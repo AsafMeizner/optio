@@ -16,7 +16,7 @@ import { logger } from "../logger.js";
 import { resolveImage } from "./repo-pool-service.js";
 import { getWorkloadManager, isStatefulSetEnabled } from "./k8s-workload-service.js";
 import * as podPool from "./agent-pod-pool.js";
-import { buildPooledExecScript } from "../utils/pod-env.js";
+import { buildPooledExecScript, KEEP_POD_ALIVE } from "../utils/pod-env.js";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 
 const IDLE_TIMEOUT_MS = parseIntEnv("OPTIO_WORKFLOW_POD_IDLE_MS", 600000); // 10 min default
@@ -60,7 +60,7 @@ function buildInitScript(): string {
     "mkdir -p /workspace/runs",
     "touch /workspace/.ready",
     "echo '[optio] Workflow pod ready'",
-    "exec sleep infinity",
+    KEEP_POD_ALIVE,
   ].join("\n");
 }
 

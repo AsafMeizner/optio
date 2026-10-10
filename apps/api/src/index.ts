@@ -2,6 +2,7 @@ import "dotenv/config";
 import { parseIntEnv } from "@optio/shared";
 import { initTelemetry, shutdownTelemetry, registerMetricCallbacks } from "./telemetry.js";
 import { logger } from "./logger.js";
+import { INSTANCE_ID } from "./services/instance.js";
 
 // Prevent Redis connection errors from crashing the process
 process.on("uncaughtException", (err) => {
@@ -159,6 +160,7 @@ async function main() {
   const migrationsPath = join(dirname(fileURLToPath(import.meta.url)), "db", "migrations");
   const applied = await migrateSafe(db, migrationsPath);
   logger.info({ applied }, "Database migrations applied");
+  logger.info({ instanceId: INSTANCE_ID }, "API instance");
 
   // Heal contradictory (scope='global', workspace_id IS NOT NULL) secret rows
   // left over from issue #509. Idempotent — a no-op once the data is clean.

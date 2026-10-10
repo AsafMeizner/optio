@@ -163,5 +163,11 @@ fi
 touch /workspace/.ready
 echo "[optio] Repo pod ready — waiting for tasks"
 
-# Keep the pod alive
-exec sleep infinity
+# Keep the pod alive under a pid 1 that reaps: a run's supervisor is
+# reparented here when the exec that started it ends (run protocol), and a
+# bare `sleep` would leave every finished run a zombie.
+if command -v tini >/dev/null 2>&1; then
+  exec tini -- sleep infinity
+else
+  exec sleep infinity
+fi

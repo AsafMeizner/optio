@@ -312,6 +312,38 @@ interface LaunchPrReviewInput {
  * pr_reviews row already exists for the PR URL, promote it to reviewing
  * and spawn a rereview run rather than duplicating.
  */
+/** The states a review is "in flight" in: at most one of these per PR URL (`pr_reviews_active_pr_url_key`). */
+export const ACTIVE_PR_REVIEW_STATES: readonly PrReviewState[] = [
+  PrReviewState.QUEUED,
+  PrReviewState.WAITING_CI,
+  PrReviewState.REVIEWING,
+  PrReviewState.READY,
+];
+
+/**
+ * The review row a launch builds on for a PR URL: the active one when there
+ * is one, else the most recently updated. A historical cancelled duplicate
+ * (overlapping sweeps before the unique index) is never picked over a live
+ * review.
+ */
+export async function findReviewByUrl(prUrl: string): Promise<PrReview | undefined> {
+  const [row] = await db
+    .select()
+    .from(prReviews)
+    .where(eq(prReviews.prUrl, prUrl))
+    .orderBy(
+      desc(
+        sql`${prReviews.state} IN (${sql.join(
+          ACTIVE_PR_REVIEW_STATES.map((s) => sql`${s}`),
+          sql`, `,
+        )})`,
+      ),
+      desc(prReviews.updatedAt),
+    )
+    .limit(1);
+  return row;
+}
+
 export async function launchPrReview(input: LaunchPrReviewInput) {
   const parsed = parsePrUrl(input.prUrl);
   if (!parsed) throw new Error("Invalid PR URL");
@@ -332,7 +364,7 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
   const origin = input.origin ?? "manual";
 
   // Upsert pr_reviews row.
-  const [existing] = await db.select().from(prReviews).where(eq(prReviews.prUrl, input.prUrl));
+  const existing = await findReviewByUrl(input.prUrl);
   let review: PrReview;
   if (existing) {
     // Reset to queued/reviewing with fresh head_sha. Keep origin sticky —

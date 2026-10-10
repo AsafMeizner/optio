@@ -37,7 +37,14 @@ export interface ApiServerHandle {
   proc: ChildProcess;
   /** Captured stdout+stderr (ring buffer) — for debugging failed scenarios. */
   logs(): string;
+  /** Graceful stop: SIGTERM, then SIGKILL after 10 s. */
   stop(): Promise<void>;
+  /**
+   * Sends `signal` to the server's process group and waits for the process
+   * to be gone (a signal other than SIGKILL is followed by SIGKILL after
+   * 15 s). The scale-out e2e tier kills servers mid-run with it.
+   */
+  kill(signal: NodeJS.Signals): Promise<void>;
 }
 
 export interface StartApiServerOptions {
@@ -175,23 +182,29 @@ async function startApiServerOnce(opts: StartApiServerOptions): Promise<ApiServe
     await new Promise((r) => setTimeout(r, 250));
   }
 
+  const kill = (signal: NodeJS.Signals, forceAfterMs: number) =>
+    new Promise<void>((resolve) => {
+      if (exited) return resolve();
+      const killTimer =
+        signal === "SIGKILL"
+          ? null
+          : setTimeout(() => {
+              killGroup("SIGKILL");
+            }, forceAfterMs);
+      proc.once("exit", () => {
+        if (killTimer) clearTimeout(killTimer);
+        resolve();
+      });
+      killGroup(signal);
+    });
+
   return {
     baseUrl,
     port,
     proc,
     logs: () => lines.join("\n"),
-    stop: () =>
-      new Promise<void>((resolve) => {
-        if (exited) return resolve();
-        const killTimer = setTimeout(() => {
-          killGroup("SIGKILL");
-        }, 10_000);
-        proc.once("exit", () => {
-          clearTimeout(killTimer);
-          resolve();
-        });
-        killGroup("SIGTERM");
-      }),
+    stop: () => kill("SIGTERM", 10_000),
+    kill: (signal) => kill(signal, 15_000),
   };
 }
 

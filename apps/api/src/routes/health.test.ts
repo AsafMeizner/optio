@@ -22,8 +22,8 @@ import { healthRoutes, _resetHealthCache } from "./health.js";
 
 // ─── Helpers ───
 
-async function buildTestApp(): Promise<FastifyInstance> {
-  return buildRouteTestApp(healthRoutes, { user: null });
+async function buildTestApp(user: unknown = null): Promise<FastifyInstance> {
+  return buildRouteTestApp(healthRoutes, { user: user as never });
 }
 
 describe("GET /api/health", () => {
@@ -94,5 +94,31 @@ describe("GET /api/health", () => {
     const res = await app.inject({ method: "GET", url: "/api/health" });
 
     expect(res.json().maxConcurrent).toBeTypeOf("number");
+  });
+});
+
+describe("GET /api/health instance id", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetHealthCache();
+    mockDbExecute.mockResolvedValue([{ "?column?": 1 }]);
+    mockCheckRuntimeHealth.mockResolvedValue(true);
+  });
+
+  it("names the instance only for a signed-in request", async () => {
+    const anonymous = await buildTestApp(null);
+    const res = await anonymous.inject({ method: "GET", url: "/api/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).not.toHaveProperty("instanceId");
+
+    const signedIn = await buildTestApp({
+      id: "u1",
+      provider: "github",
+      email: "u@x",
+      displayName: "U",
+    });
+    const res2 = await signedIn.inject({ method: "GET", url: "/api/health" });
+    expect(res2.statusCode).toBe(200);
+    expect(res2.json().instanceId).toMatch(/^[^:]+:[0-9a-f]{6}$/);
   });
 });

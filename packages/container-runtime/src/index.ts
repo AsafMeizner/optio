@@ -1,4 +1,40 @@
-export type { ContainerRuntime, LogOptions, ExecOptions } from "./types.js";
+export type {
+  ContainerRuntime,
+  LogOptions,
+  ExecOptions,
+  RunSignal,
+  RunStartInput,
+  RunStartResult,
+  RunAttachInput,
+  RunAttachment,
+  RunExit,
+  RunStdinInput,
+  RunKillInput,
+} from "./types.js";
+export {
+  RUN_STARTED_MARKER,
+  RUN_EXIT_MARKER,
+  RUN_LOST_MARKER,
+  STDIN_DELIVERED_MARKER,
+  STDIN_EOF_SENTINEL,
+  RUN_FILES,
+  RUN_DIR_ENV,
+  RUN_MARK_ENV_READY_ENV,
+  RUN_STDIN_BYTES_ENV,
+  RUN_SIGNALS,
+  RUN_ALIVE_HELPER,
+  SUPERVISOR_SCRIPT,
+  startRunPrelude,
+  superviseAgent,
+  attachRunScript,
+  deliverStdinScript,
+  killRunScript,
+  normalizeFromByte,
+  parseRunExitLine,
+  parseRunStartedPid,
+  RunStartError,
+  RunDeliverError,
+} from "./run-protocol.js";
 export { DockerContainerRuntime } from "./docker.js";
 export type { DockerRuntimeOptions } from "./docker.js";
 export {
