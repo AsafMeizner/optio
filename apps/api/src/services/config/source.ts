@@ -13,6 +13,7 @@ import { applyManifests, type ConfigSourceRow } from "./apply.js";
 import { readManifestDirectory } from "./files.js";
 import { envConfigSource, type EnvConfigSource } from "./env.js";
 import { isAuthDisabled } from "../oauth/index.js";
+import { withLease } from "../lease-service.js";
 
 export { envConfigSource, type EnvConfigSource } from "./env.js";
 
@@ -107,8 +108,14 @@ async function ensureSourceRow(
   return created ?? (await sourceRow(workspaceId));
 }
 
-// One apply at a time in this process: a tick and a "Sync now" that overlap
-// would race each other's creates.
+// One apply at a time across every API instance: a tick and a "Sync now"
+// that overlap would race each other's creates. The apply holds the
+// `config-sync:apply` lease (services/lease-service.ts); within one process
+// callers are also chained, so a tick never contends with its own instance.
+const APPLY_LEASE_KEY = "config-sync:apply";
+const APPLY_LEASE_TTL_MS = 5 * 60_000;
+const APPLY_WAIT_MS = 60_000;
+
 let running: Promise<unknown> = Promise.resolve();
 
 function serialized<T>(run: () => Promise<T>): Promise<T> {
@@ -117,66 +124,96 @@ function serialized<T>(run: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** Read the directory and apply it (or plan it). Null when config as code is off. */
+export class ConfigApplyBusyError extends Error {
+  constructor() {
+    super("Another API instance is applying the configuration directory; try again shortly");
+    this.name = "ConfigApplyBusyError";
+  }
+}
+
+/**
+ * Runs `run` under the apply lease. A periodic tick (`wait: false`) skips
+ * when another instance holds it — the next tick applies the same files. A
+ * person's "Sync now" (`wait: true`) waits up to a minute for the lease
+ * and fails with `ConfigApplyBusyError` otherwise.
+ */
+async function underApplyLease<T>(wait: boolean, run: () => Promise<T>): Promise<T | null> {
+  const result = await withLease(APPLY_LEASE_KEY, run, {
+    ttlMs: APPLY_LEASE_TTL_MS,
+    ...(wait ? { wait: { timeoutMs: APPLY_WAIT_MS, pollMs: 500 } } : {}),
+  });
+  if (result !== null) return result;
+  if (wait) throw new ConfigApplyBusyError();
+  logger.debug("config directory: another instance is applying; skipping this tick");
+  return null;
+}
+
+/**
+ * Read the directory and apply it (or plan it). Null when config as code is
+ * off, or when `wait` is false and another instance is applying right now.
+ */
 export async function syncEnvSource(
-  opts: { dryRun?: boolean } = {},
+  opts: { dryRun?: boolean; wait?: boolean } = {},
 ): Promise<ConfigApplyResult | null> {
   const source = await ensureEnvSource();
   if (!source) return null;
-  return serialized(async () => {
-    const dryRun = opts.dryRun ?? false;
-    let result: ConfigApplyResult;
-    let hash: string | null = null;
-    let error: string | null = null;
-    try {
-      const read = await readManifestDirectory(source.path);
-      hash = read.hash;
-      result = await applyManifests({
-        workspaceId: source.workspaceId,
-        manifests: read.manifests,
-        dryRun,
-        source,
-        prune: source.prune,
-        priorErrors: read.errors,
-      });
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      logger.error({ err, dir: source.path }, "config directory: sync failed");
-      result = {
-        dryRun,
-        source: { id: source.id, name: source.name },
-        items: [],
-        summary: {
-          created: 0,
-          updated: 0,
-          reverted: 0,
-          unchanged: 0,
-          adopted: 0,
-          replaced: 0,
-          pruned: 0,
-          errors: 1,
-        },
-        at: new Date().toISOString(),
-      };
-    }
-    if (!dryRun) {
-      await db
-        .update(configSources)
-        .set({
-          lastSyncAt: new Date(),
-          lastSyncHash: hash,
-          lastSyncError: error,
-          lastSyncResult: result,
-          updatedAt: new Date(),
-        })
-        .where(eq(configSources.id, source.id));
-      const s = result.summary;
-      if (s.created || s.updated || s.replaced || s.pruned || s.errors || error) {
-        logger.info({ dir: source.path, ...s, error }, "config directory applied");
+  const wait = opts.wait ?? true;
+  return serialized(() =>
+    underApplyLease(wait, async () => {
+      const dryRun = opts.dryRun ?? false;
+      let result: ConfigApplyResult;
+      let hash: string | null = null;
+      let error: string | null = null;
+      try {
+        const read = await readManifestDirectory(source.path);
+        hash = read.hash;
+        result = await applyManifests({
+          workspaceId: source.workspaceId,
+          manifests: read.manifests,
+          dryRun,
+          source,
+          prune: source.prune,
+          priorErrors: read.errors,
+        });
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+        logger.error({ err, dir: source.path }, "config directory: sync failed");
+        result = {
+          dryRun,
+          source: { id: source.id, name: source.name },
+          items: [],
+          summary: {
+            created: 0,
+            updated: 0,
+            reverted: 0,
+            unchanged: 0,
+            adopted: 0,
+            replaced: 0,
+            pruned: 0,
+            errors: 1,
+          },
+          at: new Date().toISOString(),
+        };
       }
-    }
-    return result;
-  });
+      if (!dryRun) {
+        await db
+          .update(configSources)
+          .set({
+            lastSyncAt: new Date(),
+            lastSyncHash: hash,
+            lastSyncError: error,
+            lastSyncResult: result,
+            updatedAt: new Date(),
+          })
+          .where(eq(configSources.id, source.id));
+        const s = result.summary;
+        if (s.created || s.updated || s.replaced || s.pruned || s.errors || error) {
+          logger.info({ dir: source.path, ...s, error }, "config directory applied");
+        }
+      }
+      return result;
+    }),
+  );
 }
 
 export function toSourceView(row: ConfigSourceRow, intervalMs: number): ConfigSourceView {

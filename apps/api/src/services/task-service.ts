@@ -366,6 +366,12 @@ export async function searchTasks(opts: SearchTasksOpts) {
   return { tasks: hydrated, nextCursor, hasMore };
 }
 
+/**
+ * Where a transition's reads and writes run: the shared client, or a
+ * transaction (a claim under the advisory lock, services/claim-lock.ts).
+ */
+export type TransitionExecutor = Pick<typeof db, "select" | "update" | "insert">;
+
 export async function transitionTask(
   id: string,
   toState: TaskState,
@@ -373,7 +379,46 @@ export async function transitionTask(
   message?: string,
   userId?: string,
 ) {
-  const task = await getTask(id);
+  const written = await writeTransition(db, id, toState, trigger, message, userId);
+  await announceTransition(written);
+  return written.updatedTask;
+}
+
+/**
+ * `transitionTask` inside a claim (`withClaimLock`): the CAS and its event
+ * row on the claim's transaction, so they commit with it, and the
+ * announcement — events, webhooks, the reconciler — registered to run once
+ * it has committed. The updated task, or null when another worker won the
+ * race (the shapes `tryTransitionTask` treats as lost).
+ */
+export async function claimTransitionIn(
+  claim: { tx: TransitionExecutor; afterCommit(step: () => unknown): void },
+  id: string,
+  toState: TaskState,
+  trigger: string,
+) {
+  try {
+    const written = await writeTransition(claim.tx, id, toState, trigger);
+    claim.afterCommit(() => announceTransition(written));
+    return written.updatedTask;
+  } catch (err) {
+    if (err instanceof StateRaceError || err instanceof InvalidTransitionError) return null;
+    throw err;
+  }
+}
+
+type WrittenTransition = Awaited<ReturnType<typeof writeTransition>>;
+
+/** The read, validation, CAS update and event row of a transition. */
+async function writeTransition(
+  exec: TransitionExecutor,
+  id: string,
+  toState: TaskState,
+  trigger: string,
+  message?: string,
+  userId?: string,
+) {
+  const [task] = await exec.select().from(tasks).where(eq(tasks.id, id));
   if (!task) throw new Error(`Task not found: ${id}`);
 
   const currentState = task.state as TaskState;
@@ -427,7 +472,7 @@ export async function transitionTask(
   }
 
   // Atomic conditional update — only succeeds if state hasn't changed since we read it
-  const updated = await db
+  const updated = await exec
     .update(tasks)
     .set(updateFields)
     .where(and(eq(tasks.id, id), eq(tasks.state, currentState as any)))
@@ -435,11 +480,11 @@ export async function transitionTask(
 
   if (updated.length === 0) {
     // Another worker changed the state between our read and write
-    const fresh = await getTask(id);
+    const [fresh] = await exec.select({ state: tasks.state }).from(tasks).where(eq(tasks.id, id));
     throw new StateRaceError(currentState, toState, fresh?.state as TaskState);
   }
 
-  await db.insert(taskEvents).values({
+  await exec.insert(taskEvents).values({
     taskId: id,
     fromState: currentState,
     toState,
@@ -448,7 +493,16 @@ export async function transitionTask(
     userId,
   });
 
-  const updatedTask = updated[0];
+  return { id, task, currentState, toState, trigger, updatedTask: updated[0] };
+}
+
+/**
+ * What follows a committed transition: metrics, the state event, linked
+ * issue, webhooks, notifications, dependents, kills, and the reconciler.
+ */
+async function announceTransition(written: WrittenTransition) {
+  const { id, task, currentState, toState, trigger, updatedTask } = written;
+  const updated = [updatedTask];
 
   // Emit OTel state transition metric and log
   recordStateTransition(currentState, toState, trigger);
@@ -569,8 +623,6 @@ export async function transitionTask(
       enqueueReconcile({ kind: "repo", id }, { reason: `transition:${currentState}->${toState}` }),
     )
     .catch((err) => logger.warn({ err, taskId: id }, "Failed to enqueue reconcile"));
-
-  return updated[0];
 }
 
 async function closeIssue(repoUrl: string, issueNumber: string, prUrl?: string | null) {

@@ -305,7 +305,10 @@ Watch frame, should post or update a visible notification.
   trailing edge sends, the latest frame wins, and an alerting frame is never
   downgraded by a later silent one. `start` and `end` are never downgraded to
   `update`. An `update` identical to the last frame sent is dropped (`asOf` is
-  ignored in the comparison).
+  ignored in the comparison). The coalescer is per API instance; the rest of
+  the bookkeeping (last attention state, needs-you and running counts, hosts
+  alerted offline, the quiet-period and snooze timers) is shared in the
+  `glance_state` table, as described in `docs/ios-push.md`.
 - **Bad tokens.** The server deletes the row at once on any of these:
   - `UNREGISTERED`, or HTTP 404
   - `SENDER_ID_MISMATCH`

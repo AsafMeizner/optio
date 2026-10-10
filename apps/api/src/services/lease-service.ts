@@ -105,11 +105,36 @@ export interface WithLeaseOptions {
   /** How often to renew while `fn` runs (default a third of the TTL). */
   renewEveryMs?: number;
   holder?: string;
+  /**
+   * Wait for a lease held elsewhere instead of giving up at once: try again
+   * every `pollMs` (default 250) until `timeoutMs` has passed, then resolve
+   * `null` as if it had been held all along.
+   */
+  wait?: { timeoutMs: number; pollMs?: number };
+}
+
+/** Takes the lease now, or — with `wait` — as soon as it is free within the timeout. */
+async function acquireWithin(
+  key: string,
+  ttlMs: number,
+  holder: string,
+  wait: WithLeaseOptions["wait"],
+): Promise<boolean> {
+  if (await acquireLease(key, ttlMs, holder)) return true;
+  if (!wait) return false;
+  const deadline = Date.now() + wait.timeoutMs;
+  const pollMs = Math.max(10, wait.pollMs ?? 250);
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
+    if (await acquireLease(key, ttlMs, holder)) return true;
+  }
+  return false;
 }
 
 /**
  * Runs `fn` while holding the lease, renewing it on an interval. Resolves
- * `null` without running `fn` when the lease is held elsewhere. If a renew
+ * `null` without running `fn` when the lease is held elsewhere (after
+ * waiting for it, with `wait`). If a renew
  * fails while `fn` runs, `fn`'s `signal` aborts and, once `fn` settles, the
  * call rejects with `LeaseLostError`; `fn` should stop what it is doing when
  * the signal fires. The lease is released when `fn` finishes.
@@ -122,7 +147,7 @@ export async function withLease<T>(
   const ttlMs = opts.ttlMs ?? 60_000;
   const renewEveryMs = opts.renewEveryMs ?? Math.max(250, Math.floor(ttlMs / 3));
   const holder = opts.holder ?? INSTANCE_ID;
-  if (!(await acquireLease(key, ttlMs, holder))) return null;
+  if (!(await acquireWithin(key, ttlMs, holder, opts.wait))) return null;
 
   const controller = new AbortController();
   let lost = false;

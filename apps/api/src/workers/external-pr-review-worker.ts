@@ -21,9 +21,15 @@ import { db } from "../db/client.js";
 import { repos, prReviews } from "../db/schema.js";
 import { parseIntEnv, parseRepoUrl, PrReviewState } from "@optio/shared";
 import { getGitPlatformForRepo } from "../services/git-token-service.js";
-import { launchPrReview, isOptioAuthoredPr } from "../services/pr-review-service.js";
+import {
+  launchPrReview,
+  isOptioAuthoredPr,
+  preferredReview,
+} from "../services/pr-review-service.js";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
+import { scheduleRepeat } from "../services/repeat-jobs.js";
+import { underPollerLease } from "../services/poller-lease.js";
 import { instrumentWorkerProcessor } from "../telemetry/instrument-worker.js";
 import { determineCheckStatus } from "./pr-watcher-worker.js";
 
@@ -57,138 +63,25 @@ function passesFilters(
   return true;
 }
 
+/**
+ * One sweep at a time across instances (a poller lease); a sweep that does
+ * overlap another can't launch a second review of a PR anyway: each launch
+ * names the review the sweep saw (`seenVersion`, none for a new PR) and
+ * lands only while that is still the review, and
+ * `pr_reviews_active_pr_url_key` admits one active review per PR URL —
+ * `launchPrReview` treats either race as "someone else launched it".
+ */
 export function startExternalPrReviewWorker() {
-  externalPrReviewQueue.add(
-    "poll-external-prs",
-    {},
-    {
-      repeat: {
-        every: parseIntEnv("OPTIO_EXTERNAL_PR_POLL_INTERVAL_MS", 120_000),
-      },
-    },
-  );
+  void scheduleRepeat(
+    externalPrReviewQueue,
+    "external-pr-review.poll-external-prs",
+    parseIntEnv("OPTIO_EXTERNAL_PR_POLL_INTERVAL_MS", 120_000),
+  ).catch(() => {});
 
   const worker = new Worker(
     "external-pr-review",
     instrumentWorkerProcessor("external-pr-review", async () => {
-      const activeRepos = await db
-        .select()
-        .from(repos)
-        .where(
-          sql`${repos.externalReviewMode} IN ('on_pr_hold', 'on_pr_post') AND ${repos.reviewEnabled} = true`,
-        );
-
-      for (const repo of activeRepos) {
-        try {
-          const ri = parseRepoUrl(repo.repoUrl);
-          if (!ri) continue;
-
-          const { platform } = await getGitPlatformForRepo(repo.repoUrl, { server: true }).catch(
-            () => ({
-              platform: null as unknown as Awaited<
-                ReturnType<typeof getGitPlatformForRepo>
-              >["platform"],
-            }),
-          );
-          if (!platform) continue;
-
-          const prs = await platform.listOpenPullRequests(ri, { perPage: 50 }).catch(() => []);
-          if (prs.length === 0) continue;
-
-          const prUrls = prs.map((p) => p.url);
-          const reviews = prUrls.length
-            ? await db.select().from(prReviews).where(inArray(prReviews.prUrl, prUrls))
-            : [];
-          const byUrl = new Map(reviews.map((r) => [r.prUrl, r]));
-
-          const filters = repo.externalReviewFilters ?? null;
-
-          for (const pr of prs) {
-            try {
-              const existing = byUrl.get(pr.url);
-
-              if (existing) {
-                // Skip in-flight drafting states — reconciler owns those.
-                if (
-                  existing.state === PrReviewState.QUEUED ||
-                  existing.state === PrReviewState.REVIEWING
-                ) {
-                  continue;
-                }
-
-                // User has engaged — don't auto-mutate their review.
-                if (existing.userEngaged) {
-                  // But still advance waiting_ci if CI has cleared.
-                  if (existing.state === PrReviewState.WAITING_CI) {
-                    const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
-                    const status = determineCheckStatus(checks);
-                    if (status !== "pending") {
-                      await launchPrReview({
-                        prUrl: pr.url,
-                        workspaceId: repo.workspaceId ?? undefined,
-                        origin: existing.origin as "auto" | "manual",
-                      });
-                    }
-                  }
-                  continue;
-                }
-
-                // New commits — spawn a rereview.
-                if (pr.headSha && pr.headSha !== existing.headSha) {
-                  await launchPrReview({
-                    prUrl: pr.url,
-                    workspaceId: repo.workspaceId ?? undefined,
-                    origin: "auto",
-                  });
-                  continue;
-                }
-
-                // Waiting on CI — promote when CI clears.
-                if (existing.state === PrReviewState.WAITING_CI) {
-                  const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
-                  const status = determineCheckStatus(checks);
-                  if (status !== "pending") {
-                    await launchPrReview({
-                      prUrl: pr.url,
-                      workspaceId: repo.workspaceId ?? undefined,
-                      origin: "auto",
-                    });
-                  }
-                  continue;
-                }
-
-                continue;
-              }
-
-              // No existing review — apply filters, then decide whether to
-              // park in waiting_ci or launch immediately.
-              if (!passesFilters(pr, filters)) continue;
-              if (filters?.skipOptioAuthored && (await isOptioAuthoredPr(pr.url))) continue;
-
-              let startInWaitingCi = false;
-              if (repo.externalReviewWaitForCi) {
-                const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
-                const status = determineCheckStatus(checks);
-                if (status === "pending") startInWaitingCi = true;
-              }
-
-              await launchPrReview({
-                prUrl: pr.url,
-                workspaceId: repo.workspaceId ?? undefined,
-                origin: "auto",
-                startInWaitingCi,
-              });
-            } catch (err) {
-              logger.warn(
-                { err, prUrl: pr.url, repoId: repo.id },
-                "external PR review: failed to process PR",
-              );
-            }
-          }
-        } catch (err) {
-          logger.warn({ err, repoId: repo.id }, "external PR review: failed to process repo");
-        }
-      }
+      await underPollerLease("external-pr-review", () => sweepExternalPrs());
     }),
     { ...bullmqOpts, concurrency: 1 },
   );
@@ -198,6 +91,133 @@ export function startExternalPrReviewWorker() {
   });
 
   return worker;
+}
+
+/** One sweep over every repo that reviews external PRs. */
+export async function sweepExternalPrs(): Promise<void> {
+  const activeRepos = await db
+    .select()
+    .from(repos)
+    .where(
+      sql`${repos.externalReviewMode} IN ('on_pr_hold', 'on_pr_post') AND ${repos.reviewEnabled} = true`,
+    );
+
+  for (const repo of activeRepos) {
+    try {
+      const ri = parseRepoUrl(repo.repoUrl);
+      if (!ri) continue;
+
+      const { platform } = await getGitPlatformForRepo(repo.repoUrl, { server: true }).catch(
+        () => ({
+          platform: null as unknown as Awaited<
+            ReturnType<typeof getGitPlatformForRepo>
+          >["platform"],
+        }),
+      );
+      if (!platform) continue;
+
+      const prs = await platform.listOpenPullRequests(ri, { perPage: 50 }).catch(() => []);
+      if (prs.length === 0) continue;
+
+      const prUrls = prs.map((p) => p.url);
+      const reviews = prUrls.length
+        ? await db.select().from(prReviews).where(inArray(prReviews.prUrl, prUrls))
+        : [];
+      const byUrl = new Map<string, (typeof reviews)[number]>();
+      for (const r of reviews) byUrl.set(r.prUrl, preferredReview(byUrl.get(r.prUrl), r));
+
+      const filters = repo.externalReviewFilters ?? null;
+
+      for (const pr of prs) {
+        try {
+          const existing = byUrl.get(pr.url);
+
+          if (existing) {
+            // Skip in-flight drafting states — reconciler owns those.
+            if (
+              existing.state === PrReviewState.QUEUED ||
+              existing.state === PrReviewState.REVIEWING
+            ) {
+              continue;
+            }
+
+            // User has engaged — don't auto-mutate their review.
+            if (existing.userEngaged) {
+              // But still advance waiting_ci if CI has cleared.
+              if (existing.state === PrReviewState.WAITING_CI) {
+                const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
+                const status = determineCheckStatus(checks);
+                if (status !== "pending") {
+                  await launchPrReview({
+                    prUrl: pr.url,
+                    workspaceId: repo.workspaceId ?? undefined,
+                    origin: existing.origin as "auto" | "manual",
+                    seenVersion: existing.updatedAt,
+                  });
+                }
+              }
+              continue;
+            }
+
+            // New commits — spawn a rereview.
+            if (pr.headSha && pr.headSha !== existing.headSha) {
+              await launchPrReview({
+                prUrl: pr.url,
+                workspaceId: repo.workspaceId ?? undefined,
+                origin: "auto",
+                seenVersion: existing.updatedAt,
+              });
+              continue;
+            }
+
+            // Waiting on CI — promote when CI clears.
+            if (existing.state === PrReviewState.WAITING_CI) {
+              const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
+              const status = determineCheckStatus(checks);
+              if (status !== "pending") {
+                await launchPrReview({
+                  prUrl: pr.url,
+                  workspaceId: repo.workspaceId ?? undefined,
+                  origin: "auto",
+                  seenVersion: existing.updatedAt,
+                });
+              }
+              continue;
+            }
+
+            continue;
+          }
+
+          // No existing review — apply filters, then decide whether to
+          // park in waiting_ci or launch immediately.
+          if (!passesFilters(pr, filters)) continue;
+          if (filters?.skipOptioAuthored && (await isOptioAuthoredPr(pr.url))) continue;
+
+          let startInWaitingCi = false;
+          if (repo.externalReviewWaitForCi) {
+            const checks = await platform.getCIChecks(ri, pr.headSha).catch(() => []);
+            const status = determineCheckStatus(checks);
+            if (status === "pending") startInWaitingCi = true;
+          }
+
+          await launchPrReview({
+            prUrl: pr.url,
+            workspaceId: repo.workspaceId ?? undefined,
+            origin: "auto",
+            startInWaitingCi,
+            seenVersion: null,
+          });
+        } catch (err) {
+          logger.warn(
+            { err, prUrl: pr.url, repoId: repo.id },
+            "external PR review: failed to process PR",
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, repoId: repo.id }, "external PR review: failed to process repo");
+    }
+  }
 }
 
 // Keep `and`, `eq` available for future filters so lint doesn't strip them.

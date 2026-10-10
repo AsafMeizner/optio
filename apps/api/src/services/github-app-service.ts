@@ -2,6 +2,10 @@ import type { Signer } from "./crypto/signer.js";
 import { Rs256Signer, MlDsa65Signer } from "./crypto/signer.js";
 import { logger } from "../logger.js";
 
+// A per-instance cache of the installation token (an hour long; GitHub
+// mints as many as are asked for and rotates nothing), so every API
+// instance fetching its own is correct — the lock only folds concurrent
+// callers within this process onto one fetch. Not shared state.
 let cachedToken: { token: string; expiresAt: number } | null = null;
 let installationTokenLock: Promise<string> | null = null;
 

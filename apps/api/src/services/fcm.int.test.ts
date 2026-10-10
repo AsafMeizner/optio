@@ -66,7 +66,7 @@ class FakeDaemonSocket implements relay.RelaySocket {
 
 beforeEach(async () => {
   relay.resetRelayForTests();
-  resetGlanceForTests();
+  await resetGlanceForTests();
   apnsService.reset();
   fcmService.reset();
   fcmFake.sent.length = 0;

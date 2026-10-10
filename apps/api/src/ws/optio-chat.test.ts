@@ -7,15 +7,10 @@ import {
   parseActionResult,
   toAnthropicTools,
   streamAnthropicResponse,
-  _resetActiveConnections,
 } from "./optio-chat.js";
 import { OPTIO_TOOL_SCHEMAS } from "@optio/shared";
 
 describe("optio-chat", () => {
-  beforeEach(() => {
-    _resetActiveConnections();
-  });
-
   // ─── toolRequiresConfirmation ───
 
   describe("toolRequiresConfirmation", () => {

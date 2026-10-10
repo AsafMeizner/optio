@@ -13,7 +13,11 @@ import { workflowRuns, workRuns } from "../db/schema.js";
 import { and, eq } from "drizzle-orm";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import * as workflowService from "../services/workflow-service.js";
-import { transitionWorkflowRunCas, type Workflow } from "../services/workflow-service.js";
+import {
+  claimWorkflowRunIn,
+  transitionWorkflowRunCas,
+  type Workflow,
+} from "../services/workflow-service.js";
 import { COMMAND_SCRIPT, commandResult, parseCommandLine } from "../services/command-run.js";
 import { renderCommandTemplate } from "../services/prompt-template-service.js";
 import * as workflowPool from "../services/workflow-pool-service.js";
@@ -41,6 +45,7 @@ import { RunOutputDigest } from "../services/run-output-digest.js";
 import { runHome } from "../utils/harness-config.js";
 import { addUsage } from "../services/run-usage.js";
 import { activityFlusher } from "../services/activity-flush.js";
+import { WORKFLOW_CLAIM_KEY, withClaimLock } from "../services/claim-lock.js";
 import { resolvePodSecrets } from "../services/secret-service.js";
 import { recordAuthEvent } from "../services/auth-failure-detector.js";
 import {
@@ -109,18 +114,6 @@ export function buildWorkflowAgentCommand(
     maxTurns: opts?.maxTurns ?? DEFAULT_MAX_TURNS_CODING,
     label: "workflow agent",
   });
-}
-
-// ── Concurrency lock ───────────────────────────────────────────────────────────
-
-let claimLockChain: Promise<void> = Promise.resolve();
-
-function withClaimLock<T>(fn: () => Promise<T>): Promise<T> {
-  let releaseLock!: () => void;
-  const nextLink = new Promise<void>((r) => (releaseLock = r));
-  const prev = claimLockChain;
-  claimLockChain = nextLink;
-  return prev.then(fn).finally(releaseLock);
 }
 
 // ── Worker ─────────────────────────────────────────────────────────────────────
@@ -194,34 +187,42 @@ export function startWorkflowWorker() {
         }
 
         // ── Concurrency check ─────────────────────────────────────────
-        const claimed = await withClaimLock(async () => {
+        // Under the advisory lock for the global limit, so claimers on every
+        // API instance count one at a time (claim-lock.ts); this Job's own
+        // limit is counted under the same lock. Null when another worker
+        // held the lock past its timeout: re-queue.
+        const claimed = await withClaimLock([WORKFLOW_CLAIM_KEY], async (claim) => {
           // Global workflow concurrency (cluster runs only; local runs don't
           // occupy pods), then this workflow's own.
           const capacity = await workflowService.jobRunCapacity(
             workflow.id,
             workflow.maxConcurrent,
+            claim.tx,
           );
           if (capacity.global.running >= capacity.global.max) {
             log.info(
               { activeCount: capacity.global.running, globalMax: capacity.global.max },
               "Global workflow concurrency saturated",
             );
-            return false;
+            return null;
           }
           if (capacity.job.running >= capacity.job.max) {
             log.info(
               { activeCount: capacity.job.running, max: capacity.job.max },
               "Per-workflow concurrency saturated",
             );
-            return false;
+            return null;
           }
 
           // Claim: transition to running. CAS — a second worker holding the
           // same run (a reconcile re-enqueue) loses here instead of running it twice.
           // The claim is the attempt's first sign of life: a retried run must
           // not be judged stalled by the previous attempt's last activity.
+          // On the lock's transaction, so it commits before the lock goes;
+          // its announcement runs after the commit.
           const now = new Date();
-          return transitionWorkflowRunCas(
+          return claimWorkflowRunIn(
+            claim,
             workflowRunId,
             WorkflowRunState.QUEUED,
             WorkflowRunState.RUNNING,

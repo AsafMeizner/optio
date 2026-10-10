@@ -1,20 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
 
-// Shared Redis stand-in for the durable delivery-id dedupe (SET NX EX).
-const redisKeys = new Set<string>();
-const redisSet = vi.fn(async (key: string) => {
-  if (redisKeys.has(key)) return null;
-  redisKeys.add(key);
-  return "OK";
-});
 vi.mock("../services/event-bus.js", () => ({
-  getRedisClient: () => ({ set: redisSet }),
+  getRedisClient: () => ({}),
   publishEvent: vi.fn(),
+}));
+// Every receiver claims the delivery id in the database first
+// (services/inbound-delivery-service.ts); the claim is a set here.
+const claimed = new Set<string>();
+const mockClaim = vi.fn(async (source: string, id: string) => {
+  const key = `${source}:${id}`;
+  if (claimed.has(key)) return false;
+  claimed.add(key);
+  return true;
+});
+vi.mock("../services/inbound-delivery-service.js", () => ({
+  claimInboundDelivery: (...args: unknown[]) => mockClaim(...(args as [string, string])),
 }));
 
 import { verifyGitHubSignature } from "./tickets.js";
-import { resetSlackEventDedupe } from "./event-ingress.js";
 
 describe("verifyGitHubSignature", () => {
   const secret = "test-webhook-secret";
@@ -60,9 +64,8 @@ describe("POST /api/webhooks/github (signature enforcement)", () => {
   let app: import("fastify").FastifyInstance;
 
   beforeEach(async () => {
-    redisKeys.clear();
-    redisSet.mockClear();
-    resetSlackEventDedupe();
+    claimed.clear();
+    mockClaim.mockClear();
     process.env.GITHUB_WEBHOOK_SECRET = secret;
     const { buildRouteTestApp } = await import("../test-utils/build-route-test-app.js");
     const { ticketRoutes } = await import("./tickets.js");
@@ -109,30 +112,18 @@ describe("POST /api/webhooks/github (signature enforcement)", () => {
   it("drops a replayed delivery id without re-processing it", async () => {
     const headers = { "x-hub-signature-256": sign(raw), "x-github-delivery": "guid-1" };
     expect((await deliver(headers)).statusCode).toBe(200);
-    expect(redisSet).toHaveBeenCalledTimes(1);
-    expect(redisSet.mock.calls[0]).toEqual([
-      "optio:webhook-delivery:github:guid-1",
-      "1",
-      "EX",
-      86400,
-      "NX",
-    ]);
-    // Replay: answered 200 but short-circuited by the in-process set.
+    expect(mockClaim).toHaveBeenCalledTimes(1);
+    expect(mockClaim.mock.calls[0]).toEqual(["github", "guid-1"]);
+    // Replay: answered 200 but the claim is a conflict.
     expect((await deliver(headers)).json()).toEqual({ ok: true });
-    expect(redisSet).toHaveBeenCalledTimes(1);
+    expect(mockClaim).toHaveBeenCalledTimes(2);
   });
 
   it("drops a delivery another replica (or a previous process) already claimed", async () => {
-    redisKeys.add("optio:webhook-delivery:github:guid-2");
+    claimed.add("github:guid-2");
     const res = await deliver({ "x-hub-signature-256": sign(raw), "x-github-delivery": "guid-2" });
     expect(res.statusCode).toBe(200);
-    expect(redisSet).toHaveBeenCalledTimes(1);
-  });
-
-  it("accepts the delivery when Redis is unavailable (fails open)", async () => {
-    redisSet.mockRejectedValueOnce(new Error("ECONNREFUSED"));
-    const res = await deliver({ "x-hub-signature-256": sign(raw), "x-github-delivery": "guid-3" });
-    expect(res.statusCode).toBe(200);
+    expect(mockClaim).toHaveBeenCalledTimes(1);
   });
 
   it("rejects every delivery when GITHUB_WEBHOOK_SECRET is unset", async () => {

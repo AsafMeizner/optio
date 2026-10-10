@@ -16,7 +16,7 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { logger } from "../logger.js";
-import { getRedisClient } from "../services/event-bus.js";
+import { claimInboundDelivery, type DeliverySource } from "../services/inbound-delivery-service.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
 import {
   fireEventTriggers,
@@ -48,82 +48,17 @@ export {
 };
 
 /** Providers whose delivery ids the receivers remember. */
-export type DeliveryProvider =
-  | "slack"
-  | "linear"
-  | "github"
-  | "pagerduty"
-  | "gitlab"
-  | "jira"
-  | "sentry";
+export type DeliveryProvider = DeliverySource;
 
 const OkResponse = z.object({ ok: z.boolean(), duplicate: z.boolean().optional() });
 const ChallengeResponse = z.object({ challenge: z.string() });
 
 /**
- * Remember recent delivery ids so provider retries and replays inside the
- * signature window don't fire an automation twice. In-process, like the
- * local relay itself (single API replica): a restart forgets, which at
- * worst re-fires a delivery retried across the restart.
+ * Provider retries and replays inside the signature window must not fire an
+ * automation twice, on any API instance: every receiver claims the
+ * delivery's id in the database first (services/inbound-delivery-service.ts).
  */
-const RECENT_EVENT_IDS_MAX = 4000;
-const recentDeliveryIds = new Set<string>();
-export function rememberDelivery(provider: DeliveryProvider, id: string): boolean {
-  const key = `${provider}:${id}`;
-  if (recentDeliveryIds.has(key)) return false;
-  recentDeliveryIds.add(key);
-  if (recentDeliveryIds.size > RECENT_EVENT_IDS_MAX) {
-    const first = recentDeliveryIds.values().next().value;
-    if (first) recentDeliveryIds.delete(first);
-  }
-  return true;
-}
-
-/** How long a claimed delivery id stays claimed in Redis. */
-const DELIVERY_DEDUPE_TTL_SECS = 24 * 60 * 60;
-/** Don't hold a webhook ack hostage to a slow / unreachable Redis. */
-const DELIVERY_DEDUPE_REDIS_TIMEOUT_MS = 1000;
-
-/**
- * Durable variant of {@link rememberDelivery}: also claims the id in Redis
- * (SET NX, 24 h TTL) so a replay is dropped across API restarts and replicas.
- * Returns true when this caller is the first to see the delivery. Fails open
- * (true) when Redis errors or is slow — the signature check still gates it.
- */
-export async function claimDelivery(provider: DeliveryProvider, id: string): Promise<boolean> {
-  if (!rememberDelivery(provider, id)) return false;
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    const result = await Promise.race([
-      getRedisClient().set(
-        `optio:webhook-delivery:${provider}:${id}`,
-        "1",
-        "EX",
-        DELIVERY_DEDUPE_TTL_SECS,
-        "NX",
-      ),
-      new Promise<"timeout">((resolve) => {
-        timer = setTimeout(() => resolve("timeout"), DELIVERY_DEDUPE_REDIS_TIMEOUT_MS);
-        timer.unref?.();
-      }),
-    ]);
-    if (result === "timeout") {
-      logger.warn({ provider }, "Webhook delivery dedupe timed out in Redis; accepting");
-      return true;
-    }
-    return result === "OK";
-  } catch (err) {
-    logger.warn({ err, provider }, "Webhook delivery dedupe failed in Redis; accepting");
-    return true;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Exported for tests. */
-export function resetSlackEventDedupe(): void {
-  recentDeliveryIds.clear();
-}
+export const claimDelivery = claimInboundDelivery;
 
 export async function eventIngressRoutes(rawApp: FastifyInstance) {
   const app = rawApp.withTypeProvider<ZodTypeProvider>();
@@ -171,8 +106,8 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
 
       const event = normalizeSlackEvent(body);
       if (!event) return reply.status(200).send({ ok: true });
-      if (event.eventId && !rememberDelivery("slack", event.eventId)) {
-        return reply.status(200).send({ ok: true });
+      if (event.eventId && !(await claimDelivery("slack", event.eventId))) {
+        return reply.status(200).send({ ok: true, duplicate: true });
       }
 
       await reply.status(200).send({ ok: true });
@@ -217,8 +152,8 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
       // identifies a delivery well enough to drop retries of it.
       const data = (body.data ?? {}) as Record<string, unknown>;
       const deliveryKey = `${body.type}:${body.action}:${data.id ?? ""}:${body.webhookTimestamp ?? ""}`;
-      if (!rememberDelivery("linear", deliveryKey)) {
-        return reply.status(200).send({ ok: true });
+      if (!(await claimDelivery("linear", deliveryKey))) {
+        return reply.status(200).send({ ok: true, duplicate: true });
       }
 
       await reply.status(200).send({ ok: true });

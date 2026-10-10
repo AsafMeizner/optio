@@ -119,6 +119,32 @@ describe("withLease", () => {
     expect(ran).toBe(false);
   });
 
+  it("with wait, runs fn once the holder lets go, or resolves null when it never does", async () => {
+    const key = "poller:wait";
+    expect(await acquireLease(key, 5_000, B)).toBe(true);
+    setTimeout(() => void releaseLease(key, B), 300);
+    const started = Date.now();
+    const result = await withLease(key, async () => "ran", {
+      holder: A,
+      wait: { timeoutMs: 3_000, pollMs: 50 },
+    });
+    expect(result).toBe("ran");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+
+    expect(await acquireLease(key, 5_000, B)).toBe(true);
+    let ran = false;
+    const timedOut = await withLease(
+      key,
+      async () => {
+        ran = true;
+        return "ran";
+      },
+      { holder: A, wait: { timeoutMs: 300, pollMs: 50 } },
+    );
+    expect(timedOut).toBeNull();
+    expect(ran).toBe(false);
+  });
+
   it("aborts fn and rejects with LeaseLostError when the lease is taken away", async () => {
     const key = "poller:lost";
     let aborted = false;

@@ -8,6 +8,8 @@ import {
 } from "@optio/shared";
 import type { RunRef, Action } from "@optio/shared";
 import { getBullMQOptions } from "../services/redis-config.js";
+import { scheduleRepeat } from "../services/repeat-jobs.js";
+import { underPollerLease } from "../services/poller-lease.js";
 import { buildWorldSnapshot } from "../services/reconcile-snapshot.js";
 import { executeAction, type ExecuteOutcome } from "../services/reconcile-executor.js";
 import { reconcileQueue, enqueueReconcile } from "../services/reconcile-queue.js";
@@ -124,56 +126,14 @@ export async function kickResync(): Promise<void> {
 export function startReconcileResyncWorker() {
   const intervalMs = parseIntEnv("OPTIO_RECONCILE_RESYNC_INTERVAL", 5 * 60 * 1000);
 
-  resyncQueue.add(
-    "resync",
-    {},
-    {
-      repeat: { every: intervalMs },
-    },
-  );
+  void scheduleRepeat(resyncQueue, "reconcile-resync.resync", intervalMs).catch(() => {});
 
   const worker = new Worker(
     "reconcile-resync",
     instrumentWorkerProcessor("reconcile-resync", async () => {
-      const { db } = await import("../db/client.js");
-      const { workRuns, prReviews, persistentAgents } = await import("../db/schema.js");
-      const { sql } = await import("drizzle-orm");
-
-      // Repo tasks and Job runs: `kind` is the run's RunKind.
-      const nonTerminalRuns = await db
-        .select({ id: workRuns.id, kind: workRuns.kind })
-        .from(workRuns)
-        .where(sql`${workRuns.state} NOT IN ('completed')`);
-
-      const nonTerminalReviews = await db
-        .select({ id: prReviews.id })
-        .from(prReviews)
-        .where(sql`${prReviews.state} NOT IN ('cancelled')`);
-
-      const livePersistentAgents = await db
-        .select({ id: persistentAgents.id })
-        .from(persistentAgents)
-        .where(sql`${persistentAgents.state} NOT IN ('archived')`);
-
-      logger.info(
-        {
-          tasks: nonTerminalRuns.filter((r) => r.kind === "repo").length,
-          runs: nonTerminalRuns.filter((r) => r.kind === "standalone").length,
-          reviews: nonTerminalReviews.length,
-          persistentAgents: livePersistentAgents.length,
-        },
-        "reconcile.resync.sweep",
-      );
-
-      for (const r of nonTerminalRuns) {
-        await enqueueReconcile({ kind: r.kind, id: r.id }, { reason: "resync" });
-      }
-      for (const r of nonTerminalReviews) {
-        await enqueueReconcile({ kind: "pr-review", id: r.id }, { reason: "resync" });
-      }
-      for (const r of livePersistentAgents) {
-        await enqueueReconcile({ kind: "persistent-agent", id: r.id }, { reason: "resync" });
-      }
+      // Idempotent (it only enqueues reconcile keys), but one sweep at a
+      // time keeps the reconcile queue from taking every key N times.
+      await underPollerLease("reconcile-resync", () => resyncAll());
     }),
     {
       ...bullmqOpts,
@@ -186,6 +146,49 @@ export function startReconcileResyncWorker() {
   });
 
   return worker;
+}
+
+/** One resync: enqueue a reconcile for every non-terminal run, review and agent. */
+export async function resyncAll(): Promise<void> {
+  const { db } = await import("../db/client.js");
+  const { workRuns, prReviews, persistentAgents } = await import("../db/schema.js");
+  const { sql } = await import("drizzle-orm");
+
+  // Repo tasks and Job runs: `kind` is the run's RunKind.
+  const nonTerminalRuns = await db
+    .select({ id: workRuns.id, kind: workRuns.kind })
+    .from(workRuns)
+    .where(sql`${workRuns.state} NOT IN ('completed')`);
+
+  const nonTerminalReviews = await db
+    .select({ id: prReviews.id })
+    .from(prReviews)
+    .where(sql`${prReviews.state} NOT IN ('cancelled')`);
+
+  const livePersistentAgents = await db
+    .select({ id: persistentAgents.id })
+    .from(persistentAgents)
+    .where(sql`${persistentAgents.state} NOT IN ('archived')`);
+
+  logger.info(
+    {
+      tasks: nonTerminalRuns.filter((r) => r.kind === "repo").length,
+      runs: nonTerminalRuns.filter((r) => r.kind === "standalone").length,
+      reviews: nonTerminalReviews.length,
+      persistentAgents: livePersistentAgents.length,
+    },
+    "reconcile.resync.sweep",
+  );
+
+  for (const r of nonTerminalRuns) {
+    await enqueueReconcile({ kind: r.kind, id: r.id }, { reason: "resync" });
+  }
+  for (const r of nonTerminalReviews) {
+    await enqueueReconcile({ kind: "pr-review", id: r.id }, { reason: "resync" });
+  }
+  for (const r of livePersistentAgents) {
+    await enqueueReconcile({ kind: "persistent-agent", id: r.id }, { reason: "resync" });
+  }
 }
 
 export { reconcileQueue };

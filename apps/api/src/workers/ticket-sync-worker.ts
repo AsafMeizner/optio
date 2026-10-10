@@ -3,28 +3,33 @@ import { parseIntEnv } from "@optio/shared";
 import { logger } from "../logger.js";
 
 import { getBullMQOptions } from "../services/redis-config.js";
+import { scheduleRepeat } from "../services/repeat-jobs.js";
+import { underPollerLease } from "../services/poller-lease.js";
 
 const bullmqOpts = getBullMQOptions();
 
 export const ticketSyncQueue = new Queue("ticket-sync", { ...bullmqOpts });
 
+/**
+ * Periodic ticket sync: one sweep at a time across instances (a poller
+ * lease); the sync itself claims each (source, ticket, repo) in
+ * `ticket_sync_claims` before creating a task, so two sweeps that do
+ * overlap still create one task per ticket.
+ */
 export function startTicketSyncWorker(syncFn: () => Promise<unknown>) {
-  // Add repeatable job for periodic sync
-  ticketSyncQueue.add(
-    "sync",
-    {},
-    {
-      repeat: {
-        every: parseIntEnv("OPTIO_TICKET_SYNC_INTERVAL", 60000), // default: 60s
-      },
-    },
-  );
+  void scheduleRepeat(
+    ticketSyncQueue,
+    "ticket-sync.sync",
+    parseIntEnv("OPTIO_TICKET_SYNC_INTERVAL", 60000), // default: 60s
+  ).catch(() => {});
 
   const worker = new Worker(
     "ticket-sync",
     async () => {
-      logger.info("Running periodic ticket sync");
-      await syncFn();
+      await underPollerLease("ticket-sync", async () => {
+        logger.info("Running periodic ticket sync");
+        await syncFn();
+      });
     },
     {
       ...bullmqOpts,

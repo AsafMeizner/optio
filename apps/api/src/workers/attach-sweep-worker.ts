@@ -17,6 +17,7 @@ import { persistentAgentTurns, prReviewRuns, workRuns } from "../db/schema.js";
 import { enqueueReconcile } from "../services/reconcile-queue.js";
 import { ATTACH_LEASE_MS } from "../services/run-attachment.js";
 import { getBullMQOptions } from "../services/redis-config.js";
+import { scheduleRepeat } from "../services/repeat-jobs.js";
 import { instrumentWorkerProcessor } from "../telemetry/instrument-worker.js";
 import { logger } from "../logger.js";
 
@@ -100,14 +101,12 @@ export async function sweepExpiredAttachments(): Promise<number> {
 }
 
 export function startAttachSweepWorker(): Worker {
-  // One scheduler, the same on every instance: upserting it is idempotent.
-  attachSweepQueue
-    .upsertJobScheduler(
-      "attach-sweep",
-      { every: ATTACH_SWEEP_INTERVAL_MS },
-      { name: "sweep", data: {}, opts: { removeOnComplete: 20, removeOnFail: 20 } },
-    )
-    .catch((err) => logger.warn({ err }, "Failed to schedule the attachment sweep"));
+  // One scheduler, the same on every instance: upserting it is idempotent
+  // (services/repeat-jobs.ts lists it, so boot's cleanup keeps it).
+  void scheduleRepeat(attachSweepQueue, "attach-sweep.sweep", ATTACH_SWEEP_INTERVAL_MS, {
+    removeOnComplete: 20,
+    removeOnFail: 20,
+  }).catch((err) => logger.warn({ err }, "Failed to schedule the attachment sweep"));
 
   const worker = new Worker(
     ATTACH_SWEEP_QUEUE,

@@ -10,6 +10,7 @@ import { Queue, Worker } from "bullmq";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { envConfigSource, syncEnvSource } from "../services/config/source.js";
+import { scheduleRepeat } from "../services/repeat-jobs.js";
 
 const QUEUE = "config-sync";
 
@@ -18,29 +19,26 @@ export function startConfigSyncWorker(): Worker | null {
   if (!env) return null;
   const bullmqOpts = getBullMQOptions();
   const queue = new Queue(QUEUE, { ...bullmqOpts });
-  queue
-    .add(
-      "sync",
-      {},
-      {
-        repeat: { every: env.intervalMs },
-        removeOnComplete: { count: 20 },
-        removeOnFail: { count: 20 },
-      },
-    )
-    .catch((err) => logger.error({ err }, "config sync: could not schedule"));
+  void scheduleRepeat(queue, "config-sync.sync", env.intervalMs, {
+    removeOnComplete: { count: 20 },
+    removeOnFail: { count: 20 },
+  }).catch((err) => logger.error({ err }, "config sync: could not schedule"));
 
+  // A tick skips when another instance is applying (source.ts takes the
+  // apply lease without waiting); "Sync now" from the UI waits for it.
   const worker = new Worker(
     QUEUE,
     async () => {
-      await syncEnvSource();
+      await syncEnvSource({ wait: false });
     },
     { ...bullmqOpts, concurrency: 1 },
   );
   worker.on("failed", (_job, err) => logger.error({ err }, "config sync failed"));
 
   // Don't wait a whole interval for the first pass.
-  syncEnvSource().catch((err) => logger.error({ err }, "config sync: first pass failed"));
+  syncEnvSource({ wait: false }).catch((err) =>
+    logger.error({ err }, "config sync: first pass failed"),
+  );
   logger.info(
     { dir: env.dir, everyMs: env.intervalMs, prune: env.prune },
     "Config sync worker started",

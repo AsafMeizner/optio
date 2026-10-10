@@ -150,10 +150,8 @@ export async function installedSkillRoutes(rawApp: FastifyInstance) {
           workspaceId,
         );
         // Kick off an eager sync so the user doesn't wait the full 5 min interval.
-        const { skillSyncQueue } = await import("../workers/skill-sync-worker.js");
-        await skillSyncQueue
-          .add("sync-one", { id: skill.id }, { removeOnComplete: true })
-          .catch(() => {});
+        const { enqueueSkillSync } = await import("../workers/skill-sync-worker.js");
+        await enqueueSkillSync(skill.id).catch(() => {});
         reply.status(201).send({ skill });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "invalid input";
@@ -192,10 +190,8 @@ export async function installedSkillRoutes(rawApp: FastifyInstance) {
         const skill = await installedSkillService.updateInstalledSkill(req.params.id, req.body);
         // If ref or subpath changed, the sync worker needs to re-resolve.
         if (req.body.ref !== undefined || req.body.subpath !== undefined) {
-          const { skillSyncQueue } = await import("../workers/skill-sync-worker.js");
-          await skillSyncQueue
-            .add("sync-one", { id: skill.id }, { removeOnComplete: true })
-            .catch(() => {});
+          const { enqueueSkillSync } = await import("../workers/skill-sync-worker.js");
+          await enqueueSkillSync(skill.id).catch(() => {});
         }
         reply.send({ skill });
       } catch (err) {
@@ -252,8 +248,8 @@ export async function installedSkillRoutes(rawApp: FastifyInstance) {
           .status(403)
           .send({ error: changeRefusal(skill.ownerUserId, "skill", "member") });
       }
-      const { skillSyncQueue } = await import("../workers/skill-sync-worker.js");
-      await skillSyncQueue.add("sync-one", { id: skill.id }, { removeOnComplete: true });
+      const { enqueueSkillSync } = await import("../workers/skill-sync-worker.js");
+      await enqueueSkillSync(skill.id);
       reply.status(202).send({ skill });
     },
   );

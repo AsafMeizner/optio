@@ -103,6 +103,70 @@ vi.mock("./local-host-service.js", () => ({
   listHosts: (...args: unknown[]) => mockListHosts(...args),
 }));
 
+// The bookkeeping rows (glance_state) in memory, with the same contract as
+// glance-state-service.ts; the fake clock below is what "due" is judged by.
+const glanceMem = vi.hoisted(() => ({
+  rows: new Map<string, { value: Record<string, unknown>; dueAt: Date | null }>(),
+}));
+vi.mock("./glance-state-service.js", () => ({
+  getGlance: async (key: string) => {
+    const r = glanceMem.rows.get(key);
+    return r ? { key, ...r } : null;
+  },
+  setGlance: async (key: string, value: Record<string, unknown>, dueAt?: Date | null) => {
+    const prev = glanceMem.rows.get(key);
+    glanceMem.rows.set(key, {
+      value,
+      dueAt: dueAt === undefined ? (prev?.dueAt ?? null) : dueAt,
+    });
+  },
+  getGlanceMany: async (keys: readonly string[]) => {
+    const out = new Map<string, Record<string, unknown>>();
+    for (const key of keys) {
+      const r = glanceMem.rows.get(key);
+      if (r) out.set(key, r.value);
+    }
+    return out;
+  },
+  setGlanceMany: async (
+    entries: ReadonlyArray<{ key: string; value: Record<string, unknown> }>,
+  ) => {
+    for (const e of entries) {
+      const prev = glanceMem.rows.get(e.key);
+      glanceMem.rows.set(e.key, { value: e.value, dueAt: prev?.dueAt ?? null });
+    }
+  },
+  swapGlance: async (key: string, next: Record<string, unknown> | null) => {
+    const prev = glanceMem.rows.get(key)?.value ?? null;
+    if (next === null) glanceMem.rows.delete(key);
+    else glanceMem.rows.set(key, { value: next, dueAt: null });
+    return prev;
+  },
+  claimGlance: async (key: string, value: Record<string, unknown>) => {
+    if (glanceMem.rows.has(key)) return false;
+    glanceMem.rows.set(key, { value, dueAt: null });
+    return true;
+  },
+  deleteGlance: async (key: string) => glanceMem.rows.delete(key),
+  joinGlanceTimer: async (key: string, providers: readonly string[], dueAt: Date) => {
+    const prev = glanceMem.rows.get(key);
+    const set = new Set([...((prev?.value.providers as string[] | undefined) ?? []), ...providers]);
+    glanceMem.rows.set(key, { value: { providers: [...set] }, dueAt: prev?.dueAt ?? dueAt });
+  },
+  takeDueGlance: async (now = new Date()) => {
+    const out: { key: string; value: Record<string, unknown>; dueAt: Date | null }[] = [];
+    for (const [key, r] of glanceMem.rows) {
+      if (r.dueAt && r.dueAt.getTime() <= now.getTime()) {
+        out.push({ key, ...r });
+        glanceMem.rows.delete(key);
+      }
+    }
+    return out;
+  },
+  listGlance: async () => [...glanceMem.rows].map(([key, r]) => ({ key, ...r })),
+  resetGlanceState: async () => glanceMem.rows.clear(),
+}));
+
 import {
   agentToWatchItem,
   computeWatchState,
@@ -115,9 +179,17 @@ import {
   onLocalTerminalChanged,
   onTaskTransition,
   resetGlanceForTests,
+  scheduleSnoozeExpiry,
+  sweepGlanceDue,
   terminalToWatchItem,
   WATCH_END_GRACE_MS,
 } from "./glance-service.js";
+
+/** Lets `ms` pass on the fake clock, then fires the timers that came due (the sweep worker). */
+async function sweepAfter(ms: number): Promise<number> {
+  await vi.advanceTimersByTimeAsync(ms);
+  return sweepGlanceDue();
+}
 
 const NOW = new Date("2026-09-17T12:00:00Z");
 
@@ -159,10 +231,10 @@ function terminal(overrides: Record<string, unknown> = {}) {
 const host = (overrides: Record<string, unknown> = {}) =>
   ({ id: "h1", userId: "u1", name: "mbp", state: "online", updatedAt: NOW, ...overrides }) as never;
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
-  resetGlanceForTests();
+  await resetGlanceForTests();
   vi.clearAllMocks();
   apns.configured = true;
   apns.hasWatchToken.mockResolvedValue(true);
@@ -506,18 +578,49 @@ describe("onLocalTerminalChanged", () => {
     // Activity resumes inside the grace period → end cancelled.
     mockListTerminals.mockResolvedValue([row]);
     await onLocalTerminalChanged(row);
-    await vi.advanceTimersByTimeAsync(WATCH_END_GRACE_MS + 10);
+    expect(await sweepAfter(WATCH_END_GRACE_MS + 10)).toBe(0);
     expect(apns.updateWatch.mock.calls.every((c) => c[2].event === "update")).toBe(true);
 
-    // Goes quiet for good → end frame.
+    // Goes quiet for good → end frame, fired by the sweep once the grace period passed.
     mockListTerminals.mockResolvedValue([exited]);
     await onLocalTerminalChanged(exited);
-    await vi.advanceTimersByTimeAsync(WATCH_END_GRACE_MS + 10);
+    expect(await sweepAfter(WATCH_END_GRACE_MS / 2)).toBe(0);
+    expect(apns.updateWatch.mock.calls.some((c) => c[2].event === "end")).toBe(false);
+    expect(await sweepAfter(WATCH_END_GRACE_MS / 2 + 10)).toBe(1);
     expect(apns.updateWatch).toHaveBeenLastCalledWith(
       "u1",
       expect.objectContaining({ phase: "done", summary: "Quiet." }),
       { event: "end" },
     );
+  });
+
+  it("a snooze is a due row that resurfaces the item when it ends; clearing the snooze removes it", async () => {
+    const row = terminal({ attentionState: "needs_you", attentionReason: "stop" });
+    mockListTerminals.mockResolvedValue([row]);
+    await onLocalTerminalChanged(row);
+    const until = new Date(NOW.getTime() + 10 * 60_000);
+    const snoozed = terminal({ attentionState: "needs_you", snoozedUntil: until });
+    mockListTerminals.mockResolvedValue([snoozed]);
+    await scheduleSnoozeExpiry(snoozed);
+    expect(glanceMem.rows.get("snooze:t1")).toEqual({
+      value: { userId: "u1" },
+      dueAt: new Date(until.getTime() + 250),
+    });
+    vi.clearAllMocks();
+    expect(await sweepAfter(9 * 60_000)).toBe(0);
+    expect(apns.updateWatch).not.toHaveBeenCalled();
+    mockListTerminals.mockResolvedValue([row]); // the window closed: the row is unsnoozed again
+    expect(await sweepAfter(60_000 + 300)).toBe(1);
+    expect(apns.updateWatch).toHaveBeenLastCalledWith(
+      "u1",
+      expect.objectContaining({ phase: "waiting", needsYouCount: 1 }),
+      { event: "update", alert: null },
+    );
+    expect(glanceMem.rows.has("snooze:t1")).toBe(false);
+
+    await scheduleSnoozeExpiry(snoozed);
+    await scheduleSnoozeExpiry(terminal({ snoozedUntil: null }));
+    expect(glanceMem.rows.has("snooze:t1")).toBe(false);
   });
 });
 
@@ -748,7 +851,7 @@ describe("one fan-out over APNs and FCM", () => {
     apns.hasWatchToken.mockResolvedValue(false); // the iPhone already dismissed its activity
     await onLocalTerminalChanged(exited);
     await onLocalHostChanged(host()); // another quiet event inside the grace period
-    await vi.advanceTimersByTimeAsync(WATCH_END_GRACE_MS + 10);
+    expect(await sweepAfter(WATCH_END_GRACE_MS + 10)).toBe(1);
     expect(fcm.endWatch).toHaveBeenCalledTimes(1);
     expect(fcm.endWatch).toHaveBeenCalledWith(
       "u1",
@@ -764,8 +867,9 @@ describe("one fan-out over APNs and FCM", () => {
     mockListTerminals.mockResolvedValue([exited]);
     await onLocalTerminalChanged(exited); // FCM schedules the end
     apns.hasWatchToken.mockResolvedValue(true);
-    await onLocalTerminalChanged(exited); // APNs joins the pending end
-    await vi.advanceTimersByTimeAsync(WATCH_END_GRACE_MS + 10);
+    await vi.advanceTimersByTimeAsync(WATCH_END_GRACE_MS / 2);
+    await onLocalTerminalChanged(exited); // APNs joins the pending end, which keeps its due time
+    expect(await sweepAfter(WATCH_END_GRACE_MS / 2 + 10)).toBe(1);
     expect(fcm.endWatch).toHaveBeenCalledTimes(1);
     expect(apns.updateWatch).toHaveBeenLastCalledWith(
       "u1",

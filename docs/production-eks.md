@@ -7,6 +7,18 @@ for upgrades. This includes a brief control-plane outage; it is not an HA API.
 Queue locks alone do not make the process-local relays safe across replicas.
 Agent pods scale independently within each workspace, owner and access profile.
 
+The pieces of coordination that several API pods will share are already in the
+database ([docs/plans/scale-out.md](plans/scale-out.md)): a run's concurrency
+claim is a Postgres advisory lock, every periodic sweep runs under a lease in
+`leases` and is safe to overlap anyway (ticket claims, a compare-and-swap on a
+schedule's next tick, one active review per PR), inbound webhook deliveries and
+WebSocket upgrade tokens are rows, and repeat jobs are BullMQ job schedulers
+with stable ids, so pods booting in any order leave one schedule per tick. What
+stays **per pod** is the WebSocket connection cap (50 sockets per client
+address, counted by the pod that holds them, so with N pods an address may hold
+up to N times that) and the installation-token cache (each pod mints its own
+hour-long GitHub App token).
+
 ## Managed services and existing Secrets
 
 Start with `helm/optio/values.production.yaml`. Set your public hostname, ingress
@@ -86,6 +98,14 @@ Retained claims are not automatically deleted on idle scale-down or recovery.
 Back them up if unpushed work matters. Inventory and remove retained claims only
 after confirming their work is no longer needed. Bare pods/pooled Jobs do not
 provide the same workspace persistence as repo StatefulSets.
+
+The API itself needs no volume. Marketplace skills are synced into PostgreSQL
+(`installed_skill_files`) and runs read them from there, so the chart no longer
+has the former `installedSkillsCache` ReadWriteOnce PVC (a value left in an
+override file is ignored). `helm upgrade` deletes the
+`<release>-installed-skills-cache` claim if it was enabled; nothing in it needs a
+backup, because the first sync after the upgrade re-clones each skill from its
+source and writes its files to the database.
 
 Agents use a separate service account, with no API-server RBAC and no automounted
 Kubernetes token. Configure `agent.serviceAccount.annotations` for an intentionally
