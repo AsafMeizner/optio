@@ -3,22 +3,27 @@
  *
  * Two job types:
  *   - "sync-one"  { id }  → on-demand, fired by POST /api/installed-skills/:id/sync
- *   - "sync-due"  {}      → periodic; finds rows with a missing or stale resolved_sha
+ *   - "sync-due"  {}      → periodic; finds rows never synced, or whose files at
+ *                          their resolved_sha are not in the database
  *
  * For each row, the worker:
  *   1. Resolves `ref` → SHA via `git ls-remote` (cheap, no clone).
- *   2. If `<cacheDir>/<sha>/` already exists, skips the clone — multiple skills
- *      can share a cache entry when they pin to the same SHA.
- *   3. Otherwise shallow-clones into a temp dir, then renames into place.
- *   4. Walks `<sha>/<subpath>/`, parses SKILL.md frontmatter, sums file sizes,
- *      flags executable files, and writes the manifest back to the row.
+ *   2. If the row already carries that SHA and its files are in the database,
+ *      there is nothing to do.
+ *   3. Otherwise shallow-clones into a scratch directory, walks
+ *      `<clone>/<subpath>/`, parses SKILL.md frontmatter, sums file sizes,
+ *      flags executable files, and writes the manifest **and every file** to
+ *      the database (`installed_skill_files`) in one transaction.
  *
- * The cache PVC is mounted at OPTIO_SKILLS_CACHE_DIR (default
- * /opt/optio/skills-cache). The directory layout is content-addressable, so
- * concurrent passes either race-create the same SHA dir or no-op.
+ * The files live in Postgres, not on a volume: a run spawned on any API
+ * instance reads them (`readInstalledSkillFiles`), whichever instance did
+ * the sync. The scratch directory (`OPTIO_SKILLS_SCRATCH_DIR`, default
+ * `<tmpdir>/optio-skills`) is only ever a clone in flight; the API container's
+ * root filesystem is read-only, so it is under /tmp.
  */
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Queue, Worker } from "bullmq";
@@ -27,17 +32,17 @@ import type { InstalledSkillManifest } from "@optio/shared";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { db } from "../db/client.js";
-import { installedSkills } from "../db/schema.js";
-import { eq, isNull, or } from "drizzle-orm";
-import { recordSyncResult } from "../services/installed-skill-service.js";
+import { installedSkillFiles, installedSkills } from "../db/schema.js";
+import { and, eq, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
+import { recordSyncResult, type SyncedSkillFile } from "../services/installed-skill-service.js";
 
 const execFileP = promisify(execFile);
 const bullmqOpts = getBullMQOptions();
 
 export const skillSyncQueue = new Queue("skill-sync", { ...bullmqOpts });
 
-function cacheDir(): string {
-  return process.env.OPTIO_SKILLS_CACHE_DIR ?? "/opt/optio/skills-cache";
+function scratchDir(): string {
+  return process.env.OPTIO_SKILLS_SCRATCH_DIR ?? path.join(tmpdir(), "optio-skills");
 }
 const CLONE_TIMEOUT_MS = parseIntEnv("OPTIO_SKILL_CLONE_TIMEOUT_MS", 60_000);
 const SYNC_INTERVAL_MS = parseIntEnv("OPTIO_SKILL_SYNC_INTERVAL", 300_000); // 5 min
@@ -45,11 +50,6 @@ const SYNC_INTERVAL_MS = parseIntEnv("OPTIO_SKILL_SYNC_INTERVAL", 300_000); // 5
 const MAX_SKILL_BYTES = parseIntEnv("OPTIO_SKILL_MAX_BYTES", 1_048_576); // 1 MiB
 
 export function startSkillSyncWorker() {
-  // Ensure cache dir exists. mkdir is idempotent.
-  fs.mkdir(cacheDir(), { recursive: true }).catch((err) => {
-    logger.warn({ err, dir: cacheDir() }, "Could not pre-create skills cache dir");
-  });
-
   // Periodic sweep for rows that need a sync.
   skillSyncQueue.add(
     "sync-due",
@@ -81,15 +81,54 @@ export function startSkillSyncWorker() {
   return worker;
 }
 
-/** Find all rows that need syncing and enqueue a sync-one for each. */
-async function syncDue(): Promise<void> {
+/**
+ * The rows that need a sync: never synced, or synced at a commit whose files
+ * are not in the database (a skill synced to the former cache volume before
+ * the upgrade, or a write that never landed).
+ */
+export async function dueSkillIds(): Promise<string[]> {
   const rows = await db
     .select({ id: installedSkills.id })
     .from(installedSkills)
-    .where(or(isNull(installedSkills.resolvedSha), eq(installedSkills.lastSyncError, "")));
-  for (const row of rows) {
-    await skillSyncQueue.add("sync-one", { id: row.id }, { removeOnComplete: true });
+    .where(
+      or(
+        isNull(installedSkills.resolvedSha),
+        eq(installedSkills.lastSyncError, ""),
+        and(
+          eq(installedSkills.enabled, true),
+          isNotNull(installedSkills.resolvedSha),
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(installedSkillFiles)
+              .where(
+                and(
+                  eq(installedSkillFiles.skillId, installedSkills.id),
+                  eq(installedSkillFiles.resolvedSha, installedSkills.resolvedSha),
+                ),
+              ),
+          ),
+        ),
+      ),
+    );
+  return rows.map((r) => r.id);
+}
+
+/** Find all rows that need syncing and enqueue a sync-one for each. */
+async function syncDue(): Promise<void> {
+  for (const id of await dueSkillIds()) {
+    await skillSyncQueue.add("sync-one", { id }, { removeOnComplete: true });
   }
+}
+
+/** Whether the skill's files for `sha` are already in the database. */
+async function filesSynced(skillId: string, sha: string): Promise<boolean> {
+  const [row] = await db
+    .select({ path: installedSkillFiles.path })
+    .from(installedSkillFiles)
+    .where(and(eq(installedSkillFiles.skillId, skillId), eq(installedSkillFiles.resolvedSha, sha)))
+    .limit(1);
+  return !!row;
 }
 
 export async function syncOne(id: string): Promise<void> {
@@ -104,17 +143,16 @@ export async function syncOne(id: string): Promise<void> {
     return;
   }
 
+  let clone: string | null = null;
   try {
     const sha = await resolveRefToSha(row.sourceUrl, row.ref);
-    const shaDir = path.join(cacheDir(), sha);
-
-    if (!(await pathExists(shaDir))) {
-      await cloneIntoCache(row.sourceUrl, sha, shaDir, log);
-    } else {
-      log.info({ sha }, "cache hit; skipping clone");
+    if (row.resolvedSha === sha && !row.lastSyncError && (await filesSynced(id, sha))) {
+      log.info({ sha }, "already synced at this commit; nothing to do");
+      return;
     }
 
-    const subpathDir = path.join(shaDir, row.subpath === "." ? "" : row.subpath);
+    clone = await cloneIntoScratch(row.sourceUrl, sha, log);
+    const subpathDir = path.join(clone, row.subpath === "." ? "" : row.subpath);
     if (!(await pathExists(subpathDir))) {
       throw new Error(`subpath '${row.subpath}' not found in source@${sha}`);
     }
@@ -125,6 +163,7 @@ export async function syncOne(id: string): Promise<void> {
         `skill exceeds ${MAX_SKILL_BYTES} byte cap (got ${inspected.totalSizeBytes})`,
       );
     }
+    const files = await collectSkillFiles(subpathDir);
 
     await recordSyncResult(id, {
       ok: true,
@@ -132,15 +171,18 @@ export async function syncOne(id: string): Promise<void> {
       manifest: inspected.manifest,
       hasExecutableFiles: inspected.hasExecutableFiles,
       totalSizeBytes: inspected.totalSizeBytes,
+      files,
     });
     log.info(
-      { sha, fileCount: inspected.manifest.files?.length ?? 0, bytes: inspected.totalSizeBytes },
+      { sha, fileCount: files.length, bytes: inspected.totalSizeBytes },
       "installed skill synced",
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error({ err }, "installed skill sync failed");
     await recordSyncResult(id, { ok: false, error: msg });
+  } finally {
+    if (clone) await fs.rm(path.dirname(clone), { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -166,55 +208,39 @@ async function resolveRefToSha(sourceUrl: string, ref: string): Promise<string> 
   return headSha;
 }
 
-async function cloneIntoCache(
+/**
+ * A shallow clone of the source at `sha` in a fresh scratch directory.
+ * Resolves the clone's path; the caller removes its parent when done.
+ */
+async function cloneIntoScratch(
   sourceUrl: string,
   sha: string,
-  destDir: string,
   log: { info: (...args: unknown[]) => void },
-): Promise<void> {
-  // Keep the temp dir on the SAME filesystem as the cache so the final
-  // rename is an atomic intra-filesystem move. /tmp is often a separate
-  // tmpfs mount in K8s pods, which would EXDEV on rename.
-  const tmpParent = path.join(cacheDir(), ".tmp");
-  await fs.mkdir(tmpParent, { recursive: true });
-  const tmpRoot = await fs.mkdtemp(path.join(tmpParent, "skill-"));
+): Promise<string> {
+  await fs.mkdir(scratchDir(), { recursive: true });
+  const tmpRoot = await fs.mkdtemp(path.join(scratchDir(), "skill-"));
   const tmpClone = path.join(tmpRoot, "clone");
+  log.info({ sourceUrl, sha }, "shallow-cloning skill source");
+  // Clone with depth=1 then check out the exact SHA.
+  await execFileP("git", ["clone", "--depth", "1", "--no-tags", sourceUrl, tmpClone], {
+    timeout: CLONE_TIMEOUT_MS,
+  });
+  // Best-effort: fetch + checkout the exact SHA in case the default ref isn't
+  // what we resolved (e.g. tag vs branch).
   try {
-    log.info({ sourceUrl, sha }, "shallow-cloning skill source");
-    // Clone with depth=1 then check out the exact SHA.
-    await execFileP("git", ["clone", "--depth", "1", "--no-tags", sourceUrl, tmpClone], {
+    await execFileP("git", ["-C", tmpClone, "fetch", "--depth", "1", "origin", sha], {
       timeout: CLONE_TIMEOUT_MS,
     });
-    // Best-effort: fetch + checkout the exact SHA in case the default ref isn't
-    // what we resolved (e.g. tag vs branch).
-    try {
-      await execFileP("git", ["-C", tmpClone, "fetch", "--depth", "1", "origin", sha], {
-        timeout: CLONE_TIMEOUT_MS,
-      });
-      await execFileP("git", ["-C", tmpClone, "checkout", "--detach", sha], {
-        timeout: CLONE_TIMEOUT_MS,
-      });
-    } catch {
-      // If fetch-by-sha is unsupported (older servers) the depth-1 clone of
-      // the resolved branch should already be at the right SHA.
-    }
-    // Drop .git to save cache space.
-    await fs.rm(path.join(tmpClone, ".git"), { recursive: true, force: true });
-
-    // Atomic move into place. If another worker beat us to it, that's fine.
-    await fs.mkdir(path.dirname(destDir), { recursive: true });
-    try {
-      await fs.rename(tmpClone, destDir);
-    } catch (err) {
-      if (await pathExists(destDir)) {
-        log.info({ sha }, "another worker populated cache concurrently");
-      } else {
-        throw err;
-      }
-    }
-  } finally {
-    await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    await execFileP("git", ["-C", tmpClone, "checkout", "--detach", sha], {
+      timeout: CLONE_TIMEOUT_MS,
+    });
+  } catch {
+    // If fetch-by-sha is unsupported (older servers) the depth-1 clone of
+    // the resolved branch should already be at the right SHA.
   }
+  // The files, not the history.
+  await fs.rm(path.join(tmpClone, ".git"), { recursive: true, force: true });
+  return tmpClone;
 }
 
 interface InspectionResult {
@@ -223,7 +249,8 @@ interface InspectionResult {
   totalSizeBytes: number;
 }
 
-async function inspectSkillDir(dir: string): Promise<InspectionResult> {
+/** The skill directory's manifest: every file with its size and mode, and SKILL.md's frontmatter. */
+export async function inspectSkillDir(dir: string): Promise<InspectionResult> {
   const files: NonNullable<InstalledSkillManifest["files"]> = [];
   let hasExecutableFiles = false;
   let totalSizeBytes = 0;
@@ -264,13 +291,37 @@ async function inspectSkillDir(dir: string): Promise<InspectionResult> {
   };
 }
 
+/** Every file under `dir`, with its bytes and executable bit, paths relative to `dir`. */
+export async function collectSkillFiles(dir: string): Promise<SyncedSkillFile[]> {
+  const out: SyncedSkillFile[] = [];
+  async function walk(current: string, rel: string): Promise<void> {
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    for (const ent of entries) {
+      const full = path.join(current, ent.name);
+      const relPath = rel ? `${rel}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        await walk(full, relPath);
+      } else if (ent.isFile()) {
+        const stat = await fs.stat(full);
+        out.push({
+          relativePath: relPath,
+          content: await fs.readFile(full),
+          executable: (stat.mode & 0o111) !== 0,
+        });
+      }
+    }
+  }
+  await walk(dir, "");
+  return out;
+}
+
 /**
  * Tiny YAML-frontmatter parser. Handles `key: value` lines (string values)
  * and ignores anything more complex. Good enough for SKILL.md surfaces like
  * `name`, `description`, `version`. Returns undefined when no frontmatter
  * block is present.
  */
-function parseFrontmatter(content: string): Record<string, unknown> | undefined {
+export function parseFrontmatter(content: string): Record<string, unknown> | undefined {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*(\n|$)/);
   if (!match) return undefined;
   const out: Record<string, unknown> = {};
@@ -300,32 +351,39 @@ async function pathExists(p: string): Promise<boolean> {
 }
 
 /**
- * Read materialized files for an installed skill from the cache. Used by
- * task-worker to inject the skill into the worktree at task spawn time.
+ * The materialized files of an installed skill, from the database, for the
+ * worker injecting the skill into a run's worktree at spawn time — on any
+ * instance, whichever one synced it. With `expectedSha`, files from another
+ * commit (a sync in flight) are refused rather than injected half-updated.
  */
 export async function readInstalledSkillFiles(
-  resolvedSha: string,
-  subpath: string,
+  skillId: string,
+  expectedSha?: string | null,
 ): Promise<Array<{ relativePath: string; content: Buffer; executable: boolean }>> {
-  const baseDir = path.join(cacheDir(), resolvedSha, subpath === "." ? "" : subpath);
-  if (!(await pathExists(baseDir))) {
-    throw new Error(`cache miss for ${resolvedSha}:${subpath}`);
+  const rows = await db
+    .select({
+      path: installedSkillFiles.path,
+      content: installedSkillFiles.content,
+      executable: installedSkillFiles.executable,
+      resolvedSha: installedSkillFiles.resolvedSha,
+    })
+    .from(installedSkillFiles)
+    .where(eq(installedSkillFiles.skillId, skillId))
+    .orderBy(installedSkillFiles.path);
+  if (rows.length === 0) {
+    throw new Error(`no synced files for installed skill ${skillId}`);
   }
-  const out: Array<{ relativePath: string; content: Buffer; executable: boolean }> = [];
-  async function walk(current: string, rel: string): Promise<void> {
-    const entries = await fs.readdir(current, { withFileTypes: true });
-    for (const ent of entries) {
-      const full = path.join(current, ent.name);
-      const relPath = rel ? `${rel}/${ent.name}` : ent.name;
-      if (ent.isDirectory()) {
-        await walk(full, relPath);
-      } else if (ent.isFile()) {
-        const stat = await fs.stat(full);
-        const executable = (stat.mode & 0o111) !== 0;
-        out.push({ relativePath: relPath, content: await fs.readFile(full), executable });
-      }
+  if (expectedSha) {
+    const other = rows.find((r) => r.resolvedSha && r.resolvedSha !== expectedSha);
+    if (other) {
+      throw new Error(
+        `installed skill ${skillId} files are at ${other.resolvedSha}, expected ${expectedSha}`,
+      );
     }
   }
-  await walk(baseDir, "");
-  return out;
+  return rows.map((r) => ({
+    relativePath: r.path,
+    content: Buffer.from(r.content),
+    executable: r.executable,
+  }));
 }

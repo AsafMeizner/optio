@@ -1,6 +1,6 @@
 import { and, eq, isNull, or } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { installedSkills } from "../db/schema.js";
+import { installedSkillFiles, installedSkills } from "../db/schema.js";
 import { usableBy, visibleOwner, type Actor } from "./ownership.js";
 import type {
   CreateInstalledSkillInput,
@@ -104,8 +104,17 @@ export async function deleteInstalledSkill(id: string): Promise<void> {
   await db.delete(installedSkills).where(eq(installedSkills.id, id));
 }
 
+/** One file of a synced skill, as the sync worker read it from the clone. */
+export interface SyncedSkillFile {
+  relativePath: string;
+  content: Buffer;
+  executable: boolean;
+}
+
 /**
- * Mark a skill's sync result. Used by the sync worker.
+ * Records a sync: on success the row's manifest and **the files themselves**
+ * (`installed_skill_files`, replaced whole) in one transaction, so a run
+ * spawned on any instance reads a complete set at the recorded commit.
  */
 export async function recordSyncResult(
   id: string,
@@ -116,22 +125,37 @@ export async function recordSyncResult(
         manifest: InstalledSkillManifest;
         hasExecutableFiles: boolean;
         totalSizeBytes: number;
+        files: readonly SyncedSkillFile[];
       }
     | { ok: false; error: string },
 ): Promise<void> {
   if (result.ok) {
-    await db
-      .update(installedSkills)
-      .set({
-        resolvedSha: result.resolvedSha,
-        cachedManifest: result.manifest,
-        hasExecutableFiles: result.hasExecutableFiles,
-        totalSizeBytes: result.totalSizeBytes,
-        lastSyncedAt: new Date(),
-        lastSyncError: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(installedSkills.id, id));
+    await db.transaction(async (tx) => {
+      await tx.delete(installedSkillFiles).where(eq(installedSkillFiles.skillId, id));
+      if (result.files.length > 0) {
+        await tx.insert(installedSkillFiles).values(
+          result.files.map((f) => ({
+            skillId: id,
+            path: f.relativePath,
+            content: f.content,
+            executable: f.executable,
+            resolvedSha: result.resolvedSha,
+          })),
+        );
+      }
+      await tx
+        .update(installedSkills)
+        .set({
+          resolvedSha: result.resolvedSha,
+          cachedManifest: result.manifest,
+          hasExecutableFiles: result.hasExecutableFiles,
+          totalSizeBytes: result.totalSizeBytes,
+          lastSyncedAt: new Date(),
+          lastSyncError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(installedSkills.id, id));
+    });
   } else {
     await db
       .update(installedSkills)
