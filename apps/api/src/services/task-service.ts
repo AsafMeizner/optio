@@ -385,21 +385,22 @@ export async function transitionTask(
 }
 
 /**
- * A claim's transition inside a transaction (`withClaimLock`): the CAS and
- * its event row on `tx`, so they commit with the transaction, and the
- * announcement — events, webhooks, the reconciler — handed back to run once
- * it has committed. Null when another worker won the race (the shapes
- * `tryTransitionTask` treats as lost).
+ * `transitionTask` inside a claim (`withClaimLock`): the CAS and its event
+ * row on the claim's transaction, so they commit with it, and the
+ * announcement — events, webhooks, the reconciler — registered to run once
+ * it has committed. The updated task, or null when another worker won the
+ * race (the shapes `tryTransitionTask` treats as lost).
  */
 export async function claimTransitionIn(
-  tx: TransitionExecutor,
+  claim: { tx: TransitionExecutor; afterCommit(step: () => unknown): void },
   id: string,
   toState: TaskState,
   trigger: string,
 ) {
   try {
-    const written = await writeTransition(tx, id, toState, trigger);
-    return { task: written.updatedTask, announce: () => announceTransition(written) };
+    const written = await writeTransition(claim.tx, id, toState, trigger);
+    claim.afterCommit(() => announceTransition(written));
+    return written.updatedTask;
   } catch (err) {
     if (err instanceof StateRaceError || err instanceof InvalidTransitionError) return null;
     throw err;

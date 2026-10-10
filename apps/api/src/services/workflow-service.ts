@@ -581,21 +581,22 @@ export async function transitionWorkflowRunCas(
 }
 
 /**
- * A claim's transition inside a transaction (`withClaimLock`): the CAS on
- * `tx`, so it commits with the transaction, and the announcement — events,
- * webhooks, the reconciler — handed back to run once it has committed. Null
- * when the CAS lost.
+ * `transitionWorkflowRunCas` inside a claim (`withClaimLock`): the CAS on
+ * the claim's transaction, so it commits with it, and the announcement —
+ * events, webhooks, the reconciler — registered to run once it has
+ * committed. The updated run, or null when the CAS lost.
  */
 export async function claimWorkflowRunIn(
-  tx: Pick<typeof db, "update">,
+  claim: { tx: Pick<typeof db, "update">; afterCommit(step: () => unknown): void },
   runId: string,
   from: WorkflowRunState,
   to: WorkflowRunState,
   fields: PgUpdateSetSource<typeof workflowRuns> = {},
 ) {
-  const row = await writeWorkflowRunCas(tx, runId, from, to, fields, {});
+  const row = await writeWorkflowRunCas(claim.tx, runId, from, to, fields, {});
   if (!row) return null;
-  return { run: row, announce: () => announceWorkflowRunTransition(row, from, to, {}) };
+  claim.afterCommit(() => announceWorkflowRunTransition(row, from, to, {}));
+  return row;
 }
 
 async function writeWorkflowRunCas(

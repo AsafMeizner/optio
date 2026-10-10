@@ -24,7 +24,7 @@ import { renderCommandTemplate } from "../services/prompt-template-service.js";
 import * as workflowPool from "../services/workflow-pool-service.js";
 import { addUsage } from "../services/run-usage.js";
 import { activityFlusher } from "../services/activity-flush.js";
-import { WORKFLOW_CLAIM_KEY, withClaimLock, workflowClaimKey } from "../services/claim-lock.js";
+import { WORKFLOW_CLAIM_KEY, withClaimLock } from "../services/claim-lock.js";
 import { resolvePodSecrets } from "../services/secret-service.js";
 import { detectAuthFailureInLogs, recordAuthEvent } from "../services/auth-failure-detector.js";
 import {
@@ -155,51 +155,48 @@ export function startWorkflowWorker() {
         }
 
         // ── Concurrency check ─────────────────────────────────────────
-        // Under the advisory locks for the global limit and this Job's, so
-        // claimers on every API instance count one at a time (claim-lock.ts).
-        const claimed = await withClaimLock(
-          [WORKFLOW_CLAIM_KEY, workflowClaimKey(workflow.id)],
-          async (tx) => {
-            // Global workflow concurrency (cluster runs only; local runs don't
-            // occupy pods), then this workflow's own.
-            const capacity = await workflowService.jobRunCapacity(
-              workflow.id,
-              workflow.maxConcurrent,
-              tx,
+        // Under the advisory lock for the global limit, so claimers on every
+        // API instance count one at a time (claim-lock.ts); this Job's own
+        // limit is counted under the same lock. Null when another worker
+        // held the lock past its timeout: re-queue.
+        const claimed = await withClaimLock([WORKFLOW_CLAIM_KEY], async (claim) => {
+          // Global workflow concurrency (cluster runs only; local runs don't
+          // occupy pods), then this workflow's own.
+          const capacity = await workflowService.jobRunCapacity(
+            workflow.id,
+            workflow.maxConcurrent,
+            claim.tx,
+          );
+          if (capacity.global.running >= capacity.global.max) {
+            log.info(
+              { activeCount: capacity.global.running, globalMax: capacity.global.max },
+              "Global workflow concurrency saturated",
             );
-            if (capacity.global.running >= capacity.global.max) {
-              log.info(
-                { activeCount: capacity.global.running, globalMax: capacity.global.max },
-                "Global workflow concurrency saturated",
-              );
-              return false;
-            }
-            if (capacity.job.running >= capacity.job.max) {
-              log.info(
-                { activeCount: capacity.job.running, max: capacity.job.max },
-                "Per-workflow concurrency saturated",
-              );
-              return false;
-            }
+            return null;
+          }
+          if (capacity.job.running >= capacity.job.max) {
+            log.info(
+              { activeCount: capacity.job.running, max: capacity.job.max },
+              "Per-workflow concurrency saturated",
+            );
+            return null;
+          }
 
-            // Claim: transition to running. CAS — a second worker holding the
-            // same run (a reconcile re-enqueue) loses here instead of running it twice.
-            // The claim is the attempt's first sign of life: a retried run must
-            // not be judged stalled by the previous attempt's last activity.
-            // On the lock's transaction, so it commits before the lock goes.
-            const now = new Date();
-            const claim = await claimWorkflowRunIn(
-              tx,
-              workflowRunId,
-              WorkflowRunState.QUEUED,
-              WorkflowRunState.RUNNING,
-              { startedAt: now, lastActivityAt: now },
-            );
-            return claim ?? false;
-          },
-        );
-        // Committed: now the state event, the reconciler, and the rest.
-        if (claimed) await claimed.announce();
+          // Claim: transition to running. CAS — a second worker holding the
+          // same run (a reconcile re-enqueue) loses here instead of running it twice.
+          // The claim is the attempt's first sign of life: a retried run must
+          // not be judged stalled by the previous attempt's last activity.
+          // On the lock's transaction, so it commits before the lock goes;
+          // its announcement runs after the commit.
+          const now = new Date();
+          return claimWorkflowRunIn(
+            claim,
+            workflowRunId,
+            WorkflowRunState.QUEUED,
+            WorkflowRunState.RUNNING,
+            { startedAt: now, lastActivityAt: now },
+          );
+        });
 
         if (!claimed) {
           // Re-queue with delay
@@ -211,7 +208,7 @@ export function startWorkflowWorker() {
           return;
         }
         // This attempt — every later write is conditional on still owning it.
-        attemptStartedAt = claimed.run.startedAt!;
+        attemptStartedAt = claimed.startedAt!;
         const attempt = attemptStartedAt;
         const thisAttempt = () =>
           and(
