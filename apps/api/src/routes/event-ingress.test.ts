@@ -12,15 +12,21 @@ vi.mock("../services/event-trigger-service.js", async () => {
 });
 vi.mock("../db/client.js", () => ({ db: {} }));
 vi.mock("../services/trigger-dispatch.js", () => ({ fireTrigger: vi.fn() }));
-// `claimDelivery` also claims the id in Redis (SET NX); every claim is first here.
-const mockRedisSet = vi.fn();
-vi.mock("../services/event-bus.js", () => ({
-  getRedisClient: () => ({ set: (...args: unknown[]) => mockRedisSet(...args) }),
+// Every receiver claims the delivery id in the database first
+// (services/inbound-delivery-service.ts); the claim is a set here.
+const claimed = new Set<string>();
+const mockClaim = vi.fn(async (source: string, id: string) => {
+  const key = `${source}:${id}`;
+  if (claimed.has(key)) return false;
+  claimed.add(key);
+  return true;
+});
+vi.mock("../services/inbound-delivery-service.js", () => ({
+  claimInboundDelivery: (...args: unknown[]) => mockClaim(...(args as [string, string])),
 }));
 
 import {
   eventIngressRoutes,
-  resetSlackEventDedupe,
   verifyLinearSignature,
   verifySlackSignature,
 } from "./event-ingress.js";
@@ -79,8 +85,8 @@ beforeEach(async () => {
   process.env.LINEAR_WEBHOOK_SECRET = LINEAR_SECRET;
   process.env.PAGERDUTY_WEBHOOK_SECRET = PAGERDUTY_SECRET;
   mockFire.mockReset().mockResolvedValue([]);
-  mockRedisSet.mockReset().mockResolvedValue("OK");
-  resetSlackEventDedupe();
+  mockClaim.mockClear();
+  claimed.clear();
   app = await buildRouteTestApp(eventIngressRoutes, { user: null });
 });
 
@@ -253,13 +259,7 @@ describe("POST /api/webhooks/pagerduty", () => {
         eventId: "ev-PINC1",
       }),
     );
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      "optio:webhook-delivery:pagerduty:wh-1",
-      "1",
-      "EX",
-      expect.any(Number),
-      "NX",
-    );
+    expect(mockClaim).toHaveBeenCalledWith("pagerduty", "wh-1");
   });
 
   it("accepts a header carrying several signatures when one matches", async () => {

@@ -16,12 +16,20 @@ vi.mock("../services/event-trigger-service.js", async () => {
 });
 vi.mock("../db/client.js", () => ({ db: {} }));
 vi.mock("../services/trigger-dispatch.js", () => ({ fireTrigger: vi.fn() }));
-const mockRedisSet = vi.fn();
-vi.mock("../services/event-bus.js", () => ({
-  getRedisClient: () => ({ set: (...args: unknown[]) => mockRedisSet(...args) }),
+// Every receiver claims the delivery id in the database first
+// (services/inbound-delivery-service.ts); the claim is a set here.
+const claimed = new Set<string>();
+const mockClaim = vi.fn(async (source: string, id: string) => {
+  const key = `${source}:${id}`;
+  if (claimed.has(key)) return false;
+  claimed.add(key);
+  return true;
+});
+vi.mock("../services/inbound-delivery-service.js", () => ({
+  claimInboundDelivery: (...args: unknown[]) => mockClaim(...(args as [string, string])),
 }));
 
-import { eventIngressRoutes, resetSlackEventDedupe } from "./event-ingress.js";
+import { eventIngressRoutes } from "./event-ingress.js";
 
 const GITLAB_SECRET = "gl-token";
 const JIRA_SECRET = "jira-secret";
@@ -37,8 +45,8 @@ beforeEach(async () => {
   process.env.JIRA_WEBHOOK_SECRET = JIRA_SECRET;
   process.env.SENTRY_WEBHOOK_SECRET = SENTRY_SECRET;
   mockFire.mockReset().mockResolvedValue([]);
-  mockRedisSet.mockReset().mockResolvedValue("OK");
-  resetSlackEventDedupe();
+  mockClaim.mockClear();
+  claimed.clear();
   app = await buildRouteTestApp(eventIngressRoutes, { user: null });
 });
 
@@ -78,13 +86,7 @@ describe("POST /api/webhooks/gitlab", () => {
       "gitlab",
       expect.objectContaining({ kinds: ["push"], project: "acme/optio", sourceBranch: "main" }),
     );
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      "optio:webhook-delivery:gitlab:u-1",
-      "1",
-      "EX",
-      expect.any(Number),
-      "NX",
-    );
+    expect(mockClaim).toHaveBeenCalledWith("gitlab", "u-1");
     const again = await post({ "x-gitlab-token": GITLAB_SECRET, "x-gitlab-event-uuid": "u-1" });
     expect(again.json()).toEqual({ ok: true, duplicate: true });
     await flush();
@@ -151,13 +153,7 @@ describe("POST /api/webhooks/jira", () => {
       "jira",
       expect.objectContaining({ key: "ENG-42", kinds: ["created"] }),
     );
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      "optio:webhook-delivery:jira:jira:issue_created:10001:1700000000000",
-      "1",
-      "EX",
-      expect.any(Number),
-      "NX",
-    );
+    expect(mockClaim).toHaveBeenCalledWith("jira", "jira:issue_created:10001:1700000000000");
   });
 
   it("fires a comment once when it arrives both as comment_created and as an issue update", async () => {
@@ -238,13 +234,7 @@ describe("POST /api/webhooks/sentry", () => {
       "sentry",
       expect.objectContaining({ kind: "issue_created", shortId: "API-1A", project: "api" }),
     );
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      "optio:webhook-delivery:sentry:issue:created:123:1700000000",
-      "1",
-      "EX",
-      expect.any(Number),
-      "NX",
-    );
+    expect(mockClaim).toHaveBeenCalledWith("sentry", "issue:created:123:1700000000");
     // The same delivery again (same timestamp) is a redelivery.
     const again = await post(issueCreated, signed(issueCreated, "issue"));
     expect(again.json()).toEqual({ ok: true, duplicate: true });

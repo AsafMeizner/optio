@@ -340,7 +340,8 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
 
       // GitHub signs no timestamp, so a captured delivery stays validly
       // signed forever. Drop replays (and GitHub's own redeliveries) by the
-      // unique X-GitHub-Delivery id, claimed durably in Redis.
+      // unique X-GitHub-Delivery id, claimed in the database so every API
+      // instance sees the claim.
       const delivery = req.headers["x-github-delivery"];
       if (typeof delivery === "string" && !(await claimDelivery("github", delivery))) {
         logger.info({ delivery }, "Ignoring already-processed GitHub delivery");
