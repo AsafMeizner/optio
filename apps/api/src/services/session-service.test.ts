@@ -11,6 +11,12 @@ vi.mock("../db/client.js", () => ({
 }));
 
 vi.mock("../db/schema.js", () => ({
+  wsUpgradeTokens: {
+    tokenHash: "ws_upgrade_tokens.token_hash",
+    userId: "ws_upgrade_tokens.user_id",
+    workspaceId: "ws_upgrade_tokens.workspace_id",
+    expiresAt: "ws_upgrade_tokens.expires_at",
+  },
   users: {
     id: "users.id",
     provider: "users.provider",
@@ -43,13 +49,39 @@ import {
   createWsToken,
   validateWsToken,
   cleanupExpiredSessions,
-  _wsTokenStoreForTesting,
 } from "./session-service.js";
+
+/**
+ * The WS upgrade token table, as the mocked db sees it: `insert().values()`
+ * stores a row; `delete().where().returning()` consumes it (the hash is the
+ * only thing the where clause carries, so the stand-in keys rows by the
+ * hash it finds in the drizzle `eq`).
+ */
+const wsTokenRows = new Map<string, { userId: string; expiresAt: Date }>();
+function mockWsTokenTable() {
+  (db.insert as any) = vi.fn().mockReturnValue({
+    values: vi.fn().mockImplementation(async (row: any) => {
+      wsTokenRows.set(row.tokenHash, { userId: row.userId, expiresAt: row.expiresAt });
+    }),
+  });
+  (db.delete as any) = vi.fn().mockReturnValue({
+    where: vi.fn().mockImplementation((cond: any) => ({
+      returning: vi.fn().mockImplementation(async () => {
+        // drizzle's eq() keeps the right-hand value in its query chunks.
+        const hash = JSON.stringify(cond).match(/[0-9a-f]{64}/)?.[0];
+        const row = hash ? wsTokenRows.get(hash) : undefined;
+        if (!row) return [];
+        wsTokenRows.delete(hash!);
+        return [row];
+      }),
+    })),
+  });
+}
 
 describe("session-service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    _wsTokenStoreForTesting.clear();
+    wsTokenRows.clear();
   });
 
   describe("createSession", () => {
@@ -280,18 +312,21 @@ describe("session-service", () => {
   });
 
   describe("createWsToken", () => {
-    it("creates a short-lived WebSocket upgrade token in memory", async () => {
+    it("stores a short-lived WebSocket upgrade token, hashed, in the database", async () => {
+      mockWsTokenTable();
       const token = await createWsToken("user-1");
       expect(token).toBeDefined();
       expect(token.length).toBe(64); // 32 bytes hex
-      // Token should be stored in the in-memory map, not in the DB
-      expect(_wsTokenStoreForTesting.size).toBe(1);
-      expect(db.insert).not.toHaveBeenCalled();
+      // Stored by hash (any instance can consume it); the raw token never lands.
+      expect(wsTokenRows.size).toBe(1);
+      expect(wsTokenRows.has(testHashToken(token))).toBe(true);
+      expect(wsTokenRows.has(token)).toBe(false);
     });
   });
 
   describe("validateWsToken", () => {
     it("validates and consumes a valid upgrade token", async () => {
+      mockWsTokenTable();
       // Mock the user lookup that happens after token validation
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -311,18 +346,19 @@ describe("session-service", () => {
       });
 
       const token = await createWsToken("user-1");
-      expect(_wsTokenStoreForTesting.size).toBe(1);
+      expect(wsTokenRows.size).toBe(1);
 
       const user = await validateWsToken(token);
       expect(user).not.toBeNull();
       expect(user!.id).toBe("user-1");
       expect(user!.email).toBe("test@test.com");
 
-      // Token should be consumed (deleted from map)
-      expect(_wsTokenStoreForTesting.size).toBe(0);
+      // Token should be consumed (deleted from the table)
+      expect(wsTokenRows.size).toBe(0);
     });
 
     it("rejects a token that has already been consumed (single-use)", async () => {
+      mockWsTokenTable();
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -352,22 +388,24 @@ describe("session-service", () => {
     });
 
     it("rejects an unknown token", async () => {
+      mockWsTokenTable();
       const user = await validateWsToken("nonexistent-token");
       expect(user).toBeNull();
     });
 
     it("rejects an expired token", async () => {
+      mockWsTokenTable();
       const token = await createWsToken("user-1");
 
-      // Manually expire the token in the store
-      for (const [, entry] of _wsTokenStoreForTesting) {
-        entry.expiresAt = Date.now() - 1000;
+      // Manually expire the token in the table
+      for (const [, entry] of wsTokenRows) {
+        entry.expiresAt = new Date(Date.now() - 1000);
       }
 
       const user = await validateWsToken(token);
       expect(user).toBeNull();
-      // Token should still be removed from the map even though expired
-      expect(_wsTokenStoreForTesting.size).toBe(0);
+      // Token should still be removed from the table even though expired
+      expect(wsTokenRows.size).toBe(0);
     });
   });
 
