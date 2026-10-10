@@ -116,14 +116,20 @@ CREATE TABLE IF NOT EXISTS "ticket_sync_claims" (
 
 -- External PR reviews: one active review per PR URL, so two overlapping
 -- sweeps can't both launch one. Older active duplicates (left by overlapping
--- sweeps before this) are cancelled first, newest kept.
-UPDATE "pr_reviews" SET "state" = 'cancelled', "updated_at" = now()
-WHERE "id" IN (
+-- sweeps before this) are cancelled first, newest kept, along with their
+-- runs that have not finished.
+WITH "dups" AS (
   SELECT "id" FROM (
     SELECT "id", row_number() OVER (PARTITION BY "pr_url" ORDER BY "updated_at" DESC, "created_at" DESC) AS rn
     FROM "pr_reviews" WHERE "state" IN ('queued', 'waiting_ci', 'reviewing', 'ready')
   ) d WHERE rn > 1
-);
+), "cancelled_reviews" AS (
+  UPDATE "pr_reviews" SET "state" = 'cancelled', "updated_at" = now()
+  WHERE "id" IN (SELECT "id" FROM "dups") RETURNING "id"
+)
+UPDATE "pr_review_runs" SET "state" = 'cancelled', "updated_at" = now()
+WHERE "pr_review_id" IN (SELECT "id" FROM "cancelled_reviews")
+  AND "state" IN ('queued', 'provisioning', 'running');
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "pr_reviews_active_pr_url_key" ON "pr_reviews" ("pr_url")
   WHERE "state" IN ('queued', 'waiting_ci', 'reviewing', 'ready');

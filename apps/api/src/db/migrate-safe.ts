@@ -33,33 +33,65 @@ interface MigrationEntry {
 
 const ADVISORY_LOCK_ID = 8_675_309; // arbitrary, unique to optio migrations
 
-/**
- * Columns the run views select that a migration adds after `tasks.kind`
- * existed: a fresh install remakes the views between every historical
- * migration, so each is left out until its migration has run.
- */
-const LATER_RUN_VIEW_COLUMNS = [
-  "recovery_required",
-  "exec_state",
-  "exec_pid",
-  "consumed_bytes",
-  "attached_by",
-  "attach_lease_until",
-];
+/** The items of a view statement's select list, trimmed. */
+function selectList(stmt: string): { list: string[]; from: string } | null {
+  const m = stmt.match(/SELECT([\s\S]*?)(\sFROM\s)/i);
+  if (!m) return null;
+  return {
+    list: m[1]
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    from: m[2],
+  };
+}
 
+/** The source column of a select item (`"col"` or `"col" AS "alias"`), or null (`*`, expressions). */
+function sourceColumn(item: string): string | null {
+  const m = item.match(/^"([^"]+)"(?:\s+AS\s+"[^"]+")?$/i);
+  return m ? m[1] : null;
+}
+
+/** The `tasks` columns a view statement selects (aliases are not columns). */
+export function viewSourceColumns(stmt: string): string[] {
+  const parsed = selectList(stmt);
+  if (!parsed) return [];
+  const names = new Set<string>();
+  for (const item of parsed.list) {
+    const col = sourceColumn(item);
+    if (col) names.add(col);
+  }
+  return [...names];
+}
+
+/**
+ * The view statement without the given source columns. A fresh install
+ * remakes the views between every historical migration, before a later
+ * migration has added a column the views select: the column is left out
+ * until it exists, and nothing has to list which columns those are.
+ */
+export function withoutColumns(stmt: string, missing: string[]): string {
+  if (missing.length === 0) return stmt;
+  const parsed = selectList(stmt);
+  if (!parsed) return stmt;
+  const kept = parsed.list.filter((item) => {
+    const col = sourceColumn(item);
+    return !col || !missing.includes(col);
+  });
+  return stmt.replace(
+    /SELECT([\s\S]*?)(\sFROM\s)/i,
+    () => `SELECT ${kept.join(", ")}${parsed.from}`,
+  );
+}
+
+/** The view columns the `tasks` table does not have yet. */
 async function missingRunViewColumns(tx: { execute: Database["execute"] }): Promise<string[]> {
   const rows = await tx.execute<{ column_name: string }>(sql`
     SELECT column_name FROM information_schema.columns
     WHERE table_schema = current_schema() AND table_name = 'tasks'`);
   const present = new Set(rows.map((r) => r.column_name));
-  return LATER_RUN_VIEW_COLUMNS.filter((c) => !present.has(c));
-}
-
-/** The view statement without the given columns (each `"col", ` and its spacing). */
-export function withoutColumns(stmt: string, missing: string[]): string {
-  let out = stmt;
-  for (const col of missing) out = out.replace(new RegExp(`"${col}",\\s*`), "");
-  return out;
+  const wanted = new Set(RUN_VIEWS_SQL.flatMap(viewSourceColumns));
+  return [...wanted].filter((c) => !present.has(c));
 }
 
 /** Drop the run views if they are views (before the runs table, `workflow_runs` was a table). */
