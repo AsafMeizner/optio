@@ -13,22 +13,13 @@ vi.mock("./repo-pool-service.js", () => ({
   updateWorktreeState: vi.fn(),
 }));
 
-vi.mock("./agent-pod-pool.js", () => ({
-  getPod: vi.fn(),
-  podHandle: (pod: { podId: string | null; podName: string }) => ({
-    id: pod.podId ?? pod.podName,
-    name: pod.podName,
-  }),
-}));
-
-const killRun = vi.fn();
-vi.mock("./container-service.js", () => ({
-  getRuntime: () => ({ killRun }),
+const signalRun = vi.fn();
+vi.mock("./run-attachment.js", () => ({
+  signalRun: (...args: unknown[]) => signalRun(...args),
 }));
 
 import { getTask } from "./task-service.js";
 import { killOrphanedAgentInPod, updateWorktreeState } from "./repo-pool-service.js";
-import { getPod } from "./agent-pod-pool.js";
 import { terminateTaskExecution } from "./task-cancellation-service.js";
 
 describe("terminateTaskExecution", () => {
@@ -42,15 +33,12 @@ describe("terminateTaskExecution", () => {
       lastPodId: "pod-9",
       execState: "started",
     } as any);
-    vi.mocked(getPod).mockResolvedValueOnce({ id: "pod-9", podId: "p9", podName: "pod-9" } as any);
-    killRun.mockResolvedValueOnce(true);
+    signalRun.mockResolvedValueOnce(true);
 
     const result = await terminateTaskExecution("task-1");
 
-    expect(killRun).toHaveBeenCalledWith(
-      { id: "p9", name: "pod-9" },
-      { runId: "task-1", runDir: "/home/agent/optio/runs/task-1", signal: "TERM" },
-    );
+    // The pod from the database, the run directory from the run's id (signalRun).
+    expect(signalRun).toHaveBeenCalledWith("pod-9", "task-1", "TERM");
     // The supervisor took the signal: no env-based sweep of the pod.
     expect(killOrphanedAgentInPod).not.toHaveBeenCalled();
     expect(updateWorktreeState).toHaveBeenCalledWith("task-1", "preserved");
@@ -63,8 +51,7 @@ describe("terminateTaskExecution", () => {
       lastPodId: "pod-9",
       execState: "started",
     } as any);
-    vi.mocked(getPod).mockResolvedValueOnce({ id: "pod-9", podId: "p9", podName: "pod-9" } as any);
-    killRun.mockResolvedValueOnce(false);
+    signalRun.mockResolvedValueOnce(false);
     vi.mocked(killOrphanedAgentInPod).mockResolvedValueOnce(true);
 
     const result = await terminateTaskExecution("task-5");
@@ -83,7 +70,7 @@ describe("terminateTaskExecution", () => {
 
     const result = await terminateTaskExecution("task-2");
 
-    expect(killRun).not.toHaveBeenCalled();
+    expect(signalRun).not.toHaveBeenCalled();
     expect(result).toEqual({ signalled: false, agentKilled: true });
   });
 
@@ -92,7 +79,7 @@ describe("terminateTaskExecution", () => {
 
     const result = await terminateTaskExecution("task-3");
 
-    expect(killRun).not.toHaveBeenCalled();
+    expect(signalRun).not.toHaveBeenCalled();
     expect(killOrphanedAgentInPod).not.toHaveBeenCalled();
     expect(result).toEqual({ signalled: false, agentKilled: false });
   });

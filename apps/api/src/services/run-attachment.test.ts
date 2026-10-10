@@ -28,6 +28,19 @@ vi.mock("./run-log-service.js", async (importOriginal) => {
   return { ...actual, appendRunLogsBatch: (...args: unknown[]) => mockAppend(...args) };
 });
 
+const mockGetPod = vi.fn();
+const mockKillRun = vi.fn();
+vi.mock("./agent-pod-pool.js", () => ({
+  getPod: (...args: unknown[]) => mockGetPod(...args),
+  podHandle: (pod: { podId: string | null; podName: string }) => ({
+    id: pod.podId ?? pod.podName,
+    name: pod.podName,
+  }),
+}));
+vi.mock("./container-service.js", () => ({
+  getRuntime: () => ({ killRun: (...args: unknown[]) => mockKillRun(...args) }),
+}));
+
 vi.mock("../logger.js", () => {
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   return { logger: { ...log, child: () => log } };
@@ -38,6 +51,7 @@ import {
   LineSplitter,
   detachAll,
   heldRunCount,
+  signalRun,
   startHold,
   streamRun,
   type ParsedRunLine,
@@ -367,5 +381,27 @@ describe("the hold: renew or lose", () => {
       .filter((v) => v.attachLeaseUntil);
     expect(releases).toHaveLength(2);
     for (const r of releases) expect(r.attachLeaseUntil!.getTime()).toBeLessThanOrEqual(before);
+  });
+});
+
+describe("signalRun: any instance stops a run", () => {
+  it("finds the pod from the database and signals the run directory named by the run", async () => {
+    mockGetPod.mockResolvedValueOnce({ id: "pod-9", podId: "p9", podName: "pod-9" });
+    mockKillRun.mockResolvedValueOnce(true);
+    expect(await signalRun("pod-9", "run-1", "TERM")).toBe(true);
+    expect(mockGetPod).toHaveBeenCalledWith("pod-9");
+    expect(mockKillRun).toHaveBeenCalledWith(
+      { id: "p9", name: "pod-9" },
+      { runId: "run-1", runDir: "/home/agent/optio/runs/run-1", signal: "TERM" },
+    );
+  });
+
+  it("is a no-op without a pod, and never throws", async () => {
+    expect(await signalRun(null, "run-1")).toBe(false);
+    mockGetPod.mockResolvedValueOnce(null);
+    expect(await signalRun("gone", "run-1")).toBe(false);
+    mockGetPod.mockResolvedValueOnce({ id: "pod-9", podId: "p9", podName: "pod-9" });
+    mockKillRun.mockRejectedValueOnce(new Error("exec failed"));
+    expect(await signalRun("pod-9", "run-1", "KILL")).toBe(false);
   });
 });
