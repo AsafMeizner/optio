@@ -174,8 +174,9 @@ describe("installed-skill-service", () => {
           }),
         }),
         insert: vi.fn().mockReturnValue({
-          values: vi.fn().mockImplementation(async (rows: any[]) => {
+          values: vi.fn().mockImplementation((rows: any[]) => {
             inserted = rows;
+            return { onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) };
           }),
         }),
         update: vi.fn().mockReturnValue({
@@ -201,6 +202,14 @@ describe("installed-skill-service", () => {
           skillId: "skill-1",
           path: "SKILL.md",
           content: Buffer.from("# hi"),
+          executable: false,
+          resolvedSha: "abc",
+        },
+        // The sentinel: synced at this commit, whatever the files are.
+        {
+          skillId: "skill-1",
+          path: ".optio-synced",
+          content: Buffer.from("abc"),
           executable: false,
           resolvedSha: "abc",
         },

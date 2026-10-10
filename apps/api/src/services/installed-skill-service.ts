@@ -1,4 +1,4 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { installedSkillFiles, installedSkills } from "../db/schema.js";
 import { usableBy, visibleOwner, type Actor } from "./ownership.js";
@@ -112,9 +112,21 @@ export interface SyncedSkillFile {
 }
 
 /**
- * Records a sync: on success the row's manifest and **the files themselves**
- * (`installed_skill_files`, replaced whole) in one transaction, so a run
- * spawned on any instance reads a complete set at the recorded commit.
+ * The marker row every successful sync writes beside the skill's files
+ * (content: the resolved commit). "Synced at this commit" is this row, not
+ * "some file exists", so a skill with no files at all is still synced, and
+ * the reader skips it. A skill file of the same name at the skill's root is
+ * not synced (the sync worker skips it).
+ */
+export const SKILL_SYNC_SENTINEL = ".optio-synced";
+
+/**
+ * Records a sync: on success the row's manifest, **the files themselves**
+ * (`installed_skill_files`, replaced whole) and the sentinel in one
+ * transaction, so a run spawned on any instance reads a complete set at the
+ * recorded commit. The inserts upsert on (skill_id, path): two syncs of one
+ * skill that overlap (each deleting before the other's rows are visible)
+ * both succeed rather than one failing on the primary key.
  */
 export async function recordSyncResult(
   id: string,
@@ -130,19 +142,37 @@ export async function recordSyncResult(
     | { ok: false; error: string },
 ): Promise<void> {
   if (result.ok) {
+    const rows = [
+      ...result.files
+        .filter((f) => f.relativePath !== SKILL_SYNC_SENTINEL)
+        .map((f) => ({
+          skillId: id,
+          path: f.relativePath,
+          content: f.content,
+          executable: f.executable,
+          resolvedSha: result.resolvedSha,
+        })),
+      {
+        skillId: id,
+        path: SKILL_SYNC_SENTINEL,
+        content: Buffer.from(result.resolvedSha),
+        executable: false,
+        resolvedSha: result.resolvedSha,
+      },
+    ];
     await db.transaction(async (tx) => {
       await tx.delete(installedSkillFiles).where(eq(installedSkillFiles.skillId, id));
-      if (result.files.length > 0) {
-        await tx.insert(installedSkillFiles).values(
-          result.files.map((f) => ({
-            skillId: id,
-            path: f.relativePath,
-            content: f.content,
-            executable: f.executable,
-            resolvedSha: result.resolvedSha,
-          })),
-        );
-      }
+      await tx
+        .insert(installedSkillFiles)
+        .values(rows)
+        .onConflictDoUpdate({
+          target: [installedSkillFiles.skillId, installedSkillFiles.path],
+          set: {
+            content: sql`excluded.content`,
+            executable: sql`excluded.executable`,
+            resolvedSha: sql`excluded.resolved_sha`,
+          },
+        });
       await tx
         .update(installedSkills)
         .set({

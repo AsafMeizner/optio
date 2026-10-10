@@ -248,7 +248,7 @@ describe("marketplace skills across two API servers", () => {
       { timeoutMs: 60_000, label: "the skill syncs" },
     );
     const [{ n }] =
-      await sql`SELECT count(*)::int AS n FROM installed_skill_files WHERE skill_id = ${skillId}`;
+      await sql`SELECT count(*)::int AS n FROM installed_skill_files WHERE skill_id = ${skillId} AND path <> '.optio-synced'`;
     expect(n).toBe(1);
 
     const job = await call(1, 0, "/api/jobs", "POST", {

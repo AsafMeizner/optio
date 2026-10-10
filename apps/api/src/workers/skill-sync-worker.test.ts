@@ -26,7 +26,7 @@ vi.mock("../services/redis-config.js", () => ({
 }));
 vi.mock("../db/client.js", () => ({ db: {} }));
 
-import { collectSkillFiles, inspectSkillDir, parseFrontmatter } from "./skill-sync-worker.js";
+import { parseFrontmatter, readSkillDir } from "./skill-sync-worker.js";
 
 describe("a cloned skill directory", () => {
   const baseDir = path.join(tmpdir(), `optio-skill-test-${Date.now()}`);
@@ -44,31 +44,49 @@ describe("a cloned skill directory", () => {
     await fs.rm(baseDir, { recursive: true, force: true });
   });
 
-  it("collects each file with its bytes and executable flag", async () => {
-    const files = await collectSkillFiles(baseDir);
-    const byPath = Object.fromEntries(files.map((f) => [f.relativePath, f]));
+  it("reads every file once: bytes, executable flag, manifest, frontmatter", async () => {
+    const read = await readSkillDir(baseDir);
+    const byPath = Object.fromEntries(read.files.map((f) => [f.relativePath, f]));
     expect(Object.keys(byPath).sort()).toEqual(["SKILL.md", "reference.md", "scripts/helper.sh"]);
     expect(byPath["scripts/helper.sh"].executable).toBe(true);
     expect(byPath["SKILL.md"].executable).toBe(false);
     expect(byPath["SKILL.md"].content.toString("utf8")).toMatch(/^---/);
-  });
-
-  it("inspects the manifest: sizes, the executable bit, SKILL.md frontmatter", async () => {
-    const inspected = await inspectSkillDir(baseDir);
-    expect(inspected.hasExecutableFiles).toBe(true);
-    expect(inspected.totalSizeBytes).toBeGreaterThan(0);
-    expect(inspected.manifest.frontmatter).toEqual({ name: "test" });
-    expect(inspected.manifest.files?.map((f) => f.relativePath).sort()).toEqual([
+    expect(read.hasExecutableFiles).toBe(true);
+    expect(read.totalSizeBytes).toBe(read.files.reduce((n, f) => n + f.content.length, 0));
+    expect(read.manifest.frontmatter).toEqual({ name: "test" });
+    expect(read.manifest.files?.map((f) => f.relativePath).sort()).toEqual([
       "SKILL.md",
       "reference.md",
       "scripts/helper.sh",
     ]);
   });
 
-  it("collects a subpath on its own", async () => {
-    const files = await collectSkillFiles(path.join(baseDir, "scripts"));
-    expect(files).toHaveLength(1);
-    expect(files[0].relativePath).toBe("helper.sh");
+  it("reads a subpath on its own", async () => {
+    const read = await readSkillDir(path.join(baseDir, "scripts"));
+    expect(read.files.map((f) => f.relativePath)).toEqual(["helper.sh"]);
+    expect(read.manifest.frontmatter).toBeUndefined();
+  });
+
+  it("stops at the size cap", async () => {
+    await expect(readSkillDir(baseDir, 5)).rejects.toThrow(/exceeds 5 byte cap/);
+  });
+
+  it("leaves out a root file named like the sync sentinel, and reads an empty skill", async () => {
+    const dir = path.join(baseDir, "..", `optio-skill-sentinel-${Date.now()}`);
+    await fs.mkdir(path.join(dir, "nested"), { recursive: true });
+    await fs.writeFile(path.join(dir, ".optio-synced"), "not ours");
+    await fs.writeFile(path.join(dir, "nested", ".optio-synced"), "fine here");
+    try {
+      const read = await readSkillDir(dir);
+      expect(read.files.map((f) => f.relativePath)).toEqual(["nested/.optio-synced"]);
+      await fs.rm(path.join(dir, "nested"), { recursive: true });
+      await fs.rm(path.join(dir, ".optio-synced"));
+      const empty = await readSkillDir(dir);
+      expect(empty.files).toEqual([]);
+      expect(empty.totalSizeBytes).toBe(0);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

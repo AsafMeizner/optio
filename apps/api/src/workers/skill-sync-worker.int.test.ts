@@ -59,6 +59,10 @@ beforeAll(async () => {
   const script = path.join(source, "skills", "greet", "scripts", "hi.sh");
   await fs.writeFile(script, "#!/bin/sh\necho hi\n");
   await fs.chmod(script, 0o755);
+  // A skill directory with no files of its own (its one file is the
+  // sentinel's name, which the sync leaves out).
+  await fs.mkdir(path.join(source, "skills", "empty"), { recursive: true });
+  await fs.writeFile(path.join(source, "skills", "empty", ".optio-synced"), "not ours\n");
   await git(["init", "-q", "-b", "main"]);
   await git(["add", "."]);
   await git(["commit", "-q", "-m", "greet"]);
@@ -158,6 +162,45 @@ describe("skill sync into the database", () => {
     await syncOne(legacy.id);
     due = await dueSkillIds();
     expect(due).not.toContain(legacy.id);
+  });
+
+  it("a skill with no files is synced (the sentinel), read as empty, and not due again", async () => {
+    const { syncOne, dueSkillIds, readInstalledSkillFiles } =
+      await import("./skill-sync-worker.js");
+    const skill = await insertSkill("skills/empty");
+    await syncOne(skill.id);
+    const [first] = await db.select().from(installedSkills).where(eq(installedSkills.id, skill.id));
+    expect(first.lastSyncError).toBeNull();
+    expect(first.resolvedSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(await readInstalledSkillFiles(skill.id, first.resolvedSha)).toEqual([]);
+    expect(await dueSkillIds()).not.toContain(skill.id);
+    await syncOne(skill.id);
+    const [second] = await db
+      .select()
+      .from(installedSkills)
+      .where(eq(installedSkills.id, skill.id));
+    expect(second.lastSyncedAt?.getTime()).toBe(first.lastSyncedAt?.getTime());
+  });
+
+  it("two syncs of one skill at once both succeed (the writes upsert)", async () => {
+    const { syncOne, readInstalledSkillFiles } = await import("./skill-sync-worker.js");
+    const skill = await insertSkill();
+    await Promise.all([syncOne(skill.id), syncOne(skill.id), syncOne(skill.id)]);
+    const [after] = await db.select().from(installedSkills).where(eq(installedSkills.id, skill.id));
+    expect(after.lastSyncError).toBeNull();
+    const files = await readInstalledSkillFiles(skill.id, after.resolvedSha);
+    expect(files.map((f) => f.relativePath)).toContain("SKILL.md");
+  });
+
+  it("a clone that fails leaves nothing in the scratch directory", async () => {
+    const { cloneIntoScratch } = await import("./skill-sync-worker.js");
+    const notARepo = path.join(root, "not-a-repo");
+    await fs.mkdir(notARepo, { recursive: true });
+    await expect(
+      cloneIntoScratch(`file://${notARepo}`, "0".repeat(40), { info: () => {} }),
+    ).rejects.toThrow();
+    const scratch = await fs.readdir(process.env.OPTIO_SKILLS_SCRATCH_DIR!).catch(() => []);
+    expect(scratch).toEqual([]);
   });
 
   it("records a missing subpath as the sync error and keeps no files; deleting the skill cascades", async () => {
