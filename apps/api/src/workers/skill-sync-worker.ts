@@ -36,7 +36,43 @@ import { recordSyncResult } from "../services/installed-skill-service.js";
 const execFileP = promisify(execFile);
 const bullmqOpts = getBullMQOptions();
 
-export const skillSyncQueue = new Queue("skill-sync", { ...bullmqOpts });
+/**
+ * Every job on the queue retries with backoff: a sync-one whose skill
+ * another instance is syncing right now throws `SkillSyncBusyError` and
+ * comes back later instead of being dropped (re-adding it from inside the
+ * job would be ignored while the job's own id is still taken).
+ */
+export const SKILL_SYNC_JOB_OPTIONS = {
+  attempts: 8,
+  backoff: { type: "exponential", delay: 5_000 },
+} as const;
+
+export const skillSyncQueue = new Queue("skill-sync", {
+  ...bullmqOpts,
+  defaultJobOptions: SKILL_SYNC_JOB_OPTIONS,
+});
+
+/** A sync-one found its skill's lease held: retried by BullMQ with backoff. */
+export class SkillSyncBusyError extends Error {
+  constructor(public readonly skillId: string) {
+    super(`skill ${skillId} is being synced by another instance; retrying`);
+    this.name = "SkillSyncBusyError";
+  }
+}
+
+/** One job's work (the worker's processor; exported for tests). */
+export async function processSkillSyncJob(job: { name: string; data: unknown }): Promise<void> {
+  if (job.name === "sync-due") {
+    await underPollerLease("skill-sync", () => syncDue());
+  } else if (job.name === "sync-one") {
+    const { id } = job.data as { id: string };
+    const ran = await underPollerLease(`skill-sync:${id}`, async () => {
+      await syncOne(id);
+      return true;
+    });
+    if (ran === null) throw new SkillSyncBusyError(id);
+  }
+}
 
 function cacheDir(): string {
   return process.env.OPTIO_SKILLS_CACHE_DIR ?? "/opt/optio/skills-cache";
@@ -54,26 +90,22 @@ export function startSkillSyncWorker() {
 
   // Periodic sweep for rows that need a sync — one instance at a time; a
   // one-skill sync holds its own lease so two instances never clone the
-  // same skill at once.
+  // same skill at once (the one that finds it held retries later).
   void scheduleRepeat(skillSyncQueue, "skill-sync.sync-due", SYNC_INTERVAL_MS, {
     removeOnComplete: { count: 50 },
     removeOnFail: { count: 50 },
   }).catch(() => {});
 
-  const worker = new Worker(
-    "skill-sync",
-    async (job) => {
-      if (job.name === "sync-due") {
-        await underPollerLease("skill-sync", () => syncDue());
-      } else if (job.name === "sync-one") {
-        const { id } = job.data as { id: string };
-        await underPollerLease(`skill-sync:${id}`, () => syncOne(id));
-      }
-    },
-    { ...bullmqOpts, concurrency: 1 },
-  );
+  const worker = new Worker("skill-sync", (job) => processSkillSyncJob(job), {
+    ...bullmqOpts,
+    concurrency: 1,
+  });
 
   worker.on("failed", (job, err) => {
+    if (err instanceof SkillSyncBusyError) {
+      logger.debug({ skillId: err.skillId, attempt: job?.attemptsMade }, err.message);
+      return;
+    }
     logger.error({ err, jobName: job?.name, jobId: job?.id }, "skill-sync job failed");
   });
 

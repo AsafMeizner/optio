@@ -461,6 +461,43 @@ describe("ticket-sync-service", () => {
     expect(count).toBe(1); // Task still synced despite comment failure
   });
 
+  it("queues the task, and keeps sweeping, when recording it on its claim fails", async () => {
+    mockDbSelect([
+      {
+        id: "p1",
+        source: "github",
+        config: { repoUrl: "https://github.com/o/r" },
+        enabled: true,
+        initialSyncAt: new Date("2026-01-01"),
+      },
+    ]);
+    (db.update as any) = vi.fn(() => ({
+      set: () => ({ where: () => Promise.reject(new Error("connection reset")) }),
+    }));
+    const ticket = (externalId: string) => ({
+      title: `Task ${externalId}`,
+      body: "",
+      source: "github",
+      externalId,
+      url: "",
+      labels: [],
+      repo: null,
+    });
+    vi.mocked(getTicketProvider).mockReturnValue({
+      fetchActionableTickets: vi.fn().mockResolvedValue([ticket("201"), ticket("202")]),
+      fetchTicketComments: vi.fn().mockResolvedValue([]),
+      addComment: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    vi.mocked(taskService.listTasks).mockResolvedValue([] as any);
+    vi.mocked(taskService.createTask)
+      .mockResolvedValueOnce({ id: "t-201", maxRetries: 3 } as any)
+      .mockResolvedValueOnce({ id: "t-202", maxRetries: 3 } as any);
+
+    expect(await syncAllTickets()).toBe(2);
+    expect(taskService.transitionTask).toHaveBeenCalledWith("t-201", "queued", "ticket_sync");
+    expect(taskService.transitionTask).toHaveBeenCalledWith("t-202", "queued", "ticket_sync");
+  });
+
   it("queries configuredRepos only once even with multiple providers", async () => {
     mockDbSelect(
       [

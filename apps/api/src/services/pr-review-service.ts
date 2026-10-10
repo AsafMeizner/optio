@@ -396,9 +396,10 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
   if (existing) {
     // Reset to queued/reviewing with fresh head_sha. Keep origin sticky —
     // a manual launch on top of an auto review flips to manual so the
-    // auto-rereview flow no longer applies. Compare-and-swap on the version
-    // we read: two sweeps (two API instances) relaunching the same review
-    // must start one run, not two.
+    // auto-rereview flow no longer applies. A sweep's launch is a
+    // compare-and-swap on the version it saw: two sweeps (two API
+    // instances) relaunching the same review start one run, not two. A
+    // person's launch (no `seenVersion`) relaunches the review as it is now.
     const [reset] = await db
       .update(prReviews)
       .set({
@@ -419,7 +420,7 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
       .where(
         and(
           eq(prReviews.id, existing.id),
-          updatedAtMatches(prReviews.updatedAt, input.seenVersion ?? existing.updatedAt),
+          input.seenVersion ? updatedAtMatches(prReviews.updatedAt, input.seenVersion) : undefined,
         ),
       )
       .returning();

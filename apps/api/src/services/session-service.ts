@@ -1,7 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { db } from "../db/client.js";
 import { users, sessions, wsUpgradeTokens } from "../db/schema.js";
-import { eq, and, lt } from "drizzle-orm";
+import { eq, and, lt, sql } from "drizzle-orm";
 import type { OAuthUser } from "./oauth/provider.js";
 
 const SESSION_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days absolute max
@@ -162,7 +162,7 @@ export async function revokeAllUserSessions(userId: string): Promise<void> {
 
 // ── Single-use WebSocket upgrade tokens (ws_upgrade_tokens) ───────────────
 
-const WS_TOKEN_TTL_MS = 30_000; // 30 seconds — just enough for the WS upgrade
+const WS_TOKEN_TTL_SECONDS = 30; // just enough for the WS upgrade
 
 /**
  * Create a short-lived, single-use token for WebSocket authentication.
@@ -175,10 +175,12 @@ const WS_TOKEN_TTL_MS = 30_000; // 30 seconds — just enough for the WS upgrade
  */
 export async function createWsToken(userId: string): Promise<string> {
   const token = randomBytes(32).toString("hex");
+  // Expiry on the database's clock, as validation compares it: API pods'
+  // clocks may disagree by more than the token lives.
   await db.insert(wsUpgradeTokens).values({
     tokenHash: hashToken(token),
     userId,
-    expiresAt: new Date(Date.now() + WS_TOKEN_TTL_MS),
+    expiresAt: sql`now() + make_interval(secs => ${WS_TOKEN_TTL_SECONDS})`,
   });
   return token;
 }
@@ -197,10 +199,13 @@ export async function validateWsToken(token: string): Promise<SessionUser | null
   const [entry] = await db
     .delete(wsUpgradeTokens)
     .where(eq(wsUpgradeTokens.tokenHash, hashToken(token)))
-    .returning({ userId: wsUpgradeTokens.userId, expiresAt: wsUpgradeTokens.expiresAt });
+    .returning({
+      userId: wsUpgradeTokens.userId,
+      live: sql<boolean>`${wsUpgradeTokens.expiresAt} > now()`,
+    });
 
-  if (!entry) return null;
-  if (entry.expiresAt.getTime() <= Date.now()) return null;
+  // Consumed either way: an expired token is spent, not left to retry.
+  if (!entry || !entry.live) return null;
 
   // Look up the user by ID
   const rows = await db

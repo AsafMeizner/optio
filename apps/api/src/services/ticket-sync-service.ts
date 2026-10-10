@@ -255,7 +255,20 @@ export async function syncAllTickets(): Promise<number> {
           await releaseTicketClaim(ticket.source, ticket.externalId, normalizedRepoUrl);
           throw err;
         }
-        await recordTicketClaimTask(ticket.source, ticket.externalId, normalizedRepoUrl, task.id);
+        // The task exists: a failure to note it on the claim must not strand
+        // it (or stop this provider's sweep). The claim stays task-less and
+        // is taken over after a while; the scan above still finds the task.
+        await recordTicketClaimTask(
+          ticket.source,
+          ticket.externalId,
+          normalizedRepoUrl,
+          task.id,
+        ).catch((err) =>
+          logger.warn(
+            { err, taskId: task.id, ticketId: ticket.externalId },
+            "[ticket-sync] Could not record the task on its ticket claim",
+          ),
+        );
 
         if (isFirstSync) {
           // Backfill: leave the task pending for the user to start, don't

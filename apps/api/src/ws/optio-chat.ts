@@ -35,14 +35,41 @@ const DEFAULT_MAX_TURNS = 10;
 /**
  * One active conversation per user, across every API instance: the socket
  * holds the lease `chat:<userId>` (services/lease-service.ts) while open,
- * renewed on an interval, released on close. A second socket for the same
- * user — on this instance or another — finds the lease held.
+ * renewed every 10 s, released on close. A second socket for the same
+ * user — on this instance or another — finds the lease held. A socket whose
+ * instance died stops renewing, and its lease lapses within 30 s.
  */
-const CHAT_LEASE_TTL_MS = 90_000;
-const CHAT_LEASE_RENEW_MS = 30_000;
+const CHAT_LEASE_TTL_MS = 30_000;
+const CHAT_LEASE_RENEW_MS = 10_000;
+const CHAT_LEASE_RELEASE_WAIT_MS = 2_000;
 
 export function chatLeaseKey(userId: string): string {
   return `chat:${userId}`;
+}
+
+/**
+ * Gives a conversation's lease back, waiting at most two seconds. One that
+ * doesn't land (the database slow or away) lapses with its TTL.
+ */
+async function releaseChatLease(
+  key: string,
+  holder: string,
+  log: { warn: (obj: unknown, msg?: string) => void },
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const outcome = await Promise.race([
+      releaseLease(key, holder).then(() => "released" as const),
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), CHAT_LEASE_RELEASE_WAIT_MS);
+      }),
+    ]);
+    if (outcome === "timeout") log.warn({}, "Optio chat lease release timed out; it will lapse");
+  } catch (err) {
+    log.warn({ err }, "Optio chat lease release failed; it will lapse");
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ─── Anthropic API types ────────────────────────────────────────────────────
@@ -429,7 +456,21 @@ export async function optioChatWs(app: FastifyInstance) {
     // on this instance can't extend the first one's lease.
     const leaseKey = chatLeaseKey(userId);
     const leaseHolder = `${INSTANCE_ID}:${randomUUID()}`;
-    if (!(await acquireLease(leaseKey, CHAT_LEASE_TTL_MS, leaseHolder))) {
+    let acquired: boolean;
+    try {
+      acquired = await acquireLease(leaseKey, CHAT_LEASE_TTL_MS, leaseHolder);
+    } catch (err) {
+      log.error({ err }, "Could not take the Optio chat lease");
+      socket.send(
+        JSON.stringify({
+          type: "error",
+          message: "Optio couldn't start the conversation right now. Try again in a moment.",
+        }),
+      );
+      socket.close(1011, "Could not start the conversation");
+      return conn.discard();
+    }
+    if (!acquired) {
       socket.send(
         JSON.stringify({
           type: "error",
@@ -440,7 +481,7 @@ export async function optioChatWs(app: FastifyInstance) {
       return conn.discard();
     }
     if (conn.closed) {
-      await releaseLease(leaseKey, leaseHolder).catch(() => {});
+      await releaseChatLease(leaseKey, leaseHolder, log);
       return;
     }
 
@@ -457,7 +498,7 @@ export async function optioChatWs(app: FastifyInstance) {
     renew.unref?.();
     conn.onClose(() => {
       clearInterval(renew);
-      releaseLease(leaseKey, leaseHolder).catch(() => {});
+      void releaseChatLease(leaseKey, leaseHolder, log);
     });
     log.info("Optio chat connected");
 

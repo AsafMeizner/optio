@@ -57,11 +57,13 @@ import {
  * only thing the where clause carries, so the stand-in keys rows by the
  * hash it finds in the drizzle `eq`).
  */
-const wsTokenRows = new Map<string, { userId: string; expiresAt: Date }>();
+// Expiry is computed and compared on the database's clock (`now()`), so the
+// stand-in keeps only whether the row is still live.
+const wsTokenRows = new Map<string, { userId: string; live: boolean }>();
 function mockWsTokenTable() {
   (db.insert as any) = vi.fn().mockReturnValue({
     values: vi.fn().mockImplementation(async (row: any) => {
-      wsTokenRows.set(row.tokenHash, { userId: row.userId, expiresAt: row.expiresAt });
+      wsTokenRows.set(row.tokenHash, { userId: row.userId, live: true });
     }),
   });
   (db.delete as any) = vi.fn().mockReturnValue({
@@ -399,7 +401,7 @@ describe("session-service", () => {
 
       // Manually expire the token in the table
       for (const [, entry] of wsTokenRows) {
-        entry.expiresAt = new Date(Date.now() - 1000);
+        entry.live = false;
       }
 
       const user = await validateWsToken(token);

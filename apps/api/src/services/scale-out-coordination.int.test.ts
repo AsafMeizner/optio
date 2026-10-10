@@ -11,6 +11,12 @@
  *   - two overlapping schedule sweeps fire a due trigger once; two
  *     overlapping ticket syncs create one task per ticket; two overlapping
  *     external-PR sweeps launch (and relaunch) a review once;
+ *   - a claim that can't get the lock in time gives up (null) after the
+ *     lock timeout; after-commit steps run only after a commit;
+ *   - a person's PR review launch relaunches the review as it is, a sweep's
+ *     only the version it saw;
+ *   - two instances refreshing one user's GitHub token call GitHub once,
+ *     and a refused refresh deletes only the tokens it used;
  *   - repeat jobs are schedulers with stable ids: two instances registering
  *     leave one, and an older build's hash-keyed repeatable is removed while
  *     the scheduler stays.
@@ -29,7 +35,7 @@ import {
   users,
   workflowRuns,
 } from "../db/schema.js";
-import { TASK_CLAIM_KEY, repoClaimKey, withClaimLock } from "./claim-lock.js";
+import { TASK_CLAIM_KEY, claimKey, withClaimLock } from "./claim-lock.js";
 import { claimInboundDelivery } from "./inbound-delivery-service.js";
 import { underPollerLease } from "./poller-lease.js";
 import { REPEAT_SCHEDULERS, removeLegacyRepeatables, scheduleRepeat } from "./repeat-jobs.js";
@@ -47,6 +53,9 @@ import { checkDueScheduleTriggers } from "../workers/workflow-trigger-worker.js"
 import { sweepExternalPrs } from "../workers/external-pr-review-worker.js";
 import { prReviewRunQueue } from "../workers/pr-review-worker.js";
 import { syncAllTickets } from "./ticket-sync-service.js";
+import { launchPrReview } from "./pr-review-service.js";
+import { refreshUserTokenLeased, storeUserGitHubTokens } from "./github-token-service.js";
+import { retrieveSecret } from "./secret-service.js";
 import { taskQueue } from "../workers/task-worker.js";
 import { workflowRunQueue } from "../workers/workflow-worker.js";
 import { reconcileQueue } from "./reconcile-queue.js";
@@ -116,7 +125,9 @@ afterAll(async () => {
 
 describe("claims under the advisory lock", () => {
   it("two racing claimers never admit more than the limit over 50 iterations", async () => {
-    const repoUrl = `https://github.com/it-org/claims-${randomUUID().slice(0, 8)}`;
+    // A 400-character repo URL: the repo's limit is counted under the global key.
+    const repoUrl = `https://github.com/it-org/claims-${randomUUID().slice(0, 8)}-${"x".repeat(360)}`;
+    expect(repoUrl.length).toBeGreaterThanOrEqual(400);
     const limit = 3;
     const iterations = 50;
     const queued = await Promise.all(
@@ -149,13 +160,13 @@ describe("claims under the advisory lock", () => {
       const mine: string[] = [];
       for (let i = 0; i < iterations; i++) {
         const id = pending.pop()!;
-        const claim = await withClaimLock([TASK_CLAIM_KEY, repoClaimKey(repoUrl)], async (tx) => {
-          const [{ count }] = await tx
+        const claim = await withClaimLock([TASK_CLAIM_KEY], async (c) => {
+          const [{ count }] = await c.tx
             .select({ count: sql<number>`count(*)::int` })
             .from(tasks)
             .where(active);
           if (Number(count) >= limit) return null;
-          return taskService.claimTransitionIn(tx, id, TaskState.PROVISIONING, "it_claim");
+          return taskService.claimTransitionIn(c, id, TaskState.PROVISIONING, "it_claim");
         });
         if (claim) {
           claimed++;
@@ -181,6 +192,73 @@ describe("claims under the advisory lock", () => {
     expect(claimed).toBeGreaterThan(limit); // runs came and went
     expect(await activeCount()).toBeLessThanOrEqual(limit);
   }, 60_000);
+
+  it("runs after-commit steps once the claim commits, and drops them on rollback", async () => {
+    const task = await insertTask({ state: TaskState.QUEUED });
+    const seen: string[] = [];
+    const claimed = await withClaimLock([TASK_CLAIM_KEY], async (c) => {
+      c.afterCommit(async () => {
+        // Committed by now: another connection sees the claim.
+        const [row] = await db.select().from(tasks).where(eq(tasks.id, task.id));
+        seen.push(row.state);
+      });
+      return taskService.claimTransitionIn(c, task.id, TaskState.PROVISIONING, "it_claim");
+    });
+    expect(claimed?.state).toBe(TaskState.PROVISIONING);
+    expect(seen).toEqual([TaskState.PROVISIONING]);
+
+    const other = await insertTask({ state: TaskState.QUEUED });
+    let ran = false;
+    await expect(
+      withClaimLock([TASK_CLAIM_KEY], async (c) => {
+        await taskService.claimTransitionIn(c, other.id, TaskState.PROVISIONING, "it_claim");
+        c.afterCommit(() => {
+          ran = true;
+        });
+        throw new Error("rolled back");
+      }),
+    ).rejects.toThrow("rolled back");
+    expect(ran).toBe(false);
+    const [still] = await db.select().from(tasks).where(eq(tasks.id, other.id));
+    expect(still.state).toBe(TaskState.QUEUED);
+  });
+
+  it("takes a key of any length (hashtext)", async () => {
+    const key = claimKey("claim:repo", `https://github.com/acme/${"r".repeat(400)}`);
+    expect(await withClaimLock([key], async () => "ok")).toBe("ok");
+  });
+
+  it("gives up after the lock timeout while a holder never commits", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let taken!: () => void;
+    const lockTaken = new Promise<void>((r) => (taken = r));
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${TASK_CLAIM_KEY}))`);
+      taken();
+      await held;
+    });
+    await lockTaken;
+    const started = Date.now();
+    let ran = false;
+    try {
+      // What a worker does: a null claim takes the re-queue-with-delay path.
+      const claimed = await withClaimLock([TASK_CLAIM_KEY], async () => {
+        ran = true;
+        return "claimed";
+      });
+      const waited = Date.now() - started;
+      expect(claimed).toBeNull();
+      expect(ran).toBe(false);
+      expect(waited).toBeGreaterThanOrEqual(9_500);
+      expect(waited).toBeLessThan(15_000);
+    } finally {
+      release();
+      await holder;
+    }
+    // The lock is free again: the next claimer gets it at once.
+    expect(await withClaimLock([TASK_CLAIM_KEY], async () => "claimed")).toBe("claimed");
+  }, 30_000);
 
   it("two claimers that need the same two keys take them in one order (no deadlock)", async () => {
     const a = withClaimLock(["claim:x", "claim:y"], async () => {
@@ -275,6 +353,17 @@ describe("one of two callers", () => {
     expect(winners).toHaveLength(1);
     expect(winners[0]!.id).toBe(user.id);
     expect(await validateWsToken(token)).toBeNull();
+
+    // Expiry is the database's clock: an expired row is refused (and spent).
+    const late = await createWsToken(user.id);
+    await db.execute(
+      sql`UPDATE "ws_upgrade_tokens" SET "expires_at" = now() - interval '1 second'`,
+    );
+    expect(await validateWsToken(late)).toBeNull();
+    const [{ left }] = await db.execute<{ left: number }>(
+      sql`SELECT count(*)::int AS "left" FROM "ws_upgrade_tokens"`,
+    );
+    expect(Number(left)).toBe(0);
   });
 
   it("a due schedule trigger is advanced by one of two sweeps, and fires once", async () => {
@@ -381,6 +470,128 @@ describe("two overlapping sweeps", () => {
     } finally {
       outside.prs = [];
     }
+  });
+});
+
+describe("PR review launches", () => {
+  it("a person's launch relaunches the current review; a sweep's stale view does not", async () => {
+    const repo = await insertRepo({ externalReviewMode: "on_request", reviewEnabled: true });
+    const pr = {
+      url: `${repo.repoUrl}/pull/8`,
+      number: 8,
+      title: "Another thing",
+      headSha: "cccc3333",
+      draft: false,
+      author: "bob",
+      labels: [],
+    };
+    outside.prs = [pr];
+    const runsOf = (id: string) =>
+      db.select().from(prReviewRuns).where(eq(prReviewRuns.prReviewId, id));
+    try {
+      const first = await launchPrReview({ prUrl: pr.url });
+      const id = first.review.id;
+      expect(await runsOf(id)).toHaveLength(1);
+
+      // A sweep that decided on an older version of the review loses.
+      const stale = await launchPrReview({
+        prUrl: pr.url,
+        origin: "auto",
+        seenVersion: new Date(Date.now() - 60 * 60_000),
+      });
+      expect(stale).toMatchObject({ raced: true });
+      expect(await runsOf(id)).toHaveLength(1);
+
+      // A person's launch takes the review as it is now, whatever changed.
+      await db
+        .update(prReviews)
+        .set({ state: "ready", updatedAt: new Date() })
+        .where(eq(prReviews.id, id));
+      const manual = await launchPrReview({ prUrl: pr.url });
+      expect(manual).not.toHaveProperty("raced");
+      expect(manual.review.id).toBe(id);
+      expect(await runsOf(id)).toHaveLength(2);
+    } finally {
+      outside.prs = [];
+    }
+  });
+});
+
+describe("GitHub user token refresh across instances", () => {
+  const ENV = ["GITHUB_APP_CLIENT_ID", "GITHUB_APP_CLIENT_SECRET"] as const;
+  const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const k of ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  const tokenResponse = (body: Record<string, unknown>) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  async function userWithTokenDueForRefresh(refreshToken: string): Promise<string> {
+    const userId = randomUUID();
+    // Expires in a minute: inside the refresh buffer, so it is refreshed.
+    await storeUserGitHubTokens(userId, {
+      accessToken: "ghu_old",
+      refreshToken,
+      expiresIn: 60,
+    });
+    process.env.GITHUB_APP_CLIENT_ID = "it-client";
+    process.env.GITHUB_APP_CLIENT_SECRET = "it-secret";
+    return userId;
+  }
+
+  it("two instances refreshing one user call GitHub once and keep the new tokens", async () => {
+    const userId = await userWithTokenDueForRefresh("ghr_old");
+    const sent: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)).refresh_token);
+      await sleep(300);
+      return tokenResponse({
+        access_token: "ghu_new",
+        refresh_token: "ghr_new",
+        expires_in: 28800,
+      });
+    });
+
+    const [a, b] = await Promise.all([
+      refreshUserTokenLeased(userId, null, "api-a:1"),
+      refreshUserTokenLeased(userId, null, "api-b:2"),
+    ]);
+    expect(sent).toEqual(["ghr_old"]);
+    expect([a, b]).toEqual(["ghu_new", "ghu_new"]);
+    expect(await retrieveSecret("GITHUB_USER_REFRESH_TOKEN", `user:${userId}`)).toBe("ghr_new");
+    expect(await retrieveSecret("GITHUB_USER_ACCESS_TOKEN", `user:${userId}`)).toBe("ghu_new");
+  });
+
+  it("bad_refresh_token deletes the tokens only while the refresh token is the one used", async () => {
+    // Refused, and nobody stored a newer one: the tokens go.
+    const gone = await userWithTokenDueForRefresh("ghr_revoked");
+    vi.stubGlobal("fetch", async () => tokenResponse({ error: "bad_refresh_token" }));
+    expect(await refreshUserTokenLeased(gone, null, "api-a:1")).toBeNull();
+    await expect(retrieveSecret("GITHUB_USER_REFRESH_TOKEN", `user:${gone}`)).rejects.toThrow(
+      /not found/,
+    );
+
+    // Refused, but a newer token landed meanwhile (a refresh that outlived
+    // its lease, then another instance's): the newer tokens stay.
+    const kept = await userWithTokenDueForRefresh("ghr_stale");
+    vi.stubGlobal("fetch", async () => {
+      await storeUserGitHubTokens(kept, {
+        accessToken: "ghu_rotated",
+        refreshToken: "ghr_rotated",
+        expiresIn: 28800,
+      });
+      return tokenResponse({ error: "bad_refresh_token" });
+    });
+    expect(await refreshUserTokenLeased(kept, null, "api-a:1")).toBeNull();
+    expect(await retrieveSecret("GITHUB_USER_REFRESH_TOKEN", `user:${kept}`)).toBe("ghr_rotated");
   });
 });
 
