@@ -5,7 +5,7 @@ import {
   latestSessionTurn,
   subscribeSessionChat,
   broadcastSessionChat,
-  setSessionInterrupt,
+  watchTurnControl,
   interruptSessionChat,
 } from "../services/session-turn-service.js";
 import { canJoinSession, watchSessionAccess } from "../services/session-sharing-service.js";
@@ -286,7 +286,8 @@ export async function sessionChatWs(app: FastifyInstance) {
     const executeTurn = async (
       fullPrompt: string,
       resumeSessionId: string | null,
-    ): Promise<{ fallback: boolean; completed: boolean }> => {
+      turnId: string,
+    ): Promise<{ fallback: boolean; completed: boolean; interrupted: boolean }> => {
       // Build auth passthrough env vars so the agent can make
       // authenticated API calls on behalf of the requesting user.
       const passthroughEnv: Record<string, string> = {};
@@ -354,9 +355,12 @@ export async function sessionChatWs(app: FastifyInstance) {
 
       execSession = await rt.exec(handle, ["bash", "-c", script], { tty: false });
       const thisExec = execSession;
-      // The client left while the exec was starting: closing the socket
-      // interrupts a turn, so don't let this one run unobserved.
-      setSessionInterrupt(sessionId, () => {
+      // An interrupt from any instance (a socket's `interrupt`, the session
+      // ended, the durable flag) closes this exec; the watch polls the flag
+      // while the turn runs (session-turn-service.ts).
+      let interrupted = false;
+      const stopWatch = watchTurnControl(sessionId, turnId, () => {
+        interrupted = true;
         thisExec.close();
       });
 
@@ -385,14 +389,18 @@ export async function sessionChatWs(app: FastifyInstance) {
       });
 
       // Wait for the exec to finish
-      await new Promise<void>((resolve) => {
-        thisExec.stdout.on("end", () => {
-          // Process any remaining buffer
-          if (outputBuffer.trim()) handleLine(outputBuffer);
-          outputBuffer = "";
-          resolve();
+      try {
+        await new Promise<void>((resolve) => {
+          thisExec.stdout.on("end", () => {
+            // Process any remaining buffer
+            if (outputBuffer.trim()) handleLine(outputBuffer);
+            outputBuffer = "";
+            resolve();
+          });
         });
-      });
+      } finally {
+        stopWatch();
+      }
 
       const fallback = shouldFallbackToFreshSession({
         resumed,
@@ -409,7 +417,7 @@ export async function sessionChatWs(app: FastifyInstance) {
       } else {
         flushHeldBack();
       }
-      return { fallback, completed: exitCode === 0 };
+      return { fallback, completed: exitCode === 0 && !interrupted, interrupted };
     };
 
     /**
@@ -461,11 +469,11 @@ export async function sessionChatWs(app: FastifyInstance) {
 
       try {
         agentSessionId = (await getSession(sessionId))?.agentSessionId ?? null;
-        const result = await executeTurn(fullPrompt, agentSessionId);
+        const result = await executeTurn(fullPrompt, agentSessionId, claim.turn.id);
         completed = result.completed;
         const { fallback } = result;
-        // An interrupt clears execSession; don't start a second exec then.
-        if (fallback && execSession !== null) {
+        // An interrupted turn is over; don't start a second exec then.
+        if (fallback && !result.interrupted) {
           await forgetAgentSessionId("resume_failed");
           emitEntry({
             taskId: sessionId,
@@ -474,7 +482,7 @@ export async function sessionChatWs(app: FastifyInstance) {
             content:
               "Previous conversation could not be resumed (the workspace was likely recreated); starting a fresh conversation.",
           });
-          completed = (await executeTurn(fullPrompt, null)).completed;
+          completed = (await executeTurn(fullPrompt, null, claim.turn.id)).completed;
         }
       } catch (err) {
         log.error({ err }, "Failed to run claude prompt in session");
@@ -484,7 +492,6 @@ export async function sessionChatWs(app: FastifyInstance) {
         await finishSessionTurn(claim.turn.id, completed).catch((err) =>
           log.error({ err }, "Unable to settle turn; receipt remains locked for recovery"),
         );
-        setSessionInterrupt(sessionId, null);
         isProcessing = false;
         execSession = null;
         broadcast({ type: "status", status: "idle", recovery: completed ? "live" : "resumable" });
@@ -535,7 +542,11 @@ export async function sessionChatWs(app: FastifyInstance) {
             break;
 
           case "interrupt":
-            interruptSessionChat(sessionId);
+            // Stops the turn wherever it runs (this instance's exec at once,
+            // the durable flag and the bus for another instance's).
+            interruptSessionChat(sessionId).catch((err) =>
+              log.warn({ err }, "interrupt could not reach every instance"),
+            );
             break;
 
           case "set_model":

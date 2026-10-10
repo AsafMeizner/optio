@@ -241,6 +241,10 @@ async function main() {
   const app = await buildServer();
   const { recoverSessionTurns } = await import("./services/session-turn-service.js");
   await recoverSessionTurns();
+  // Session chat frames and control from every other instance (session-bus.ts):
+  // subscribed before the first socket can connect, so none is missed.
+  const { startSessionBus, stopSessionBus } = await import("./services/session-bus.js");
+  await startSessionBus();
   const { recoverInterruptedExecutions } = await import("./services/execution-recovery-service.js");
   await recoverInterruptedExecutions();
 
@@ -346,6 +350,7 @@ async function main() {
     await localSweepWorker.close();
     await configSyncWorker?.close();
     await app.close();
+    await stopSessionBus();
     await closeSharedRedisClients();
     // Flush pending OTel spans/metrics with 5s timeout
     await shutdownTelemetry();

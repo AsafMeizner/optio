@@ -10,6 +10,8 @@ import {
 } from "../db/schema.js";
 import { podIsolationKey } from "./pod-isolation.js";
 import { isAuthDisabled } from "./oauth/index.js";
+import { INSTANCE_ID } from "./instance.js";
+import { onSessionBus, publishSessionBus } from "./session-bus.js";
 
 export type SessionKind = "pod" | "local";
 export interface SessionActor {
@@ -152,8 +154,12 @@ export async function redeemSessionShare(token: string, actor: SessionActor) {
   return { kind: share.kind, targetId: share.targetId, expiresAt: share.expiresAt };
 }
 
-// Single API replica owns live streams; close existing collaborators immediately
-// on revocation, and revalidate membership/expiry periodically and before input.
+// Live streams are per instance: each instance keeps the sockets it holds
+// for a session, closes them at once when it revokes or ends the session
+// itself, and closes them when another instance says so over the session
+// bus. Membership and expiry are also revalidated periodically and before
+// input, so a socket on an instance that missed the bus message is closed
+// within the recheck interval anyway.
 type Socket = {
   close(code?: number, reason?: string): void;
   on(event: "close", cb: () => void): unknown;
@@ -211,6 +217,33 @@ export async function listSessionShares(kind: SessionKind, targetId: string) {
     .where(and(eq(sessionShares.kind, kind), eq(sessionShares.targetId, targetId)));
 }
 
+/** This instance's collaborator sockets for the session, closed. */
+function closeLocalCollaborators(kind: SessionKind, targetId: string) {
+  for (const socket of collaborators.get(`${kind}:${targetId}`) ?? [])
+    socket.close(4403, "Session sharing revoked");
+}
+
+/** This instance's sockets (owner and collaborators) for the session, closed. */
+function closeLocalStreams(kind: SessionKind, id: string) {
+  for (const socket of sessionStreams.get(`${kind}:${id}`) ?? [])
+    socket.close(4403, "Session ended");
+}
+
+/** How many sockets this instance holds for the session (diagnostics / tests). */
+export function sessionStreamCount(kind: SessionKind, id: string): number {
+  return sessionStreams.get(`${kind}:${id}`)?.size ?? 0;
+}
+
+onSessionBus("control", (m) => {
+  if (m.action === "share_revoked") closeLocalCollaborators(m.scope, m.sessionId);
+  else if (m.action === "end") closeLocalStreams(m.scope, m.sessionId);
+});
+
+/**
+ * Revokes a share link: the grant is gone in the database (what every later
+ * check reads), this instance's collaborator sockets close now, and every
+ * other instance closes its own on the bus message.
+ */
 export async function revokeSessionShare(kind: SessionKind, targetId: string, id: string) {
   await db
     .update(sessionShares)
@@ -222,11 +255,28 @@ export async function revokeSessionShare(kind: SessionKind, targetId: string, id
         eq(sessionShares.targetId, targetId),
       ),
     );
-  for (const socket of collaborators.get(`${kind}:${targetId}`) ?? [])
-    socket.close(4403, "Session sharing revoked");
+  closeLocalCollaborators(kind, targetId);
+  await publishSessionBus({
+    kind: "control",
+    scope: kind,
+    sessionId: targetId,
+    action: "share_revoked",
+    origin: INSTANCE_ID,
+  });
 }
 
-export function closeSessionStreams(kind: SessionKind, id: string) {
-  for (const socket of sessionStreams.get(`${kind}:${id}`) ?? [])
-    socket.close(4403, "Session ended");
+/**
+ * The session ended: this instance's sockets for it close now, every other
+ * instance's on the bus message. The session row's state is what a socket
+ * that missed the message is checked against.
+ */
+export async function closeSessionStreams(kind: SessionKind, id: string): Promise<void> {
+  closeLocalStreams(kind, id);
+  await publishSessionBus({
+    kind: "control",
+    scope: kind,
+    sessionId: id,
+    action: "end",
+    origin: INSTANCE_ID,
+  });
 }

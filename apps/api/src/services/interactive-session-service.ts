@@ -163,10 +163,13 @@ export async function endSession(id: string) {
     .where(eq(interactiveSessions.id, id))
     .returning();
 
+  // Sockets and the running turn may be on any instance: both go through the
+  // session bus, and the ended state above is what a missed message falls
+  // back on (the sockets' access recheck, the turn's control poll).
   const { closeSessionStreams } = await import("./session-sharing-service.js");
   const { interruptSessionChat } = await import("./session-turn-service.js");
-  closeSessionStreams("pod", id);
-  interruptSessionChat(id);
+  await closeSessionStreams("pod", id);
+  await interruptSessionChat(id);
   if (session.podId) {
     try {
       const { getRuntime } = await import("./container-service.js");
