@@ -7,6 +7,18 @@ for upgrades. This includes a brief control-plane outage; it is not an HA API.
 Queue locks alone do not make the process-local relays safe across replicas.
 Agent pods scale independently within each workspace, owner and access profile.
 
+The pieces of coordination that several API pods will share are already in the
+database ([docs/plans/scale-out.md](plans/scale-out.md)): a run's concurrency
+claim is a Postgres advisory lock, every periodic sweep runs under a lease in
+`leases` and is safe to overlap anyway (ticket claims, a compare-and-swap on a
+schedule's next tick, one active review per PR), inbound webhook deliveries and
+WebSocket upgrade tokens are rows, and repeat jobs are BullMQ job schedulers
+with stable ids, so pods booting in any order leave one schedule per tick. What
+stays **per pod** is the WebSocket connection cap (50 sockets per client
+address, counted by the pod that holds them, so with N pods an address may hold
+up to N times that) and the installation-token cache (each pod mints its own
+hour-long GitHub App token).
+
 ## Managed services and existing Secrets
 
 Start with `helm/optio/values.production.yaml`. Set your public hostname, ingress
