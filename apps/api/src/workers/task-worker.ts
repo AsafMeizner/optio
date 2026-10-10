@@ -72,30 +72,11 @@ import {
 } from "../utils/harness-config.js";
 import { applyGitAccess } from "../services/git-access-env.js";
 import { activityFlusher } from "../services/activity-flush.js";
+import { TASK_CLAIM_KEY, repoClaimKey, withClaimLock } from "../services/claim-lock.js";
 
 const bullmqOpts = getBullMQOptions();
 
 export const taskQueue = new Queue("tasks", { ...bullmqOpts });
-
-/**
- * Serialized claim lock.
- * Prevents concurrent BullMQ workers from all passing the concurrency
- * pre-check simultaneously (seeing 0 running), all claiming their tasks,
- * and then all failing the post-check — which creates a storm of
- * provisioning→queued state events that repeats every 10s.
- *
- * With the lock, only one worker at a time checks counts + claims,
- * so the counts are always accurate.
- */
-let claimLockChain: Promise<void> = Promise.resolve();
-
-function withClaimLock<T>(fn: () => Promise<T>): Promise<T> {
-  let releaseLock!: () => void;
-  const nextLink = new Promise<void>((r) => (releaseLock = r));
-  const prev = claimLockChain;
-  claimLockChain = nextLink;
-  return prev.then(fn).finally(releaseLock);
-}
 
 export function startTaskWorker() {
   const worker = new Worker(
@@ -208,54 +189,66 @@ export function startTaskWorker() {
         }
 
         // ── Serialized concurrency check + claim ─────────────────────
-        // The claim lock ensures only one worker at a time checks
-        // counts and claims a task. Without this, N workers all see
-        // 0 running (pre-check race), all claim (provisioning), then
-        // all fail the post-check and re-queue — creating 2N state
-        // events per cycle that repeat every 10s ("event storm") and
-        // preventing ANY task from ever running.
+        // The claim lock (a Postgres advisory lock on the global and the
+        // repo's limit, services/claim-lock.ts) ensures only one worker —
+        // on any API instance — at a time checks counts and claims a
+        // task. Without it, N workers all see 0 running (pre-check race),
+        // all claim (provisioning), then all fail the post-check and
+        // re-queue — creating 2N state events per cycle that repeat every
+        // 10s ("event storm") and preventing ANY task from ever running.
 
         // Compute effective concurrency: maxAgentsPerPod * maxPodInstances
         const maxAgentsPerPod = repoConfig?.maxAgentsPerPod ?? 2;
         const maxPodInstances = repoConfig?.maxPodInstances ?? 1;
         const effectiveRepoConcurrency = maxAgentsPerPod * maxPodInstances;
 
-        const claimed = await withClaimLock(async () => {
-          const globalMax = parseIntEnv("OPTIO_MAX_CONCURRENT", 5);
+        const claimed = await withClaimLock(
+          [TASK_CLAIM_KEY, repoClaimKey(currentTask.repoUrl)],
+          async (tx) => {
+            const globalMax = parseIntEnv("OPTIO_MAX_CONCURRENT", 5);
 
-          // Global concurrency check
-          const [{ count: activeCount }] = await db
-            .select({ count: sql<number>`count(*)` })
-            .from(tasks)
-            .where(sql`${tasks.state} IN ('provisioning', 'running')`);
-          if (Number(activeCount) >= globalMax) {
-            log.info({ activeCount, globalMax }, "Global concurrency saturated, re-scheduling");
-            return null;
-          }
+            // Global concurrency check
+            const [{ count: activeCount }] = await tx
+              .select({ count: sql<number>`count(*)` })
+              .from(tasks)
+              .where(sql`${tasks.state} IN ('provisioning', 'running')`);
+            if (Number(activeCount) >= globalMax) {
+              log.info({ activeCount, globalMax }, "Global concurrency saturated, re-scheduling");
+              return null;
+            }
 
-          // Per-repo concurrency: use pod-based limit (pods * agents per pod).
-          // maxConcurrentTasks is a legacy field — if set, take the lower of
-          // the two to respect both the pod capacity and the explicit cap.
-          const repoMax = repoConfig?.maxConcurrentTasks
-            ? Math.min(repoConfig.maxConcurrentTasks, effectiveRepoConcurrency)
-            : effectiveRepoConcurrency;
-          const [{ count: repoCount }] = await db
-            .select({ count: sql<number>`count(*)` })
-            .from(tasks)
-            .where(
-              sql`${tasks.repoUrl} = ${currentTask.repoUrl} AND ${tasks.state} IN ('provisioning', 'running')`,
+            // Per-repo concurrency: use pod-based limit (pods * agents per pod).
+            // maxConcurrentTasks is a legacy field — if set, take the lower of
+            // the two to respect both the pod capacity and the explicit cap.
+            const repoMax = repoConfig?.maxConcurrentTasks
+              ? Math.min(repoConfig.maxConcurrentTasks, effectiveRepoConcurrency)
+              : effectiveRepoConcurrency;
+            const [{ count: repoCount }] = await tx
+              .select({ count: sql<number>`count(*)` })
+              .from(tasks)
+              .where(
+                sql`${tasks.repoUrl} = ${currentTask.repoUrl} AND ${tasks.state} IN ('provisioning', 'running')`,
+              );
+            if (Number(repoCount) >= repoMax) {
+              log.info(
+                { repoActiveCount: repoCount, max: repoMax },
+                "Repo concurrency saturated, re-scheduling",
+              );
+              return null;
+            }
+
+            // Claim — atomic conditional update (queued → provisioning) on
+            // the lock's transaction, so it commits before the lock goes.
+            return taskService.claimTransitionIn(
+              tx,
+              taskId,
+              TaskState.PROVISIONING,
+              "worker_pickup",
             );
-          if (Number(repoCount) >= repoMax) {
-            log.info(
-              { repoActiveCount: repoCount, max: repoMax },
-              "Repo concurrency saturated, re-scheduling",
-            );
-            return null;
-          }
-
-          // Claim — atomic conditional update (queued → provisioning)
-          return taskService.tryTransitionTask(taskId, TaskState.PROVISIONING, "worker_pickup");
-        });
+          },
+        );
+        // Committed: now the state event, the reconciler, and the rest.
+        await claimed?.announce();
 
         if (!claimed) {
           const jitter = Math.floor(Math.random() * 5000);
