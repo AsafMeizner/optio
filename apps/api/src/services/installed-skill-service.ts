@@ -85,8 +85,10 @@ export async function updateInstalledSkill(
   if (input.agentTypes !== undefined) {
     updates.agentTypes = input.agentTypes && input.agentTypes.length > 0 ? input.agentTypes : null;
   }
-  // Changing ref or subpath invalidates the resolved SHA — sync worker will
-  // refresh on the next pass.
+  // Changing ref or subpath invalidates the resolved SHA, in the same
+  // statement as the change: the skill is due (`dueSkillIds`) the moment the
+  // new ref is visible, and a sync of the old ref still in flight finds the
+  // ref moved and records nothing (`recordSyncResult`).
   if (input.ref !== undefined || input.subpath !== undefined) {
     updates.resolvedSha = null;
     updates.lastSyncError = null;
@@ -121,7 +123,9 @@ export interface SyncedSkillFile {
 export const SKILL_SYNC_SENTINEL = ".optio-synced";
 
 /**
- * Records a sync: on success the row's manifest, **the files themselves**
+ * Records a sync — only while the skill's ref and subpath are still the
+ * ones the sync resolved (false, and nothing written, otherwise): on
+ * success the row's manifest, **the files themselves**
  * (`installed_skill_files`, replaced whole) and the sentinel in one
  * transaction, so a run spawned on any instance reads a complete set at the
  * recorded commit. The inserts upsert on (skill_id, path): two syncs of one
@@ -140,8 +144,40 @@ export async function recordSyncResult(
         files: readonly SyncedSkillFile[];
       }
     | { ok: false; error: string },
-): Promise<void> {
-  if (result.ok) {
+  /** The ref and subpath the sync read from the row (and resolved). */
+  synced: { ref: string; subpath: string },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    // A sync is only good for the ref and subpath it resolved. If a PATCH
+    // moved the skill meanwhile, write nothing: the PATCH left it due, and
+    // the next sync-due takes the new ref (a sync-one the PATCH queued may
+    // have been absorbed by this very job). FOR UPDATE: a PATCH that lands
+    // now waits for this commit, then makes the skill due again.
+    const [current] = await tx
+      .select({ id: installedSkills.id })
+      .from(installedSkills)
+      .where(
+        and(
+          eq(installedSkills.id, id),
+          eq(installedSkills.ref, synced.ref),
+          eq(installedSkills.subpath, synced.subpath),
+        ),
+      )
+      .for("update");
+    if (!current) return false;
+
+    if (!result.ok) {
+      await tx
+        .update(installedSkills)
+        .set({
+          lastSyncError: result.error,
+          lastSyncedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(installedSkills.id, id));
+      return true;
+    }
+
     const rows = [
       ...result.files
         .filter((f) => f.relativePath !== SKILL_SYNC_SENTINEL)
@@ -160,42 +196,32 @@ export async function recordSyncResult(
         resolvedSha: result.resolvedSha,
       },
     ];
-    await db.transaction(async (tx) => {
-      await tx.delete(installedSkillFiles).where(eq(installedSkillFiles.skillId, id));
-      await tx
-        .insert(installedSkillFiles)
-        .values(rows)
-        .onConflictDoUpdate({
-          target: [installedSkillFiles.skillId, installedSkillFiles.path],
-          set: {
-            content: sql`excluded.content`,
-            executable: sql`excluded.executable`,
-            resolvedSha: sql`excluded.resolved_sha`,
-          },
-        });
-      await tx
-        .update(installedSkills)
-        .set({
-          resolvedSha: result.resolvedSha,
-          cachedManifest: result.manifest,
-          hasExecutableFiles: result.hasExecutableFiles,
-          totalSizeBytes: result.totalSizeBytes,
-          lastSyncedAt: new Date(),
-          lastSyncError: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(installedSkills.id, id));
-    });
-  } else {
-    await db
+    await tx.delete(installedSkillFiles).where(eq(installedSkillFiles.skillId, id));
+    await tx
+      .insert(installedSkillFiles)
+      .values(rows)
+      .onConflictDoUpdate({
+        target: [installedSkillFiles.skillId, installedSkillFiles.path],
+        set: {
+          content: sql`excluded.content`,
+          executable: sql`excluded.executable`,
+          resolvedSha: sql`excluded.resolved_sha`,
+        },
+      });
+    await tx
       .update(installedSkills)
       .set({
-        lastSyncError: result.error,
+        resolvedSha: result.resolvedSha,
+        cachedManifest: result.manifest,
+        hasExecutableFiles: result.hasExecutableFiles,
+        totalSizeBytes: result.totalSizeBytes,
         lastSyncedAt: new Date(),
+        lastSyncError: null,
         updatedAt: new Date(),
       })
       .where(eq(installedSkills.id, id));
-  }
+    return true;
+  });
 }
 
 /**

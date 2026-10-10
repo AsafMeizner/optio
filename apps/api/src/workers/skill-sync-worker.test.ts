@@ -26,7 +26,37 @@ vi.mock("../services/redis-config.js", () => ({
 }));
 vi.mock("../db/client.js", () => ({ db: {} }));
 
-import { parseFrontmatter, readSkillDir } from "./skill-sync-worker.js";
+const leaseFree = { value: true };
+vi.mock("../services/poller-lease.js", () => ({
+  underPollerLease: async (_name: string, fn: () => Promise<unknown>) =>
+    leaseFree.value ? fn() : null,
+}));
+
+import {
+  SKILL_SYNC_JOB_OPTIONS,
+  SkillSyncBusyError,
+  parseFrontmatter,
+  processSkillSyncJob,
+  readSkillDir,
+} from "./skill-sync-worker.js";
+
+describe("sync-one under another instance's lease", () => {
+  it("throws a retryable busy error instead of dropping the sync", async () => {
+    leaseFree.value = false;
+    try {
+      await expect(
+        processSkillSyncJob({ name: "sync-one", data: { id: "skill-1" } }),
+      ).rejects.toBeInstanceOf(SkillSyncBusyError);
+    } finally {
+      leaseFree.value = true;
+    }
+  });
+
+  it("every job on the queue retries with exponential backoff", () => {
+    expect(SKILL_SYNC_JOB_OPTIONS.attempts).toBeGreaterThan(1);
+    expect(SKILL_SYNC_JOB_OPTIONS.backoff.type).toBe("exponential");
+  });
+});
 
 describe("a cloned skill directory", () => {
   const baseDir = path.join(tmpdir(), `optio-skill-test-${Date.now()}`);

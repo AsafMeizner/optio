@@ -32,6 +32,8 @@ import { parseIntEnv } from "@optio/shared";
 import type { InstalledSkillManifest } from "@optio/shared";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
+import { scheduleRepeat } from "../services/repeat-jobs.js";
+import { underPollerLease } from "../services/poller-lease.js";
 import { db } from "../db/client.js";
 import { installedSkillFiles, installedSkills } from "../db/schema.js";
 import { and, eq, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
@@ -44,7 +46,43 @@ import {
 const execFileP = promisify(execFile);
 const bullmqOpts = getBullMQOptions();
 
-export const skillSyncQueue = new Queue("skill-sync", { ...bullmqOpts });
+/**
+ * Every job on the queue retries with backoff: a sync-one whose skill
+ * another instance is syncing right now throws `SkillSyncBusyError` and
+ * comes back later instead of being dropped (re-adding it from inside the
+ * job would be ignored while the job's own id is still taken).
+ */
+export const SKILL_SYNC_JOB_OPTIONS = {
+  attempts: 8,
+  backoff: { type: "exponential", delay: 5_000 },
+} as const;
+
+export const skillSyncQueue = new Queue("skill-sync", {
+  ...bullmqOpts,
+  defaultJobOptions: SKILL_SYNC_JOB_OPTIONS,
+});
+
+/** A sync-one found its skill's lease held: retried by BullMQ with backoff. */
+export class SkillSyncBusyError extends Error {
+  constructor(public readonly skillId: string) {
+    super(`skill ${skillId} is being synced by another instance; retrying`);
+    this.name = "SkillSyncBusyError";
+  }
+}
+
+/** One job's work (the worker's processor; exported for tests). */
+export async function processSkillSyncJob(job: { name: string; data: unknown }): Promise<void> {
+  if (job.name === "sync-due") {
+    await underPollerLease("skill-sync", () => syncDue());
+  } else if (job.name === "sync-one") {
+    const { id } = job.data as { id: string };
+    const ran = await underPollerLease(`skill-sync:${id}`, async () => {
+      await syncOne(id);
+      return true;
+    });
+    if (ran === null) throw new SkillSyncBusyError(id);
+  }
+}
 
 function scratchDir(): string {
   return process.env.OPTIO_SKILLS_SCRATCH_DIR ?? path.join(tmpdir(), "optio-skills");
@@ -55,16 +93,13 @@ const SYNC_INTERVAL_MS = parseIntEnv("OPTIO_SKILL_SYNC_INTERVAL", 300_000); // 5
 const MAX_SKILL_BYTES = parseIntEnv("OPTIO_SKILL_MAX_BYTES", 1_048_576); // 1 MiB
 
 export function startSkillSyncWorker() {
-  // Periodic sweep for rows that need a sync.
-  skillSyncQueue.add(
-    "sync-due",
-    {},
-    {
-      repeat: { every: SYNC_INTERVAL_MS },
-      removeOnComplete: { count: 50 },
-      removeOnFail: { count: 50 },
-    },
-  );
+  // Periodic sweep for rows that need a sync — one instance at a time; a
+  // one-skill sync holds its own lease so two instances never clone the
+  // same skill at once (the one that finds it held retries later).
+  void scheduleRepeat(skillSyncQueue, "skill-sync.sync-due", SYNC_INTERVAL_MS, {
+    removeOnComplete: { count: 50 },
+    removeOnFail: { count: 50 },
+  }).catch(() => {});
 
   // And one pass now: a skill synced to the former cache volume before the
   // upgrade (a commit, no files in the database) is back within seconds.
@@ -72,20 +107,16 @@ export function startSkillSyncWorker() {
     .add("sync-due", {}, { removeOnComplete: true, removeOnFail: { count: 50 } })
     .catch((err) => logger.warn({ err }, "skill sync: could not enqueue the boot pass"));
 
-  const worker = new Worker(
-    "skill-sync",
-    async (job) => {
-      if (job.name === "sync-due") {
-        await syncDue();
-      } else if (job.name === "sync-one") {
-        const { id } = job.data as { id: string };
-        await syncOne(id);
-      }
-    },
-    { ...bullmqOpts, concurrency: 1 },
-  );
+  const worker = new Worker("skill-sync", (job) => processSkillSyncJob(job), {
+    ...bullmqOpts,
+    concurrency: 1,
+  });
 
   worker.on("failed", (job, err) => {
+    if (err instanceof SkillSyncBusyError) {
+      logger.debug({ skillId: err.skillId, attempt: job?.attemptsMade }, err.message);
+      return;
+    }
     logger.error({ err, jobName: job?.name, jobId: job?.id }, "skill-sync job failed");
   });
 
@@ -173,6 +204,8 @@ export async function syncOne(id: string): Promise<void> {
     return;
   }
 
+  // What this sync resolves; its result lands only if the row still says so.
+  const synced = { ref: row.ref, subpath: row.subpath };
   let clone: string | null = null;
   try {
     const sha = await resolveRefToSha(row.sourceUrl, row.ref);
@@ -191,14 +224,22 @@ export async function syncOne(id: string): Promise<void> {
     const inspected = await readSkillDir(subpathDir, MAX_SKILL_BYTES);
     const { files } = inspected;
 
-    await recordSyncResult(id, {
-      ok: true,
-      resolvedSha: sha,
-      manifest: inspected.manifest,
-      hasExecutableFiles: inspected.hasExecutableFiles,
-      totalSizeBytes: inspected.totalSizeBytes,
-      files,
-    });
+    const recorded = await recordSyncResult(
+      id,
+      {
+        ok: true,
+        resolvedSha: sha,
+        manifest: inspected.manifest,
+        hasExecutableFiles: inspected.hasExecutableFiles,
+        totalSizeBytes: inspected.totalSizeBytes,
+        files,
+      },
+      synced,
+    );
+    if (!recorded) {
+      log.info({ sha, ref: row.ref }, "skill's ref changed during the sync; result discarded");
+      return;
+    }
     log.info(
       { sha, fileCount: files.length, bytes: inspected.totalSizeBytes },
       "installed skill synced",
@@ -206,7 +247,7 @@ export async function syncOne(id: string): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error({ err }, "installed skill sync failed");
-    await recordSyncResult(id, { ok: false, error: msg });
+    await recordSyncResult(id, { ok: false, error: msg }, synced);
   } finally {
     if (clone) await fs.rm(path.dirname(clone), { recursive: true, force: true }).catch(() => {});
   }

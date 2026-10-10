@@ -1,7 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { db } from "../db/client.js";
-import { users, sessions } from "../db/schema.js";
-import { eq, and, lt } from "drizzle-orm";
+import { users, sessions, wsUpgradeTokens } from "../db/schema.js";
+import { eq, and, lt, sql } from "drizzle-orm";
 import type { OAuthUser } from "./oauth/provider.js";
 
 const SESSION_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days absolute max
@@ -160,58 +160,29 @@ export async function revokeAllUserSessions(userId: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.userId, userId));
 }
 
-// ── In-memory store for single-use WebSocket upgrade tokens ──────────────
+// ── Single-use WebSocket upgrade tokens (ws_upgrade_tokens) ───────────────
 
-const WS_TOKEN_TTL_MS = 30_000; // 30 seconds — just enough for the WS upgrade
-const WS_TOKEN_CLEANUP_INTERVAL_MS = 60_000;
-
-interface WsUpgradeEntry {
-  userId: string;
-  expiresAt: number; // epoch ms
-}
-
-/** Map from token-hash → { userId, expiresAt }. Tokens are deleted on first use. */
-const wsUpgradeTokens = new Map<string, WsUpgradeEntry>();
-
-/** Periodic cleanup of expired entries (prevents slow leak if tokens are never used). */
-const _wsCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [hash, entry] of wsUpgradeTokens) {
-    if (entry.expiresAt <= now) wsUpgradeTokens.delete(hash);
-  }
-}, WS_TOKEN_CLEANUP_INTERVAL_MS);
-// Allow the process to exit even if the timer is still running.
-if (_wsCleanupTimer.unref) _wsCleanupTimer.unref();
-
-/** Create a short-lived, single-use token for WebSocket authentication. */
-export async function createWsToken(userId: string): Promise<string> {
-  const token = randomBytes(32).toString("hex");
-  const tokenHash = hashToken(token);
-
-  wsUpgradeTokens.set(tokenHash, {
-    userId,
-    expiresAt: Date.now() + WS_TOKEN_TTL_MS,
-  });
-
-  return token;
-}
+const WS_TOKEN_TTL_SECONDS = 30; // just enough for the WS upgrade
 
 /**
- * Find a WS upgrade token entry using timing-safe comparison.
+ * Create a short-lived, single-use token for WebSocket authentication.
  *
- * Iterates all entries and compares hashes with crypto.timingSafeEqual
- * to prevent timing side-channel attacks. Returns the matching key and
- * entry, or null if not found.
+ * The browser fetches it from whichever API instance answers
+ * `/api/auth/ws-token` and upgrades `/ws/*` through the ingress to any
+ * instance, so the token lives in `ws_upgrade_tokens` (hashed; the raw
+ * token is never stored), not in process memory. Expired rows are swept by
+ * the housekeeping worker.
  */
-function findWsTokenEntry(tokenHash: string): { key: string; entry: WsUpgradeEntry } | null {
-  const targetBuf = Buffer.from(tokenHash, "hex");
-  for (const [key, entry] of wsUpgradeTokens) {
-    const candidateBuf = Buffer.from(key, "hex");
-    if (candidateBuf.length === targetBuf.length && timingSafeEqual(candidateBuf, targetBuf)) {
-      return { key, entry };
-    }
-  }
-  return null;
+export async function createWsToken(userId: string): Promise<string> {
+  const token = randomBytes(32).toString("hex");
+  // Expiry on the database's clock, as validation compares it: API pods'
+  // clocks may disagree by more than the token lives.
+  await db.insert(wsUpgradeTokens).values({
+    tokenHash: hashToken(token),
+    userId,
+    expiresAt: sql`now() + make_interval(secs => ${WS_TOKEN_TTL_SECONDS})`,
+  });
+  return token;
 }
 
 /**
@@ -219,18 +190,22 @@ function findWsTokenEntry(tokenHash: string): { key: string; entry: WsUpgradeEnt
  * Returns the SessionUser on success (token is deleted), or null if
  * the token is invalid, expired, or already consumed.
  *
- * Uses timing-safe comparison and atomic delete-then-validate semantics.
+ * Consuming is one `DELETE … RETURNING` on the hash: exactly one of two
+ * concurrent upgrades with the same token (on any instances) gets the row.
+ * The lookup is an equality on a SHA-256 of 32 random bytes, so a timing
+ * side channel on the comparison reveals nothing an attacker could use.
  */
 export async function validateWsToken(token: string): Promise<SessionUser | null> {
-  const tokenHash = hashToken(token);
-  const match = findWsTokenEntry(tokenHash);
+  const [entry] = await db
+    .delete(wsUpgradeTokens)
+    .where(eq(wsUpgradeTokens.tokenHash, hashToken(token)))
+    .returning({
+      userId: wsUpgradeTokens.userId,
+      live: sql<boolean>`${wsUpgradeTokens.expiresAt} > now()`,
+    });
 
-  if (!match) return null;
-
-  // Always delete — single use regardless of expiry check (atomic consume)
-  wsUpgradeTokens.delete(match.key);
-
-  if (match.entry.expiresAt <= Date.now()) return null;
+  // Consumed either way: an expired token is spent, not left to retry.
+  if (!entry || !entry.live) return null;
 
   // Look up the user by ID
   const rows = await db
@@ -244,7 +219,7 @@ export async function validateWsToken(token: string): Promise<SessionUser | null
       defaultWorkspaceId: users.defaultWorkspaceId,
     })
     .from(users)
-    .where(eq(users.id, match.entry.userId))
+    .where(eq(users.id, entry.userId))
     .limit(1);
 
   if (rows.length === 0) return null;
@@ -261,9 +236,6 @@ export async function validateWsToken(token: string): Promise<SessionUser | null
     workspaceRole: null,
   };
 }
-
-/** Expose internals for testing only. */
-export const _wsTokenStoreForTesting = wsUpgradeTokens;
 
 /** Delete all expired sessions. Returns count of deleted rows. */
 export async function cleanupExpiredSessions(): Promise<number> {

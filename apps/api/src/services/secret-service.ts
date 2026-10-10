@@ -363,6 +363,66 @@ export async function listVisibleSecrets(actor: Actor, scope?: string): Promise<
   });
 }
 
+/**
+ * A deployment-level secret (no workspace, no user — e.g. the `user:<id>`
+ * scoped GitHub tokens) with its version: the row's IV, new at every store.
+ * For a caller that must later act only while the value is still the one it
+ * read (`deleteSecretsIfUnchanged`).
+ */
+export async function retrieveSecretVersioned(
+  name: string,
+  scope: string,
+): Promise<{ value: string; version: string }> {
+  const [secret] = await db
+    .select()
+    .from(secrets)
+    .where(
+      and(
+        eq(secrets.name, name),
+        eq(secrets.scope, scope),
+        isNull(secrets.workspaceId),
+        isNull(secrets.userId),
+      ),
+    );
+  if (!secret) throw new Error(`Secret not found: ${name} (scope: ${scope})`);
+  const value = decrypt(
+    {
+      alg: secret.alg ?? ALG_AES_256_GCM_V1,
+      iv: secret.iv,
+      ciphertext: secret.encryptedValue,
+      authTag: secret.authTag,
+    },
+    buildSecretAAD(name, scope, null),
+    name,
+  );
+  return { value, version: Buffer.from(secret.iv).toString("hex") };
+}
+
+/**
+ * Deletes the deployment-level secrets `names` in `scope` — in one
+ * statement, and only while `guard.name` still holds the version read with
+ * `retrieveSecretVersioned`. True iff they were deleted.
+ */
+export async function deleteSecretsIfUnchanged(
+  names: string[],
+  scope: string,
+  guard: { name: string; version: string },
+): Promise<boolean> {
+  const rows = await db.execute<{ id: string }>(sql`
+    DELETE FROM "secrets"
+    WHERE "scope" = ${scope} AND "workspace_id" IS NULL AND "user_id" IS NULL
+      AND "name" IN (${sql.join(
+        names.map((n) => sql`${n}`),
+        sql`, `,
+      )})
+      AND EXISTS (
+        SELECT 1 FROM "secrets" g
+        WHERE g."scope" = ${scope} AND g."workspace_id" IS NULL AND g."user_id" IS NULL
+          AND g."name" = ${guard.name} AND encode(g."iv", 'hex') = ${guard.version})
+    RETURNING "id"`);
+  return rows.length > 0;
+}
+
 export async function deleteSecret(
   name: string,
   scope = "global",

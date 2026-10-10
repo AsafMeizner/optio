@@ -42,10 +42,21 @@ function seedDefinition(row: { id: string; kind: string; enabled: boolean; name?
 // The worker finds due schedules through the trigger service and fires them
 // through the dispatcher, which looks the target up as a work definition and
 // starts it through the per-kind services mocked here.
+// The sweep advances each trigger by CAS before firing it; here every
+// advance lands (the two-sweep race is an integration test).
 vi.mock("../services/trigger-service.js", () => ({
   listDueScheduleTriggers: (...args: unknown[]) => mockGetDueScheduleTriggersAll(...args),
-  advanceSchedule: (...args: unknown[]) => mockMarkTriggerFired(...args),
+  advanceScheduleCas: async (id: string, cron: string) => {
+    mockMarkTriggerFired(id, cron);
+    return true;
+  },
   markTriggerFired: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../services/poller-lease.js", () => ({
+  underPollerLease: (_name: string, fn: () => Promise<unknown>) => fn(),
+}));
+vi.mock("../services/repeat-jobs.js", () => ({
+  scheduleRepeat: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../services/work-definition-service.js", async (importOriginal) => {
@@ -79,6 +90,7 @@ function jobTrigger(overrides: Partial<Record<string, unknown>> = {}) {
     type: "schedule",
     config: { cronExpression: "0 0 * * *" },
     paramMapping: null,
+    nextFireAt: new Date(Date.now() - 1000),
     ...overrides,
   };
 }

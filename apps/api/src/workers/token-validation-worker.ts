@@ -1,6 +1,8 @@
 import { Queue, Worker } from "bullmq";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
+import { scheduleRepeat } from "../services/repeat-jobs.js";
+import { underPollerLease } from "../services/poller-lease.js";
 import { getRedisClient } from "../services/event-bus.js";
 
 const bullmqOpts = getBullMQOptions();
@@ -108,107 +110,14 @@ export async function validateClaudeToken(
 export function startTokenValidationWorker() {
   const intervalMs = parseInt(process.env.OPTIO_TOKEN_VALIDATION_INTERVAL ?? "300000", 10); // 5 min
 
-  tokenValidationQueue.add(
-    "validate-token",
-    {},
-    {
-      repeat: {
-        every: intervalMs,
-      },
-    },
+  void scheduleRepeat(tokenValidationQueue, "token-validation.validate-token", intervalMs).catch(
+    () => {},
   );
 
   const worker = new Worker(
     "token-validation",
     async () => {
-      const redis = getRedisClient();
-
-      // Try to retrieve the stored OAuth token from the secrets store
-      let token: string | null = null;
-      try {
-        const { retrieveSecret } = await import("../services/secret-service.js");
-        token = await retrieveSecret("CLAUDE_CODE_OAUTH_TOKEN").catch(() => null);
-      } catch {
-        // No secret-service available or encryption key not set — skip
-      }
-
-      // Also check host credentials (max-subscription mode)
-      if (!token) {
-        try {
-          const { getClaudeAuthToken } = await import("../services/auth-service.js");
-          const authResult = getClaudeAuthToken();
-          if (authResult.available && authResult.token) {
-            token = authResult.token;
-          }
-        } catch {
-          // auth-service not available
-        }
-      }
-
-      const now = new Date().toISOString();
-
-      if (!token) {
-        // No token configured — nothing to validate. Cache that fact.
-        const result: TokenValidationResult = {
-          valid: true,
-          lastValidated: now,
-          tokenExists: false,
-        };
-        await redis.setex(TOKEN_VALIDATION_CACHE_KEY, CACHE_TTL_SECS, JSON.stringify(result));
-        return;
-      }
-
-      // Validate the token
-      const validation = await validateClaudeToken(token);
-
-      const result: TokenValidationResult = {
-        valid: validation.valid,
-        lastValidated: now,
-        tokenExists: true,
-        ...(validation.error ? { error: validation.error } : {}),
-      };
-
-      await redis.setex(TOKEN_VALIDATION_CACHE_KEY, CACHE_TTL_SECS, JSON.stringify(result));
-
-      if (!validation.valid) {
-        logger.warn("Claude OAuth token validation failed — token is expired or invalid");
-
-        // A paired machine (Optio Local daemon) may hold a fresh login: take
-        // it from there before bothering anyone with the paste banner.
-        try {
-          const { autoRefreshClaudeToken } =
-            await import("../services/local-auth-refresh-service.js");
-          if (await autoRefreshClaudeToken("validation-failed")) {
-            logger.info("Claude OAuth token refreshed automatically from a paired machine");
-            return;
-          }
-        } catch (err) {
-          logger.warn({ err }, "automatic Claude token refresh failed");
-        }
-
-        // Invalidate the usage cache so the dashboard shows fresh data
-        try {
-          const { invalidateUsageCache } = await import("../services/auth-service.js");
-          invalidateUsageCache();
-        } catch {
-          // non-fatal
-        }
-
-        // Publish auth:failed event so the UI shows a banner immediately
-        try {
-          const { publishEvent } = await import("../services/event-bus.js");
-          await publishEvent({
-            type: "auth:failed",
-            message:
-              "Claude Code OAuth token has expired. Go to Secrets to paste a new token, or re-run 'claude setup-token'.",
-            timestamp: now,
-          });
-        } catch {
-          // non-fatal — UI will pick it up on next poll
-        }
-      } else {
-        logger.debug("Claude OAuth token validation passed");
-      }
+      await underPollerLease("token-validation", () => validateStoredToken());
     },
     {
       ...bullmqOpts,
@@ -221,4 +130,95 @@ export function startTokenValidationWorker() {
   });
 
   return worker;
+}
+
+/** One validation pass (the tick's body). */
+export async function validateStoredToken(): Promise<void> {
+  const redis = getRedisClient();
+
+  // Try to retrieve the stored OAuth token from the secrets store
+  let token: string | null = null;
+  try {
+    const { retrieveSecret } = await import("../services/secret-service.js");
+    token = await retrieveSecret("CLAUDE_CODE_OAUTH_TOKEN").catch(() => null);
+  } catch {
+    // No secret-service available or encryption key not set — skip
+  }
+
+  // Also check host credentials (max-subscription mode)
+  if (!token) {
+    try {
+      const { getClaudeAuthToken } = await import("../services/auth-service.js");
+      const authResult = getClaudeAuthToken();
+      if (authResult.available && authResult.token) {
+        token = authResult.token;
+      }
+    } catch {
+      // auth-service not available
+    }
+  }
+
+  const now = new Date().toISOString();
+
+  if (!token) {
+    // No token configured — nothing to validate. Cache that fact.
+    const result: TokenValidationResult = {
+      valid: true,
+      lastValidated: now,
+      tokenExists: false,
+    };
+    await redis.setex(TOKEN_VALIDATION_CACHE_KEY, CACHE_TTL_SECS, JSON.stringify(result));
+    return;
+  }
+
+  // Validate the token
+  const validation = await validateClaudeToken(token);
+
+  const result: TokenValidationResult = {
+    valid: validation.valid,
+    lastValidated: now,
+    tokenExists: true,
+    ...(validation.error ? { error: validation.error } : {}),
+  };
+
+  await redis.setex(TOKEN_VALIDATION_CACHE_KEY, CACHE_TTL_SECS, JSON.stringify(result));
+
+  if (!validation.valid) {
+    logger.warn("Claude OAuth token validation failed — token is expired or invalid");
+
+    // A paired machine (Optio Local daemon) may hold a fresh login: take
+    // it from there before bothering anyone with the paste banner.
+    try {
+      const { autoRefreshClaudeToken } = await import("../services/local-auth-refresh-service.js");
+      if (await autoRefreshClaudeToken("validation-failed")) {
+        logger.info("Claude OAuth token refreshed automatically from a paired machine");
+        return;
+      }
+    } catch (err) {
+      logger.warn({ err }, "automatic Claude token refresh failed");
+    }
+
+    // Invalidate the usage cache so the dashboard shows fresh data
+    try {
+      const { invalidateUsageCache } = await import("../services/auth-service.js");
+      invalidateUsageCache();
+    } catch {
+      // non-fatal
+    }
+
+    // Publish auth:failed event so the UI shows a banner immediately
+    try {
+      const { publishEvent } = await import("../services/event-bus.js");
+      await publishEvent({
+        type: "auth:failed",
+        message:
+          "Claude Code OAuth token has expired. Go to Secrets to paste a new token, or re-run 'claude setup-token'.",
+        timestamp: now,
+      });
+    } catch {
+      // non-fatal — UI will pick it up on next poll
+    }
+  } else {
+    logger.debug("Claude OAuth token validation passed");
+  }
 }

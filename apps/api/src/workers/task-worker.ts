@@ -72,30 +72,11 @@ import {
 } from "../utils/harness-config.js";
 import { applyGitAccess } from "../services/git-access-env.js";
 import { activityFlusher } from "../services/activity-flush.js";
+import { TASK_CLAIM_KEY, withClaimLock } from "../services/claim-lock.js";
 
 const bullmqOpts = getBullMQOptions();
 
 export const taskQueue = new Queue("tasks", { ...bullmqOpts });
-
-/**
- * Serialized claim lock.
- * Prevents concurrent BullMQ workers from all passing the concurrency
- * pre-check simultaneously (seeing 0 running), all claiming their tasks,
- * and then all failing the post-check — which creates a storm of
- * provisioning→queued state events that repeats every 10s.
- *
- * With the lock, only one worker at a time checks counts + claims,
- * so the counts are always accurate.
- */
-let claimLockChain: Promise<void> = Promise.resolve();
-
-function withClaimLock<T>(fn: () => Promise<T>): Promise<T> {
-  let releaseLock!: () => void;
-  const nextLink = new Promise<void>((r) => (releaseLock = r));
-  const prev = claimLockChain;
-  claimLockChain = nextLink;
-  return prev.then(fn).finally(releaseLock);
-}
 
 export function startTaskWorker() {
   const worker = new Worker(
@@ -208,23 +189,26 @@ export function startTaskWorker() {
         }
 
         // ── Serialized concurrency check + claim ─────────────────────
-        // The claim lock ensures only one worker at a time checks
-        // counts and claims a task. Without this, N workers all see
-        // 0 running (pre-check race), all claim (provisioning), then
-        // all fail the post-check and re-queue — creating 2N state
-        // events per cycle that repeat every 10s ("event storm") and
-        // preventing ANY task from ever running.
+        // The claim lock (a Postgres advisory lock on the global limit,
+        // services/claim-lock.ts) ensures only one worker — on any API
+        // instance — at a time checks counts and claims a task; the repo's
+        // own limit is counted under the same lock. Without it, N workers all see 0 running (pre-check race),
+        // all claim (provisioning), then all fail the post-check and
+        // re-queue — creating 2N state events per cycle that repeat every
+        // 10s ("event storm") and preventing ANY task from ever running.
 
         // Compute effective concurrency: maxAgentsPerPod * maxPodInstances
         const maxAgentsPerPod = repoConfig?.maxAgentsPerPod ?? 2;
         const maxPodInstances = repoConfig?.maxPodInstances ?? 1;
         const effectiveRepoConcurrency = maxAgentsPerPod * maxPodInstances;
 
-        const claimed = await withClaimLock(async () => {
+        // Null when another worker held the lock past its timeout: re-queue.
+        const claimed = await withClaimLock([TASK_CLAIM_KEY], async (claim) => {
+          const { tx } = claim;
           const globalMax = parseIntEnv("OPTIO_MAX_CONCURRENT", 5);
 
           // Global concurrency check
-          const [{ count: activeCount }] = await db
+          const [{ count: activeCount }] = await tx
             .select({ count: sql<number>`count(*)` })
             .from(tasks)
             .where(sql`${tasks.state} IN ('provisioning', 'running')`);
@@ -239,7 +223,7 @@ export function startTaskWorker() {
           const repoMax = repoConfig?.maxConcurrentTasks
             ? Math.min(repoConfig.maxConcurrentTasks, effectiveRepoConcurrency)
             : effectiveRepoConcurrency;
-          const [{ count: repoCount }] = await db
+          const [{ count: repoCount }] = await tx
             .select({ count: sql<number>`count(*)` })
             .from(tasks)
             .where(
@@ -253,8 +237,15 @@ export function startTaskWorker() {
             return null;
           }
 
-          // Claim — atomic conditional update (queued → provisioning)
-          return taskService.tryTransitionTask(taskId, TaskState.PROVISIONING, "worker_pickup");
+          // Claim — atomic conditional update (queued → provisioning) on
+          // the lock's transaction, so it commits before the lock goes;
+          // its announcement runs after the commit.
+          return taskService.claimTransitionIn(
+            claim,
+            taskId,
+            TaskState.PROVISIONING,
+            "worker_pickup",
+          );
         });
 
         if (!claimed) {

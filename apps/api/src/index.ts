@@ -71,6 +71,8 @@ async function main() {
     await import("./workers/reconcile-worker.js");
   const { startSkillSyncWorker } = await import("./workers/skill-sync-worker.js");
   const { startConfigSyncWorker } = await import("./workers/config-sync-worker.js");
+  const { startSweepWorker } = await import("./workers/sweep-worker.js");
+  const { REPEAT_QUEUE_NAMES, removeLegacyRepeatables } = await import("./services/repeat-jobs.js");
   const { getBullMQOptions, describeRedisConfig, inspectRedisEviction, closeSharedRedisClients } =
     await import("./services/redis-config.js");
   const { logTlsStackInfo, initTlsObservability } = await import("./services/tls-observability.js");
@@ -78,22 +80,15 @@ async function main() {
   const bullmqOpts = getBullMQOptions();
 
   /**
-   * Remove all stale repeatable jobs from a queue before re-registering.
-   * Prevents duplicate/orphaned repeat jobs after server restarts.
+   * Every periodic worker registers its tick as a job scheduler with a
+   * stable id (services/repeat-jobs.ts), so instances never wipe each
+   * other's schedules. What a build before that registered — hash-keyed
+   * repeatables — would tick beside them; remove those once per boot.
    */
-  async function cleanRepeatJobs(queueName: string) {
+  async function cleanLegacyRepeatJobs(queueName: (typeof REPEAT_QUEUE_NAMES)[number]) {
     const queue = new Queue(queueName, { ...bullmqOpts });
     try {
-      const repeatableJobs = await queue.getRepeatableJobs();
-      for (const job of repeatableJobs) {
-        await queue.removeRepeatableByKey(job.key);
-      }
-      if (repeatableJobs.length > 0) {
-        logger.info(
-          { queue: queueName, removed: repeatableJobs.length },
-          "Cleaned stale repeat jobs",
-        );
-      }
+      await removeLegacyRepeatables(queue, queueName);
     } finally {
       await queue.close();
     }
@@ -264,24 +259,13 @@ async function main() {
 
   // --- Background initialization (after listen) ---
 
-  // Clean stale repeat jobs from previous server sessions
-  await Promise.all([
-    cleanRepeatJobs("pr-watcher"),
-    cleanRepeatJobs("external-pr-review"),
-    cleanRepeatJobs("repo-cleanup"),
-    cleanRepeatJobs("ticket-sync"),
-    cleanRepeatJobs("workflow-runs"),
-    cleanRepeatJobs("workflow-trigger-checker"),
-    cleanRepeatJobs("token-validation"),
-    cleanRepeatJobs("reconcile"),
-    cleanRepeatJobs("reconcile-resync"),
-    cleanRepeatJobs("skill-sync"),
-  ]);
+  // Repeat jobs an older build registered (see cleanLegacyRepeatJobs).
+  await Promise.all(REPEAT_QUEUE_NAMES.map((q) => cleanLegacyRepeatJobs(q)));
 
   // Recover before starting workers so a newly claimed run is never mistaken for an orphan.
   await reconcileOrphanedTasks();
 
-  // Start BullMQ workers (each re-registers its repeat job)
+  // Start BullMQ workers (each upserts its repeat job scheduler)
   const worker = startTaskWorker();
   logger.info("Task worker started");
 
@@ -327,6 +311,9 @@ async function main() {
   const localSweepWorker = startLocalSweepWorker();
   logger.info("Local sweep worker started");
 
+  const sweepWorker = startSweepWorker();
+  logger.info("Housekeeping worker started");
+
   const { startGlanceSweepWorker } = await import("./workers/glance-sweep-worker.js");
   const glanceSweepWorker = startGlanceSweepWorker();
   logger.info("Glance sweep worker started");
@@ -355,6 +342,7 @@ async function main() {
     await reconcileResyncWorker.close();
     await skillSyncWorker.close();
     await localSweepWorker.close();
+    await sweepWorker.close();
     await glanceSweepWorker.close();
     await configSyncWorker?.close();
     await app.close();

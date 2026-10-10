@@ -38,6 +38,8 @@ import { getGitPlatformForRepo } from "./git-token-service.js";
 import { enqueueReconcile } from "./reconcile-queue.js";
 import * as runLogService from "./run-log-service.js";
 import { publishEvent } from "./event-bus.js";
+import { isUniqueViolation } from "../utils/db-errors.js";
+import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import { logger } from "../logger.js";
 
 export type PrReview = typeof prReviews.$inferSelect;
@@ -305,6 +307,26 @@ interface LaunchPrReviewInput {
   origin?: PrReviewOrigin;
   /** Start in waiting_ci if the repo wants CI to clear first. */
   startInWaitingCi?: boolean;
+  /**
+   * The review the caller decided on: its `updatedAt`, or null when it saw
+   * none. The launch lands only while that is still so, so two sweeps
+   * (two API instances) that decide on the same view launch once; the
+   * loser gets `raced: true` and the review as it is. Omitted (a person's
+   * launch), the current review is relaunched whatever it was.
+   */
+  seenVersion?: Date | null;
+}
+
+/** Of two reviews of one PR, the one `findReviewByUrl` returns: active first, then newest. */
+export function preferredReview<T extends Pick<PrReview, "state" | "updatedAt">>(
+  a: T | undefined,
+  b: T,
+): T {
+  if (!a) return b;
+  const activeA = ACTIVE_PR_REVIEW_STATES.includes(a.state as PrReviewState);
+  const activeB = ACTIVE_PR_REVIEW_STATES.includes(b.state as PrReviewState);
+  if (activeA !== activeB) return activeA ? a : b;
+  return b.updatedAt.getTime() > a.updatedAt.getTime() ? b : a;
 }
 
 /**
@@ -365,12 +387,20 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
 
   // Upsert pr_reviews row.
   const existing = await findReviewByUrl(input.prUrl);
+  if (existing && input.seenVersion === null) {
+    // The caller saw no review; someone launched one since.
+    logger.info({ prUrl: input.prUrl, reviewId: existing.id }, "PR review launched elsewhere");
+    return { review: existing, raced: true as const };
+  }
   let review: PrReview;
   if (existing) {
     // Reset to queued/reviewing with fresh head_sha. Keep origin sticky —
     // a manual launch on top of an auto review flips to manual so the
-    // auto-rereview flow no longer applies.
-    [review] = await db
+    // auto-rereview flow no longer applies. A sweep's launch is a
+    // compare-and-swap on the version it saw: two sweeps (two API
+    // instances) relaunching the same review start one run, not two. A
+    // person's launch (no `seenVersion`) relaunches the review as it is now.
+    const [reset] = await db
       .update(prReviews)
       .set({
         headSha: prContext.headSha,
@@ -387,8 +417,19 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
         reconcileAttempts: 0,
         updatedAt: new Date(),
       })
-      .where(eq(prReviews.id, existing.id))
+      .where(
+        and(
+          eq(prReviews.id, existing.id),
+          input.seenVersion ? updatedAtMatches(prReviews.updatedAt, input.seenVersion) : undefined,
+        ),
+      )
       .returning();
+    if (!reset) {
+      const theirs = (await findReviewByUrl(input.prUrl)) ?? existing;
+      logger.info({ prUrl: input.prUrl, reviewId: theirs.id }, "PR review relaunched elsewhere");
+      return { review: theirs, raced: true as const };
+    }
+    review = reset;
     await db.insert(prReviewEvents).values({
       prReviewId: review.id,
       fromState: existing.state as PrReviewState,
@@ -396,21 +437,32 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
       trigger: origin === "auto" ? "auto_relaunch" : "user_relaunch",
     });
   } else {
-    [review] = await db
-      .insert(prReviews)
-      .values({
-        workspaceId: input.workspaceId ?? null,
-        prUrl: input.prUrl,
-        prNumber,
-        repoOwner: owner,
-        repoName,
-        repoUrl,
-        headSha: prContext.headSha,
-        state: input.startInWaitingCi ? PrReviewState.WAITING_CI : PrReviewState.QUEUED,
-        origin,
-        createdBy: input.createdBy ?? null,
-      })
-      .returning();
+    try {
+      [review] = await db
+        .insert(prReviews)
+        .values({
+          workspaceId: input.workspaceId ?? null,
+          prUrl: input.prUrl,
+          prNumber,
+          repoOwner: owner,
+          repoName,
+          repoUrl,
+          headSha: prContext.headSha,
+          state: input.startInWaitingCi ? PrReviewState.WAITING_CI : PrReviewState.QUEUED,
+          origin,
+          createdBy: input.createdBy ?? null,
+        })
+        .returning();
+    } catch (err) {
+      // Another sweep (on another API instance) launched this PR's review
+      // between the lookup and the insert: `pr_reviews_active_pr_url_key`
+      // admits one active review per PR. Theirs is the review.
+      if (!isUniqueViolation(err)) throw err;
+      const theirs = await findReviewByUrl(input.prUrl);
+      if (!theirs) throw err;
+      logger.info({ prUrl: input.prUrl, reviewId: theirs.id }, "PR review launched elsewhere");
+      return { review: theirs, raced: true as const };
+    }
     await db.insert(prReviewEvents).values({
       prReviewId: review.id,
       toState: review.state as PrReviewState,

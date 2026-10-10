@@ -55,7 +55,8 @@ function extractUpgradeTokenFromProtocol(req: FastifyRequest): string | undefine
  *  1. Session cookie (`optio_session`) — validated against the sessions table.
  *     Browsers send cookies on WebSocket upgrade requests automatically.
  *  2. Single-use upgrade token via `Sec-WebSocket-Protocol` header — validated
- *     and consumed from the in-memory WS token store (short-lived, ~30 s, one-time use).
+ *     and consumed from `ws_upgrade_tokens` (short-lived, ~30 s, one-time use; any
+ *     API instance may have minted it).
  *     Used for cross-origin setups where cookies are not available.
  *
  * Tokens are NEVER read from URL query params to prevent leaking into logs.

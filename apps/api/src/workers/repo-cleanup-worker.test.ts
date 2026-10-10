@@ -12,6 +12,12 @@ vi.mock("bullmq", () => ({
     return { on: vi.fn() };
   }),
 }));
+vi.mock("../services/poller-lease.js", () => ({
+  underPollerLease: (_name: string, fn: () => Promise<unknown>) => fn(),
+}));
+vi.mock("../services/repeat-jobs.js", () => ({
+  scheduleRepeat: vi.fn().mockResolvedValue(undefined),
+}));
 
 // ── DB mock ────────────────────────────────────────────────────────────────
 

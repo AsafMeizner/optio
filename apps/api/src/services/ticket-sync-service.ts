@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { ticketProviders, repos } from "../db/schema.js";
+import { ticketProviders, repos, ticketSyncClaims } from "../db/schema.js";
 import { getTicketProvider } from "@optio/ticket-providers";
 import type { TicketSource } from "@optio/shared";
 import { TaskState, normalizeRepoUrl } from "@optio/shared";
@@ -14,6 +14,76 @@ import { recordAuthEvent } from "./auth-failure-detector.js";
 
 /** Auto-disable a provider after this many consecutive failures. */
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+/** A task-less claim older than this was left by a sweep that died mid-way. */
+const ABANDONED_CLAIM = "10 minutes";
+
+/**
+ * Claims (source, ticket, repo) for this sweep: the insert lands once,
+ * however many sweeps overlap (docs/plans/scale-out.md §3). True iff this
+ * caller holds the claim and may create the task. A claim whose task never
+ * got created (`task_id` null) is released by `releaseTicketClaim`, so it
+ * does not block the ticket forever; one whose sweep died before that is
+ * taken over after ten minutes, and one whose task was deleted is taken
+ * over at once (a deleted task is re-created, as before claims existed).
+ * The takeover is the same one statement, so two racing sweeps still get
+ * one claim.
+ */
+export async function claimTicketForSync(
+  source: string,
+  externalId: string,
+  repoUrl: string,
+): Promise<boolean> {
+  const rows = await db.execute<{ ticket_external_id: string }>(sql`
+    INSERT INTO "ticket_sync_claims" ("ticket_source", "ticket_external_id", "repo_url")
+    VALUES (${source}, ${externalId}, ${repoUrl})
+    ON CONFLICT ("ticket_source", "ticket_external_id", "repo_url") DO UPDATE
+      SET "task_id" = NULL, "created_at" = now()
+      WHERE ("ticket_sync_claims"."task_id" IS NULL
+             AND "ticket_sync_claims"."created_at" < now() - ${ABANDONED_CLAIM}::interval)
+         OR ("ticket_sync_claims"."task_id" IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM "tasks" t WHERE t."id" = "ticket_sync_claims"."task_id"))
+    RETURNING "ticket_external_id"`);
+  return rows.length > 0;
+}
+
+/** Records the task a claim produced. */
+export async function recordTicketClaimTask(
+  source: string,
+  externalId: string,
+  repoUrl: string,
+  taskId: string,
+): Promise<void> {
+  await db
+    .update(ticketSyncClaims)
+    .set({ taskId })
+    .where(
+      and(
+        eq(ticketSyncClaims.ticketSource, source),
+        eq(ticketSyncClaims.ticketExternalId, externalId),
+        eq(ticketSyncClaims.repoUrl, repoUrl),
+      ),
+    );
+}
+
+/** Gives a claim back when creating its task failed (only a task-less claim is released). */
+export async function releaseTicketClaim(
+  source: string,
+  externalId: string,
+  repoUrl: string,
+): Promise<void> {
+  await db
+    .delete(ticketSyncClaims)
+    .where(
+      and(
+        eq(ticketSyncClaims.ticketSource, source),
+        eq(ticketSyncClaims.ticketExternalId, externalId),
+        eq(ticketSyncClaims.repoUrl, repoUrl),
+        isNull(ticketSyncClaims.taskId),
+      ),
+    )
+    .catch((err) => logger.warn({ err, source, externalId }, "Could not release ticket claim"));
+}
 
 export async function syncAllTickets(): Promise<number> {
   const providers = await db
@@ -124,6 +194,18 @@ export async function syncAllTickets(): Promise<number> {
 
         if (alreadyExists) continue;
 
+        // Claim the ticket for this repo before creating anything: two
+        // sweeps that overlap (two API instances, or a slow sweep and the
+        // next tick) both get past the scan above, and only the one whose
+        // claim row lands creates the task.
+        if (!(await claimTicketForSync(ticket.source, ticket.externalId, normalizedRepoUrl))) {
+          logger.debug(
+            { ticketId: ticket.externalId, repoUrl: normalizedRepoUrl },
+            "[ticket-sync] Ticket already claimed by another sweep",
+          );
+          continue;
+        }
+
         // Fetch comments for context
         let commentsSection = "";
         try {
@@ -153,18 +235,40 @@ export async function syncAllTickets(): Promise<number> {
             : null;
         const agentType = labelAgent ?? repoConfig?.defaultAgentType ?? "claude-code";
 
-        const task = await taskService.createTask({
-          title: ticket.title,
-          prompt: `${ticket.title}\n\n${ticket.body}${commentsSection}${attachmentsSection}`,
-          repoUrl,
-          agentType,
-          ticketSource: ticket.source,
-          ticketExternalId: ticket.externalId,
-          metadata: { ticketUrl: ticket.url },
-          // Inherit the repo's workspace so webhook/poll-created tasks are
-          // visible in the (workspace-scoped) UI — see issue #544.
-          workspaceId: repoConfig?.workspaceId ?? null,
-        });
+        let task: Awaited<ReturnType<typeof taskService.createTask>>;
+        try {
+          task = await taskService.createTask({
+            title: ticket.title,
+            prompt: `${ticket.title}\n\n${ticket.body}${commentsSection}${attachmentsSection}`,
+            repoUrl,
+            agentType,
+            ticketSource: ticket.source,
+            ticketExternalId: ticket.externalId,
+            metadata: { ticketUrl: ticket.url },
+            // Inherit the repo's workspace so webhook/poll-created tasks are
+            // visible in the (workspace-scoped) UI — see issue #544.
+            workspaceId: repoConfig?.workspaceId ?? null,
+          });
+        } catch (err) {
+          // The claim is only good with a task behind it: give it back so
+          // the next sweep tries again.
+          await releaseTicketClaim(ticket.source, ticket.externalId, normalizedRepoUrl);
+          throw err;
+        }
+        // The task exists: a failure to note it on the claim must not strand
+        // it (or stop this provider's sweep). The claim stays task-less and
+        // is taken over after a while; the scan above still finds the task.
+        await recordTicketClaimTask(
+          ticket.source,
+          ticket.externalId,
+          normalizedRepoUrl,
+          task.id,
+        ).catch((err) =>
+          logger.warn(
+            { err, taskId: task.id, ticketId: ticket.externalId },
+            "[ticket-sync] Could not record the task on its ticket claim",
+          ),
+        );
 
         if (isFirstSync) {
           // Backfill: leave the task pending for the user to start, don't

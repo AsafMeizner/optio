@@ -410,8 +410,13 @@ export async function getWorkflowRun(id: string) {
  * OPTIO_MAX_WORKFLOW_CONCURRENT, and this Job's running runs under its
  * `maxConcurrent`. A run starts only while both are below their max.
  */
-export async function jobRunCapacity(workflowId: string, maxConcurrent: number) {
-  const [row] = await db
+export async function jobRunCapacity(
+  workflowId: string,
+  maxConcurrent: number,
+  /** The claim lock's transaction (claim-lock.ts), when counting under it. */
+  tx: Pick<typeof db, "select"> = db,
+) {
+  const [row] = await tx
     .select({
       global: sql<number>`count(*) FILTER (WHERE ${workDefinitions.runTarget} <> 'local')::int`,
       job: sql<number>`count(*) FILTER (WHERE ${workflowRuns.workflowId} = ${workflowId})::int`,
@@ -569,11 +574,44 @@ export async function transitionWorkflowRunCas(
     wakeReconciler?: boolean;
   } = {},
 ) {
+  const row = await writeWorkflowRunCas(db, runId, from, to, fields, opts);
+  if (!row) return null;
+  await announceWorkflowRunTransition(row, from, to, opts);
+  return row;
+}
+
+/**
+ * `transitionWorkflowRunCas` inside a claim (`withClaimLock`): the CAS on
+ * the claim's transaction, so it commits with it, and the announcement —
+ * events, webhooks, the reconciler — registered to run once it has
+ * committed. The updated run, or null when the CAS lost.
+ */
+export async function claimWorkflowRunIn(
+  claim: { tx: Pick<typeof db, "update">; afterCommit(step: () => unknown): void },
+  runId: string,
+  from: WorkflowRunState,
+  to: WorkflowRunState,
+  fields: PgUpdateSetSource<typeof workflowRuns> = {},
+) {
+  const row = await writeWorkflowRunCas(claim.tx, runId, from, to, fields, {});
+  if (!row) return null;
+  claim.afterCommit(() => announceWorkflowRunTransition(row, from, to, {}));
+  return row;
+}
+
+async function writeWorkflowRunCas(
+  exec: Pick<typeof db, "update">,
+  runId: string,
+  from: WorkflowRunState,
+  to: WorkflowRunState,
+  fields: PgUpdateSetSource<typeof workflowRuns>,
+  opts: { version?: Date; startedAt?: Date },
+) {
   if (!canTransitionWorkflowRun(from, to)) {
     logger.warn({ runId, from, to }, "Invalid workflow run state transition");
     return null;
   }
-  const [row] = await db
+  const [row] = await exec
     .update(workflowRuns)
     .set({ ...fields, state: to, updatedAt: new Date() })
     .where(
@@ -585,8 +623,17 @@ export async function transitionWorkflowRunCas(
       ),
     )
     .returning();
-  if (!row) return null;
+  return row ?? null;
+}
 
+/** What follows a committed run transition: the event, webhooks, kills, the reconciler. */
+async function announceWorkflowRunTransition(
+  row: typeof workflowRuns.$inferSelect,
+  from: WorkflowRunState,
+  to: WorkflowRunState,
+  opts: { wakeReconciler?: boolean },
+) {
+  const runId = row.id;
   await publishWorkflowRunEvent({
     type: "workflow_run:state_changed",
     workflowRunId: runId,
@@ -661,8 +708,6 @@ export async function transitionWorkflowRunCas(
       )
       .catch((err) => logger.warn({ err, runId }, "Failed to enqueue reconcile"));
   }
-
-  return row;
 }
 
 // ── Workflow Run Logs ────────────────────────────────────────────────────────
