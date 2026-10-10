@@ -70,9 +70,9 @@ class FakeDaemonSocket implements relay.RelaySocket {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   relay.resetRelayForTests();
-  resetGlanceForTests();
+  await resetGlanceForTests();
 });
 afterEach(() => relay.resetRelayForTests());
 

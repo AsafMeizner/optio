@@ -10,10 +10,14 @@
  *
  * Every hook is fire-and-forget behind `isPushConfigured()`; alerts go
  * through notification-service's per-user preference checks so web push,
- * APNs and FCM share one opt-out surface. Attention/queue bookkeeping is
- * in-memory — the API runs a single replica for Optio Local (see
- * local-relay.ts), and the worst case after a restart is one duplicate alert
- * that the collapse id folds on the device.
+ * APNs and FCM share one opt-out surface. Attention / queue bookkeeping and
+ * the two timers (the Watch's quiet-period end, a snooze's expiry) are rows
+ * in `glance_state` (glance-state-service.ts), shared by every API instance:
+ * a hook on any instance compares against what the last one recorded, and a
+ * timer is fired by whichever instance sweeps it (glance-sweep-worker.ts),
+ * up to one sweep interval late. What stays per instance is the APNs / FCM
+ * one-second coalescer of Watch frames; its worst case is one duplicate
+ * push, which the collapse id folds on the device.
  */
 import { and, count, eq, inArray, ne, or } from "drizzle-orm";
 import {
@@ -46,37 +50,40 @@ import {
 import { shouldNotify, type NotificationEventType } from "./notification-service.js";
 import type { LocalHostRow } from "./local-host-service.js";
 import type { LocalTerminalRow } from "./local-terminal-service.js";
+import {
+  deleteGlance,
+  getGlance,
+  joinGlanceTimer,
+  resetGlanceState,
+  setGlance,
+  takeDueGlance,
+} from "./glance-state-service.js";
 
 /** Quiet this long with nothing running or waiting → end the Watch. */
 export const WATCH_END_GRACE_MS = 2 * 60_000;
 
-// ── In-memory bookkeeping (single API replica) ──────────────────────────────
+// ── Bookkeeping: rows in glance_state, shared by every instance ─────────────
 
 /** terminalId → last attention state we pushed for. */
-const lastAttention = new Map<string, LocalTerminalRow["attentionState"]>();
+const attentionKey = (terminalId: string) => `attention:${terminalId}`;
 /** userId → last computed needs-you count (was the queue empty before this event?). */
-const lastNeedsYou = new Map<string, number>();
+const needsYouKey = (userId: string) => `needs-you:${userId}`;
 /** userId → last computed running count (first running terminal → push-to-start). */
-const lastRunning = new Map<string, number>();
+const runningKey = (userId: string) => `running:${userId}`;
 /** userId → pending end-of-Watch timer, and the providers whose Watch it ends. */
-const endTimers = new Map<
-  string,
-  { timer: ReturnType<typeof setTimeout>; providers: Set<PushProvider> }
->();
+const watchEndKey = (userId: string) => `watch-end:${userId}`;
 /** terminalId → snooze-expiry recompute timer. */
-const snoozeTimers = new Map<string, ReturnType<typeof setTimeout>>();
-/** hostIds we already alerted about going offline (cleared when back online). */
-const hostOfflineAlerted = new Set<string>();
+const snoozeKey = (terminalId: string) => `snooze:${terminalId}`;
+/** hostId → already alerted about going offline (cleared when back online). */
+const hostOfflineKey = (hostId: string) => `host-offline:${hostId}`;
 
-export function resetGlanceForTests(): void {
-  lastAttention.clear();
-  lastNeedsYou.clear();
-  lastRunning.clear();
-  for (const t of endTimers.values()) clearTimeout(t.timer);
-  endTimers.clear();
-  for (const t of snoozeTimers.values()) clearTimeout(t);
-  snoozeTimers.clear();
-  hostOfflineAlerted.clear();
+async function lastCount(key: string): Promise<number> {
+  return (await getGlance<{ count: number }>(key))?.value.count ?? 0;
+}
+
+/** Clears every row (tests). */
+export async function resetGlanceForTests(): Promise<void> {
+  await resetGlanceState();
 }
 
 // ── Item mapping ────────────────────────────────────────────────────────────
@@ -428,43 +435,73 @@ async function syncWatch(
   const active = state.needsYouCount > 0 || state.runningCount > 0;
 
   if (active) {
-    const pendingEnd = endTimers.get(userId);
-    if (pendingEnd) {
-      clearTimeout(pendingEnd.timer);
-      endTimers.delete(userId);
-    }
-    const opts = { alert: laAlert ?? null, firstRunning: (lastRunning.get(userId) ?? 0) === 0 };
+    // Something resumed: the pending end, set by any instance, is off.
+    await deleteGlance(watchEndKey(userId));
+    const opts = {
+      alert: laAlert ?? null,
+      firstRunning: (await lastCount(runningKey(userId))) === 0,
+    };
     await eachProvider(providers, "Watch frame", (p) => p.pushWatch(userId, state, opts));
     return;
   }
 
   const watching = await providersWithWatch(providers, userId);
   if (watching.length === 0) return;
-  const pending = endTimers.get(userId);
-  if (pending) {
-    for (const p of watching) pending.providers.add(p);
-    return;
-  }
-  const entry = {
-    providers: new Set(watching),
-    timer: setTimeout(() => {
-      if (endTimers.get(userId) === entry) endTimers.delete(userId);
-      void computeWatchState(userId)
-        .then(async (latest) => {
-          if (latest.needsYouCount > 0 || latest.runningCount > 0) return;
-          const done: WatchState = { ...latest, phase: "done", summary: "Quiet." };
-          await eachProvider([...entry.providers], "Watch end", (p) => p.endWatch(userId, done));
-        })
-        .catch((err) => logger.warn({ err, userId }, "glance: ending Watch failed"));
-    }, WATCH_END_GRACE_MS),
-  };
-  entry.timer.unref?.();
-  endTimers.set(userId, entry);
+  // The first quiet moment starts the clock; later ones (another quiet
+  // event, a provider whose Watch appeared since) join the pending end.
+  await joinGlanceTimer(
+    watchEndKey(userId),
+    watching.map((p) => p.name),
+    new Date(Date.now() + WATCH_END_GRACE_MS),
+  );
 }
 
-function remember(userId: string, state: WatchState): void {
-  lastNeedsYou.set(userId, state.needsYouCount);
-  lastRunning.set(userId, state.runningCount);
+/** A due `watch-end` row: end the Watch on its providers if still quiet. */
+async function fireWatchEnd(userId: string, providerNames: readonly string[]): Promise<void> {
+  const latest = await computeWatchState(userId);
+  if (latest.needsYouCount > 0 || latest.runningCount > 0) return;
+  const done: WatchState = { ...latest, phase: "done", summary: "Quiet." };
+  const providers = configuredPushProviders().filter((p) => providerNames.includes(p.name));
+  await eachProvider(providers, "Watch end", (p) => p.endWatch(userId, done));
+}
+
+/** A due `snooze` row: the "Later" window closed, so the item resurfaces. */
+async function fireSnoozeExpiry(userId: string): Promise<void> {
+  const state = await computeWatchState(userId);
+  await syncWatch(userId, state);
+  await remember(userId, state);
+}
+
+/**
+ * Fires every timer that is due (glance-sweep-worker.ts). The rows are
+ * claimed atomically, so a timer fires once however many instances sweep.
+ * Resolves the number of timers fired.
+ */
+export async function sweepGlanceDue(now = new Date()): Promise<number> {
+  const due = await takeDueGlance(now);
+  for (const row of due) {
+    try {
+      if (row.key.startsWith("watch-end:")) {
+        if (!isPushConfigured()) continue;
+        const providers = Array.isArray(row.value.providers)
+          ? (row.value.providers as unknown[]).filter((p): p is string => typeof p === "string")
+          : [];
+        await fireWatchEnd(row.key.slice("watch-end:".length), providers);
+      } else if (row.key.startsWith("snooze:")) {
+        if (!isPushConfigured()) continue;
+        const userId = typeof row.value.userId === "string" ? row.value.userId : null;
+        if (userId) await fireSnoozeExpiry(userId);
+      }
+    } catch (err) {
+      logger.warn({ err, key: row.key }, "glance: firing a due timer failed");
+    }
+  }
+  return due.length;
+}
+
+async function remember(userId: string, state: WatchState): Promise<void> {
+  await setGlance(needsYouKey(userId), { count: state.needsYouCount });
+  await setGlance(runningKey(userId), { count: state.runningCount });
 }
 
 // ── Hooks: Optio Local ──────────────────────────────────────────────────────
@@ -479,11 +516,13 @@ export async function onLocalTerminalChanged(row: LocalTerminalRow): Promise<voi
   const userId = row.userId;
   if (!userId) return; // auth-disabled dev user has no devices
 
-  const prev = lastAttention.get(row.id);
-  if (row.state === "exited" || row.state === "error") lastAttention.delete(row.id);
-  else lastAttention.set(row.id, row.attentionState);
+  const prev =
+    (await getGlance<{ state: LocalTerminalRow["attentionState"] }>(attentionKey(row.id)))?.value
+      .state ?? undefined;
+  if (row.state === "exited" || row.state === "error") await deleteGlance(attentionKey(row.id));
+  else await setGlance(attentionKey(row.id), { state: row.attentionState });
 
-  const priorQueue = lastNeedsYou.get(userId) ?? 0;
+  const priorQueue = await lastCount(needsYouKey(userId));
   const state = await computeWatchState(userId);
 
   const enteredNeedsYou = row.attentionState === "needs_you" && prev !== "needs_you";
@@ -528,28 +567,24 @@ export async function onLocalTerminalChanged(row: LocalTerminalRow): Promise<voi
   }
 
   await syncWatch(userId, state, laAlert);
-  remember(userId, state);
+  await remember(userId, state);
 }
 
-/** Recompute the Watch when a "Later" window closes so the item resurfaces. */
-export function scheduleSnoozeExpiry(row: LocalTerminalRow): void {
-  const existing = snoozeTimers.get(row.id);
-  if (existing) clearTimeout(existing);
-  snoozeTimers.delete(row.id);
-  if (!row.userId || !row.snoozedUntil || !isPushConfigured()) return;
-  const delay = Math.max(0, row.snoozedUntil.getTime() - Date.now());
-  const userId = row.userId;
-  const timer = setTimeout(() => {
-    snoozeTimers.delete(row.id);
-    void computeWatchState(userId)
-      .then(async (state) => {
-        await syncWatch(userId, state);
-        remember(userId, state);
-      })
-      .catch((err) => logger.warn({ err, terminalId: row.id }, "glance: snooze expiry failed"));
-  }, delay + 250);
-  timer.unref?.();
-  snoozeTimers.set(row.id, timer);
+/**
+ * Recompute the Watch when a "Later" window closes so the item resurfaces:
+ * a timer row due just after the snooze ends, fired by the sweep. Clearing
+ * the snooze removes it.
+ */
+export async function scheduleSnoozeExpiry(row: LocalTerminalRow): Promise<void> {
+  if (!row.userId || !row.snoozedUntil || !isPushConfigured()) {
+    await deleteGlance(snoozeKey(row.id));
+    return;
+  }
+  await setGlance(
+    snoozeKey(row.id),
+    { userId: row.userId },
+    new Date(row.snoozedUntil.getTime() + 250),
+  );
 }
 
 /** Host went online/offline (local-host-service). Alerts once per outage. */
@@ -563,9 +598,9 @@ export async function onLocalHostChanged(
   const state = await computeWatchState(userId);
 
   if (host.state === "online") {
-    hostOfflineAlerted.delete(host.id);
-  } else if (!hostOfflineAlerted.has(host.id)) {
-    hostOfflineAlerted.add(host.id);
+    await deleteGlance(hostOfflineKey(host.id));
+  } else if (!(await getGlance(hostOfflineKey(host.id)))) {
+    await setGlance(hostOfflineKey(host.id), { at: new Date().toISOString() });
     // Only worth a ping when something was actually running there.
     if (state.phase === "offline" || state.runningCount > 0 || state.needsYouCount > 0) {
       await alert(userId, "local.host_offline", {
@@ -581,7 +616,7 @@ export async function onLocalHostChanged(
   }
 
   await syncWatch(userId, state);
-  remember(userId, state);
+  await remember(userId, state);
 }
 
 // ── Hooks: Repo Tasks ───────────────────────────────────────────────────────
@@ -646,7 +681,7 @@ export async function onTaskTransition(
   if (watching.length > 0) {
     const state = await computeWatchState(userId);
     await syncWatch(userId, state, null, watching);
-    remember(userId, state);
+    await remember(userId, state);
   }
 }
 

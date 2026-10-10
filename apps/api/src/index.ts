@@ -324,6 +324,10 @@ async function main() {
   const localSweepWorker = startLocalSweepWorker();
   logger.info("Local sweep worker started");
 
+  const { startGlanceSweepWorker } = await import("./workers/glance-sweep-worker.js");
+  const glanceSweepWorker = startGlanceSweepWorker();
+  logger.info("Glance sweep worker started");
+
   // Config as code: the configuration directory, when the deployment has one.
   const configSyncWorker = startConfigSyncWorker();
 
@@ -348,6 +352,7 @@ async function main() {
     await reconcileResyncWorker.close();
     await skillSyncWorker.close();
     await localSweepWorker.close();
+    await glanceSweepWorker.close();
     await configSyncWorker?.close();
     await app.close();
     await stopSessionBus();
