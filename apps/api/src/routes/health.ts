@@ -26,8 +26,12 @@ const HealthResponseSchema = z
     checks: z.record(z.boolean()),
     maxConcurrent: z.number().int(),
     otelEnabled: z.boolean(),
-    /** Which API process answered (services/instance.ts): `<pod>:<boot suffix>`. */
-    instanceId: z.string(),
+    /**
+     * Which API process answered (services/instance.ts): `<pod>:<boot
+     * suffix>`. Only for a signed-in request; the public probe gets nothing
+     * that identifies a pod.
+     */
+    instanceId: z.string().optional(),
   })
   .describe("API health probe result");
 
@@ -54,7 +58,7 @@ export async function healthRoutes(rawApp: FastifyInstance) {
         },
       },
     },
-    async (_req, reply) => {
+    async (req, reply) => {
       const checks: Record<string, boolean> = {};
 
       try {
@@ -89,7 +93,7 @@ export async function healthRoutes(rawApp: FastifyInstance) {
         checks,
         maxConcurrent,
         otelEnabled: isOtelEnabled(),
-        instanceId: INSTANCE_ID,
+        ...(req.user ? { instanceId: INSTANCE_ID } : {}),
       });
     },
   );

@@ -112,16 +112,6 @@ export async function startApiCluster(opts: ApiClusterOptions): Promise<ApiClust
 
   const live = () => servers.filter((s) => s.alive);
 
-  const killGroup = (server: ClusterServer, signal: NodeJS.Signals) => {
-    const pid = server.handle.proc.pid;
-    try {
-      if (pid) process.kill(-pid, signal);
-      else server.handle.proc.kill(signal);
-    } catch {
-      server.handle.proc.kill(signal);
-    }
-  };
-
   return {
     servers,
     fakeRuntimeDir,
@@ -146,16 +136,7 @@ export async function startApiCluster(opts: ApiClusterOptions): Promise<ApiClust
       const server = servers[i];
       if (!server) throw new Error(`no server ${i}`);
       if (!server.alive) return;
-      await new Promise<void>((resolve) => {
-        server.handle.proc.once("exit", () => resolve());
-        killGroup(server, signal);
-        // A SIGTERM that is ignored still ends in a SIGKILL.
-        if (signal !== "SIGKILL") {
-          setTimeout(() => {
-            if (server.alive) killGroup(server, "SIGKILL");
-          }, 15_000).unref();
-        }
-      });
+      await server.handle.kill(signal);
       server.alive = false;
     },
     add: boot,

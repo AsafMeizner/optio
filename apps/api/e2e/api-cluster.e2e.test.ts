@@ -62,15 +62,19 @@ async function waitForRun(i: number, runId: string, states: string[]): Promise<R
 }
 
 describe("api cluster e2e", () => {
-  it("both servers are healthy and each reports its own instance", async () => {
+  it("both servers are healthy; the public probe names no instance", async () => {
     const [a, b] = await Promise.all([
       cluster.client(0)<{ healthy: boolean; instanceId?: string }>("/api/health"),
       cluster.client(1)<{ healthy: boolean; instanceId?: string }>("/api/health"),
     ]);
     expect(a.body.healthy).toBe(true);
     expect(b.body.healthy).toBe(true);
-    expect(a.body.instanceId).toMatch(/^api-0:[0-9a-f]{6}$/);
-    expect(b.body.instanceId).toMatch(/^api-1:[0-9a-f]{6}$/);
+    // Auth is disabled here, so no request is signed in: nothing identifying.
+    expect(a.body).not.toHaveProperty("instanceId");
+    expect(b.body).not.toHaveProperty("instanceId");
+    // Each server logged its own instance id at boot.
+    expect(cluster.servers[0].handle.logs()).toMatch(/api-0:[0-9a-f]{6}/);
+    expect(cluster.servers[1].handle.logs()).toMatch(/api-1:[0-9a-f]{6}/);
   });
 
   it("a Job created through A is read through B, and its run completes", async () => {
@@ -100,8 +104,8 @@ describe("api cluster e2e", () => {
     const run = await waitForRun(1, runId, ["completed", "failed"]);
     expect(run.state).toBe("completed");
 
-    const { body } = await cluster.any()<{ healthy: boolean; instanceId?: string }>("/api/health");
-    expect(body.instanceId).toMatch(/^api-1:/);
+    const { body } = await cluster.any()<{ healthy: boolean }>("/api/health");
+    expect(body.healthy).toBe(true);
   });
 
   it("a third server joins the same database and work", async () => {

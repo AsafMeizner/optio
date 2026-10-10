@@ -16,6 +16,3 @@ const suffix = randomBytes(3).toString("hex");
 
 /** This process's id: `<pod or host name>:<6 hex, new at every boot>`. */
 export const INSTANCE_ID: string = `${base}:${suffix}`;
-
-/** When this process started. */
-export const INSTANCE_STARTED_AT: Date = new Date();
