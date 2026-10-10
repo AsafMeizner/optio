@@ -119,6 +119,10 @@ describe("FakeContainerRuntime run protocol", () => {
     expect(events.map((e) => e.seq)).toEqual([1, 2, 3]);
     expect(events[2]).toMatchObject({ subtype: "success", total_cost_usd: 0.5 });
     expect(readFileSync(join(b.runDirectory(runId), RUN_FILES.exit), "utf8").trim()).toBe("0");
+    // The agent wrote its own pid file, pid and identity token, once its TERM handler was up.
+    expect(readFileSync(join(b.runDirectory(runId), RUN_FILES.pid), "utf8").trim()).toMatch(
+      /^\d+ \S+$/,
+    );
   });
 
   it("re-attaching from the consumed offset yields the rest exactly once", async () => {

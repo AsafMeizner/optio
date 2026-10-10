@@ -97,31 +97,25 @@ import type {
   RunStdinInput,
 } from "./types.js";
 import { RUN_FILES, RUN_SIGNALS } from "./run-protocol.js";
+import {
+  AGENT_EXEC_MARKER,
+  COMMAND_RUN_MARKER,
+  CURSOR_EXEC_MARKER,
+  UNSUPPORTED_AGENT_MARKERS,
+  directive,
+  extractPromptText,
+  extractScriptExport,
+  noPromptResult,
+  planAgentRun,
+  planCommandRun,
+  type TapeLine,
+} from "./fake-tape.mjs";
 
 const FAKE_AGENT_PATH = fileURLToPath(new URL("./fake-agent.mjs", import.meta.url));
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const ATTACH_POLL_MS = 50;
 /** How long after the agent's pid is gone with no exit file an attach reports the run lost. */
 const LOST_AFTER_MS = Number(process.env.OPTIO_FAKE_LOST_AFTER_MS ?? 3_000);
-
-const AGENT_EXEC_MARKER = "--output-format stream-json";
-/** A Job's shell command (apps/api/src/services/command-run.ts). */
-const COMMAND_RUN_MARKER = 'bash -lc "$OPTIO_COMMAND"';
-/** Markers of non-claude agent CLIs the fake cannot play — fail loudly. */
-const UNSUPPORTED_AGENT_MARKERS = [" codex ", " copilot ", " gemini ", " opencode ", " openclaw "];
-/**
- * Cursor's stream-json events are claude-shaped (system:init / assistant /
- * result), so the fake plays cursor-agent execs with the standard tape. The
- * prompt arrives as a positional `"$OPTIO_PROMPT"` (no stdin priming), set by
- * the exec script's `export OPTIO_PROMPT='...'` line — extract it from there.
- */
-const CURSOR_EXEC_MARKER = "cursor-agent ";
-
-/** The value an exec script exports for `name` (`export NAME='…'`), or null. */
-function extractScriptExport(script: string, name: string): string | null {
-  const m = script.match(new RegExp(`export ${name}='([^']*(?:'\\\\''[^']*)*)'`));
-  return m ? m[1].replaceAll("'\\''", "'") : null;
-}
 
 /**
  * How long exec waits for a prompt on stdin before failing the run — a
@@ -133,62 +127,6 @@ const PROMPT_TIMEOUT_MS = Number(process.env.OPTIO_FAKE_PROMPT_TIMEOUT_MS ?? 10_
 interface FakeContainer {
   spec: ContainerSpec;
   createdAt: Date;
-}
-
-function extractPromptText(line: string): string | null {
-  try {
-    const msg = JSON.parse(line) as {
-      type?: string;
-      message?: { content?: Array<{ type?: string; text?: string }> };
-    };
-    if (msg.type !== "user") return null;
-    const blocks = msg.message?.content ?? [];
-    return blocks
-      .filter((b) => b.type === "text" && typeof b.text === "string")
-      .map((b) => b.text)
-      .join("\n");
-  } catch {
-    return null;
-  }
-}
-
-function directive(prompt: string, name: string): boolean {
-  return prompt.includes(`[[mock:${name}]]`);
-}
-
-function directiveArg(prompt: string, name: string): string | null {
-  const m = prompt.match(new RegExp(`\\[\\[mock:${name}:([^\\]]+)\\]\\]`));
-  return m ? m[1] : null;
-}
-
-/**
- * Directives can hide inside the exec script rather than the stdin prompt:
- * for REPO tasks the stdin prompt is the rendered coding template (the raw
- * task prompt only exists in the task FILE, which travels base64-encoded in
- * the script — env blob → OPTIO_SETUP_FILES → file content). Decode base64
- * runs up to two levels deep and search everything.
- */
-function collectDirectiveHaystack(script: string, prompt: string): string {
-  const parts = [prompt];
-  const decodeOnce = (s: string): string | null => {
-    try {
-      const text = Buffer.from(s, "base64").toString("utf8");
-      // Reject binary-looking decodes.
-      return /[\x00-\x08\x0e-\x1f]/.test(text.slice(0, 200)) ? null : text;
-    } catch {
-      return null;
-    }
-  };
-  for (const run of script.match(/[A-Za-z0-9+/=]{80,}/g) ?? []) {
-    const level1 = decodeOnce(run);
-    if (!level1) continue;
-    parts.push(level1);
-    for (const nested of level1.match(/[A-Za-z0-9+/=]{80,}/g) ?? []) {
-      const level2 = decodeOnce(nested);
-      if (level2) parts.push(level2);
-    }
-  }
-  return parts.join("\n");
 }
 
 export interface FakeRuntimeOptions {
@@ -301,13 +239,33 @@ export class FakeContainerRuntime implements ContainerRuntime {
     return join(this.dir, "runs", runId);
   }
 
+  /**
+   * The run's agent pid, when the pid file's process is alive and — on
+   * Linux, where /proc says — the one that wrote it (its start time
+   * matches; the real supervisor's pid file works the same way). A reused
+   * pid after a restart reads as not running.
+   */
   private runPid(runDir: string): number | null {
+    let pid: number;
+    let token: string | undefined;
     try {
-      const pid = Number.parseInt(readFileSync(join(runDir, RUN_FILES.pid), "utf8"), 10);
-      return Number.isFinite(pid) ? pid : null;
+      [pid, token] = readFileSync(join(runDir, RUN_FILES.pid), "utf8")
+        .trim()
+        .split(/\s+/)
+        .map((x, i) => (i === 0 ? Number.parseInt(x, 10) : x)) as [number, string | undefined];
     } catch {
       return null;
     }
+    if (!Number.isFinite(pid) || !token) return null;
+    if (!this.pidAlive(pid)) return null;
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+      if (start !== token) return null;
+    } catch {
+      // No /proc here (macOS): the pid alone has to do.
+    }
+    return pid;
   }
 
   private pidAlive(pid: number): boolean {
@@ -411,8 +369,17 @@ export class FakeContainerRuntime implements ContainerRuntime {
     });
     child.unref();
     if (!child.pid) throw new Error("could not spawn the fake agent");
-    writeFileSync(join(dir, RUN_FILES.pid), `${child.pid}\n`);
-    return { pid: child.pid, output: "[fake] agent started\n" };
+    // Like the real supervisor, the agent writes its own pid file once its
+    // TERM handler is installed; only then is the run "started".
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(join(dir, RUN_FILES.pid))) {
+      if (Date.now() > deadline || !this.pidAlive(child.pid)) {
+        throw new Error("the fake agent did not start");
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const pid = this.runPid(dir) ?? child.pid;
+    return { pid, output: "[fake] agent started\n" };
   }
 
   async attachRun(_handle: ContainerHandle, input: RunAttachInput): Promise<RunAttachment> {
@@ -434,7 +401,7 @@ export class FakeContainerRuntime implements ContainerRuntime {
     };
 
     const pid = this.runPid(dir);
-    if (pid === null || !existsSync(outputPath)) {
+    if (!existsSync(outputPath) || (pid === null && !existsSync(exitPath))) {
       end({ kind: "lost" });
       return { output, exit, close: () => {} };
     }
@@ -471,7 +438,7 @@ export class FakeContainerRuntime implements ContainerRuntime {
         end({ kind: "exited", code: Number.isFinite(code) ? code : 1 });
         return;
       }
-      if (!this.pidAlive(pid)) {
+      if (pid === null || !this.pidAlive(pid)) {
         deadSince ??= Date.now();
         if (Date.now() - deadSince > LOST_AFTER_MS) {
           pump();
@@ -531,13 +498,9 @@ export class FakeContainerRuntime implements ContainerRuntime {
     const stdin = new Writable({ write: (_c, _e, cb) => cb() });
     // The command travels in the script itself (`export OPTIO_COMMAND='…'`).
     setImmediate(() => {
-      if (!directive(script, "silent")) {
-        stdout.write("[optio] Running command...\n");
-        stdout.write("fake command output\n");
-        stdout.write(`[optio:exit] ${directive(script, "fail") ? 1 : 0}\n`);
-        if (script.includes("__OPTIO_RUN_EXIT__:"))
-          stdout.write(`__OPTIO_RUN_EXIT__:${directive(script, "fail") ? 1 : 0}\n`);
-      }
+      const plan = planCommandRun(script);
+      for (const line of plan.lines) stdout.write(`${"raw" in line ? line.raw : ""}\n`);
+      if (plan.exitMarker) stdout.write(`__OPTIO_RUN_EXIT__:${plan.exitCode}\n`);
       stdout.end();
       stderr.end();
     });
@@ -586,146 +549,37 @@ export class FakeContainerRuntime implements ContainerRuntime {
       stderr.end();
     };
 
+    const writeLine = (line: TapeLine) => {
+      if ("event" in line) emit(line.event);
+      else emitRaw(line.raw);
+    };
     const run = async (echoPrompt: string) => {
       // Directives may live in the stdin prompt (standalone jobs, persistent
       // agents) or buried in the exec script's task file (repo tasks).
-      const prompt = collectDirectiveHaystack(script, echoPrompt);
-      if (directive(prompt, "silent")) {
+      const plan = planAgentRun({
+        script,
+        prompt: echoPrompt,
+        specEnv: spec?.env ?? {},
+        prNumber: ++this.prCounter,
+        sessionId,
+      });
+      if (plan.kind === "silent") {
         finish();
         return;
       }
-
-      emit({
-        type: "system",
-        subtype: "init",
-        session_id: sessionId,
-        model: "fake-model",
-        tools: [],
-      });
-
-      if (directive(prompt, "hang")) {
+      emit(plan.init);
+      if (plan.hang) {
         return; // stream stays open until close()
       }
-
-      const sleepMs = Number(directiveArg(prompt, "sleep") ?? 0);
-      if (sleepMs > 0) {
+      if (plan.sleepMs > 0) {
         await new Promise<void>((r) => {
-          sleepTimer = setTimeout(r, sleepMs);
+          sleepTimer = setTimeout(r, plan.sleepMs);
           sleepTimer.unref?.();
         });
         if (closed) return;
       }
-
-      emit({
-        type: "assistant",
-        session_id: sessionId,
-        message: {
-          model: "fake-model",
-          usage: { input_tokens: 100, output_tokens: 25 },
-          content: [{ type: "text", text: `Mock agent handled: ${echoPrompt.slice(0, 120)}` }],
-        },
-      });
-
-      for (const m of prompt.matchAll(/\[\[mock:env:([A-Z0-9_]+)\]\]/g)) {
-        const value = extractScriptExport(script, m[1]) ?? spec?.env?.[m[1]] ?? "<unset>";
-        emitRaw(`env ${m[1]}=${value}`);
-      }
-
-      // [[mock:file:PATH]] → print a setup file the exec script would write
-      // (`OPTIO_SETUP_FILES`), as `file PATH=<content>`; `<missing>` when the
-      // script carries no such file.
-      for (const m of prompt.matchAll(/\[\[mock:file:([^\]]+)\]\]/g)) {
-        const blob =
-          extractScriptExport(script, "OPTIO_SETUP_FILES") ?? spec?.env?.OPTIO_SETUP_FILES;
-        let content = "<missing>";
-        if (blob) {
-          try {
-            const files = JSON.parse(Buffer.from(blob, "base64").toString("utf8")) as Array<{
-              path: string;
-              content?: string;
-              contentBase64?: string;
-            }>;
-            const want = m[1];
-            const f = files.find((x) =>
-              want.startsWith("*") ? x.path.endsWith(want.slice(1)) : x.path === want,
-            );
-            if (f) {
-              content = f.contentBase64
-                ? Buffer.from(f.contentBase64, "base64").toString("utf8")
-                : (f.content ?? "");
-            }
-          } catch {
-            content = "<undecodable>";
-          }
-        }
-        // One line: the content as a JSON string literal (log lines are split on newlines).
-        emitRaw(`file ${m[1]}=${JSON.stringify(content)}`);
-      }
-
-      // [[mock:script:TEXT]] → whether the exec script carries TEXT — outside
-      // the prompt's own export line, which carries the directive itself.
-      const scriptSansPrompt = script.replace(/export OPTIO_PROMPT='[^']*(?:'\\''[^']*)*'/, "");
-      for (const m of prompt.matchAll(/\[\[mock:script:([^\]]+)\]\]/g)) {
-        emitRaw(`script ${m[1]}=${scriptSansPrompt.includes(m[1]) ? "present" : "absent"}`);
-      }
-
-      const repoUrl = (spec?.env?.OPTIO_REPO_URL ?? "https://github.com/mock/repo").replace(
-        /\.git$/,
-        "",
-      );
-      const toolCall = (id: string, command: string, output: string) => {
-        emit({
-          type: "assistant",
-          session_id: sessionId,
-          message: {
-            model: "fake-model",
-            content: [{ type: "tool_use", id, name: "Bash", input: { command } }],
-          },
-        });
-        emit({
-          type: "user",
-          session_id: sessionId,
-          message: { content: [{ type: "tool_result", tool_use_id: id, content: output }] },
-        });
-      };
-
-      if (directive(prompt, "pr-mention")) {
-        const mentioned = `${repoUrl}/pull/9999`;
-        emit({
-          type: "assistant",
-          session_id: sessionId,
-          message: {
-            model: "fake-model",
-            content: [{ type: "text", text: `This is similar to ${mentioned} (see #9999).` }],
-          },
-        });
-        toolCall(`toolu_view_${randomUUID().slice(0, 8)}`, "gh pr view 9999", `url: ${mentioned}`);
-      }
-
-      if (directive(prompt, "pr")) {
-        this.prCounter += 1;
-        const prUrl = `${repoUrl}/pull/${this.prCounter}`;
-        toolCall(
-          `toolu_create_${randomUUID().slice(0, 8)}`,
-          "git push -u origin HEAD && gh pr create --fill",
-          `${prUrl}\n`,
-        );
-        emitRaw(`Opened pull request: ${prUrl}`);
-      }
-
-      const isError = directive(prompt, "fail");
-      const cost = Number(directiveArg(prompt, "cost") ?? 0.0123);
-      emit({
-        type: "result",
-        subtype: isError ? "error_during_execution" : "success",
-        is_error: isError,
-        result: isError ? "Mock agent failure" : "Mock agent success",
-        total_cost_usd: cost,
-        num_turns: 1,
-        duration_ms: 5,
-        session_id: sessionId,
-      });
-      finish(isError ? 1 : 0);
+      for (const line of plan.lines) writeLine(line);
+      finish(plan.exitCode);
     };
 
     const handlePrompt = (prompt: string) => {
@@ -745,16 +599,7 @@ export class FakeContainerRuntime implements ContainerRuntime {
     const promptTimer = setTimeout(() => {
       if (promptHandled) return;
       promptHandled = true;
-      emit({
-        type: "result",
-        subtype: "error_during_execution",
-        is_error: true,
-        result: `FakeContainerRuntime: no prompt arrived on stdin within ${PROMPT_TIMEOUT_MS}ms — prompt delivery is broken`,
-        total_cost_usd: 0,
-        num_turns: 0,
-        duration_ms: PROMPT_TIMEOUT_MS,
-        session_id: sessionId,
-      });
+      emit(noPromptResult(sessionId, PROMPT_TIMEOUT_MS));
       finish();
     }, PROMPT_TIMEOUT_MS);
     promptTimer.unref?.();
