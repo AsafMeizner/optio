@@ -23,7 +23,7 @@ import { PersistentAgentPodLifecycle, parseIntEnv, type RepoImageConfig } from "
 import { logger } from "../logger.js";
 import { resolveImage } from "./repo-pool-service.js";
 import * as podPool from "./agent-pod-pool.js";
-import { buildPooledExecScript } from "../utils/pod-env.js";
+import { buildPooledExecScript, KEEP_POD_ALIVE } from "../utils/pod-env.js";
 
 const POD_PROVISION_TIMEOUT_MS = parseIntEnv("OPTIO_PERSISTENT_AGENT_POD_PROVISION_MS", 120_000);
 
@@ -203,7 +203,7 @@ function buildInitScript(): string {
     "mkdir -p /workspace/turns",
     "touch /workspace/.ready",
     "echo '[optio] Persistent agent pod ready'",
-    "exec sleep infinity",
+    KEEP_POD_ALIVE,
   ].join("\n");
 }
 

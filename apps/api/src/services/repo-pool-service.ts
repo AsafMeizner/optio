@@ -765,6 +765,12 @@ export interface TaskScriptOptions {
   resetWorktree?: boolean;
   /** The run token written to the worktree (a fresh one when omitted). */
   runToken?: string;
+  /**
+   * Remove the task's internal `-wt` worktree and prune stale worktree
+   * records after the worktree setup (what the exec script's EXIT trap does
+   * at the end; the start script has no trap, so it does it up front).
+   */
+  pruneStaleWorktrees?: boolean;
 }
 
 /**
@@ -886,6 +892,12 @@ function taskSetupLines(
     `git checkout "${env.OPTIO_REPO_BRANCH ?? "main"}" 2>/dev/null || true`,
     `git reset --hard "origin/${env.OPTIO_REPO_BRANCH ?? "main"}"`,
     ...worktreeSetup,
+    ...(opts.pruneStaleWorktrees
+      ? [
+          `git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true`,
+          `git worktree prune 2>/dev/null || true`,
+        ]
+      : []),
     `if [ -f /workspace/repo/.gitmodules ]; then git -C /workspace/tasks/${taskId} submodule update --init --recursive 2>&1 || true; fi`,
     `flock -u 9`,
     `exec 9>&-`,
@@ -948,10 +960,13 @@ export function buildTaskExecScript(
 
 /**
  * The start script of the run protocol (run-protocol.ts): the same setup,
- * then the agent launched under the supervisor in the task's run home, so
- * the exec returns as soon as the agent runs and any API instance can
- * attach later. No trap, no watchdog, and the run home stays until the run
- * is over and consumed.
+ * the stale `-wt` worktree and worktree records pruned (the exec script's
+ * trap did that at exit), then the agent launched under the supervisor in
+ * the task's run home, so the exec returns as soon as the agent runs and any
+ * API instance can attach later. No trap, no watchdog. The run home stays
+ * until the attached worker removes it — when the run is terminal and
+ * `consumed_bytes` equals the output file's size (phase B) — with the
+ * run-home sweep (`run-home-sweep-service.ts`) as the backstop.
  */
 export function buildTaskStartScript(
   taskId: string,
@@ -959,7 +974,7 @@ export function buildTaskStartScript(
   agentCommand: string[],
   opts: TaskScriptOptions = {},
 ): string {
-  const setup = taskSetupLines(taskId, env, opts);
+  const setup = taskSetupLines(taskId, env, { ...opts, pruneStaleWorktrees: true });
   const home = runHome(taskId);
   return [
     ...setup,

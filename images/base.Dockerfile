@@ -15,8 +15,10 @@ FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7
 ENV DEBIAN_FRONTEND=noninteractive
 
 # System essentials
+# tini: the pods' pid 1 (`exec tini -- sleep infinity` ends every init
+# script), so the run supervisors reparented to it are reaped (run protocol).
 RUN apt-get update && apt-get install -y \
-    git curl wget jq unzip tmux \
+    git curl wget jq unzip tmux tini \
     ca-certificates gnupg \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*

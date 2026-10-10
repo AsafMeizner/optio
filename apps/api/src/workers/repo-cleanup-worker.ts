@@ -34,6 +34,7 @@ import { instrumentWorkerProcessor } from "../telemetry/instrument-worker.js";
 
 import { getBullMQOptions } from "../services/redis-config.js";
 import { removeRunHome } from "../utils/harness-config.js";
+import { sweepFinishedRunHomes } from "../services/run-home-sweep-service.js";
 
 const bullmqOpts = getBullMQOptions();
 
@@ -490,6 +491,15 @@ export function startRepoCleanupWorker() {
         }
       } catch (err) {
         logger.warn({ err }, "Failed to clean up idle persistent agent pods");
+      }
+
+      // Run homes of finished runs (the run protocol's directories in the
+      // pods): the attached worker removes them; this is the backstop.
+      try {
+        const homes = await sweepFinishedRunHomes();
+        if (homes > 0) logger.info({ homes }, "Removed finished run homes");
+      } catch (err) {
+        logger.warn({ err }, "Failed to sweep run homes");
       }
 
       // Detect zombie workflow_runs (running but pod terminated/gone)

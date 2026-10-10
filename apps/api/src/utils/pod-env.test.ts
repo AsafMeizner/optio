@@ -452,7 +452,9 @@ describe("buildPooledStartScript (the run protocol)", () => {
   it("keeps the run lock, refuses a second start of a live run, and never traps or removes the home", () => {
     const script = buildPooledStartScript(base);
     expect(script).toMatch(/exec 7>\/workspace\/\.run-[0-9a-f]+\.lock\nflock -n 7/);
-    expect(script).toContain(`kill -0 "$(cat '/home/agent/optio/runs/${runId}/${RUN_FILES.pid}')"`);
+    expect(script).toContain(`if optio_run_pid '/home/agent/optio/runs/${runId}' >/dev/null; then`);
+    expect(script).toContain("optio_run_pid() {");
+    expect(script).toContain(`read -r _optio_pid _optio_start < "$1/${RUN_FILES.pid}"`);
     expect(script).not.toContain("trap '");
     expect(script).not.toContain("__OPTIO_RUN_EXIT__");
     expect(script).not.toContain("rm -rf");
@@ -469,7 +471,7 @@ describe("buildPooledStartScript (the run protocol)", () => {
   it("re-exports the protocol's pieces beside the other script fragments", () => {
     expect(STDIN_EOF_SENTINEL).toBe("__OPTIO_STDIN_EOF__");
     expect(attachRunScript("/home/agent/optio/runs/x", 0)).toContain("tail -c +1 ");
-    expect(deliverStdinScript("/home/agent/optio/runs/x", "hi")).toContain("OPTIO_STDIN_LINE");
+    expect(deliverStdinScript("/home/agent/optio/runs/x", 3)).toContain("head -c 3 >>");
     expect(killRunScript("/home/agent/optio/runs/x", "TERM")).toContain("kill -TERM");
   });
 });

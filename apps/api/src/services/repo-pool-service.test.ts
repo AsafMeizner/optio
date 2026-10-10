@@ -1163,7 +1163,13 @@ describe("task scripts: exec (inline agent) and start (the run protocol)", () =>
       expect(script).toContain(`grep -qxF '.optio/' "$EXCLUDE_FILE"`);
     }
     const setupEnd = `grep -qxF '.optio-cache/' "$EXCLUDE_FILE" 2>/dev/null || echo '.optio-cache/' >> "$EXCLUDE_FILE"`;
-    expect(exec.slice(0, exec.indexOf(setupEnd))).toBe(start.slice(0, start.indexOf(setupEnd)));
+    // The start script prunes the stale `-wt` worktree up front (the exec
+    // script's EXIT trap did it at the end); otherwise the setup is the same.
+    const prune = `git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true\ngit worktree prune 2>/dev/null || true\n`;
+    expect(start).toContain(prune);
+    expect(exec.slice(0, exec.indexOf(setupEnd))).toBe(
+      start.slice(0, start.indexOf(setupEnd)).replace(prune, ""),
+    );
   });
 
   it("the exec script runs the agent inline with the EXIT trap and the EPIPE watchdog, as before", () => {

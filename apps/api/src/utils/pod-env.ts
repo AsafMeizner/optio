@@ -18,18 +18,21 @@ import { createHash } from "node:crypto";
 
 import { shellQuote } from "@optio/shared";
 import {
+  RUN_ALIVE_HELPER,
   RUN_DIR_ENV,
   RUN_EXIT_MARKER,
   RUN_FILES,
   RUN_LOST_MARKER,
   RUN_MARK_ENV_READY_ENV,
   RUN_STARTED_MARKER,
-  RUN_STDIN_ENV,
+  RUN_STDIN_BYTES_ENV,
+  STDIN_DELIVERED_MARKER,
   STDIN_EOF_SENTINEL,
   SUPERVISOR_SCRIPT,
   attachRunScript,
   deliverStdinScript,
   killRunScript,
+  startRunPrelude,
   superviseAgent,
 } from "@optio/container-runtime";
 import { REMOVE_RUN_HOME, runHome } from "./harness-config.js";
@@ -38,18 +41,21 @@ import { REMOVE_RUN_HOME, runHome } from "./harness-config.js";
 // the runtimes that run them (packages/container-runtime/src/run-protocol.ts)
 // and are re-exported here, next to the other exec script pieces.
 export {
+  RUN_ALIVE_HELPER,
   RUN_DIR_ENV,
   RUN_EXIT_MARKER,
   RUN_FILES,
   RUN_LOST_MARKER,
   RUN_MARK_ENV_READY_ENV,
   RUN_STARTED_MARKER,
-  RUN_STDIN_ENV,
+  RUN_STDIN_BYTES_ENV,
+  STDIN_DELIVERED_MARKER,
   STDIN_EOF_SENTINEL,
   SUPERVISOR_SCRIPT,
   attachRunScript,
   deliverStdinScript,
   killRunScript,
+  startRunPrelude,
   superviseAgent,
 };
 
@@ -283,14 +289,25 @@ export function buildPooledExecScript(input: {
 }
 
 /**
+ * The last line of every pod's init script: keep the pod alive under a pid
+ * 1 that reaps. A run's supervisor is reparented to pid 1 when the exec
+ * that started it ends (run-protocol.ts), and a bare `sleep` never calls
+ * wait(), so every finished run would stay a zombie. `tini` is in the agent
+ * image (images/base.Dockerfile); an older image falls back to `sleep`.
+ */
+export const KEEP_POD_ALIVE =
+  "if command -v tini >/dev/null 2>&1; then exec tini -- sleep infinity; else exec sleep infinity; fi";
+
+/**
  * The run protocol's start script for a pooled pod (a Job run or a
  * persistent-agent turn): the same setup as `buildPooledExecScript`, then
  * the agent launched under the supervisor in the run's own home
  * (`runHome(runId)`), so the exec returns once the agent runs and any API
  * instance can attach to it later (run-protocol.ts). The run lock stays:
  * a second start of the same run while its supervisor lives exits 75. No
- * trap removes the run home; it is removed once the run is over and
- * consumed.
+ * trap removes the run home: the attached worker removes it when the run
+ * is terminal and `consumed_bytes` equals the output file's size (phase B),
+ * with the run-home sweep (`run-home-sweep-service.ts`) as the backstop.
  */
 export function buildPooledStartScript(input: {
   env: Record<string, string>;
@@ -315,10 +332,12 @@ export function buildPooledStartScript(input: {
     `[ -f /workspace/.ready ] || { echo "[optio] ERROR: ${what} not ready after 120s"; exit 1; }`,
     ...(input.label ? [`echo "[optio] ${what[0].toUpperCase()}${what.slice(1)} ready"`] : []),
     // The lock is held by the start exec only while it sets up: the
-    // supervisor's pid file is what says a run is live (killRunScript).
+    // supervisor's pid file is what says a run is live, and only when its
+    // process is the one that wrote it (RUN_ALIVE_HELPER).
     `exec 7>/workspace/.run-${lock}.lock`,
     "flock -n 7 || { echo 'Previous run is still active; inspect before retrying.' >&2; exit 75; }",
-    `if [ -s ${shellQuote(`${home.podDir}/${RUN_FILES.pid}`)} ] && kill -0 "$(cat ${shellQuote(`${home.podDir}/${RUN_FILES.pid}`)})" 2>/dev/null; then echo 'Previous run is still active; inspect before retrying.' >&2; exit 75; fi`,
+    ...RUN_ALIVE_HELPER,
+    `if optio_run_pid ${shellQuote(home.podDir)} >/dev/null; then echo 'Previous run is still active; inspect before retrying.' >&2; exit 75; fi`,
     ...(input.checkout ? CHECKOUT_REPO : [`mkdir -p ${shellQuote(dir)}`]),
     `cd ${shellQuote(dir)}`,
     ...WRITE_SETUP_FILES,
