@@ -120,6 +120,33 @@ vi.mock("./glance-state-service.js", () => ({
       dueAt: dueAt === undefined ? (prev?.dueAt ?? null) : dueAt,
     });
   },
+  getGlanceMany: async (keys: readonly string[]) => {
+    const out = new Map<string, Record<string, unknown>>();
+    for (const key of keys) {
+      const r = glanceMem.rows.get(key);
+      if (r) out.set(key, r.value);
+    }
+    return out;
+  },
+  setGlanceMany: async (
+    entries: ReadonlyArray<{ key: string; value: Record<string, unknown> }>,
+  ) => {
+    for (const e of entries) {
+      const prev = glanceMem.rows.get(e.key);
+      glanceMem.rows.set(e.key, { value: e.value, dueAt: prev?.dueAt ?? null });
+    }
+  },
+  swapGlance: async (key: string, next: Record<string, unknown> | null) => {
+    const prev = glanceMem.rows.get(key)?.value ?? null;
+    if (next === null) glanceMem.rows.delete(key);
+    else glanceMem.rows.set(key, { value: next, dueAt: null });
+    return prev;
+  },
+  claimGlance: async (key: string, value: Record<string, unknown>) => {
+    if (glanceMem.rows.has(key)) return false;
+    glanceMem.rows.set(key, { value, dueAt: null });
+    return true;
+  },
   deleteGlance: async (key: string) => glanceMem.rows.delete(key),
   joinGlanceTimer: async (key: string, providers: readonly string[], dueAt: Date) => {
     const prev = glanceMem.rows.get(key);

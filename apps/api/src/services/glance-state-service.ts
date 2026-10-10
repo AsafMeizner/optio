@@ -14,7 +14,7 @@
  *   watch-end:<user>       { providers: [] }   due: end the Watch if still quiet
  *   snooze:<terminal>      { userId }          due: recompute when the snooze ends
  */
-import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { glanceState } from "../db/schema.js";
 
@@ -49,6 +49,77 @@ export async function setGlance(
         ...(dueAt === undefined ? {} : { dueAt }),
       },
     });
+}
+
+/** Several rows' values in one read (absent keys are absent from the map). */
+export async function getGlanceMany(keys: readonly string[]): Promise<Map<string, GlanceValue>> {
+  if (keys.length === 0) return new Map();
+  const rows = await db
+    .select({ key: glanceState.key, value: glanceState.value })
+    .from(glanceState)
+    .where(inArray(glanceState.key, [...keys]));
+  return new Map(rows.map((r) => [r.key, r.value as GlanceValue]));
+}
+
+/**
+ * Several values in one statement, written only where they changed
+ * (`IS DISTINCT FROM`): a hook that recomputes the same counts writes
+ * nothing. Due times are left alone.
+ */
+export async function setGlanceMany(
+  entries: ReadonlyArray<{ key: string; value: GlanceValue }>,
+): Promise<void> {
+  if (entries.length === 0) return;
+  await db
+    .insert(glanceState)
+    .values(entries.map((e) => ({ key: e.key, value: e.value, dueAt: null })))
+    .onConflictDoUpdate({
+      target: glanceState.key,
+      set: { value: sql`excluded.value` },
+      where: sql`${glanceState.value} IS DISTINCT FROM excluded.value`,
+    });
+}
+
+/**
+ * Replaces a row's value (null deletes it) and returns the value it had, as
+ * one atomic step per key: the read and the write run under a transaction
+ * advisory lock on the key, so of N concurrent swaps to the same value
+ * exactly one sees the old one (one alert for one transition, however many
+ * instances take the event). Nothing is written when the value is unchanged.
+ */
+export async function swapGlance<T extends GlanceValue = GlanceValue>(
+  key: string,
+  next: GlanceValue | null,
+): Promise<T | null> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`);
+    const [row] = await tx
+      .select({ value: glanceState.value })
+      .from(glanceState)
+      .where(eq(glanceState.key, key));
+    const prev = (row?.value as T | undefined) ?? null;
+    if (next === null) {
+      if (row) await tx.delete(glanceState).where(eq(glanceState.key, key));
+    } else if (!row) {
+      await tx.insert(glanceState).values({ key, value: next, dueAt: null });
+    } else if (JSON.stringify(row.value) !== JSON.stringify(next)) {
+      await tx.update(glanceState).set({ value: next }).where(eq(glanceState.key, key));
+    }
+    return prev;
+  });
+}
+
+/**
+ * Inserts the row only when the key is absent; true iff this call created
+ * it. A once-only claim ("alert this outage once") in one statement.
+ */
+export async function claimGlance(key: string, value: GlanceValue): Promise<boolean> {
+  const rows = await db
+    .insert(glanceState)
+    .values({ key, value, dueAt: null })
+    .onConflictDoNothing({ target: glanceState.key })
+    .returning({ key: glanceState.key });
+  return rows.length > 0;
 }
 
 export async function deleteGlance(key: string): Promise<boolean> {

@@ -33,6 +33,7 @@ import {
 import {
   WATCH_END_GRACE_MS,
   onLocalHostChanged,
+  onLocalTerminalChanged,
   resetGlanceForTests,
   scheduleSnoozeExpiry,
   sweepGlanceDue,
@@ -265,7 +266,8 @@ describe("timers across instances", () => {
     });
     await handleStarted(host.id, t.id);
     const offline = { id: host.id, userId: u.id, state: "offline" as const, name: host.name };
-    await onLocalHostChanged(offline);
+    // Several instances see the outage at once: the claim is one statement.
+    await Promise.all([1, 2, 3, 4, 5].map(() => onLocalHostChanged(offline)));
     await onLocalHostChanged(offline);
     expect(fcmFake.ofType("alert").filter((f) => f.data.category === "HOST_OFFLINE")).toHaveLength(
       1,
@@ -273,6 +275,73 @@ describe("timers across instances", () => {
     expect(await getGlance(`host-offline:${host.id}`)).not.toBeNull();
     await onLocalHostChanged({ ...offline, state: "online" });
     expect(await getGlance(`host-offline:${host.id}`)).toBeNull();
+  });
+});
+
+describe("attention transitions across instances", () => {
+  async function runningTerminal(name: string) {
+    const u = await makeUser(name);
+    await registerFcmDevice(u.id, {
+      token: fcmToken(name.slice(0, 1).toUpperCase()),
+      appId: "dev.optio.android",
+    });
+    const host = await registerHost({
+      userId: u.id,
+      workspaceId: null,
+      hostname: `it-${name}`,
+      platform: "darwin",
+      dirs: [{ path: "/home/dev/optio" }],
+    });
+    relay.registerDaemon(host.id, u.id, new FakeDaemonSocket());
+    await markHostOnline(host.id, {});
+    const t = await createTerminal({
+      host,
+      userId: u.id,
+      workspaceId: null,
+      dir: "/home/dev/optio",
+      spec: { kind: "agent", agent: "claude-code", prompt: "fix" },
+    });
+    await handleStarted(host.id, t.id);
+    await vi.waitFor(async () =>
+      expect((await getGlance(`attention:${t.id}`))?.value).toEqual({ state: "working" }),
+    );
+    await vi.waitFor(async () =>
+      expect((await getGlance<{ count: number }>(`running:${u.id}`))?.value.count).toBe(1),
+    );
+    // Let the start's other fire-and-forget hooks settle.
+    await new Promise((r) => setTimeout(r, 500));
+    return { u, t };
+  }
+
+  it("N concurrent working → needs_you changes for one terminal alert exactly once", async () => {
+    const { t } = await runningTerminal("swap");
+    const row = {
+      ...(await getTerminal(t.id))!,
+      attentionState: "needs_you" as const,
+      attentionReason: "stop",
+    };
+    fcmFake.sent.length = 0;
+    await Promise.all(Array.from({ length: 8 }, () => onLocalTerminalChanged(row)));
+    await new Promise((r) => setTimeout(r, 300));
+    const needsYou = fcmFake.ofType("alert").filter((f) => f.data.category === "LOCAL_NEEDS_YOU");
+    expect(needsYou).toHaveLength(1);
+    expect((await getGlance(`attention:${t.id}`))?.value).toEqual({ state: "needs_you" });
+  });
+
+  it("a terminal change with nothing changed writes no glance_state row", async () => {
+    const { u, t } = await runningTerminal("noop");
+    const keys = [`attention:${t.id}`, `needs-you:${u.id}`, `running:${u.id}`];
+    const versions = async () =>
+      (
+        await db.execute<{ key: string; xmin: string }>(
+          sql`SELECT key, xmin::text AS xmin FROM glance_state
+              WHERE key = ANY(${`{${keys.join(",")}}`}::text[]) ORDER BY key`,
+        )
+      ).map((r) => `${r.key}@${r.xmin}`);
+    const before = await versions();
+    expect(before).toHaveLength(3);
+    await onLocalTerminalChanged((await getTerminal(t.id))!);
+    expect(await versions()).toEqual(before);
   });
 });
 

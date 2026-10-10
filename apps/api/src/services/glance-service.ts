@@ -51,11 +51,15 @@ import { shouldNotify, type NotificationEventType } from "./notification-service
 import type { LocalHostRow } from "./local-host-service.js";
 import type { LocalTerminalRow } from "./local-terminal-service.js";
 import {
+  claimGlance,
   deleteGlance,
   getGlance,
+  getGlanceMany,
   joinGlanceTimer,
   resetGlanceState,
   setGlance,
+  setGlanceMany,
+  swapGlance,
   takeDueGlance,
 } from "./glance-state-service.js";
 
@@ -79,6 +83,10 @@ const hostOfflineKey = (hostId: string) => `host-offline:${hostId}`;
 
 async function lastCount(key: string): Promise<number> {
   return (await getGlance<{ count: number }>(key))?.value.count ?? 0;
+}
+
+function countOf(value: Record<string, unknown> | undefined): number {
+  return typeof value?.count === "number" ? value.count : 0;
 }
 
 /** Clears every row (tests). */
@@ -431,6 +439,7 @@ async function syncWatch(
   state: WatchState,
   laAlert?: { title: string; body: string } | null,
   providers: readonly PushProvider[] = configuredPushProviders(),
+  priorRunning?: number,
 ): Promise<void> {
   const active = state.needsYouCount > 0 || state.runningCount > 0;
 
@@ -439,7 +448,7 @@ async function syncWatch(
     await deleteGlance(watchEndKey(userId));
     const opts = {
       alert: laAlert ?? null,
-      firstRunning: (await lastCount(runningKey(userId))) === 0,
+      firstRunning: (priorRunning ?? (await lastCount(runningKey(userId)))) === 0,
     };
     await eachProvider(providers, "Watch frame", (p) => p.pushWatch(userId, state, opts));
     return;
@@ -499,9 +508,12 @@ export async function sweepGlanceDue(now = new Date()): Promise<number> {
   return due.length;
 }
 
+/** The counts this event computed, in one statement, written only if they changed. */
 async function remember(userId: string, state: WatchState): Promise<void> {
-  await setGlance(needsYouKey(userId), { count: state.needsYouCount });
-  await setGlance(runningKey(userId), { count: state.runningCount });
+  await setGlanceMany([
+    { key: needsYouKey(userId), value: { count: state.needsYouCount } },
+    { key: runningKey(userId), value: { count: state.runningCount } },
+  ]);
 }
 
 // ── Hooks: Optio Local ──────────────────────────────────────────────────────
@@ -516,13 +528,20 @@ export async function onLocalTerminalChanged(row: LocalTerminalRow): Promise<voi
   const userId = row.userId;
   if (!userId) return; // auth-disabled dev user has no devices
 
+  // The previous state and the new one in one atomic step: of several
+  // instances taking the same transition, exactly one sees the old state.
+  const ended = row.state === "exited" || row.state === "error";
   const prev =
-    (await getGlance<{ state: LocalTerminalRow["attentionState"] }>(attentionKey(row.id)))?.value
-      .state ?? undefined;
-  if (row.state === "exited" || row.state === "error") await deleteGlance(attentionKey(row.id));
-  else await setGlance(attentionKey(row.id), { state: row.attentionState });
+    (
+      await swapGlance<{ state: LocalTerminalRow["attentionState"] }>(
+        attentionKey(row.id),
+        ended ? null : { state: row.attentionState },
+      )
+    )?.state ?? undefined;
 
-  const priorQueue = await lastCount(needsYouKey(userId));
+  const prior = await getGlanceMany([needsYouKey(userId), runningKey(userId)]);
+  const priorQueue = countOf(prior.get(needsYouKey(userId)));
+  const priorRunning = countOf(prior.get(runningKey(userId)));
   const state = await computeWatchState(userId);
 
   const enteredNeedsYou = row.attentionState === "needs_you" && prev !== "needs_you";
@@ -566,7 +585,7 @@ export async function onLocalTerminalChanged(row: LocalTerminalRow): Promise<voi
     }
   }
 
-  await syncWatch(userId, state, laAlert);
+  await syncWatch(userId, state, laAlert, configuredPushProviders(), priorRunning);
   await remember(userId, state);
 }
 
@@ -599,8 +618,9 @@ export async function onLocalHostChanged(
 
   if (host.state === "online") {
     await deleteGlance(hostOfflineKey(host.id));
-  } else if (!(await getGlance(hostOfflineKey(host.id)))) {
-    await setGlance(hostOfflineKey(host.id), { at: new Date().toISOString() });
+  } else if (await claimGlance(hostOfflineKey(host.id), { at: new Date().toISOString() })) {
+    // Claimed in one statement: of every instance that sees the host go
+    // offline, only the one that created the row alerts.
     // Only worth a ping when something was actually running there.
     if (state.phase === "offline" || state.runningCount > 0 || state.needsYouCount > 0) {
       await alert(userId, "local.host_offline", {
