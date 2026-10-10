@@ -11,7 +11,8 @@ import { sql } from "drizzle-orm";
 import { parseIntEnv } from "@optio/shared";
 import { db } from "../db/client.js";
 import { logger } from "../logger.js";
-import { sweepLeases, withLease } from "../services/lease-service.js";
+import { sweepLeases } from "../services/lease-service.js";
+import { underPollerLease } from "../services/poller-lease.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { scheduleRepeat } from "../services/repeat-jobs.js";
 
@@ -82,7 +83,7 @@ export function startSweepWorker(): Worker {
   const worker = new Worker(
     "housekeeping",
     async () => {
-      await withLease("sweep:housekeeping", () => runSweeps(), { ttlMs: 60_000 });
+      await underPollerLease("housekeeping", () => runSweeps());
     },
     { ...bullmqOpts, concurrency: 1 },
   );

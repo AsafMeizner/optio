@@ -138,17 +138,14 @@ export class ConfigApplyBusyError extends Error {
  * and fails with `ConfigApplyBusyError` otherwise.
  */
 async function underApplyLease<T>(wait: boolean, run: () => Promise<T>): Promise<T | null> {
-  const deadline = Date.now() + APPLY_WAIT_MS;
-  for (;;) {
-    const result = await withLease(APPLY_LEASE_KEY, run, { ttlMs: APPLY_LEASE_TTL_MS });
-    if (result !== null) return result;
-    if (!wait) {
-      logger.debug("config directory: another instance is applying; skipping this tick");
-      return null;
-    }
-    if (Date.now() >= deadline) throw new ConfigApplyBusyError();
-    await new Promise((r) => setTimeout(r, 500));
-  }
+  const result = await withLease(APPLY_LEASE_KEY, run, {
+    ttlMs: APPLY_LEASE_TTL_MS,
+    ...(wait ? { wait: { timeoutMs: APPLY_WAIT_MS, pollMs: 500 } } : {}),
+  });
+  if (result !== null) return result;
+  if (wait) throw new ConfigApplyBusyError();
+  logger.debug("config directory: another instance is applying; skipping this tick");
+  return null;
 }
 
 /**

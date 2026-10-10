@@ -197,6 +197,12 @@ describe("github-app-service", () => {
 
 describe("github-token-service", () => {
   const mockRetrieveSecret = vi.fn();
+  const mockRetrieveSecretVersioned = vi.fn();
+  const mockDeleteSecretsIfUnchanged = vi.fn().mockResolvedValue(true);
+  const mockWithLease = vi.fn(
+    (_key: string, fn: (signal: AbortSignal) => Promise<unknown>, _opts?: unknown) =>
+      fn(new AbortController().signal),
+  );
   const mockRetrieveSecretWithFallback = vi.fn();
   const mockStoreSecret = vi.fn().mockResolvedValue(undefined);
   const mockDeleteSecret = vi.fn().mockResolvedValue(undefined);
@@ -232,6 +238,8 @@ describe("github-token-service", () => {
 
     vi.doMock("./secret-service.js", () => ({
       retrieveSecret: (...args: unknown[]) => mockRetrieveSecret(...args),
+      retrieveSecretVersioned: (...args: unknown[]) => mockRetrieveSecretVersioned(...args),
+      deleteSecretsIfUnchanged: (...args: unknown[]) => mockDeleteSecretsIfUnchanged(...args),
       retrieveSecretWithFallback: (...args: unknown[]) => mockRetrieveSecretWithFallback(...args),
       storeSecret: (...args: unknown[]) => mockStoreSecret(...args),
       deleteSecret: (...args: unknown[]) => mockDeleteSecret(...args),
@@ -243,9 +251,10 @@ describe("github-token-service", () => {
     }));
 
     // The refresh runs under a cross-instance lease; here it is always free.
+    mockWithLease.mockImplementation((_key, fn) => fn(new AbortController().signal));
     vi.doMock("./lease-service.js", () => ({
-      withLease: (_key: string, fn: () => Promise<unknown>) => fn(),
-      leaseHolder: async () => null,
+      withLease: (key: string, fn: (signal: AbortSignal) => Promise<unknown>, opts?: unknown) =>
+        mockWithLease(key, fn, opts),
       LeaseLostError: class LeaseLostError extends Error {},
     }));
 
@@ -278,10 +287,10 @@ describe("github-token-service", () => {
 
   it("refreshes expired user token", async () => {
     const pastDate = new Date(Date.now() - 60 * 1000).toISOString();
-    mockRetrieveSecret
-      .mockResolvedValueOnce("ghu_expired_token")
-      .mockResolvedValueOnce(pastDate)
-      .mockResolvedValueOnce("ghr_refresh_token");
+    mockRetrieveSecret.mockImplementation(async (name: string) =>
+      name === "GITHUB_USER_ACCESS_TOKEN" ? "ghu_expired_token" : pastDate,
+    );
+    mockRetrieveSecretVersioned.mockResolvedValue({ value: "ghr_refresh_token", version: "v1" });
 
     process.env.GITHUB_APP_CLIENT_ID = "client-id";
     process.env.GITHUB_APP_CLIENT_SECRET = "client-secret";
@@ -301,9 +310,99 @@ describe("github-token-service", () => {
     expect(token).toBe("ghu_new_token");
     expect(mockFetch).toHaveBeenCalledWith(
       "https://github.com/login/oauth/access_token",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }),
     );
     expect(mockStoreSecret).toHaveBeenCalledTimes(3);
+    // Under the lease, waiting for another instance's refresh.
+    expect(mockWithLease).toHaveBeenCalledWith(
+      "github-refresh:user-2",
+      expect.any(Function),
+      expect.objectContaining({ wait: expect.objectContaining({ timeoutMs: expect.any(Number) }) }),
+    );
+  });
+
+  it("uses the token another instance stored while it waited for the lease", async () => {
+    const pastDate = new Date(Date.now() - 60 * 1000).toISOString();
+    const futureDate = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    let refreshedElsewhere = false;
+    mockRetrieveSecret.mockImplementation(async (name: string) => {
+      if (name === "GITHUB_USER_ACCESS_TOKEN") {
+        return refreshedElsewhere ? "ghu_from_other_instance" : "ghu_expired";
+      }
+      return refreshedElsewhere ? futureDate : pastDate;
+    });
+    mockWithLease.mockImplementation(async (_key, fn) => {
+      refreshedElsewhere = true; // the holder refreshed before letting go
+      return fn(new AbortController().signal);
+    });
+    process.env.GITHUB_APP_CLIENT_ID = "client-id";
+    process.env.GITHUB_APP_CLIENT_SECRET = "client-secret";
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    expect(await getGitHubToken({ userId: "user-5" })).toBe("ghu_from_other_instance");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("never refreshes without the lease: a timed-out wait uses a still-valid stored token", async () => {
+    const soon = new Date(Date.now() + 2 * 60 * 1000).toISOString(); // inside the refresh buffer
+    mockRetrieveSecret.mockImplementation(async (name: string) =>
+      name === "GITHUB_USER_ACCESS_TOKEN" ? "ghu_still_valid" : soon,
+    );
+    mockWithLease.mockResolvedValue(null); // held elsewhere the whole wait
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    expect(await getGitHubToken({ userId: "user-6" })).toBe("ghu_still_valid");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to PAT when the wait times out and the stored token has expired", async () => {
+    const pastDate = new Date(Date.now() - 60 * 1000).toISOString();
+    mockRetrieveSecret.mockImplementation(async (name: string) =>
+      name === "GITHUB_USER_ACCESS_TOKEN" ? "ghu_expired" : pastDate,
+    );
+    mockWithLease.mockResolvedValue(null);
+    mockRetrieveSecretWithFallback.mockResolvedValue("ghp_pat");
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    expect(await getGitHubToken({ userId: "user-7" })).toBe("ghp_pat");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to PAT when the refresh rejects", async () => {
+    const pastDate = new Date(Date.now() - 60 * 1000).toISOString();
+    mockRetrieveSecret.mockImplementation(async (name: string) =>
+      name === "GITHUB_USER_ACCESS_TOKEN" ? "ghu_expired" : pastDate,
+    );
+    mockWithLease.mockRejectedValue(new Error("database unavailable"));
+    mockRetrieveSecretWithFallback.mockResolvedValue("ghp_pat_after_reject");
+
+    expect(await getGitHubToken({ userId: "user-8" })).toBe("ghp_pat_after_reject");
+  });
+
+  it("on bad_refresh_token deletes the tokens only if the refresh token is unchanged", async () => {
+    const pastDate = new Date(Date.now() - 60 * 1000).toISOString();
+    mockRetrieveSecret.mockImplementation(async (name: string) =>
+      name === "GITHUB_USER_ACCESS_TOKEN" ? "ghu_expired" : pastDate,
+    );
+    mockRetrieveSecretVersioned.mockResolvedValue({ value: "ghr_used", version: "iv-used" });
+    process.env.GITHUB_APP_CLIENT_ID = "client-id";
+    process.env.GITHUB_APP_CLIENT_SECRET = "client-secret";
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ error: "bad_refresh_token" }),
+    });
+    mockRetrieveSecretWithFallback.mockResolvedValue("ghp_pat");
+
+    expect(await getGitHubToken({ userId: "user-9" })).toBe("ghp_pat");
+    expect(mockDeleteSecretsIfUnchanged).toHaveBeenCalledWith(
+      ["GITHUB_USER_ACCESS_TOKEN", "GITHUB_USER_REFRESH_TOKEN", "GITHUB_USER_TOKEN_EXPIRES_AT"],
+      "user:user-9",
+      { name: "GITHUB_USER_REFRESH_TOKEN", version: "iv-used" },
+    );
+    expect(mockDeleteSecret).not.toHaveBeenCalled();
   });
 
   it("falls back to PAT when no user tokens exist", async () => {
@@ -333,10 +432,10 @@ describe("github-token-service", () => {
 
   it("falls back to PAT when refresh fails", async () => {
     const pastDate = new Date(Date.now() - 60 * 1000).toISOString();
-    mockRetrieveSecret
-      .mockResolvedValueOnce("ghu_expired")
-      .mockResolvedValueOnce(pastDate)
-      .mockResolvedValueOnce("ghr_refresh");
+    mockRetrieveSecret.mockImplementation(async (name: string) =>
+      name === "GITHUB_USER_ACCESS_TOKEN" ? "ghu_expired" : pastDate,
+    );
+    mockRetrieveSecretVersioned.mockResolvedValue({ value: "ghr_refresh", version: "v1" });
 
     process.env.GITHUB_APP_CLIENT_ID = "client-id";
     process.env.GITHUB_APP_CLIENT_SECRET = "client-secret";
@@ -355,6 +454,7 @@ describe("github-token-service", () => {
     // Transient failures (HTTP 401) should NOT delete tokens — only definitive
     // revocation errors (bad_refresh_token) trigger deletion
     expect(mockDeleteSecret).not.toHaveBeenCalled();
+    expect(mockDeleteSecretsIfUnchanged).not.toHaveBeenCalled();
   });
 
   it("resolves task creator's token", async () => {

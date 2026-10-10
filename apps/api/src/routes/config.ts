@@ -25,7 +25,7 @@ import {
 } from "../schemas/config.js";
 import { applyManifests, detachObject } from "../services/config/apply.js";
 import { exportManifests, manifestsToYaml } from "../services/config/export.js";
-import { configStatus, syncEnvSource } from "../services/config/source.js";
+import { ConfigApplyBusyError, configStatus, syncEnvSource } from "../services/config/source.js";
 import { logAction } from "../services/optio-action-service.js";
 
 const SCHEMA_PATH = "/api/config/schema.json";
@@ -108,12 +108,28 @@ export async function configRoutes(rawApp: FastifyInstance) {
           "`?dryRun=true` only plans it. Requires `admin` role.",
         tags: ["Config"],
         querystring: SyncQuerySchema,
-        response: { 200: ConfigApplyResultSchema, 404: ErrorResponseSchema },
+        response: {
+          200: ConfigApplyResultSchema,
+          404: ErrorResponseSchema,
+          409: ErrorResponseSchema,
+        },
       },
     },
     async (req, reply) => {
-      // Waits for an apply running on another instance (the default).
-      const result = await syncEnvSource({ dryRun: req.query.dryRun === "true" });
+      // Waits for an apply running on another instance (the default), up to
+      // a minute; past that, a 409 the person can retry.
+      let result: Awaited<ReturnType<typeof syncEnvSource>>;
+      try {
+        result = await syncEnvSource({ dryRun: req.query.dryRun === "true" });
+      } catch (err) {
+        if (err instanceof ConfigApplyBusyError) {
+          return reply.status(409).send({
+            error:
+              "Another apply of the configuration directory is still running; try again in a minute.",
+          });
+        }
+        throw err;
+      }
       if (!result) {
         return reply
           .status(404)
