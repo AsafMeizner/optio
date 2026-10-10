@@ -1,6 +1,7 @@
 import type { AgentTaskInput, AgentContainerConfig, AgentResult } from "@optio/shared";
 import { TASK_BRANCH_PREFIX } from "@optio/shared";
-import type { AgentAdapter } from "./types.js";
+import type { AgentAdapter, AgentResultParser } from "./types.js";
+import { firstMatch, parseAllLines } from "./types.js";
 
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly type = "claude-code";
@@ -115,8 +116,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   parseResult(exitCode: number, logs: string): AgentResult {
+    return parseAllLines(this.createResultParser(), exitCode, logs);
+  }
+
+  createResultParser(): AgentResultParser {
     // Match both GitHub PR URLs and GitLab MR URLs (web URLs only, not API URLs)
-    const prMatch = logs.match(
+    const pr = firstMatch(
       /https:\/\/(?![\w.-]+\/api\/)[^\s"]+\/(?:pull\/\d+|-\/merge_requests\/\d+)/,
     );
     // Cost: take the LAST total_cost_usd, not the first. In stream-json mode a
@@ -124,12 +129,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // and each result's total_cost_usd is the CUMULATIVE cost of the process so
     // far — so the final result event carries the full spend. Grabbing the first
     // match would drop every turn after the first (issue #541). The authoritative
-    // value comes from the last result event (captured in the loop below); this
-    // global-regex last-match is only a fallback for logs whose result event
-    // didn't parse as JSON.
-    const costMatches = [...logs.matchAll(/"total_cost_usd":\s*([\d.]+)/g)];
-    const costFromRegex =
-      costMatches.length > 0 ? parseFloat(costMatches[costMatches.length - 1][1]) : undefined;
+    // value comes from the last result event (captured below); this last regex
+    // match is only a fallback for output whose result event didn't parse as JSON.
+    let costFromRegex: number | undefined;
 
     // Extract error, token usage, model, and result text from Claude's NDJSON events
     let totalInputTokens = 0;
@@ -151,7 +153,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // produced a result event (i.e. the error was terminal, not recovered).
     let lastApiErrorText: string | undefined;
 
-    for (const line of logs.split("\n")) {
+    const push = (line: string): void => {
+      pr.push(line);
+      const costMatches = [...line.matchAll(/"total_cost_usd":\s*([\d.]+)/g)];
+      if (costMatches.length > 0) {
+        costFromRegex = parseFloat(costMatches[costMatches.length - 1][1]);
+      }
       try {
         const event = JSON.parse(line);
 
@@ -202,63 +209,67 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       } catch {
         // Not JSON, skip
       }
-    }
-
-    let error: string | undefined;
-    let resultText: string | undefined;
-    // Did the agent itself report a terminal, unrecovered error?
-    let agentReportedError = false;
-
-    if (sawResultEvent && lastResultIsError) {
-      // Terminal error result (e.g. "API Error: Usage credits required") —
-      // authoritative failure even when the CLI process exits 0.
-      agentReportedError = true;
-      error =
-        lastResultText ??
-        lastApiErrorText ??
-        `Agent reported an error result${lastResultSubtype ? ` (${lastResultSubtype})` : ""}`;
-    } else if (sawResultEvent) {
-      // A successful final result event supersedes any transient API errors
-      // the agent recovered from mid-run.
-      resultText = lastResultText;
-    } else if (lastApiErrorText) {
-      // API error with no result event at all — the run died on the error.
-      agentReportedError = true;
-      error = lastApiErrorText;
-    }
-
-    if (exitCode !== 0 && !error) {
-      error = `Exit code: ${exitCode}`;
-    }
-
-    const success = exitCode === 0 && !agentReportedError;
-
-    // Use the agent's actual result text as the summary when available.
-    // When the agent reports an explicit error, surface it in the summary
-    // so users see what went wrong without digging into raw logs.
-    let summary: string;
-    const hasStructuredError = !success && error && error !== `Exit code: ${exitCode}`;
-    if (hasStructuredError) {
-      const preview = error!.length > 500 ? error!.slice(0, 500) + "…" : error!;
-      summary = `Agent error: ${preview}`;
-    } else if (!success) {
-      summary = `Agent exited with code ${exitCode}`;
-    } else if (resultText) {
-      // Truncate very long result texts for the summary field
-      summary = resultText.length > 2000 ? resultText.slice(0, 2000) + "…" : resultText;
-    } else {
-      summary = "Agent completed successfully";
-    }
-
-    return {
-      success,
-      prUrl: prMatch?.[0],
-      costUsd: lastResultCostUsd ?? costFromRegex,
-      inputTokens: totalInputTokens > 0 ? totalInputTokens : undefined,
-      outputTokens: totalOutputTokens > 0 ? totalOutputTokens : undefined,
-      model,
-      summary,
-      error,
     };
+
+    const finish = (exitCode: number): AgentResult => {
+      let error: string | undefined;
+      let resultText: string | undefined;
+      // Did the agent itself report a terminal, unrecovered error?
+      let agentReportedError = false;
+
+      if (sawResultEvent && lastResultIsError) {
+        // Terminal error result (e.g. "API Error: Usage credits required") —
+        // authoritative failure even when the CLI process exits 0.
+        agentReportedError = true;
+        error =
+          lastResultText ??
+          lastApiErrorText ??
+          `Agent reported an error result${lastResultSubtype ? ` (${lastResultSubtype})` : ""}`;
+      } else if (sawResultEvent) {
+        // A successful final result event supersedes any transient API errors
+        // the agent recovered from mid-run.
+        resultText = lastResultText;
+      } else if (lastApiErrorText) {
+        // API error with no result event at all — the run died on the error.
+        agentReportedError = true;
+        error = lastApiErrorText;
+      }
+
+      if (exitCode !== 0 && !error) {
+        error = `Exit code: ${exitCode}`;
+      }
+
+      const success = exitCode === 0 && !agentReportedError;
+
+      // Use the agent's actual result text as the summary when available.
+      // When the agent reports an explicit error, surface it in the summary
+      // so users see what went wrong without digging into raw logs.
+      let summary: string;
+      const hasStructuredError = !success && error && error !== `Exit code: ${exitCode}`;
+      if (hasStructuredError) {
+        const preview = error!.length > 500 ? error!.slice(0, 500) + "…" : error!;
+        summary = `Agent error: ${preview}`;
+      } else if (!success) {
+        summary = `Agent exited with code ${exitCode}`;
+      } else if (resultText) {
+        // Truncate very long result texts for the summary field
+        summary = resultText.length > 2000 ? resultText.slice(0, 2000) + "…" : resultText;
+      } else {
+        summary = "Agent completed successfully";
+      }
+
+      return {
+        success,
+        prUrl: pr.value?.[0],
+        costUsd: lastResultCostUsd ?? costFromRegex,
+        inputTokens: totalInputTokens > 0 ? totalInputTokens : undefined,
+        outputTokens: totalOutputTokens > 0 ? totalOutputTokens : undefined,
+        model,
+        summary,
+        error,
+      };
+    };
+
+    return { push, finish };
   }
 }

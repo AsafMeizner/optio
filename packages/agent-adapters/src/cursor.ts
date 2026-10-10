@@ -1,6 +1,7 @@
 import type { AgentTaskInput, AgentContainerConfig, AgentResult } from "@optio/shared";
 import { TASK_BRANCH_PREFIX } from "@optio/shared";
-import type { AgentAdapter } from "./types.js";
+import type { AgentAdapter, AgentResultParser } from "./types.js";
+import { firstMatch, parseAllLines } from "./types.js";
 
 /**
  * Cursor CLI (cursor-agent --print --output-format stream-json) emits NDJSON
@@ -62,37 +63,55 @@ export class CursorAdapter implements AgentAdapter {
   }
 
   parseResult(exitCode: number, logs: string): AgentResult {
-    const prMatch = logs.match(
+    return parseAllLines(this.createResultParser(), exitCode, logs);
+  }
+
+  createResultParser(): AgentResultParser {
+    // Extract the PR URL from anywhere in the output (its first mention)
+    const pr = firstMatch(
       /https:\/\/(?![\w.-]+\/api\/)[^\s"]+\/(?:pull\/\d+|-\/merge_requests\/\d+)/,
     );
-    const { errorMessage, hasError, summary, model } = this.parseLogs(logs);
-
-    const success = exitCode === 0 && !hasError;
-
+    const parsed = this.logParser();
     return {
-      success,
-      prUrl: prMatch?.[0],
-      model,
-      summary:
-        summary ??
-        (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
-      error: !success ? (errorMessage ?? `Exit code: ${exitCode}`) : undefined,
+      push(line) {
+        pr.push(line);
+        parsed.push(line);
+      },
+      finish(exitCode) {
+        const prMatch = pr.value;
+        const { errorMessage, hasError, summary, model } = parsed.done();
+
+        const success = exitCode === 0 && !hasError;
+
+        return {
+          success,
+          prUrl: prMatch?.[0],
+          model,
+          summary:
+            summary ??
+            (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
+          error: !success ? (errorMessage ?? `Exit code: ${exitCode}`) : undefined,
+        };
+      },
     };
   }
 
-  private parseLogs(logs: string): {
-    errorMessage?: string;
-    hasError: boolean;
-    summary?: string;
-    model?: string;
+  private logParser(): {
+    push(line: string): void;
+    done(): {
+      errorMessage?: string;
+      hasError: boolean;
+      summary?: string;
+      model?: string;
+    };
   } {
     let model: string | undefined;
     let errorMessage: string | undefined;
     let hasError = false;
     let lastAssistantMessage: string | undefined;
 
-    for (const line of logs.split("\n")) {
-      if (!line.trim()) continue;
+    const push = (line: string): void => {
+      if (!line.trim()) return;
 
       let event: any;
       try {
@@ -103,7 +122,7 @@ export class CursorAdapter implements AgentAdapter {
           hasError = true;
           console.warn(`[cursor] Raw error: ${errorMessage}`);
         }
-        continue;
+        return;
       }
 
       if (event.model && !model) {
@@ -114,21 +133,21 @@ export class CursorAdapter implements AgentAdapter {
       if (event.error && typeof event.error === "object" && event.error.message) {
         errorMessage = event.error.message;
         hasError = true;
-        continue;
+        return;
       }
 
       // Error events: { type: "error", message: "..." }
       if (event.type === "error") {
         errorMessage = event.message ?? event.error ?? JSON.stringify(event);
         hasError = true;
-        continue;
+        return;
       }
 
       // Assistant message — content may be a string or a Claude-style block array
       if (event.type === "assistant") {
         const text = extractMessageText(event.message ?? event);
         if (text) lastAssistantMessage = text;
-        continue;
+        return;
       }
 
       // Terminal result event
@@ -141,14 +160,18 @@ export class CursorAdapter implements AgentAdapter {
           lastAssistantMessage = event.result;
         }
       }
-    }
-
-    return {
-      errorMessage,
-      hasError,
-      summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,
-      model,
     };
+
+    const done = () => {
+      return {
+        errorMessage,
+        hasError,
+        summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,
+        model,
+      };
+    };
+
+    return { push, done };
   }
 }
 
