@@ -204,6 +204,8 @@ export async function syncOne(id: string): Promise<void> {
     return;
   }
 
+  // What this sync resolves; its result lands only if the row still says so.
+  const synced = { ref: row.ref, subpath: row.subpath };
   let clone: string | null = null;
   try {
     const sha = await resolveRefToSha(row.sourceUrl, row.ref);
@@ -222,14 +224,22 @@ export async function syncOne(id: string): Promise<void> {
     const inspected = await readSkillDir(subpathDir, MAX_SKILL_BYTES);
     const { files } = inspected;
 
-    await recordSyncResult(id, {
-      ok: true,
-      resolvedSha: sha,
-      manifest: inspected.manifest,
-      hasExecutableFiles: inspected.hasExecutableFiles,
-      totalSizeBytes: inspected.totalSizeBytes,
-      files,
-    });
+    const recorded = await recordSyncResult(
+      id,
+      {
+        ok: true,
+        resolvedSha: sha,
+        manifest: inspected.manifest,
+        hasExecutableFiles: inspected.hasExecutableFiles,
+        totalSizeBytes: inspected.totalSizeBytes,
+        files,
+      },
+      synced,
+    );
+    if (!recorded) {
+      log.info({ sha, ref: row.ref }, "skill's ref changed during the sync; result discarded");
+      return;
+    }
     log.info(
       { sha, fileCount: files.length, bytes: inspected.totalSizeBytes },
       "installed skill synced",
@@ -237,7 +247,7 @@ export async function syncOne(id: string): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error({ err }, "installed skill sync failed");
-    await recordSyncResult(id, { ok: false, error: msg });
+    await recordSyncResult(id, { ok: false, error: msg }, synced);
   } finally {
     if (clone) await fs.rm(path.dirname(clone), { recursive: true, force: true }).catch(() => {});
   }

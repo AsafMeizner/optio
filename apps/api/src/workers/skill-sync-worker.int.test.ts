@@ -30,6 +30,22 @@ vi.mock("bullmq", () => ({
   },
 }));
 
+// A hook that runs just before a sync records its result: the moment a
+// PATCH can land while the sync of the old ref is in flight.
+const beforeRecord = vi.hoisted(() => ({ hook: null as null | (() => Promise<void>) }));
+vi.mock("../services/installed-skill-service.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../services/installed-skill-service.js")>();
+  return {
+    ...real,
+    recordSyncResult: async (...args: Parameters<typeof real.recordSyncResult>) => {
+      const hook = beforeRecord.hook;
+      beforeRecord.hook = null;
+      if (hook) await hook();
+      return real.recordSyncResult(...args);
+    },
+  };
+});
+
 const run = promisify(execFile);
 let root: string;
 let source: string;
@@ -180,6 +196,46 @@ describe("skill sync into the database", () => {
       .from(installedSkills)
       .where(eq(installedSkills.id, skill.id));
     expect(second.lastSyncedAt?.getTime()).toBe(first.lastSyncedAt?.getTime());
+  });
+
+  it("discards a sync of the old ref when the ref changes meanwhile; the next sync-due takes the new one", async () => {
+    const { syncOne, dueSkillIds, readInstalledSkillFiles } =
+      await import("./skill-sync-worker.js");
+    const { updateInstalledSkill } = await import("../services/installed-skill-service.js");
+    // A branch whose skill differs from main's.
+    await git(["checkout", "-q", "-b", "next"]);
+    await fs.writeFile(path.join(source, "skills", "greet", "next.md"), "only on next\n");
+    await git(["add", "-A"]);
+    await git(["commit", "-q", "-m", "next"]);
+    await git(["checkout", "-q", "main"]);
+
+    const skill = await insertSkill();
+    // The sync of main is cloned and read; before it records, the ref moves.
+    beforeRecord.hook = async () => {
+      await updateInstalledSkill(skill.id, { ref: "next" });
+    };
+    await syncOne(skill.id);
+
+    const [after] = await db.select().from(installedSkills).where(eq(installedSkills.id, skill.id));
+    expect(after.ref).toBe("next");
+    expect(after.resolvedSha).toBeNull(); // nothing of main's sync landed
+    const files = await db
+      .select()
+      .from(installedSkillFiles)
+      .where(eq(installedSkillFiles.skillId, skill.id));
+    expect(files).toEqual([]);
+    expect(await dueSkillIds()).toContain(skill.id);
+
+    // The periodic pass syncs the new ref.
+    await syncOne(skill.id);
+    const [synced] = await db
+      .select()
+      .from(installedSkills)
+      .where(eq(installedSkills.id, skill.id));
+    expect(synced.resolvedSha).toMatch(/^[0-9a-f]{40}$/);
+    const read = await readInstalledSkillFiles(skill.id, synced.resolvedSha);
+    expect(read.map((f) => f.relativePath)).toContain("next.md");
+    expect(await dueSkillIds()).not.toContain(skill.id);
   });
 
   it("two syncs of one skill at once both succeed (the writes upsert)", async () => {

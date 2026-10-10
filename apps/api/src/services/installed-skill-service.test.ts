@@ -168,6 +168,14 @@ describe("installed-skill-service", () => {
       let deletedFrom: unknown;
       let inserted: any[] = [];
       const tx = {
+        // The CAS: the row still has the ref and subpath the sync resolved.
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              for: vi.fn().mockResolvedValue([{ id: "skill-1" }]),
+            }),
+          }),
+        }),
         delete: vi.fn().mockReturnValue({
           where: vi.fn().mockImplementation(async (w: unknown) => {
             deletedFrom = w;
@@ -188,14 +196,19 @@ describe("installed-skill-service", () => {
       };
       (db as any).transaction = vi.fn().mockImplementation(async (fn: any) => fn(tx));
 
-      await recordSyncResult("skill-1", {
-        ok: true,
-        resolvedSha: "abc",
-        manifest: { files: [{ relativePath: "SKILL.md", sizeBytes: 10, executable: false }] },
-        hasExecutableFiles: false,
-        totalSizeBytes: 10,
-        files: [{ relativePath: "SKILL.md", content: Buffer.from("# hi"), executable: false }],
-      });
+      const recorded = await recordSyncResult(
+        "skill-1",
+        {
+          ok: true,
+          resolvedSha: "abc",
+          manifest: { files: [{ relativePath: "SKILL.md", sizeBytes: 10, executable: false }] },
+          hasExecutableFiles: false,
+          totalSizeBytes: 10,
+          files: [{ relativePath: "SKILL.md", content: Buffer.from("# hi"), executable: false }],
+        },
+        { ref: "main", subpath: "." },
+      );
+      expect(recorded).toBe(true);
       expect(deletedFrom).toBeDefined();
       expect(inserted).toEqual([
         {
@@ -221,16 +234,53 @@ describe("installed-skill-service", () => {
 
     it("writes error message and leaves resolvedSha alone on failure", async () => {
       let captured: any;
-      (db.update as any) = vi.fn().mockReturnValue({
-        set: vi.fn().mockImplementation((vals: any) => {
-          captured = vals;
-          return { where: vi.fn().mockResolvedValue(undefined) };
+      const tx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              for: vi.fn().mockResolvedValue([{ id: "skill-1" }]),
+            }),
+          }),
         }),
-      });
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((vals: any) => {
+            captured = vals;
+            return { where: vi.fn().mockResolvedValue(undefined) };
+          }),
+        }),
+      };
+      (db as any).transaction = vi.fn().mockImplementation(async (fn: any) => fn(tx));
 
-      await recordSyncResult("skill-1", { ok: false, error: "clone failed" });
+      await recordSyncResult(
+        "skill-1",
+        { ok: false, error: "clone failed" },
+        { ref: "main", subpath: "." },
+      );
       expect(captured.lastSyncError).toBe("clone failed");
       expect(captured.resolvedSha).toBeUndefined();
+    });
+
+    it("writes nothing when the skill's ref moved during the sync", async () => {
+      const tx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+        delete: vi.fn(),
+        insert: vi.fn(),
+        update: vi.fn(),
+      };
+      (db as any).transaction = vi.fn().mockImplementation(async (fn: any) => fn(tx));
+
+      const recorded = await recordSyncResult(
+        "skill-1",
+        { ok: false, error: "clone failed" },
+        { ref: "main", subpath: "." },
+      );
+      expect(recorded).toBe(false);
+      expect(tx.update).not.toHaveBeenCalled();
+      expect(tx.delete).not.toHaveBeenCalled();
     });
   });
 

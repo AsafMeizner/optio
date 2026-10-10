@@ -4,7 +4,7 @@
  * coordination leaves behind and that nothing else deletes: inbound
  * webhook deliveries older than a day, expired WebSocket upgrade tokens,
  * leases that expired a day ago, and whatever another module registers
- * (`registerSweep`; glance timers are one).
+ * (`registerSweep`).
  */
 import { Queue, Worker } from "bullmq";
 import { sql } from "drizzle-orm";
