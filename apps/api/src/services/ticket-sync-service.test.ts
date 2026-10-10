@@ -1,14 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// The sync claims each ticket in `ticket_sync_claims` before creating its
+// task (an insert that returns a row) and records the task id after.
 vi.mock("../db/client.js", () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
-    update: vi.fn(),
+    execute: vi.fn(async () => [{ ticket_external_id: "claimed" }]),
+    update: vi.fn(() => ({ set: () => ({ where: async () => undefined }) })),
+    delete: vi.fn(() => ({ where: async () => undefined })),
   },
 }));
 
 vi.mock("../db/schema.js", () => ({
+  ticketSyncClaims: {
+    ticketSource: "ticket_sync_claims.ticket_source",
+    ticketExternalId: "ticket_sync_claims.ticket_external_id",
+    repoUrl: "ticket_sync_claims.repo_url",
+    taskId: "ticket_sync_claims.task_id",
+  },
   ticketProviders: {
     enabled: "ticket_providers.enabled",
     id: "ticket_providers.id",

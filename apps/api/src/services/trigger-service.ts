@@ -35,6 +35,7 @@ import {
 import { db } from "../db/client.js";
 import { workflowTriggers } from "../db/schema.js";
 import { computeNextFire } from "../utils/cron.js";
+import { updatedAtMatches } from "../utils/pg-timestamp.js";
 // The pool, or a transaction — so a trigger can be written with the row it starts.
 import type { Db } from "./work-definition-service.js";
 
@@ -473,6 +474,33 @@ export async function advanceSchedule(id: string, cronExpression: string): Promi
     .update(workflowTriggers)
     .set({ lastFiredAt: now, nextFireAt: computeNextFire(cronExpression), updatedAt: now })
     .where(eq(workflowTriggers.id, id));
+}
+
+/**
+ * Moves a schedule past the tick a sweep saw — only if nobody moved it
+ * first. The sweep fires the trigger iff this returns true, so overlapping
+ * sweeps (two API instances) fire each tick once. A trigger whose
+ * `next_fire_at` is null is never due, so `seen` is always a date here.
+ */
+export async function advanceScheduleCas(
+  id: string,
+  cronExpression: string,
+  seen: Date | null,
+): Promise<boolean> {
+  if (!seen) return false;
+  const now = new Date();
+  const rows = await db
+    .update(workflowTriggers)
+    .set({ lastFiredAt: now, nextFireAt: computeNextFire(cronExpression), updatedAt: now })
+    .where(
+      and(
+        eq(workflowTriggers.id, id),
+        eq(workflowTriggers.enabled, true),
+        updatedAtMatches(workflowTriggers.nextFireAt, seen),
+      ),
+    )
+    .returning({ id: workflowTriggers.id });
+  return rows.length > 0;
 }
 
 export async function markTriggerFired(id: string): Promise<void> {

@@ -26,6 +26,8 @@ import { parseIntEnv } from "@optio/shared";
 import type { InstalledSkillManifest } from "@optio/shared";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
+import { scheduleRepeat } from "../services/repeat-jobs.js";
+import { underPollerLease } from "../services/poller-lease.js";
 import { db } from "../db/client.js";
 import { installedSkills } from "../db/schema.js";
 import { eq, isNull, or } from "drizzle-orm";
@@ -50,25 +52,22 @@ export function startSkillSyncWorker() {
     logger.warn({ err, dir: cacheDir() }, "Could not pre-create skills cache dir");
   });
 
-  // Periodic sweep for rows that need a sync.
-  skillSyncQueue.add(
-    "sync-due",
-    {},
-    {
-      repeat: { every: SYNC_INTERVAL_MS },
-      removeOnComplete: { count: 50 },
-      removeOnFail: { count: 50 },
-    },
-  );
+  // Periodic sweep for rows that need a sync — one instance at a time; a
+  // one-skill sync holds its own lease so two instances never clone the
+  // same skill at once.
+  void scheduleRepeat(skillSyncQueue, "skill-sync.sync-due", SYNC_INTERVAL_MS, {
+    removeOnComplete: { count: 50 },
+    removeOnFail: { count: 50 },
+  }).catch(() => {});
 
   const worker = new Worker(
     "skill-sync",
     async (job) => {
       if (job.name === "sync-due") {
-        await syncDue();
+        await underPollerLease("skill-sync", () => syncDue());
       } else if (job.name === "sync-one") {
         const { id } = job.data as { id: string };
-        await syncOne(id);
+        await underPollerLease(`skill-sync:${id}`, () => syncOne(id));
       }
     },
     { ...bullmqOpts, concurrency: 1 },
