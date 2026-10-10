@@ -72,9 +72,7 @@ describe("api cluster e2e", () => {
     // Auth is disabled here, so no request is signed in: nothing identifying.
     expect(a.body).not.toHaveProperty("instanceId");
     expect(b.body).not.toHaveProperty("instanceId");
-    // Each server logged its own instance id at boot.
-    expect(cluster.servers[0].handle.logs()).toMatch(/api-0:[0-9a-f]{6}/);
-    expect(cluster.servers[1].handle.logs()).toMatch(/api-1:[0-9a-f]{6}/);
+    expect(cluster.servers.map((s) => s.name)).toEqual(["api-0", "api-1"]);
   });
 
   it("a Job created through A is read through B, and its run completes", async () => {

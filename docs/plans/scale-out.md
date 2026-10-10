@@ -139,9 +139,32 @@ message channel stays only to notify viewers.
 what cancel and the reconciler's stall action use, from any instance.
 
 **Where things live.** `RUN_DIR` is the run home. It is no longer removed by
-the exec's EXIT trap; the worker removes it when the run reaches a terminal
-state and the output has been fully consumed, and the worktree / pod cleanup
-paths from #664 remain the backstop.
+the exec's EXIT trap. The **attached worker removes the run directory when
+the run is terminal and `consumed_bytes` equals the output file's size**
+(phase B, for tasks, Job runs, turns and reviews). The backstop, from phase
+A on, is the repo-cleanup worker's sweep (`run-home-sweep-service.ts`): on
+each health cycle it lists `/home/agent/optio/runs` in every ready pod and
+removes the directories of runs that are terminal and consumed (or terminal
+for over an hour), through a small exec. Sensitive setup files never outlive
+a run by more than that cycle. The exec script's EXIT trap also pruned the
+task's stale `-wt` worktree; the start script does that right after the
+worktree setup instead.
+
+**Stdin bytes never travel in a script.** An exec's argv is at most 128 KiB,
+so the start script primes `stdin.ndjson` with `head -c <n>` from the exec's
+own stdin (saved on fd 3 by the runtime's prelude), and a delivered line goes
+the same way (`head -c <n> >> stdin.ndjson`, then `__OPTIO_STDIN_DELIVERED__`
+on stdout). `pid` holds `<pid> <starttime>` and is written by the supervisor
+itself once its TERM trap is in place; attach, kill and the pooled start
+guard trust a pid only when the live process's start time matches, so a pid
+reused after a pod restart reads as not running.
+
+**The pod's pid 1 must reap.** The supervisor is reparented to pid 1 when the
+start exec ends; a bare `sleep infinity` never calls `wait()`, so every
+finished run would stay a zombie. `tini` is in the agent image and every pod
+init script ends with `exec tini -- sleep infinity` (falling back to `sleep`
+on an older image): **the agent images must be rebuilt for the protocol** (the
+fake runtime is unaffected).
 
 ### 2. Ownership: columns, lease, reconcile
 
