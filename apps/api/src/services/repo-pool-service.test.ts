@@ -94,6 +94,7 @@ const mockRuntimeCreate = vi.fn();
 const mockRuntimeExec = vi.fn();
 const mockRuntimeStatus = vi.fn();
 const mockRuntimeDestroy = vi.fn();
+const mockRuntimeStartRun = vi.fn();
 
 vi.mock("./container-service.js", () => ({
   getRuntime: () => ({
@@ -101,6 +102,7 @@ vi.mock("./container-service.js", () => ({
     exec: mockRuntimeExec,
     status: mockRuntimeStatus,
     destroy: mockRuntimeDestroy,
+    startRun: mockRuntimeStartRun,
   }),
 }));
 
@@ -150,10 +152,10 @@ import {
   reconcileActiveTaskCounts,
   deleteNetworkPolicy,
   killOrphanedAgentInPod,
-  execTaskInRepoPod,
+  startTaskInRepoPod,
   type RepoPod,
 } from "./repo-pool-service.js";
-import { buildTaskExecScript, buildTaskStartScript } from "./repo-pool-service.js";
+import { buildTaskStartScript } from "./repo-pool-service.js";
 import { superviseAgent } from "../utils/pod-env.js";
 
 const REPO_URL = "https://github.com/org/repo";
@@ -1068,9 +1070,9 @@ describe("getOrCreateRepoPod — service account propagation", () => {
   });
 });
 
-// ── execTaskInRepoPod — env injection safety ────────────────────────
+// ── startTaskInRepoPod — env injection safety ───────────────────────
 
-describe("execTaskInRepoPod", () => {
+describe("startTaskInRepoPod", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -1092,7 +1094,7 @@ describe("execTaskInRepoPod", () => {
       "$(touch injected-from-substitution)",
     ].join("\n");
 
-    mockRuntimeExec.mockResolvedValueOnce({ stdin: { write: vi.fn() } });
+    mockRuntimeStartRun.mockResolvedValueOnce({ pid: 42, output: "" });
     const pod = repoPod({
       id: "pod-1",
       poolKey: "https://github.com/org/repo",
@@ -1101,20 +1103,29 @@ describe("execTaskInRepoPod", () => {
       state: "ready",
     });
 
-    await execTaskInRepoPod(pod, "task-1", [`echo "[optio] agent"`], {
-      OPTIO_PROMPT: hostilePrompt,
-      OPTIO_REPO_BRANCH: "main",
-    });
+    const started = await startTaskInRepoPod(
+      pod,
+      "task-1",
+      [`echo "[optio] agent"`],
+      { OPTIO_PROMPT: hostilePrompt, OPTIO_REPO_BRANCH: "main" },
+      { initialStdin: "first-message\n" },
+    );
+    expect(started).toEqual({ pid: 42, output: "" });
 
-    // The task takes a slot on the pod before it execs
+    // The task takes a slot on the pod before it starts
     expect(podPool.acquireSlot).toHaveBeenCalledWith("pod-1");
 
-    const execCall = mockRuntimeExec.mock.calls[0];
-    expect(execCall[0]).toEqual({ id: "k8s-pod-1", name: "optio-repo-org-repo-0" });
-    expect(execCall[1][0]).toBe("bash");
-    expect(execCall[1][1]).toBe("-c");
-    const script: string = execCall[1][2];
+    const [handle, input] = mockRuntimeStartRun.mock.calls[0];
+    expect(handle).toEqual({ id: "k8s-pod-1", name: "optio-repo-org-repo-0" });
+    expect(input).toMatchObject({
+      runId: "task-1",
+      runDir: "/home/agent/optio/runs/task-1",
+      initialStdin: "first-message\n",
+    });
+    const script: string = input.script;
     expect(script).not.toContain("eval $(");
+    // The first stdin never travels in the script.
+    expect(script).not.toContain("first-message");
 
     // Run the script prefix (set -e + env exports) through real bash and
     // verify the prompt round-trips exactly with no side effects.
@@ -1139,70 +1150,59 @@ describe("execTaskInRepoPod", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("gives the slot back when the start fails", async () => {
+    mockRuntimeStartRun.mockRejectedValueOnce(new Error("start script failed"));
+    vi.mocked(podPool.releaseSlot).mockResolvedValueOnce(null as never);
+    const pod = repoPod({ id: "pod-2", podName: "optio-repo-org-repo-0", state: "ready" });
+    await expect(
+      startTaskInRepoPod(pod, "task-2", ["agent"], {}, { initialStdin: "" }),
+    ).rejects.toThrow("start script failed");
+    expect(podPool.acquireSlot).toHaveBeenCalledWith("pod-2");
+    expect(podPool.releaseSlot).toHaveBeenCalledWith("pod-2");
+  });
 });
 
-describe("task scripts: exec (inline agent) and start (the run protocol)", () => {
+describe("the task start script (the run protocol)", () => {
   const taskId = "0f2e1c1a-1111-4222-8333-444444444444";
   const env = { OPTIO_REPO_URL: "https://github.com/o/r", OPTIO_REPO_BRANCH: "main" };
   const agent = ["export X='1'", "claude -p --output-format stream-json"];
 
-  it("both do the same setup: lock, worktree, credential helper, setup files, git exclude", () => {
-    const exec = buildTaskExecScript(taskId, env, agent, { runToken: "tok" });
-    const start = buildTaskStartScript(taskId, env, agent, { runToken: "tok" });
-    for (const script of [exec, start]) {
-      expect(script).toContain(`exec 7>'/workspace/.task-${taskId}.lock'`);
-      expect(script).toContain(
-        `git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/main"`,
-      );
-      expect(script).toContain(`cd /workspace/tasks/${taskId}`);
-      expect(script).toContain(
-        "git config --local credential.helper '/usr/local/bin/optio-git-credential'",
-      );
-      expect(script).toContain(`echo "tok" > /workspace/tasks/${taskId}/.optio-run-token`);
-      expect(script).toContain(`export OPTIO_TASK_ID="${taskId}"`);
-      expect(script).toContain(`grep -qxF '.optio/' "$EXCLUDE_FILE"`);
-    }
-    const setupEnd = `grep -qxF '.optio-cache/' "$EXCLUDE_FILE" 2>/dev/null || echo '.optio-cache/' >> "$EXCLUDE_FILE"`;
-    // The start script prunes the stale `-wt` worktree up front (the exec
-    // script's EXIT trap did it at the end); otherwise the setup is the same.
-    const prune = `git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true\ngit worktree prune 2>/dev/null || true\n`;
-    expect(start).toContain(prune);
-    expect(exec.slice(0, exec.indexOf(setupEnd))).toBe(
-      start.slice(0, start.indexOf(setupEnd)).replace(prune, ""),
+  it("does the task's setup: lock, worktree, credential helper, setup files, git exclude", () => {
+    const script = buildTaskStartScript(taskId, env, agent, { runToken: "tok" });
+    expect(script).toContain(`exec 7>'/workspace/.task-${taskId}.lock'`);
+    expect(script).toContain(
+      `git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/main"`,
+    );
+    expect(script).toContain(`cd /workspace/tasks/${taskId}`);
+    expect(script).toContain(
+      "git config --local credential.helper '/usr/local/bin/optio-git-credential'",
+    );
+    expect(script).toContain(`echo "tok" > /workspace/tasks/${taskId}/.optio-run-token`);
+    expect(script).toContain(`export OPTIO_TASK_ID="${taskId}"`);
+    expect(script).toContain(`grep -qxF '.optio/' "$EXCLUDE_FILE"`);
+    // The stale `-wt` worktree is pruned up front.
+    expect(script).toContain(
+      `git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true\ngit worktree prune 2>/dev/null || true\n`,
     );
   });
 
-  it("the exec script runs the agent inline with the EXIT trap and the EPIPE watchdog, as before", () => {
-    const script = buildTaskExecScript(taskId, env, agent);
-    expect(script).toContain("_optio_main_pid=$$");
-    expect(script).toContain(
-      `git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true; git worktree prune 2>/dev/null || true;`,
-    );
-    expect(script).toContain("kill -TERM $_optio_main_pid");
-    expect(script).toContain(
-      "set +e\nexport X='1'\nclaude -p --output-format stream-json\nAGENT_EXIT=$?",
-    );
-    expect(script).toContain("[ $AGENT_EXIT -eq 0 ] && touch /home/agent/.optio-env-ready");
-    expect(script.trim().endsWith("exit $AGENT_EXIT")).toBe(true);
-  });
-
-  it("the start script hands the agent to the supervisor in the task's run home and marks the env warm on success", () => {
+  it("hands the agent to the supervisor in the task's run home and marks the env warm on success", () => {
     const script = buildTaskStartScript(taskId, env, agent);
     expect(script).toContain(
       superviseAgent(`/home/agent/optio/runs/${taskId}`, agent, { markEnvReady: true }).join("\n"),
     );
+    // No inline agent, no EXIT trap, no EPIPE watchdog: nothing ties the
+    // agent to the exec that started it.
     expect(script).not.toContain("_optio_main_pid");
     expect(script).not.toContain(" EXIT");
     expect(script).not.toContain("AGENT_EXIT=$?");
-    expect(script).not.toContain("kill -TERM $_optio_main_pid");
     expect(script.trim().endsWith('echo "__OPTIO_RUN_STARTED__:$_optio_sup"')).toBe(true);
   });
 
-  it("a same-pod retry resets the worktree in both", () => {
-    for (const build of [buildTaskExecScript, buildTaskStartScript]) {
-      const script = build(taskId, env, agent, { resetWorktree: true });
-      expect(script).toContain("[optio] Resetting existing worktree for retry...");
-      expect(script).not.toContain(`rm -rf /workspace/tasks/${taskId}`);
-    }
+  it("a same-pod retry resets the worktree", () => {
+    const script = buildTaskStartScript(taskId, env, agent, { resetWorktree: true });
+    expect(script).toContain("[optio] Resetting existing worktree for retry...");
+    expect(script).not.toContain(`rm -rf /workspace/tasks/${taskId}`);
   });
 });

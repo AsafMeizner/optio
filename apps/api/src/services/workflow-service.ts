@@ -575,7 +575,14 @@ export async function transitionWorkflowRunCas(
   }
   const [row] = await db
     .update(workflowRuns)
-    .set({ ...fields, state: to, updatedAt: new Date() })
+    .set({
+      ...fields,
+      // A new attempt: no agent started, nothing consumed, nobody attached
+      // (docs/plans/scale-out.md §2).
+      ...(to === WorkflowRunState.QUEUED ? runLogs.NEW_ATTEMPT_EXECUTION : {}),
+      state: to,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(workflowRuns.id, runId),
@@ -649,6 +656,18 @@ export async function transitionWorkflowRunCas(
     import("./local-run-service.js")
       .then(({ killLinkedTerminal }) => killLinkedTerminal(terminalId, `run_failed:${from}`))
       .catch((err) => logger.warn({ err, runId }, "Failed to kill local terminal for run"));
+  }
+
+  // A pod run failed from the server side (a cancel, the reconciler's stall
+  // or pod-death call, a disabled Job) while its agent still runs: stop it,
+  // from whichever instance this is (docs/plans/scale-out.md §1). The
+  // worker's own failure comes after the agent exited (`exec_state` is no
+  // longer `started`), so it signals nothing.
+  if (to === WorkflowRunState.FAILED && row.execState === "started" && row.podId) {
+    const podId = row.podId;
+    import("./run-attachment.js")
+      .then(({ signalRun }) => signalRun(podId, runId, "TERM"))
+      .catch((err) => logger.warn({ err, runId }, "Failed to stop the run's agent"));
   }
 
   if (opts.wakeReconciler !== false) {

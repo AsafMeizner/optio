@@ -69,6 +69,7 @@ const mockRuntimeCreate = vi.fn();
 const mockRuntimeExec = vi.fn();
 const mockRuntimeStatus = vi.fn();
 const mockRuntimeDestroy = vi.fn();
+const mockRuntimeStartRun = vi.fn();
 
 vi.mock("./container-service.js", () => ({
   getRuntime: () => ({
@@ -76,6 +77,7 @@ vi.mock("./container-service.js", () => ({
     exec: mockRuntimeExec,
     status: mockRuntimeStatus,
     destroy: mockRuntimeDestroy,
+    startRun: mockRuntimeStartRun,
   }),
 }));
 
@@ -109,7 +111,7 @@ vi.mock("./repo-pool-service.js", () => ({
 
 import {
   getOrCreateWorkflowPod,
-  execRunInPod,
+  startRunInPod,
   releaseRun,
   cleanupIdleWorkflowPods,
   type WorkflowPod,
@@ -335,58 +337,57 @@ describe("getOrCreateWorkflowPod", () => {
   });
 });
 
-// ── execRunInPod ────────────────────────────────────────────────────
+// ── startRunInPod ───────────────────────────────────────────────────
 
-describe("execRunInPod", () => {
-  function makeExecSession(output: string) {
-    return {
-      stdout: {
-        [Symbol.asyncIterator]: async function* () {
-          if (output) yield Buffer.from(output);
-        },
-      },
-      stdin: { write: vi.fn(), end: vi.fn() },
-      stderr: {
-        [Symbol.asyncIterator]: async function* () {},
-      },
-      resize: vi.fn(),
-      close: vi.fn(),
-    };
-  }
-
-  it("increments active run count and returns exec session", async () => {
+describe("startRunInPod", () => {
+  it("takes a slot and starts the run under the protocol in its run home", async () => {
     const pod = workflowPod({ id: "pod-1", podName: "optio-wf-wf1-0-abcd", podId: "k8s-id" });
+    mockRuntimeStartRun.mockResolvedValueOnce({ pid: 7, output: "" });
 
-    const mockSession = makeExecSession("output");
-    mockRuntimeExec.mockResolvedValueOnce(mockSession);
-
-    const session = await execRunInPod(pod, "run-1", ["echo", "hello"], { KEY: "val" });
-    expect(session).toBe(mockSession);
+    const started = await startRunInPod(
+      pod,
+      "run-1",
+      ["echo", "hello"],
+      { KEY: "val" },
+      {
+        initialStdin: "first\n",
+      },
+    );
+    expect(started).toEqual({ pid: 7, output: "" });
     expect(podPool.acquireSlot).toHaveBeenCalledWith("pod-1");
-    expect(mockRuntimeExec).toHaveBeenCalledWith(
+    expect(mockRuntimeStartRun).toHaveBeenCalledWith(
       { id: "k8s-id", name: "optio-wf-wf1-0-abcd" },
-      ["bash", "-c", expect.any(String)],
-      { tty: false },
+      expect.objectContaining({
+        runId: "run-1",
+        runDir: "/home/agent/optio/runs/run-1",
+        initialStdin: "first\n",
+      }),
     );
   });
 
-  it("passes env vars and per-run working dir in the exec script", async () => {
+  it("passes env vars and the per-run working dir in the start script", async () => {
     const pod = workflowPod({ id: "pod-1", podName: "optio-wf-wf1-0-abcd", podId: "k8s-id" });
+    mockRuntimeStartRun.mockResolvedValueOnce({ pid: 7, output: "" });
 
-    const mockSession = makeExecSession("");
-    mockRuntimeExec.mockResolvedValueOnce(mockSession);
+    await startRunInPod(pod, "run-1", ["echo", "test"], { MY_VAR: "hello" }, { initialStdin: "" });
 
-    await execRunInPod(pod, "run-1", ["echo", "test"], { MY_VAR: "hello" });
-
-    const execCall = mockRuntimeExec.mock.calls[0];
-    expect(execCall[1][0]).toBe("bash");
-    expect(execCall[1][1]).toBe("-c");
+    const script: string = mockRuntimeStartRun.mock.calls.at(-1)![1].script;
     // Env vars are embedded as inert single-quoted exports (no eval/word-splitting)
-    expect(execCall[1][2]).toContain("export MY_VAR='hello'");
-    expect(execCall[1][2]).toContain("export OPTIO_WORKFLOW_RUN_ID='run-1'");
-    expect(execCall[1][2]).not.toContain("eval $(");
+    expect(script).toContain("export MY_VAR='hello'");
+    expect(script).toContain("export OPTIO_WORKFLOW_RUN_ID='run-1'");
+    expect(script).not.toContain("eval $(");
     // And cd into per-run working directory
-    expect(execCall[1][2]).toContain("/workspace/runs/run-1");
+    expect(script).toContain("/workspace/runs/run-1");
+  });
+
+  it("gives the slot back when the start fails", async () => {
+    const pod = workflowPod({ id: "pod-9", podName: "optio-wf-wf1-0-abcd", podId: "k8s-id" });
+    mockRuntimeStartRun.mockRejectedValueOnce(new Error("no supervisor"));
+    vi.mocked(podPool.releaseSlot).mockResolvedValueOnce(null as never);
+    await expect(startRunInPod(pod, "run-9", ["x"], {}, { initialStdin: "" })).rejects.toThrow(
+      "no supervisor",
+    );
+    expect(podPool.releaseSlot).toHaveBeenCalledWith("pod-9");
   });
 });
 

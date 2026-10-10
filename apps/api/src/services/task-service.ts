@@ -421,6 +421,9 @@ export async function transitionTask(
     updateFields.completedAt = null;
     updateFields.startedAt = null;
     updateFields.containerId = null;
+    // A new attempt: no agent started, nothing consumed, nobody attached
+    // (docs/plans/scale-out.md §2) — the last attempt's are no claim on it.
+    Object.assign(updateFields, runLogService.NEW_ATTEMPT_EXECUTION);
   }
 
   // Atomic conditional update — only succeeds if state hasn't changed since we read it
@@ -528,11 +531,19 @@ export async function transitionTask(
       .catch((err) => logger.warn({ err, taskId: id }, "Failed to cascade failure to dependents"));
   }
 
-  // A cancelled task must actually stop: kill the in-pod agent process and
-  // abort the server-side exec stream so it stops burning tokens (#549).
-  // Only running tasks can have a live agent. Fire-and-forget — post-exec
-  // paths are guarded on task state, so a late kill cannot corrupt anything.
-  if (toState === TaskState.CANCELLED && currentState === TaskState.RUNNING) {
+  // A cancelled task must actually stop: kill the in-pod agent process so it
+  // stops burning tokens (#549) — from whichever instance took the cancel
+  // (docs/plans/scale-out.md §1). A failure the reconciler decides (a stall,
+  // a dead pod) stops a still-running agent the same way; a run that failed
+  // on its own already exited (`exec_state` is no longer `started`).
+  // Fire-and-forget — post-exec paths are guarded on task state, so a late
+  // kill cannot corrupt anything.
+  const activeRun = currentState === TaskState.RUNNING || currentState === TaskState.PROVISIONING;
+  if (
+    activeRun &&
+    (toState === TaskState.CANCELLED ||
+      (toState === TaskState.FAILED && task.execState === "started"))
+  ) {
     import("./task-cancellation-service.js")
       .then(({ terminateTaskExecution }) => terminateTaskExecution(id))
       .catch((err) =>
@@ -673,10 +684,15 @@ export async function appendTaskLog(
   metadata?: Record<string, unknown>,
 ) {
   const row = await runLogService.insertLog({ taskId }, { content, stream, logType, metadata });
+  await publishTaskLogRow(taskId, row);
+}
 
-  // The live frame is the stored row — id, timestamp, type, metadata as
-  // GET /api/tasks/:id/logs returns them — so clients that merge REST
-  // history with the live stream can recognize the same line twice.
+/**
+ * The live frame for a stored log row — id, timestamp, type, metadata as
+ * GET /api/tasks/:id/logs returns them — so clients that merge REST
+ * history with the live stream can recognize the same line twice.
+ */
+export async function publishTaskLogRow(taskId: string, row: runLogService.LogRow) {
   await publishEvent({
     type: "task:log",
     taskId,

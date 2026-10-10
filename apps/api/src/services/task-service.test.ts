@@ -45,7 +45,7 @@ vi.mock("./task-pr-service.js", async (importOriginal) => {
   };
 });
 vi.mock("./task-cancellation-service.js", () => ({
-  terminateTaskExecution: vi.fn().mockResolvedValue({ streamAborted: true, agentKilled: true }),
+  terminateTaskExecution: vi.fn().mockResolvedValue({ signalled: true, agentKilled: true }),
 }));
 vi.mock("../workers/webhook-worker.js", () => ({
   enqueueWebhookEvent: vi.fn().mockResolvedValue(undefined),

@@ -82,6 +82,20 @@ export async function transitionPrReview(
     timestamp: new Date().toISOString(),
   } as never).catch(() => {});
 
+  // A cancelled review's agent must actually stop — from whichever API
+  // instance took the cancel, not only the one streaming the run
+  // (docs/plans/scale-out.md §1). The attached instance then sees it exit.
+  if (to === PrReviewState.CANCELLED) {
+    const active = await db
+      .select({ id: prReviewRuns.id, podId: prReviewRuns.podId })
+      .from(prReviewRuns)
+      .where(and(eq(prReviewRuns.prReviewId, id), eq(prReviewRuns.execState, "started")));
+    if (active.length > 0) {
+      const { signalRun } = await import("./run-attachment.js");
+      for (const run of active) await signalRun(run.podId, run.id, "TERM");
+    }
+  }
+
   // Poke the reconciler so downstream decisions fire promptly.
   await enqueueReconcile({ kind: "pr-review", id }, { reason: `transition:${to}` }).catch(() => {});
 

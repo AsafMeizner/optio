@@ -26,8 +26,8 @@ import { getEventParser } from "../services/event-parsers.js";
 import { checkExistingPr, type ExistingPr } from "../services/pr-detection-service.js";
 import { detectTaskPrs } from "../services/task-pr-service.js";
 import { db } from "../db/client.js";
-import { tasks } from "../db/schema.js";
-import { eq, sql, and, isNull } from "drizzle-orm";
+import { tasks, workRuns } from "../db/schema.js";
+import { eq, sql } from "drizzle-orm";
 import * as taskService from "../services/task-service.js";
 import * as repoPool from "../services/repo-pool-service.js";
 import { publishEvent } from "../services/event-bus.js";
@@ -39,10 +39,25 @@ import {
 import { getPromptTemplate } from "../services/prompt-template-service.js";
 import { isGitHubAppConfigured } from "../services/github-app-service.js";
 import { podProviderRuntime, resolveProviderForWork } from "../services/model-provider-service.js";
-import { subscribeToTaskMessages } from "../services/task-message-bus.js";
-import { registerActiveExec, unregisterActiveExec } from "../services/task-cancellation-service.js";
-import * as messageService from "../services/task-message-service.js";
-import { detectAuthFailureInLogs, recordAuthEvent } from "../services/auth-failure-detector.js";
+import * as podPool from "../services/agent-pod-pool.js";
+import { getRuntime } from "../services/container-service.js";
+import {
+  beginHold,
+  closeAttachment,
+  recordRunStarted,
+  removeRunDirectory,
+  runAttachJob,
+  settleRun,
+  signalRun,
+  streamRun,
+  type AttachRef,
+  type AttachmentClaim,
+  type AttachmentHold,
+  type AttachedPod,
+  type RunEnd,
+} from "../services/run-attachment.js";
+import { RunOutputDigest } from "../services/run-output-digest.js";
+import { recordAuthEvent } from "../services/auth-failure-detector.js";
 import { logger } from "../logger.js";
 import {
   recordTaskComplete,
@@ -69,6 +84,7 @@ import {
   copilotMcpConfigFlag,
   EXPORT_GEMINI_HOME,
   EXPORT_OPENCODE_CONFIG,
+  runHome,
 } from "../utils/harness-config.js";
 import { applyGitAccess } from "../services/git-access-env.js";
 import { activityFlusher } from "../services/activity-flush.js";
@@ -101,6 +117,12 @@ export function startTaskWorker() {
   const worker = new Worker(
     "tasks",
     instrumentWorkerProcessor("task-worker", async (job) => {
+      // A re-attach (the reconciler's `reattach` action): the run is already
+      // going in its pod; take it over from where its log rows stop.
+      if (job.name === "attach-task") {
+        await attachTask(job);
+        return;
+      }
       const {
         taskId,
         resumeSessionId,
@@ -123,6 +145,18 @@ export function startTaskWorker() {
       };
       const log = logger.child({ taskId, jobId: job.id });
       let repoPodId: string | null = null;
+      // This instance's attachment to the run, from the claim on
+      // (run-attachment.ts); released in the finally.
+      let hold: AttachmentHold | null = null;
+      // The pod slot the run holds once its agent started; given back when
+      // the run ends here. A run this instance detached from keeps it for
+      // the instance that finishes it.
+      let slotHeld = false;
+      let detached = false;
+      // From the start exec on, a failure is the run's (its setup in the
+      // pod), not provisioning's: no provisioning retry, as when the task
+      // was already `running` for it.
+      let startAttempted = false;
 
       try {
         // Verify task is in queued state before proceeding
@@ -271,6 +305,7 @@ export function startTaskWorker() {
           return;
         }
         log.info("Provisioning");
+        hold = await beginHold(taskRef(taskId));
 
         // Get task details
         const task = await taskService.getTask(taskId);
@@ -642,8 +677,6 @@ export function startTaskWorker() {
         log.info({ podName: pod.podName, instanceIndex: pod.instanceIndex }, "Repo pod ready");
 
         await taskService.updateTaskContainer(taskId, pod.podName ?? pod.podId ?? pod.id);
-        await taskService.transitionTask(taskId, TaskState.RUNNING, "worktree_created");
-        log.info("Running agent in worktree");
 
         // ── Check for existing PR before launching agent ───────────────
         // If a previous run already opened a PR for this task's branch,
@@ -659,6 +692,7 @@ export function startTaskWorker() {
             );
             await taskService.updateTaskPr(taskId, existingPr.url);
             await repoPool.updateWorktreeState(taskId, "preserved");
+            await taskService.transitionTask(taskId, TaskState.RUNNING, "worktree_created");
             await taskService.transitionTask(
               taskId,
               TaskState.PR_OPENED,
@@ -681,495 +715,59 @@ export function startTaskWorker() {
           maxTurnsReview: repoConfig?.maxTurnsReview ?? undefined,
         });
 
-        // Execute the task in the repo pod via worktree
+        // Start the agent under the run protocol (docs/plans/scale-out.md §1):
+        // the start exec sets the worktree up and returns once the supervisor
+        // runs; from then on any API instance can attach to the run's output,
+        // and this one does so right away. The task stays `provisioning`
+        // until the start is recorded, so `running` always means an agent
+        // some instance can attach to.
         // On retry to the same pod, reset existing worktree instead of recreating
         const shouldResetWorktree = isRetry && pod.id === (task as any).lastPodId;
-        const execSession = await repoPool.execTaskInRepoPod(pod, task.id, agentCommand, allEnv, {
-          resetWorktree: shouldResetWorktree,
-        });
-
-        // Register the live exec session so a user cancel can abort the
-        // stream (and kill the in-pod agent) instead of letting the agent
-        // run to completion in the background (#549).
-        registerActiveExec(taskId, execSession);
-
-        // Claude runs with `--input-format stream-json`, which means the initial
-        // user message must come in over stdin — the -p/--print positional arg is
-        // ignored in that mode. The pipe buffer holds this line until bash finishes
-        // its setup and execs claude, so it's safe to write immediately.
-        if (task.agentType === "claude-code") {
-          try {
-            execSession.stdin.write(buildInitialClaudeStreamMessage(allEnv.OPTIO_PROMPT ?? ""));
-          } catch (err) {
-            log.warn({ err }, "Failed to write initial prompt to claude stdin");
-          }
-        }
-
-        // Stream stdout with structured parsing
-        let allLogs = "";
-        let sessionId: string | undefined;
-        // PRs the agent's own PR-creating tool calls produced (`gh pr
-        // create`, MCP `create_pull_request`, …), each paired with its call's
-        // result by id. A PR URL the agent merely mentions is never adopted.
-        const prTracker = new PrToolCallTracker();
-        const ingestPrToolCalls = (line: string) => {
-          if (!isReviewTask) ingestPrToolCallLine(prTracker, task.agentType, line);
-        };
         const runStartedAt = new Date();
-        let lastHeartbeat = Date.now();
-        const HEARTBEAT_INTERVAL_MS = 60_000;
-        // Stall detection: debounced activity timestamp flush
-        const activity = activityFlusher((at) => taskService.updateTaskActivity(taskId, at), 5_000);
-        // Buffer for partial NDJSON lines split across chunks
-        let lineBuf = "";
-
-        // Subscribe to mid-task messages from users (only for claude-code)
-        let messageSubscription: { unsubscribe: () => void } | undefined;
-        if (task.agentType === "claude-code") {
-          messageSubscription = subscribeToTaskMessages(taskId, async (payload) => {
-            try {
-              // Format the message text — prefix with interrupt marker if needed
-              let text = payload.content;
-              if (payload.mode === "interrupt") {
-                text = `[URGENT INTERRUPT FROM USER — stop what you are doing and address this immediately] ${text}`;
-              }
-
-              // Write stream-json NDJSON line to stdin
-              const streamJsonMsg = JSON.stringify({
-                type: "user",
-                message: {
-                  role: "user",
-                  content: [{ type: "text", text }],
-                },
-              });
-              execSession.stdin.write(streamJsonMsg + "\n");
-
-              // Mark as delivered
-              await messageService.markDelivered(payload.messageId);
-              await publishEvent({
-                type: "task:message_delivered",
-                taskId,
-                messageId: payload.messageId,
-                timestamp: new Date().toISOString(),
-              });
-            } catch (err) {
-              log.warn({ messageId: payload.messageId, err }, "Failed to deliver task message");
-              await messageService
-                .markDeliveryError(
-                  payload.messageId,
-                  err instanceof Error ? err.message : "delivery failed",
-                )
-                .catch(() => {});
-            }
-          });
+        log.info("Starting agent in worktree");
+        startAttempted = true;
+        const started = await repoPool.startTaskInRepoPod(pod, task.id, agentCommand, allEnv, {
+          resetWorktree: shouldResetWorktree,
+          // Claude runs with `--input-format stream-json`: the first user
+          // message arrives over stdin, which the start script primes from
+          // this before the agent launches.
+          initialStdin:
+            task.agentType === "claude-code"
+              ? buildInitialClaudeStreamMessage(allEnv.OPTIO_PROMPT ?? "")
+              : "",
+        });
+        slotHeld = true;
+        if (started.output.trim()) {
+          log.debug({ setup: started.output.slice(-2000) }, "Run setup output");
         }
-
-        // Capture stderr for diagnostics (e.g. bash parse errors, git warnings)
-        let stderrData = "";
-        (async () => {
-          for await (const chunk of execSession.stderr as AsyncIterable<Buffer>) {
-            stderrData += chunk.toString();
-          }
-        })().catch(() => {});
-
-        for await (const chunk of execSession.stdout as AsyncIterable<Buffer>) {
-          const text = chunk.toString();
-          allLogs += text;
-
-          // Periodically bump tasks.updatedAt so the stale detector
-          // knows this task is still actively streaming
-          const now = Date.now();
-          if (now - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
-            await taskService.touchTaskHeartbeat(taskId);
-            lastHeartbeat = now;
-          }
-
-          const parts = (lineBuf + text).split("\n");
-          // Last element is either empty (text ended with \n) or a partial line
-          lineBuf = parts.pop() ?? "";
-
-          for (const line of parts) {
-            if (!line.trim()) continue;
-            ingestPrToolCalls(line);
-
-            // Parse as structured agent event (format depends on agent type)
-            const parsed = getEventParser(task.agentType)(line, taskId);
-            if (parsed.sessionId && !sessionId) {
-              sessionId = parsed.sessionId;
-              await taskService.updateTaskSession(taskId, sessionId);
-              log.info({ sessionId }, "Session ID captured");
-            }
-            // Terminal event (e.g. claude's `result` event) means the agent has
-            // finished the turn. With --input-format stream-json claude keeps
-            // stdin open waiting for another user message; closing stdin here
-            // lets it exit cleanly so the task can transition to pr_opened /
-            // completed / failed.
-            if (parsed.isTerminal) {
-              try {
-                execSession.stdin.end();
-              } catch (err) {
-                log.warn({ err }, "Failed to close agent stdin on terminal event");
-              }
-            }
-            for (const entry of parsed.entries) {
-              await taskService.appendTaskLog(
-                taskId,
-                entry.content,
-                "stdout",
-                entry.type,
-                entry.metadata,
-              );
-
-              // Stall detection: mark activity on meaningful parsed events
-              activity.mark(entry.type);
-            }
-          }
-
-          // Debounced flush of lastActivityAt to avoid per-event DB writes
-          await activity.maybeFlush();
-        }
-
-        // Final flush of pending activity timestamp
-        await activity.flush();
-
-        // Flush any remaining partial line in the buffer
-        if (lineBuf.trim()) {
-          ingestPrToolCalls(lineBuf);
-          const parsed = getEventParser(task.agentType)(lineBuf, taskId);
-          for (const entry of parsed.entries) {
-            await taskService.appendTaskLog(
-              taskId,
-              entry.content,
-              "stdout",
-              entry.type,
-              entry.metadata,
-            );
-          }
-        }
-
-        // Exec finished — clean up message subscription
-        messageSubscription?.unsubscribe();
-
-        // Exec finished — determine result
-        if (stderrData) {
-          log.warn({ stderrPreview: stderrData.slice(0, 500) }, "Exec stderr output");
-        }
-        // Before processing results, verify this worker still owns the task.
-        // A force-redo may have reset the task while we were streaming.
-        const taskAfterExec = await taskService.getTask(taskId);
-        if (!taskAfterExec || taskAfterExec.state !== TaskState.RUNNING) {
-          log.info(
-            { currentState: taskAfterExec?.state },
-            "Task state changed during execution — skipping final transition (likely force-redo)",
-          );
+        await rememberRunContext(taskId, { isReviewTask, isPlanningRun, runStartedAt });
+        if (!(await recordRunStarted(taskRef(taskId), started.pid))) {
+          // Queued again while it was set up (a force-redo): not ours.
+          await signalRun(pod.id, taskId, "TERM");
+          log.info("The task moved on while its agent started; stopped the agent");
           return;
         }
-
-        // Detect exit code from logs (agent-type-specific patterns)
-        const inferredExitCode = inferExitCode(task.agentType, allLogs);
-        const result = adapter.parseResult(inferredExitCode, allLogs);
-
-        // Override a nominally-successful result if the agent emitted an auth
-        // failure mid-run. Many agent CLIs catch 401s internally and exit 0,
-        // which would otherwise mark the task as completed despite no useful
-        // work. Mutating the result here propagates to every downstream branch.
-        const authDetection = detectAuthFailureInLogs(allLogs);
-        if (authDetection.matched && result.success) {
-          log.warn(
-            { pattern: authDetection.pattern, excerpt: authDetection.excerpt },
-            "Auth failure detected in agent output — overriding result",
-          );
-          result.success = false;
-          result.error = `Agent authentication failed: ${authDetection.excerpt ?? authDetection.pattern}`;
-          recordAuthEvent(
-            "claude",
-            authDetection.excerpt ?? authDetection.pattern ?? "auth_failure",
-            "task-worker",
-          ).catch(() => {});
+        try {
+          await taskService.transitionTask(taskId, TaskState.RUNNING, "worktree_created");
+        } catch (err) {
+          // Cancelled or reset while it was set up: the agent is nobody's.
+          await signalRun(pod.id, taskId, "TERM");
+          throw err;
         }
+        log.info({ pid: started.pid }, "Agent started; attaching");
 
-        await taskService.updateTaskResult(taskId, result.summary, result.error);
-
-        // Persist cost, token usage, and model data, ADDED to what the task
-        // already recorded. Each launch — a first run, a retry (issue #580: a
-        // failed attempt's tokens were still spent), a resume or force-restart
-        // (issue #541: `claude --resume` reports only its own turns) — is a
-        // distinct process reporting only its own spend, so prior + this run
-        // is always the true total; a first run adds onto nothing. Postgres
-        // does the addition, so it is exact and atomic.
-        const usage = addUsage(tasks, result);
-        if (Object.keys(usage).length > 0) {
-          await db.update(tasks).set(usage).where(eq(tasks.id, taskId));
-        }
-
-        // ── Telemetry: record cost and token metrics ──────────────────
-        const taskAttrs = {
-          agent_type: task.agentType,
-          model: result.model ?? "unknown",
-          repo_url: task.repoUrl,
-        };
-        if (result.costUsd != null) {
-          recordTaskCost(result.costUsd, taskAttrs);
-          emitCostReportLog(
-            taskId,
-            result.costUsd,
-            result.inputTokens ?? 0,
-            result.outputTokens ?? 0,
-            result.model ?? "unknown",
-          );
-        }
-        if (result.inputTokens != null) {
-          recordTaskTokens(result.inputTokens, { ...taskAttrs, direction: "input" });
-        }
-        if (result.outputTokens != null) {
-          recordTaskTokens(result.outputTokens, { ...taskAttrs, direction: "output" });
-        }
-
-        // Which PRs did this run open? Only the agent's own PR-creating tool
-        // calls (URL from that call's result) and PRs whose head branch is
-        // under the task's branch count — each confirmed against the git
-        // platform. A URL the agent merely mentions is never adopted. Every
-        // PR is recorded in task_prs; the first becomes tasks.pr_url (the
-        // primary the PR lifecycle follows), unless the task already has one
-        // (a resumed / restarted run keeps its PR).
-        let detectedPrUrl: string | undefined = taskAfterExec?.prUrl ?? undefined;
-        // Set when the platform answered the branch lookup and found nothing —
-        // lets the later API-fallback checks skip a redundant call.
-        let prKnownAbsent = false;
-        if (!isReviewTask) {
-          try {
-            const branches = repoPodId
-              ? await repoPool.listTaskBranchesInPod(repoPodId, taskId)
-              : [];
-            const detection = await detectTaskPrs(
-              { id: taskId, repoUrl: task.repoUrl },
-              { matches: prTracker.matches, runStartedAt, branches },
-            );
-            detectedPrUrl = detection.primaryUrl ?? detectedPrUrl;
-            prKnownAbsent = detection.platformChecked && !detection.primaryUrl;
-            if (
-              prTracker.matches.length >
-              detection.adopted.filter((p) => p.source === "tool_call").length
-            ) {
-              log.info(
-                { created: prTracker.matches.map((m) => m.url ?? m.codecommit) },
-                "Some PRs from the agent's create calls were not adopted (other repo, closed, or unconfirmed)",
-              );
-            }
-          } catch (err) {
-            log.warn({ err }, "PR detection failed");
-          }
-        }
-
-        const outcome = classifyRunOutcome({
-          success: result.success,
+        const ended = await finishTaskRun({
+          taskId,
+          task,
+          log,
+          pod: { id: pod.id, handle: podPool.podHandle(pod) },
           isReviewTask,
-          sessionId,
-          detectedPrUrl,
+          isPlanningRun,
+          runStartedAt,
+          hold,
+          claim: { consumedBytes: 0, execState: "started" },
         });
-
-        if (outcome === "no_output") {
-          // Agent never started — no session ID means no agent output was produced.
-          await repoPool.updateWorktreeState(taskId, "dirty");
-          await taskService.transitionTask(
-            taskId,
-            TaskState.FAILED,
-            "agent_no_output",
-            "Agent process exited without producing any output",
-          );
-          log.warn("Agent exited without output — no session ID captured");
-        } else if (outcome === "pr_opened" && detectedPrUrl) {
-          // PR exists — go to pr_opened regardless of exit code.
-          if (detectedPrUrl !== taskAfterExec?.prUrl) {
-            await taskService.updateTaskPr(taskId, detectedPrUrl);
-          }
-          // Preserve worktree for resume (pr_opened state needs it)
-          await repoPool.updateWorktreeState(taskId, "preserved");
-          await taskService.transitionTask(
-            taskId,
-            TaskState.PR_OPENED,
-            "pr_detected",
-            detectedPrUrl,
-          );
-          log.info({ prUrl: detectedPrUrl }, "PR opened");
-        } else if (outcome === "success") {
-          // External PR reviews no longer run here — they execute under
-          // pr_review_runs via pr-review-worker.ts. Subtask reviews
-          // (`taskType === "review"`) still flow through this path and
-          // their result lands in the parent coding task's comments.
-          // Failed review runs (e.g. terminal API errors, issue #552) take the
-          // failure branch below like any other run — they must not be marked
-          // completed, which would both show a false green state and count as
-          // an approval for auto-merge in subtask-service.
-
-          // Planning mode: agent finished planning — wait for human approval
-          if (isPlanningRun && !isReviewTask) {
-            await repoPool.updateWorktreeState(taskId, "preserved");
-            await taskService.transitionTask(
-              taskId,
-              TaskState.NEEDS_ATTENTION,
-              "plan_review",
-              "Agent has created an implementation plan and is waiting for approval",
-            );
-            log.info("Planning phase complete — awaiting human review");
-          } else if (
-            shouldEscalateNoPr({
-              success: result.success,
-              isReviewTask,
-              isPlanningRun,
-              hasRepoUrl: !!task.repoUrl,
-              detectedPrUrl,
-            })
-          ) {
-            // Repo Task completed without opening a PR. Before escalating,
-            // check the API as a fallback — the agent may have pushed a PR
-            // that wasn't captured in log output.
-            let apiFallbackPr: ExistingPr | null = null;
-            if (!prKnownAbsent) {
-              try {
-                apiFallbackPr = await checkExistingPr(task.repoUrl, taskId, taskWorkspaceId);
-              } catch {
-                // Non-fatal — proceed with escalation
-              }
-            }
-
-            if (apiFallbackPr) {
-              await taskService.updateTaskPr(taskId, apiFallbackPr.url);
-              await repoPool.updateWorktreeState(taskId, "preserved");
-              await taskService.transitionTask(
-                taskId,
-                TaskState.PR_OPENED,
-                "pr_detected_api",
-                apiFallbackPr.url,
-              );
-              log.info(
-                { prUrl: apiFallbackPr.url },
-                "PR found via API fallback after successful agent exit",
-              );
-            } else {
-              await repoPool.updateWorktreeState(taskId, "preserved");
-              await taskService.transitionTask(
-                taskId,
-                TaskState.NEEDS_ATTENTION,
-                "completed_without_pr",
-                "Agent completed successfully but did not open a pull request. " +
-                  "The work may need to be committed and pushed manually, or the agent can be restarted to open a PR.",
-              );
-              log.warn("Repo Task completed without opening a PR — escalating to needs_attention");
-            }
-          } else {
-            await repoPool.updateWorktreeState(taskId, "removed");
-            await taskService.transitionTask(
-              taskId,
-              TaskState.COMPLETED,
-              "agent_success",
-              result.summary,
-            );
-            log.info("Task completed");
-          }
-        } else {
-          // Before failing, check if a PR was actually created via the API.
-          // Log-based PR detection can miss URLs (e.g. agent created a PR but
-          // the URL wasn't in stdout, or repo validation filtered it out).
-          let apiFallbackPr: ExistingPr | null = null;
-          if (!isReviewTask && !prKnownAbsent) {
-            try {
-              apiFallbackPr = await checkExistingPr(task.repoUrl, taskId, taskWorkspaceId);
-            } catch {
-              // Non-fatal — proceed with failure
-            }
-          }
-
-          if (apiFallbackPr) {
-            // PR exists despite agent reporting failure — go to pr_opened so the
-            // PR watcher can track CI/review and auto-resume works correctly.
-            await taskService.updateTaskPr(taskId, apiFallbackPr.url);
-            await repoPool.updateWorktreeState(taskId, "preserved");
-            await taskService.transitionTask(
-              taskId,
-              TaskState.PR_OPENED,
-              "pr_detected_api",
-              apiFallbackPr.url,
-            );
-            log.info(
-              { prUrl: apiFallbackPr.url, inferredError: result.error },
-              "PR found via API fallback — transitioning to pr_opened instead of failed",
-            );
-          } else {
-            await repoPool.updateWorktreeState(taskId, "dirty");
-            await taskService.transitionTask(
-              taskId,
-              TaskState.FAILED,
-              "agent_failure",
-              result.error,
-            );
-            log.warn({ error: result.error }, "Task failed");
-
-            // Publish global alert for auth failures so the UI can show a banner
-            if (
-              result.error &&
-              /OAuth token|authentication_failed|token.*expired/i.test(result.error)
-            ) {
-              // Invalidate the usage cache so subsequent API calls return fresh data
-              // instead of stale "healthy" results that hide the expiration
-              const { invalidateUsageCache } = await import("../services/auth-service.js");
-              invalidateUsageCache();
-
-              await publishEvent({
-                type: "auth:failed",
-                message:
-                  "Claude Code OAuth token has expired. Re-authenticate with 'claude auth login' and retry failed tasks.",
-                timestamp: new Date().toISOString(),
-              });
-            }
-          }
-        }
-
-        // If this is a subtask, check if parent should advance
-        const completedTask = await taskService.getTask(taskId);
-        if (completedTask?.parentTaskId) {
-          const { onSubtaskComplete } = await import("../services/subtask-service.js");
-          await onSubtaskComplete(taskId).catch((err) =>
-            log.warn({ err }, "Failed to check parent subtask status"),
-          );
-        }
-
-        // Handle task dependencies: auto-start dependents or cascade failure
-        if (completedTask) {
-          const depSvc = await import("../services/dependency-service.js");
-          if (
-            completedTask.state === TaskState.COMPLETED ||
-            completedTask.state === TaskState.PR_OPENED
-          ) {
-            await depSvc
-              .onDependencyComplete(taskId)
-              .catch((err) => log.warn({ err }, "Failed to process dependency completions"));
-          } else if (completedTask.state === TaskState.FAILED) {
-            await depSvc
-              .cascadeFailure(taskId)
-              .catch((err) => log.warn({ err }, "Failed to cascade failure to dependents"));
-          }
-        }
-
-        // ── Telemetry: record task completion metrics ─────────────────
-        if (completedTask) {
-          const terminalState = completedTask.state;
-          recordTaskComplete({
-            state: terminalState,
-            agent_type: task.agentType,
-            model: result.model ?? "unknown",
-            repo_url: task.repoUrl,
-          });
-          // Duration from task creation to terminal state
-          const startedAt = task.startedAt ?? task.createdAt;
-          if (startedAt) {
-            const durationS = (Date.now() - new Date(startedAt).getTime()) / 1000;
-            recordTaskDuration(durationS, {
-              terminal_state: terminalState,
-              agent_type: task.agentType,
-            });
-          }
-        }
+        if (ended === "detached") detached = true;
       } catch (err) {
         // State race errors mean another worker claimed the task — not a real failure
         if (err instanceof taskService.StateRaceError) {
@@ -1185,7 +783,7 @@ export function startTaskWorker() {
             await repoPool.updateWorktreeState(taskId, "dirty").catch(() => {});
             // If the task is still provisioning (pod never started), check if
             // the error is recoverable and we haven't exceeded the retry cap.
-            if (currentTask.state === "provisioning") {
+            if (currentTask.state === "provisioning" && !startAttempted) {
               const MAX_PROVISIONING_RETRIES = 3;
               const errStr = describeError(err);
               const classified = classifyError(errStr);
@@ -1255,11 +853,12 @@ export function startTaskWorker() {
         }
         throw err;
       } finally {
-        // Drop the exec session from the cancellation registry (no-op if it
-        // was already aborted by a cancel or never registered).
-        unregisterActiveExec(taskId);
-        // Release the task slot on the repo pod
-        if (repoPodId) {
+        // The attachment: stop renewing, and give the lease up unless the
+        // run ended here (then nothing holds it any more).
+        if (hold) await hold.end({ release: true });
+        // Release the task slot on the repo pod — unless the run goes on
+        // without this instance (another one takes the slot back with it).
+        if (repoPodId && slotHeld && !detached) {
           await repoPool.releaseRepoPodTask(repoPodId).catch(() => {});
         }
       }
@@ -1267,11 +866,14 @@ export function startTaskWorker() {
     {
       ...bullmqOpts,
       concurrency: parseIntEnv("OPTIO_MAX_CONCURRENT", 5),
-      // Task jobs run for minutes/hours — BullMQ defaults (30s lock, 30s stall
-      // check, max 1 stall) are far too aggressive and cause "job stalled" failures.
-      lockDuration: 600_000, // 10 min lock
-      stalledInterval: 300_000, // check for stalls every 5 min
-      maxStalledCount: 3, // allow 3 stall detections before failing
+      // A job lasts as long as this instance streams the run. Recovery no
+      // longer rides on BullMQ's stall re-delivery (the attach sweep and the
+      // reconciler re-attach a run whose instance died), so the lock is
+      // short: a stale re-delivery is a no-op (the run is not queued, or
+      // its attachment is held).
+      lockDuration: 60_000,
+      stalledInterval: 30_000,
+      maxStalledCount: 3,
     },
   );
 
@@ -1286,77 +888,536 @@ export function startTaskWorker() {
   return worker;
 }
 
+// ── The run protocol: attaching to a task's agent and finishing the run ──────
+
+/** The attachment columns of a task row (run-attachment.ts). */
+export function taskRef(taskId: string): AttachRef {
+  return { kind: "work-run", id: taskId };
+}
+
+/**
+ * What finishing a run needs that only the starting job knew: kept on the
+ * task row (`metadata.run`) so an instance that attaches later finishes the
+ * run the same way.
+ */
+interface TaskRunContext {
+  isReviewTask: boolean;
+  isPlanningRun: boolean;
+  runStartedAt: Date;
+}
+
+async function rememberRunContext(taskId: string, ctx: TaskRunContext): Promise<void> {
+  const patch = JSON.stringify({
+    run: {
+      isReviewTask: ctx.isReviewTask,
+      isPlanningRun: ctx.isPlanningRun,
+      runStartedAt: ctx.runStartedAt.toISOString(),
+    },
+  });
+  await db
+    .update(tasks)
+    .set({ metadata: sql`COALESCE(${tasks.metadata}, '{}'::jsonb) || ${patch}::jsonb` })
+    .where(eq(tasks.id, taskId));
+}
+
+function recallRunContext(task: typeof tasks.$inferSelect): TaskRunContext {
+  const run = ((task.metadata as Record<string, unknown> | null)?.run ?? {}) as {
+    isReviewTask?: boolean;
+    isPlanningRun?: boolean;
+    runStartedAt?: string;
+  };
+  return {
+    isReviewTask: run.isReviewTask ?? task.taskType === "review",
+    isPlanningRun: run.isPlanningRun ?? false,
+    runStartedAt: run.runStartedAt
+      ? new Date(run.runStartedAt)
+      : (task.startedAt ?? task.createdAt ?? new Date()),
+  };
+}
+
+interface FinishTaskRunInput extends TaskRunContext {
+  taskId: string;
+  task: typeof tasks.$inferSelect;
+  log: typeof logger;
+  pod: AttachedPod;
+  hold: AttachmentHold;
+  /** Where the run's log rows reach, and whether an earlier holder already recorded its exit. */
+  claim: AttachmentClaim;
+}
+
+/**
+ * Streams a started run to its end and settles the task — the one path for
+ * the job that started the run and for a job that attaches to it later.
+ * Returns "detached" when this instance stopped streaming without the run
+ * ending (shutdown, or another instance took the run): the task is left as
+ * it is for whoever attaches next.
+ */
+async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
+  const { taskId, task, log, pod, isReviewTask, isPlanningRun, runStartedAt, hold } = input;
+  const taskWorkspaceId = task.workspaceId ?? null;
+  const ref = taskRef(taskId);
+  const runtime = getRuntime();
+  const runDir = runHome(taskId).podDir;
+  const parseEvent = getEventParser(task.agentType);
+
+  // Derivations: rebuilt from byte 0 on every attach, never persisted.
+  // PRs the agent's own PR-creating tool calls produced (`gh pr create`, MCP
+  // `create_pull_request`, …), each paired with its call's result by id. A
+  // PR URL the agent merely mentions is never adopted.
+  const prTracker = new PrToolCallTracker();
+  const digest = new RunOutputDigest(task.agentType);
+  let lastHeartbeat = Date.now();
+  const HEARTBEAT_INTERVAL_MS = 60_000;
+  // Stall detection: debounced activity timestamp flush
+  const activity = activityFlusher((at) => taskService.updateTaskActivity(taskId, at), 5_000);
+
+  const { outcome, sessionId } = await streamRun({
+    runtime,
+    handle: pod.handle,
+    ref,
+    runDir,
+    hold,
+    consumedBytes: input.claim.consumedBytes,
+    log,
+    parse: (line) => parseEvent(line, taskId),
+    derive(line) {
+      digest.push(line);
+      if (!isReviewTask) ingestPrToolCallLine(prTracker, task.agentType, line);
+    },
+    async onSession(id) {
+      await taskService.updateTaskSession(taskId, id);
+      log.info({ sessionId: id }, "Session ID captured");
+    },
+    onEntries(entries) {
+      for (const entry of entries) activity.mark(entry.type);
+    },
+    publish: (row) => taskService.publishTaskLogRow(taskId, row),
+    async onChunk() {
+      // Periodically bump tasks.updatedAt so the stale detector knows this
+      // task is still actively streaming
+      const now = Date.now();
+      if (now - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
+        await taskService.touchTaskHeartbeat(taskId);
+        lastHeartbeat = now;
+      }
+      // Debounced flush of lastActivityAt to avoid per-event DB writes
+      await activity.maybeFlush();
+    },
+  });
+  // Final flush of pending activity timestamp
+  await activity.flush();
+
+  if (outcome.kind === "taken" || outcome.kind === "detached") {
+    log.info({ outcome: outcome.kind }, "Detached from the run; it continues in its pod");
+    return "detached";
+  }
+
+  if (outcome.kind === "lost") {
+    // The supervisor and its files are gone without an exit: the pod
+    // restarted under the run. Nothing can say what the agent did.
+    if ((await settleRun(ref)) === "taken") return "detached";
+    await failLostTask(
+      taskId,
+      "The agent's process and its output are gone (the pod restarted while it ran)",
+    );
+    await closeAttachment(ref);
+    log.warn("Run lost: the pod restarted under the agent");
+    return "finished";
+  }
+
+  // The agent exited and every line of its output is a log row. What the
+  // output says (read as it streamed): the result, with the exit code the
+  // output implies (agent-type-specific patterns) over the real status.
+  const verdict = digest.finish(outcome.code, { inferExitCode: true });
+  const result = verdict.result;
+
+  // Override a nominally-successful result if the agent emitted an auth
+  // failure mid-run. Many agent CLIs catch 401s internally and exit 0,
+  // which would otherwise mark the task as completed despite no useful
+  // work. Mutating the result here propagates to every downstream branch.
+  const authDetection = verdict.auth;
+  if (authDetection.matched && result.success) {
+    log.warn(
+      { pattern: authDetection.pattern, excerpt: authDetection.excerpt },
+      "Auth failure detected in agent output — overriding result",
+    );
+    result.success = false;
+    result.error = `Agent authentication failed: ${authDetection.excerpt ?? authDetection.pattern}`;
+    recordAuthEvent(
+      "claude",
+      authDetection.excerpt ?? authDetection.pattern ?? "auth_failure",
+      "task-worker",
+    ).catch(() => {});
+  }
+
+  // Record the exit with this run's cost, token usage, and model, ADDED to
+  // what the task already recorded — once, whichever instance gets here
+  // (`settleRun` is a CAS on the exit). Each launch — a first run, a retry
+  // (issue #580: a failed attempt's tokens were still spent), a resume or
+  // force-restart (issue #541: `claude --resume` reports only its own
+  // turns) — is a distinct process reporting only its own spend, so prior +
+  // this run is always the true total. Postgres does the addition.
+  const settled = await settleRun(ref, {
+    ...addUsage(workRuns, result),
+    resultSummary: result.summary,
+    ...(result.error !== undefined ? { errorMessage: result.error } : {}),
+    updatedAt: new Date(),
+  });
+  if (settled === "taken") return "detached";
+
+  // Before processing results, verify this worker still owns the task.
+  // A force-redo may have reset the task while we were streaming.
+  const taskAfterExec = await taskService.getTask(taskId);
+  if (!taskAfterExec || taskAfterExec.state !== TaskState.RUNNING) {
+    log.info(
+      { currentState: taskAfterExec?.state },
+      "Task state changed during execution — skipping final transition (likely force-redo)",
+    );
+    await closeAttachment(ref);
+    return "finished";
+  }
+
+  // ── Telemetry: record cost and token metrics (once, with the spend) ──
+  if (settled === "settled") {
+    const taskAttrs = {
+      agent_type: task.agentType,
+      model: result.model ?? "unknown",
+      repo_url: task.repoUrl,
+    };
+    if (result.costUsd != null) {
+      recordTaskCost(result.costUsd, taskAttrs);
+      emitCostReportLog(
+        taskId,
+        result.costUsd,
+        result.inputTokens ?? 0,
+        result.outputTokens ?? 0,
+        result.model ?? "unknown",
+      );
+    }
+    if (result.inputTokens != null) {
+      recordTaskTokens(result.inputTokens, { ...taskAttrs, direction: "input" });
+    }
+    if (result.outputTokens != null) {
+      recordTaskTokens(result.outputTokens, { ...taskAttrs, direction: "output" });
+    }
+  }
+  // Which PRs did this run open? Only the agent's own PR-creating tool
+  // calls (URL from that call's result) and PRs whose head branch is
+  // under the task's branch count — each confirmed against the git
+  // platform. A URL the agent merely mentions is never adopted. Every
+  // PR is recorded in task_prs; the first becomes tasks.pr_url (the
+  // primary the PR lifecycle follows), unless the task already has one
+  // (a resumed / restarted run keeps its PR).
+  let detectedPrUrl: string | undefined = taskAfterExec?.prUrl ?? undefined;
+  // Set when the platform answered the branch lookup and found nothing —
+  // lets the later API-fallback checks skip a redundant call.
+  let prKnownAbsent = false;
+  if (!isReviewTask) {
+    try {
+      const branches = await repoPool.listTaskBranchesInPod(pod.id, taskId);
+      const detection = await detectTaskPrs(
+        { id: taskId, repoUrl: task.repoUrl },
+        { matches: prTracker.matches, runStartedAt, branches },
+      );
+      detectedPrUrl = detection.primaryUrl ?? detectedPrUrl;
+      prKnownAbsent = detection.platformChecked && !detection.primaryUrl;
+      if (
+        prTracker.matches.length > detection.adopted.filter((p) => p.source === "tool_call").length
+      ) {
+        log.info(
+          { created: prTracker.matches.map((m) => m.url ?? m.codecommit) },
+          "Some PRs from the agent's create calls were not adopted (other repo, closed, or unconfirmed)",
+        );
+      }
+    } catch (err) {
+      log.warn({ err }, "PR detection failed");
+    }
+  }
+
+  const outcomeKind = classifyRunOutcome({
+    success: result.success,
+    isReviewTask,
+    sessionId,
+    detectedPrUrl,
+  });
+
+  if (outcomeKind === "no_output") {
+    // Agent never started — no session ID means no agent output was produced.
+    await repoPool.updateWorktreeState(taskId, "dirty");
+    await taskService.transitionTask(
+      taskId,
+      TaskState.FAILED,
+      "agent_no_output",
+      "Agent process exited without producing any output",
+    );
+    log.warn("Agent exited without output — no session ID captured");
+  } else if (outcomeKind === "pr_opened" && detectedPrUrl) {
+    // PR exists — go to pr_opened regardless of exit code.
+    if (detectedPrUrl !== taskAfterExec?.prUrl) {
+      await taskService.updateTaskPr(taskId, detectedPrUrl);
+    }
+    // Preserve worktree for resume (pr_opened state needs it)
+    await repoPool.updateWorktreeState(taskId, "preserved");
+    await taskService.transitionTask(taskId, TaskState.PR_OPENED, "pr_detected", detectedPrUrl);
+    log.info({ prUrl: detectedPrUrl }, "PR opened");
+  } else if (outcomeKind === "success") {
+    // External PR reviews no longer run here — they execute under
+    // pr_review_runs via pr-review-worker.ts. Subtask reviews
+    // (`taskType === "review"`) still flow through this path and
+    // their result lands in the parent coding task's comments.
+    // Failed review runs (e.g. terminal API errors, issue #552) take the
+    // failure branch below like any other run — they must not be marked
+    // completed, which would both show a false green state and count as
+    // an approval for auto-merge in subtask-service.
+
+    // Planning mode: agent finished planning — wait for human approval
+    if (isPlanningRun && !isReviewTask) {
+      await repoPool.updateWorktreeState(taskId, "preserved");
+      await taskService.transitionTask(
+        taskId,
+        TaskState.NEEDS_ATTENTION,
+        "plan_review",
+        "Agent has created an implementation plan and is waiting for approval",
+      );
+      log.info("Planning phase complete — awaiting human review");
+    } else if (
+      shouldEscalateNoPr({
+        success: result.success,
+        isReviewTask,
+        isPlanningRun,
+        hasRepoUrl: !!task.repoUrl,
+        detectedPrUrl,
+      })
+    ) {
+      // Repo Task completed without opening a PR. Before escalating,
+      // check the API as a fallback — the agent may have pushed a PR
+      // that wasn't captured in log output.
+      let apiFallbackPr: ExistingPr | null = null;
+      if (!prKnownAbsent) {
+        try {
+          apiFallbackPr = await checkExistingPr(task.repoUrl, taskId, taskWorkspaceId);
+        } catch {
+          // Non-fatal — proceed with escalation
+        }
+      }
+
+      if (apiFallbackPr) {
+        await taskService.updateTaskPr(taskId, apiFallbackPr.url);
+        await repoPool.updateWorktreeState(taskId, "preserved");
+        await taskService.transitionTask(
+          taskId,
+          TaskState.PR_OPENED,
+          "pr_detected_api",
+          apiFallbackPr.url,
+        );
+        log.info(
+          { prUrl: apiFallbackPr.url },
+          "PR found via API fallback after successful agent exit",
+        );
+      } else {
+        await repoPool.updateWorktreeState(taskId, "preserved");
+        await taskService.transitionTask(
+          taskId,
+          TaskState.NEEDS_ATTENTION,
+          "completed_without_pr",
+          "Agent completed successfully but did not open a pull request. " +
+            "The work may need to be committed and pushed manually, or the agent can be restarted to open a PR.",
+        );
+        log.warn("Repo Task completed without opening a PR — escalating to needs_attention");
+      }
+    } else {
+      await repoPool.updateWorktreeState(taskId, "removed");
+      await taskService.transitionTask(
+        taskId,
+        TaskState.COMPLETED,
+        "agent_success",
+        result.summary,
+      );
+      log.info("Task completed");
+    }
+  } else {
+    // Before failing, check if a PR was actually created via the API.
+    // Log-based PR detection can miss URLs (e.g. agent created a PR but
+    // the URL wasn't in stdout, or repo validation filtered it out).
+    let apiFallbackPr: ExistingPr | null = null;
+    if (!isReviewTask && !prKnownAbsent) {
+      try {
+        apiFallbackPr = await checkExistingPr(task.repoUrl, taskId, taskWorkspaceId);
+      } catch {
+        // Non-fatal — proceed with failure
+      }
+    }
+
+    if (apiFallbackPr) {
+      // PR exists despite agent reporting failure — go to pr_opened so the
+      // PR watcher can track CI/review and auto-resume works correctly.
+      await taskService.updateTaskPr(taskId, apiFallbackPr.url);
+      await repoPool.updateWorktreeState(taskId, "preserved");
+      await taskService.transitionTask(
+        taskId,
+        TaskState.PR_OPENED,
+        "pr_detected_api",
+        apiFallbackPr.url,
+      );
+      log.info(
+        { prUrl: apiFallbackPr.url, inferredError: result.error },
+        "PR found via API fallback — transitioning to pr_opened instead of failed",
+      );
+    } else {
+      await repoPool.updateWorktreeState(taskId, "dirty");
+      await taskService.transitionTask(taskId, TaskState.FAILED, "agent_failure", result.error);
+      log.warn({ error: result.error }, "Task failed");
+
+      // Publish global alert for auth failures so the UI can show a banner
+      if (result.error && /OAuth token|authentication_failed|token.*expired/i.test(result.error)) {
+        // Invalidate the usage cache so subsequent API calls return fresh data
+        // instead of stale "healthy" results that hide the expiration
+        const { invalidateUsageCache } = await import("../services/auth-service.js");
+        invalidateUsageCache();
+
+        await publishEvent({
+          type: "auth:failed",
+          message:
+            "Claude Code OAuth token has expired. Re-authenticate with 'claude auth login' and retry failed tasks.",
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  // The run is over and every byte of its output is a log row: its
+  // directory in the pod (output, stdin, the runtime's config) goes.
+  await removeRunDirectory(runtime, pod.handle, runDir);
+  await closeAttachment(ref);
+
+  // If this is a subtask, check if parent should advance
+  const completedTask = await taskService.getTask(taskId);
+  if (completedTask?.parentTaskId) {
+    const { onSubtaskComplete } = await import("../services/subtask-service.js");
+    await onSubtaskComplete(taskId).catch((err) =>
+      log.warn({ err }, "Failed to check parent subtask status"),
+    );
+  }
+
+  // Handle task dependencies: auto-start dependents or cascade failure
+  if (completedTask) {
+    const depSvc = await import("../services/dependency-service.js");
+    if (
+      completedTask.state === TaskState.COMPLETED ||
+      completedTask.state === TaskState.PR_OPENED
+    ) {
+      await depSvc
+        .onDependencyComplete(taskId)
+        .catch((err) => log.warn({ err }, "Failed to process dependency completions"));
+    } else if (completedTask.state === TaskState.FAILED) {
+      await depSvc
+        .cascadeFailure(taskId)
+        .catch((err) => log.warn({ err }, "Failed to cascade failure to dependents"));
+    }
+  }
+
+  // ── Telemetry: record task completion metrics ─────────────────
+  if (completedTask) {
+    const terminalState = completedTask.state;
+    recordTaskComplete({
+      state: terminalState,
+      agent_type: task.agentType,
+      model: result.model ?? "unknown",
+      repo_url: task.repoUrl,
+    });
+    // Duration from task creation to terminal state
+    const startedAt = task.startedAt ?? task.createdAt;
+    if (startedAt) {
+      const durationS = (Date.now() - new Date(startedAt).getTime()) / 1000;
+      recordTaskDuration(durationS, {
+        terminal_state: terminalState,
+        agent_type: task.agentType,
+      });
+    }
+  }
+  return "finished";
+}
+
+/** Fails a task whose agent is gone with its pod (the pod-death path), workspace kept. */
+async function failLostTask(taskId: string, detail: string): Promise<void> {
+  const message = `${detail}. Workspace retained where it survived; inspect before retrying.`;
+  await repoPool.updateWorktreeState(taskId, "preserved").catch(() => {});
+  await taskService.updateTaskResult(taskId, undefined, message);
+  await taskService.transitionTask(taskId, TaskState.FAILED, "run_lost", message);
+}
+
+/**
+ * An `attach-task` job (the reconciler's `reattach` action): take the run
+ * if nobody holds it and finish it from where its log rows stop. Losing
+ * the claim is the normal case when two instances answer the same sweep.
+ */
+async function attachTask(job: { id?: string; data: unknown }): Promise<void> {
+  const { taskId } = job.data as { taskId: string };
+  const log = logger.child({ taskId, jobId: job.id, attach: true });
+  const task = await taskService.getTask(taskId);
+  if (
+    !task ||
+    (task.state !== TaskState.RUNNING && task.state !== TaskState.PROVISIONING) ||
+    task.runTarget === "local"
+  ) {
+    log.info({ state: task?.state }, "Skipping attach — the task is not an active pod run");
+    return;
+  }
+  try {
+    await runAttachJob({
+      ref: taskRef(taskId),
+      log,
+      podId: task.lastPodId ?? null,
+      async onPodGone(detail) {
+        if (task.state === TaskState.PROVISIONING) {
+          await taskService.transitionTask(taskId, TaskState.RUNNING, "run_reattached");
+        }
+        await failLostTask(taskId, detail);
+      },
+      async finish(pod, hold, claim) {
+        // The instance that started the agent went away before recording
+        // `running`: the run is this instance's now.
+        if (task.state === TaskState.PROVISIONING) {
+          await taskService.transitionTask(taskId, TaskState.RUNNING, "run_reattached");
+        }
+        return finishTaskRun({
+          taskId,
+          task,
+          log,
+          pod,
+          ...recallRunContext(task),
+          hold,
+          claim,
+        });
+      },
+      afterFinish: async (podId) => {
+        if (podId) await repoPool.releaseRepoPodTask(podId);
+      },
+    });
+  } catch (err) {
+    if (err instanceof taskService.StateRaceError) {
+      log.info({ err: String(err) }, "Lost state race while attached, skipping");
+      return;
+    }
+    log.error({ err }, "Attach failed; the run stays for the next attach");
+    throw err;
+  }
+}
+
 /**
  * Re-enqueue orphaned tasks on startup.
  * After a Redis restart, BullMQ jobs are lost but tasks remain in
- * "queued" or "provisioning" state in the database. This function
- * detects those orphans and re-adds them to the queue.
+ * "queued" state in the database. This function detects those orphans and
+ * re-adds them to the queue.
+ *
+ * Runs in flight are not touched: their agents keep going in their pods
+ * under the run protocol, and the attach sweep and the reconciler re-attach
+ * them to whichever instance is up (docs/plans/scale-out.md §2). A boot
+ * fails nothing.
  */
 export async function reconcileOrphanedTasks() {
   // Do not obliterate the queue: queued jobs may be durable, and a restart
   // is not authorization to repeat an execution with an uncertain outcome.
-  const orphanedProvisioning = await db
-    .select()
-    .from(tasks)
-    .where(and(eq(tasks.state, "provisioning" as any), isNull(tasks.localTerminalId)));
-
-  const orphanedRunning = await db
-    .select()
-    .from(tasks)
-    .where(and(eq(tasks.state, "running" as any), isNull(tasks.localTerminalId)));
-
-  // Preserve worktrees and any surviving process. Recovery reports uncertain
-  // outcomes for review; it must not kill and replay arbitrary side effects.
-  // Check if a PR was already opened —
-  // if so, transition directly to pr_opened to avoid redoing work.
-  for (const task of [...orphanedProvisioning, ...orphanedRunning]) {
-    // Re-read the task to get its current state — it may have been
-    // completed or cancelled between the initial query and now.
-    const [current] = await db.select().from(tasks).where(eq(tasks.id, task.id));
-    if (!current || (current.state !== "running" && current.state !== "provisioning")) {
-      logger.info(
-        { taskId: task.id, state: current?.state ?? "deleted" },
-        "Skipping reconciliation — task already transitioned",
-      );
-      continue;
-    }
-
-    const taskWsId = task.workspaceId ?? null;
-    const isReview = task.taskType === "review";
-    let existingPr = null;
-    if (!isReview) {
-      try {
-        existingPr = await checkExistingPr(task.repoUrl, task.id, taskWsId);
-      } catch {
-        // Non-fatal — preserve the uncertain execution for inspection
-      }
-    }
-
-    if (existingPr && current.state === "running") {
-      // running → pr_opened is a valid transition
-      logger.info(
-        { taskId: task.id, prUrl: existingPr.url },
-        "Existing PR found during reconciliation — transitioning to pr_opened",
-      );
-      await taskService.updateTaskPr(task.id, existingPr.url);
-      await taskService.transitionTask(
-        task.id,
-        TaskState.PR_OPENED,
-        "startup_reconcile",
-        existingPr.url,
-      );
-    } else {
-      if (existingPr) await taskService.updateTaskPr(task.id, existingPr.url);
-      await repoPool.updateWorktreeState(task.id, "preserved");
-      await taskService.transitionTask(
-        task.id,
-        current.state === "running" ? TaskState.NEEDS_ATTENTION : TaskState.FAILED,
-        "startup_recovery_required",
-        "API restarted during execution. Workspace retained; outcome may be incomplete. Inspect the previous process and side effects before explicitly resuming.",
-      );
-    }
-  }
-
   // Only work that has not started is eligible to be re-enqueued.
   const toEnqueue = await db
     .select()
@@ -1641,133 +1702,4 @@ export function shouldEscalateNoPr(opts: {
 }
 
 /** Infer exit code from agent logs based on agent-specific error patterns */
-export function inferExitCode(agentType: string, logs: string): number {
-  switch (agentType) {
-    case "codex": {
-      // Codex: look for error events in JSON output or OpenAI-specific failures
-      const hasErrorEvent = logs.includes('"type":"error"') || logs.includes('"type": "error"');
-      const hasApiErrorEnvelope = /"error"\s*:\s*\{\s*"message"/.test(logs);
-      const hasAuthError =
-        /OPENAI_API_KEY|invalid.*api.?key|unauthorized|authentication.*failed/i.test(logs);
-      const hasQuotaError = /quota|insufficient_quota|billing/i.test(logs);
-      const hasModelError = /model_not_found|model.*not found|does not exist.*model/i.test(logs);
-      const hasContentFilter = /content.?filter|content.?policy|safety.?system/i.test(logs);
-      return hasErrorEvent ||
-        hasApiErrorEnvelope ||
-        hasAuthError ||
-        hasQuotaError ||
-        hasModelError ||
-        hasContentFilter
-        ? 1
-        : 0;
-    }
-    case "copilot": {
-      const hasResultError = logs.includes('"is_error":true') || logs.includes('"is_error": true');
-      const hasErrorEvent = logs.includes('"type":"error"') || logs.includes('"type": "error"');
-      const hasAuthError =
-        /COPILOT_GITHUB_TOKEN|copilot.*auth|subscription.*required|unauthorized/i.test(logs);
-      const hasFatalError =
-        logs.includes("fatal:") || logs.includes("Error: authentication_failed");
-      return hasResultError || hasErrorEvent || hasAuthError || hasFatalError ? 1 : 0;
-    }
-    case "opencode": {
-      // OpenCode: similar to Codex — look for error events and provider-specific failures
-      const hasErrorEvent = logs.includes('"type":"error"') || logs.includes('"type": "error"');
-      const hasApiErrorEnvelope = /"error"\s*:\s*\{\s*"message"/.test(logs);
-      const hasAuthError =
-        /ANTHROPIC_API_KEY|OPENAI_API_KEY|GROQ_API_KEY|invalid.*api.?key|unauthorized|authentication.*failed/i.test(
-          logs,
-        );
-      const hasModelError = /model_not_found|model.*not found|does not exist.*model/i.test(logs);
-      const hasFatalError =
-        logs.includes("fatal:") || logs.includes("Error: authentication_failed");
-      return hasErrorEvent || hasApiErrorEnvelope || hasAuthError || hasModelError || hasFatalError
-        ? 1
-        : 0;
-    }
-    case "gemini": {
-      const hasErrorEvent = logs.includes('"type":"error"') || logs.includes('"type": "error"');
-      // Match auth errors by error-descriptive patterns only (not bare env var names which
-      // could appear in diagnostic output and cause false positives).
-      const hasAuthError =
-        /api.?key.*(?:invalid|not valid|missing)|invalid.*api.?key|api_key_invalid|permission denied|unauthorized/i.test(
-          logs,
-        );
-      const hasQuotaError = /quota|resource.?exhausted|rate.?limit/i.test(logs);
-      const hasModelError = /model.*not found|model_not_found|does not exist.*model/i.test(logs);
-      const hasTurnLimit = /turn.?limit|exit:?\s*53\b/i.test(logs);
-      return hasErrorEvent || hasAuthError || hasQuotaError || hasModelError || hasTurnLimit
-        ? 1
-        : 0;
-    }
-    case "openclaw": {
-      // OpenClaw: similar to OpenCode — look for error events and provider-specific failures
-      const hasErrorEvent = logs.includes('"type":"error"') || logs.includes('"type": "error"');
-      const hasApiErrorEnvelope = /"error"\s*:\s*\{\s*"message"/.test(logs);
-      const hasAuthError =
-        /ANTHROPIC_API_KEY|OPENAI_API_KEY|OPENCLAW_API_KEY|invalid.*api.?key|unauthorized|authentication.*failed/i.test(
-          logs,
-        );
-      const hasModelError = /model_not_found|model.*not found|does not exist.*model/i.test(logs);
-      const hasFatalError =
-        logs.includes("fatal:") || logs.includes("Error: authentication_failed");
-      return hasErrorEvent || hasApiErrorEnvelope || hasAuthError || hasModelError || hasFatalError
-        ? 1
-        : 0;
-    }
-    case "cursor": {
-      // Cursor emits a Claude-style terminal result event — use it when present.
-      for (const line of logs.split("\n")) {
-        try {
-          const ev = JSON.parse(line);
-          if (ev.type === "result") {
-            return ev.is_error ? 1 : 0;
-          }
-        } catch {
-          // Not JSON — skip
-        }
-      }
-      // No result event — headless failures print plain text to stderr.
-      const hasAuthError =
-        /CURSOR_API_KEY|invalid.*api.?key|unauthorized|authentication.*failed|not.*logged.*in/i.test(
-          logs,
-        );
-      const hasQuotaError = /usage limit|quota|subscription.*required/i.test(logs);
-      const hasModelError = /model.*not found|model_not_found|does not exist.*model/i.test(logs);
-      const hasErrorEvent = logs.includes('"type":"error"') || logs.includes('"type": "error"');
-      return hasAuthError || hasQuotaError || hasModelError || hasErrorEvent ? 1 : 0;
-    }
-    case "claude-code":
-    default: {
-      // Parse the NDJSON result event (authoritative source for Claude's exit status).
-      // Raw string matching on the full logs produces false positives — e.g. "fatal:"
-      // appearing in git command output that Claude ran and handled gracefully.
-      for (const line of logs.split("\n")) {
-        try {
-          const ev = JSON.parse(line);
-          if (ev.type === "result") {
-            return ev.is_error ? 1 : 0;
-          }
-        } catch {
-          // Not JSON — skip
-        }
-      }
-      // No result event found — agent likely crashed before emitting one.
-      // Fall back to heuristic checks on raw (non-JSON) output only.
-      for (const line of logs.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          JSON.parse(trimmed);
-          continue; // Skip JSON lines — errors inside tool output are not fatal
-        } catch {
-          // Raw output line — check for fatal errors
-          if (trimmed.includes("fatal:") || trimmed.includes("Error: authentication_failed")) {
-            return 1;
-          }
-        }
-      }
-      return 0;
-    }
-  }
-}
+export { inferExitCode } from "../services/run-output-digest.js";

@@ -7,10 +7,9 @@ import {
   parseIntEnv,
   describeError,
 } from "@optio/shared";
-import { getAdapter } from "@optio/agent-adapters";
-import { getEventParser, type AgentEventParser } from "../services/event-parsers.js";
+import { getEventParser } from "../services/event-parsers.js";
 import { db } from "../db/client.js";
-import { workflowRuns } from "../db/schema.js";
+import { workflowRuns, workRuns } from "../db/schema.js";
 import { and, eq } from "drizzle-orm";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import * as workflowService from "../services/workflow-service.js";
@@ -18,10 +17,32 @@ import { transitionWorkflowRunCas, type Workflow } from "../services/workflow-se
 import { COMMAND_SCRIPT, commandResult, parseCommandLine } from "../services/command-run.js";
 import { renderCommandTemplate } from "../services/prompt-template-service.js";
 import * as workflowPool from "../services/workflow-pool-service.js";
+import * as podPool from "../services/agent-pod-pool.js";
+import { getRuntime } from "../services/container-service.js";
+import { publishWorkflowRunEvent } from "../services/event-bus.js";
+import {
+  beginHold,
+  closeAttachment,
+  recordRunStarted,
+  removeRunDirectory,
+  runAttachJob,
+  settleRun,
+  signalRun,
+  streamRun,
+  type AttachRef,
+  type AttachmentClaim,
+  type AttachmentHold,
+  type AttachedPod,
+  type ParsedRunLine,
+  type RunEnd,
+  type StreamRunResult,
+} from "../services/run-attachment.js";
+import { RunOutputDigest } from "../services/run-output-digest.js";
+import { runHome } from "../utils/harness-config.js";
 import { addUsage } from "../services/run-usage.js";
 import { activityFlusher } from "../services/activity-flush.js";
 import { resolvePodSecrets } from "../services/secret-service.js";
-import { detectAuthFailureInLogs, recordAuthEvent } from "../services/auth-failure-detector.js";
+import { recordAuthEvent } from "../services/auth-failure-detector.js";
 import {
   buildInitialClaudeStreamMessage,
   buildPooledAgentCommand,
@@ -108,6 +129,12 @@ export function startWorkflowWorker() {
   const worker = new Worker(
     "workflow-runs",
     instrumentWorkerProcessor("workflow-worker", async (job) => {
+      // A re-attach (the reconciler's `reattach` action): the run is already
+      // going in its pod; take it over from where its log rows stop.
+      if (job.name === "attach-workflow-run") {
+        await attachWorkflowRun(job);
+        return;
+      }
       const { workflowRunId, provisioningRetryCount = 0 } = job.data as {
         workflowRunId: string;
         provisioningRetryCount?: number;
@@ -116,6 +143,11 @@ export function startWorkflowWorker() {
       let workflowPodId: string | null = null;
       let attemptStartedAt: Date | undefined;
       let executionAttempted = false;
+      // This instance's attachment to the run, from the claim on
+      // (run-attachment.ts); released in the finally. A run this instance
+      // detached from keeps its pod slot for the instance that finishes it.
+      let hold: AttachmentHold | null = null;
+      let detached = false;
 
       try {
         // ── Verify run is in queued state ──────────────────────────────
@@ -215,6 +247,7 @@ export function startWorkflowWorker() {
             updatedAtMatches(workflowRuns.startedAt, attempt),
           );
         log.info("Workflow run claimed, provisioning pod");
+        hold = await beginHold(workflowRunRef(workflowRunId));
 
         // ── Render the prompt (or the command) ────────────────────────
         const command = workflowService.isCommandJob(workflow);
@@ -302,195 +335,51 @@ export function startWorkflowWorker() {
               maxTurns: workflow.maxTurns ?? undefined,
             });
 
+        // Start the agent under the run protocol: the start exec returns
+        // once the supervisor runs; any API instance can attach to the
+        // run's output from here on, and this one does so right away.
         executionAttempted = true;
-        const execSession = await workflowPool.execRunInPod(pod, workflowRunId, agentCommand, env);
-        // The attempt holds a slot on the pod from here; the finally gives it back.
+        const started = await workflowPool.startRunInPod(pod, workflowRunId, agentCommand, env, {
+          // For claude-code, the prompt arrives via stdin (stream-json mode).
+          initialStdin:
+            !command && workflow.agentRuntime === "claude-code"
+              ? buildInitialClaudeStreamMessage(rendered)
+              : "",
+        });
+        // The attempt holds a slot on the pod from here; the finally gives it
+        // back unless the run goes on without this instance.
         workflowPodId = pod.id;
-
-        // For claude-code, deliver prompt via stdin (stream-json mode)
-        if (!command && workflow.agentRuntime === "claude-code") {
-          try {
-            execSession.stdin.write(buildInitialClaudeStreamMessage(rendered));
-          } catch (err) {
-            log.warn({ err }, "Failed to write initial prompt to agent stdin");
-          }
+        if (started.output.trim()) {
+          log.debug({ setup: started.output.slice(-2000) }, "Run setup output");
         }
-
-        // ── Stream stdout with NDJSON parsing ─────────────────────────
-        let allLogs = "";
-        let sessionId: string | undefined;
-        let lineBuf = "";
-
-        // Pick the right event parser for the agent type; a command's output
-        // is plain lines, the last one its exit status.
-        let exitCode: number | undefined;
-        let processExitCode: number | undefined;
-        const agentParser = getEventParser(workflow.agentRuntime);
-        const parseEvent: AgentEventParser = (line, id) => {
-          const end = line.trim().match(/^__OPTIO_RUN_EXIT__:(\d+)$/);
-          if (end) {
-            processExitCode = Number(end[1]);
-            return { entries: [] };
-          }
-          if (!command) return agentParser(line, id);
-          const parsed = parseCommandLine(line, id);
-          if (parsed.exitCode !== undefined) exitCode = parsed.exitCode;
-          return { entries: parsed.entries };
-        };
-
-        // Capture stderr for diagnostics
-        let stderrData = "";
-        (async () => {
-          for await (const chunk of execSession.stderr as AsyncIterable<Buffer>) {
-            stderrData += chunk.toString();
-          }
-        })().catch(() => {});
-
-        // Signs of life, written at most every ACTIVITY_FLUSH_MS.
-        // Only this attempt's: a zombie earlier attempt still streaming must
-        // not keep a stalled retry looking alive.
-        const activity = activityFlusher(
-          (at) => db.update(workflowRuns).set({ lastActivityAt: at }).where(thisAttempt()),
-          ACTIVITY_FLUSH_MS,
-        );
-        // A command can work quietly for a long time; while its stream is
-        // open, it is alive.
-        const keepAlive = command
-          ? setInterval(() => {
-              activity.mark("system");
-              void activity.maybeFlush().catch(() => {});
-            }, ACTIVITY_FLUSH_MS)
-          : null;
-
-        try {
-          for await (const chunk of execSession.stdout as AsyncIterable<Buffer>) {
-            const text = chunk.toString();
-            allLogs += text;
-
-            const parts = (lineBuf + text).split("\n");
-            lineBuf = parts.pop() ?? "";
-
-            for (const line of parts) {
-              if (!line.trim()) continue;
-
-              const parsed = parseEvent(line, workflowRunId);
-              if (parsed.sessionId && !sessionId) {
-                sessionId = parsed.sessionId;
-                await db
-                  .update(workflowRuns)
-                  .set({ sessionId, updatedAt: new Date() })
-                  .where(eq(workflowRuns.id, workflowRunId));
-                log.info({ sessionId }, "Session ID captured");
-              }
-
-              // Close stdin on terminal event so agent exits cleanly
-              if (parsed.isTerminal) {
-                try {
-                  execSession.stdin.end();
-                } catch (err) {
-                  log.warn({ err }, "Failed to close agent stdin on terminal event");
-                }
-              }
-
-              // Persist + publish log entries (historical DB + live WS)
-              for (const entry of parsed.entries) {
-                // Stall detection: meaningful agent events are signs of life.
-                activity.mark(entry.type);
-                await workflowService.appendWorkflowRunLog({
-                  workflowRunId,
-                  stream: "stdout",
-                  content: entry.content,
-                  logType: entry.type,
-                  metadata: entry.metadata,
-                });
-              }
-            }
-            await activity.maybeFlush();
-          }
-        } finally {
-          if (keepAlive) clearInterval(keepAlive);
+        const recorded = await recordRunStarted(workflowRunRef(workflowRunId), started.pid);
+        // Cancelled (or failed by the reconciler) while it was set up: the
+        // agent is nobody's — stop it, and stream it to its end as usual.
+        // Queued again meanwhile: not ours to stream at all.
+        const [current] = await db
+          .select({ state: workflowRuns.state })
+          .from(workflowRuns)
+          .where(thisAttempt());
+        if (!recorded || current?.state !== WorkflowRunState.RUNNING) {
+          await signalRun(pod.id, workflowRunId, "TERM");
         }
-        await activity.flush();
-
-        // Flush remaining buffer
-        if (lineBuf.trim()) {
-          const parsed = parseEvent(lineBuf, workflowRunId);
-          for (const entry of parsed.entries) {
-            await workflowService.appendWorkflowRunLog({
-              workflowRunId,
-              stream: "stdout",
-              content: entry.content,
-              logType: entry.type,
-              metadata: entry.metadata,
-            });
-          }
+        if (!recorded) {
+          log.info("The run moved on while its agent started; stopped the agent");
+          return;
         }
+        log.info({ pid: started.pid }, "Agent started; attaching");
 
-        if (stderrData) {
-          log.warn({ stderrPreview: stderrData.slice(0, 500) }, "Agent stderr output");
-        }
-
-        // ── Parse result and update run ───────────────────────────────
-        if (processExitCode === undefined)
-          throw new Error("Exec stream ended without a process exit receipt");
-        const result = command
-          ? commandResult(exitCode)
-          : getAdapter(workflow.agentRuntime).parseResult(processExitCode, allLogs);
-
-        // Override a nominally-successful result if the agent emitted an auth
-        // failure mid-run. Claude CLIs typically catch the 401 internally and
-        // exit 0, which would otherwise mark the run as completed despite no
-        // useful work being done. (A command's output is its own business.)
-        const authDetection = command ? null : detectAuthFailureInLogs(allLogs);
-        let effectiveSuccess = result.success;
-        let effectiveError = result.error;
-        if (authDetection?.matched) {
-          effectiveSuccess = false;
-          effectiveError = `Agent authentication failed: ${authDetection.excerpt ?? authDetection.pattern}`;
-          log.warn(
-            { pattern: authDetection.pattern, excerpt: authDetection.excerpt },
-            "Auth failure detected in agent output — overriding result",
-          );
-          recordAuthEvent(
-            "claude",
-            authDetection.excerpt ?? authDetection.pattern ?? "auth_failure",
-            "workflow-worker",
-          ).catch(() => {});
-        }
-
-        // This attempt's spend is ADDED to the run's — whatever became of
-        // the run meanwhile (cancelled, retried): it was spent. Not a state
-        // change, so it doesn't touch the reconciler's version.
-        // (A command spends nothing.)
-        const usage = addUsage(workflowRuns, result);
-        if (Object.keys(usage).length > 0) {
-          await db.update(workflowRuns).set(usage).where(eq(workflowRuns.id, workflowRunId));
-        }
-
-        const finished = effectiveSuccess
-          ? await transitionWorkflowRunCas(
-              workflowRunId,
-              WorkflowRunState.RUNNING,
-              WorkflowRunState.COMPLETED,
-              { output: { summary: result.summary }, finishedAt: new Date() },
-              { startedAt: attemptStartedAt },
-            )
-          : await transitionWorkflowRunCas(
-              workflowRunId,
-              WorkflowRunState.RUNNING,
-              WorkflowRunState.FAILED,
-              {
-                errorMessage:
-                  effectiveError ?? (command ? "Command failed" : "Agent execution failed"),
-                finishedAt: new Date(),
-              },
-              { startedAt: attemptStartedAt },
-            );
-        // The reconciler's decideFailed handles the FAILED→QUEUED retry +
-        // exponential backoff; the transition wakes it.
-        if (!finished) log.info("Run moved on while the agent ran; its result is not recorded");
-        else if (effectiveSuccess) log.info("Workflow run completed");
-        else log.warn({ error: effectiveError }, "Workflow run failed");
+        const ended = await finishWorkflowRun({
+          workflowRunId,
+          workflow,
+          command,
+          attemptStartedAt: attempt,
+          pod: { id: pod.id, handle: podPool.podHandle(pod) },
+          log,
+          hold,
+          claim: { consumedBytes: 0, execState: "started" },
+        });
+        if (ended === "detached") detached = true;
       } catch (err) {
         log.error({ err }, "Workflow worker error");
         try {
@@ -559,7 +448,8 @@ export function startWorkflowWorker() {
         }
         throw err;
       } finally {
-        if (workflowPodId) {
+        if (hold) await hold.end({ release: true });
+        if (workflowPodId && !detached) {
           await workflowPool.releaseRun(workflowRunId, workflowPodId, attemptStartedAt);
         }
       }
@@ -567,8 +457,10 @@ export function startWorkflowWorker() {
     {
       ...bullmqOpts,
       concurrency: parseIntEnv("OPTIO_MAX_WORKFLOW_CONCURRENT", 5),
-      lockDuration: 600_000, // 10 min lock (workflows can run long)
-      stalledInterval: 300_000, // check for stalls every 5 min
+      // See task-worker: the job lasts as long as this instance streams the
+      // run; recovery is the attach sweep's, not BullMQ's stall re-delivery.
+      lockDuration: 60_000,
+      stalledInterval: 30_000,
       maxStalledCount: 3,
     },
   );
@@ -582,4 +474,262 @@ export function startWorkflowWorker() {
   });
 
   return worker;
+}
+
+// ── The run protocol: attaching to a Job run's agent and finishing the run ───
+
+/** The attachment columns of a Job run's row (run-attachment.ts). */
+export function workflowRunRef(workflowRunId: string): AttachRef {
+  return { kind: "work-run", id: workflowRunId };
+}
+
+interface FinishWorkflowRunInput {
+  workflowRunId: string;
+  workflow: Workflow;
+  /** A command Job: plain output lines, the last one its exit status. */
+  command: boolean;
+  /** The attempt this instance streams: every state write is conditional on it. */
+  attemptStartedAt: Date;
+  pod: AttachedPod;
+  log: typeof logger;
+  hold: AttachmentHold;
+  /** Where the run's log rows reach, and whether an earlier holder already recorded its exit. */
+  claim: AttachmentClaim;
+}
+
+/**
+ * Streams a started Job run to its end and records its result — the one
+ * path for the job that started the run and for a job that attaches to it
+ * later. Returns "detached" when this instance stopped streaming without
+ * the run ending (shutdown, or another instance took the run).
+ */
+async function finishWorkflowRun(input: FinishWorkflowRunInput): Promise<RunEnd> {
+  const { workflowRunId, workflow, command, attemptStartedAt, pod, log, hold } = input;
+  const ref = workflowRunRef(workflowRunId);
+  const runtime = getRuntime();
+  const runDir = runHome(workflowRunId).podDir;
+  const thisAttempt = () =>
+    and(
+      eq(workflowRuns.id, workflowRunId),
+      updatedAtMatches(workflowRuns.startedAt, attemptStartedAt),
+    );
+
+  // Derivations: rebuilt from byte 0 on every attach, never persisted. An
+  // agent's output is read for its result as it streams; a command's is
+  // plain lines, the last one its exit status (the receipt).
+  let exitCode: number | undefined;
+  const agentParser = getEventParser(workflow.agentRuntime);
+  const parse = (line: string): ParsedRunLine => {
+    if (!command) return agentParser(line, workflowRunId);
+    const parsed = parseCommandLine(line, workflowRunId);
+    if (parsed.exitCode !== undefined) exitCode = parsed.exitCode;
+    return { entries: parsed.entries };
+  };
+  const digest = command ? null : new RunOutputDigest(workflow.agentRuntime);
+
+  // Signs of life, written at most every ACTIVITY_FLUSH_MS.
+  // Only this attempt's: a zombie earlier attempt still streaming must
+  // not keep a stalled retry looking alive.
+  const activity = activityFlusher(
+    (at) => db.update(workflowRuns).set({ lastActivityAt: at }).where(thisAttempt()),
+    ACTIVITY_FLUSH_MS,
+  );
+  // A command can work quietly for a long time; while its stream is
+  // open, it is alive.
+  const keepAlive = command
+    ? setInterval(() => {
+        activity.mark("system");
+        void activity.maybeFlush().catch(() => {});
+      }, ACTIVITY_FLUSH_MS)
+    : null;
+
+  let streamed: StreamRunResult;
+  try {
+    streamed = await streamRun({
+      runtime,
+      handle: pod.handle,
+      ref,
+      runDir,
+      hold,
+      consumedBytes: input.claim.consumedBytes,
+      log,
+      parse,
+      derive: digest ? (line) => digest.push(line) : undefined,
+      async onSession(sessionId) {
+        await db
+          .update(workflowRuns)
+          .set({ sessionId, updatedAt: new Date() })
+          .where(eq(workflowRuns.id, workflowRunId));
+        log.info({ sessionId }, "Session ID captured");
+      },
+      // Stall detection: meaningful agent events are signs of life.
+      onEntries(entries) {
+        for (const entry of entries) activity.mark(entry.type);
+      },
+      // The live frame (WS) for the stored row.
+      publish: (row) =>
+        publishWorkflowRunEvent({
+          type: "workflow_run:log",
+          workflowRunId,
+          stream: (row.stream as "stdout" | "stderr") ?? "stdout",
+          content: row.content,
+          timestamp: row.timestamp?.toISOString() ?? new Date().toISOString(),
+          logType: row.logType ?? undefined,
+          metadata: row.metadata ?? undefined,
+        }),
+      onChunk: () => activity.maybeFlush(),
+    });
+  } finally {
+    if (keepAlive) clearInterval(keepAlive);
+  }
+  await activity.flush();
+  const { outcome } = streamed;
+
+  if (outcome.kind === "taken" || outcome.kind === "detached") {
+    log.info({ outcome: outcome.kind }, "Detached from the run; it continues in its pod");
+    return "detached";
+  }
+
+  if (outcome.kind === "lost") {
+    if ((await settleRun(ref)) === "taken") return "detached";
+    await failLostRun(
+      workflowRunId,
+      attemptStartedAt,
+      "the run's process and output are gone (the pod restarted while it ran)",
+      log,
+    );
+    await closeAttachment(ref);
+    return "finished";
+  }
+
+  // ── Parse result and update run ───────────────────────────────
+  // The agent exited and every line of its output is a log row; its
+  // result was read as the output streamed.
+  const verdict = digest ? digest.finish(outcome.code) : null;
+  const result = verdict ? verdict.result : commandResult(exitCode);
+
+  // Override a nominally-successful result if the agent emitted an auth
+  // failure mid-run. Claude CLIs typically catch the 401 internally and
+  // exit 0, which would otherwise mark the run as completed despite no
+  // useful work being done. (A command's output is its own business.)
+  const authDetection = verdict?.auth ?? null;
+  let effectiveSuccess = result.success;
+  let effectiveError = result.error;
+  if (authDetection?.matched) {
+    effectiveSuccess = false;
+    effectiveError = `Agent authentication failed: ${authDetection.excerpt ?? authDetection.pattern}`;
+    log.warn(
+      { pattern: authDetection.pattern, excerpt: authDetection.excerpt },
+      "Auth failure detected in agent output — overriding result",
+    );
+    recordAuthEvent(
+      "claude",
+      authDetection.excerpt ?? authDetection.pattern ?? "auth_failure",
+      "workflow-worker",
+    ).catch(() => {});
+  }
+
+  // Record the exit with this attempt's spend ADDED to the run's — once,
+  // whichever instance gets here (`settleRun` is a CAS on the exit), and
+  // whatever became of the run meanwhile (cancelled): it was spent. Not a
+  // state change, so it leaves the reconciler's version alone. (A command
+  // spends nothing.)
+  if ((await settleRun(ref, addUsage(workRuns, result))) === "taken") return "detached";
+
+  const finished = effectiveSuccess
+    ? await transitionWorkflowRunCas(
+        workflowRunId,
+        WorkflowRunState.RUNNING,
+        WorkflowRunState.COMPLETED,
+        { output: { summary: result.summary }, finishedAt: new Date() },
+        { startedAt: attemptStartedAt },
+      )
+    : await transitionWorkflowRunCas(
+        workflowRunId,
+        WorkflowRunState.RUNNING,
+        WorkflowRunState.FAILED,
+        {
+          errorMessage: effectiveError ?? (command ? "Command failed" : "Agent execution failed"),
+          finishedAt: new Date(),
+        },
+        { startedAt: attemptStartedAt },
+      );
+  // The reconciler's decideFailed handles the FAILED→QUEUED retry +
+  // exponential backoff; the transition wakes it.
+  if (!finished) log.info("Run moved on while the agent ran; its result is not recorded");
+  else if (effectiveSuccess) log.info("Workflow run completed");
+  else log.warn({ error: effectiveError }, "Workflow run failed");
+
+  // The run is over and every byte of its output is a log row: its
+  // directory in the pod (output, stdin, the runtime's config) goes.
+  await removeRunDirectory(runtime, pod.handle, runDir);
+  await closeAttachment(ref);
+  return "finished";
+}
+
+/** Fails a Job run whose agent is gone with its pod (the pod-death path). */
+async function failLostRun(
+  workflowRunId: string,
+  attemptStartedAt: Date,
+  detail: string,
+  log: typeof logger,
+): Promise<void> {
+  const failed = await transitionWorkflowRunCas(
+    workflowRunId,
+    WorkflowRunState.RUNNING,
+    WorkflowRunState.FAILED,
+    {
+      errorMessage: `Execution outcome unknown: ${detail}. Inspect before retrying.`,
+      recoveryRequired: true,
+      finishedAt: new Date(),
+    },
+    { startedAt: attemptStartedAt },
+  );
+  if (!failed) log.info("Run moved on while the agent ran; its loss is not recorded");
+  else log.warn({ detail }, "Run lost with its pod");
+}
+
+/**
+ * An `attach-workflow-run` job (the reconciler's `reattach` action): take
+ * the run if nobody holds it and finish it from where its log rows stop.
+ */
+async function attachWorkflowRun(job: { id?: string; data: unknown }): Promise<void> {
+  const { workflowRunId } = job.data as { workflowRunId: string };
+  const log = logger.child({ workflowRunId, jobId: job.id, attach: true });
+  const run = await workflowService.getWorkflowRun(workflowRunId);
+  if (!run || run.state !== WorkflowRunState.RUNNING || run.localTerminalId || !run.startedAt) {
+    log.info({ state: run?.state }, "Skipping attach — the run is not an active pod run");
+    return;
+  }
+  const workflow = await workflowService.getWorkflow(run.workflowId);
+  if (!workflow) {
+    log.warn("Skipping attach — the Job is gone");
+    return;
+  }
+  const attemptStartedAt = run.startedAt;
+  try {
+    await runAttachJob({
+      ref: workflowRunRef(workflowRunId),
+      log,
+      podId: run.podId ?? null,
+      onPodGone: (detail) => failLostRun(workflowRunId, attemptStartedAt, detail, log),
+      finish: (pod, hold, claim) =>
+        finishWorkflowRun({
+          workflowRunId,
+          workflow,
+          command: workflowService.isCommandJob(workflow),
+          attemptStartedAt,
+          pod,
+          log,
+          hold,
+          claim,
+        }),
+      afterFinish: async (podId) => {
+        if (podId) await workflowPool.releaseRun(workflowRunId, podId, attemptStartedAt);
+      },
+    });
+  } catch (err) {
+    log.error({ err }, "Attach failed; the run stays for the next attach");
+    throw err;
+  }
 }

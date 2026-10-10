@@ -1,20 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   attachRunScript,
   buildEnvExports,
-  buildPooledExecScript,
   buildPooledStartScript,
   CHECKOUT_REPO,
   deliverStdinScript,
@@ -293,57 +284,6 @@ describe("CHECKOUT_REPO", () => {
       ).toBe(second);
     } finally {
       rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("buildPooledExecScript", () => {
-  const base = { env: { A: "1" }, workDir: "/workspace/turns/t1", agentCommand: ["run-agent"] };
-
-  it("runs in the run's own directory, after its setup files and commands", () => {
-    const script = buildPooledExecScript(base);
-    expect(script).toContain(`mkdir -p '/workspace/turns/t1'`);
-    expect(script).toContain(`cd '/workspace/turns/t1'`);
-    expect(script.indexOf(WRITE_SETUP_FILES[0])).toBeLessThan(script.indexOf("run-agent"));
-    expect(script.indexOf(RUN_WORK_SETUP_COMMANDS[0])).toBeLessThan(script.indexOf("run-agent"));
-  });
-
-  it("with a repo, works in the pod's one checkout of it", () => {
-    const script = buildPooledExecScript({ ...base, checkout: true });
-    expect(script).toContain(CHECKOUT_REPO.join("\n"));
-    expect(script).toContain(`cd '${POOLED_CHECKOUT_DIR}'`);
-    expect(script).not.toContain("/workspace/turns/t1");
-  });
-
-  it("removes the run's home when the script exits, whatever the agent did", () => {
-    const dir = mkdtempSync(join(tmpdir(), "optio-pooled-"));
-    try {
-      const home = join(dir, "runs", "r1");
-      const script = buildPooledExecScript({
-        env: { OPTIO_RUN_HOME: home },
-        workDir: join(dir, "work"),
-        agentCommand: ['mkdir -p "$OPTIO_RUN_HOME"', 'touch "$OPTIO_RUN_HOME/x"', "exit 3"],
-      })
-        .replaceAll("/home/agent/optio/runs", `${dir}/runs`)
-        // No pod: stand in for its readiness marker and lock file.
-        .replace(
-          "for i in $(seq 1 120); do [ -f /workspace/.ready ] && break; sleep 1; done",
-          "true",
-        )
-        .replace("[ -f /workspace/.ready ] || {", "true || {")
-        .replace(/exec 7>\/workspace\/\.run-[0-9a-f]+\.lock/, `exec 7>${dir}/lock`)
-        // flock is not on every development machine.
-        .replace(/^flock -n 7 .*$/m, "true");
-      let status = 0;
-      try {
-        runBash(script, dir);
-      } catch (err) {
-        status = (err as { status: number }).status;
-      }
-      expect(status).toBe(3);
-      expect(existsSync(home)).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

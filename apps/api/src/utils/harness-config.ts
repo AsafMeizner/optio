@@ -35,8 +35,9 @@
  * agent's home, and Codex and Gemini write session logs next to their
  * settings, which must never land in a checkout. Every run gets
  * `/home/agent/optio/runs/<run id>` (`OPTIO_RUN_HOME`), named after the run
- * so a retry or a resume lands in the same place, and removed when the run's
- * script exits (`REMOVE_RUN_HOME`) and again with the run's worktree
+ * so a retry or a resume lands in the same place, and removed by the
+ * instance that finishes the run (run-attachment.ts), by the repo-cleanup
+ * worker's run-home sweep, and again with the run's worktree
  * (`removeRunHome`). Files whose only sane place is the working directory
  * (Cursor's) are merged into the repo's own file when it has one and kept
  * out of git by the setup-file writer.
@@ -84,12 +85,6 @@ export function removeRunHome(runId: string): string {
   const path = runHomePath(runId);
   return path ? `rm -rf ${shellQuote(path)}` : "true";
 }
-
-/**
- * Removes the run's own home when its script exits. Guarded to the runs
- * directory, and free of single quotes so it fits inside a `trap '…' EXIT`.
- */
-export const REMOVE_RUN_HOME = `case "\${${OPTIO_RUN_HOME}:-}" in ${RUN_HOMES_DIR}/*) rm -rf "\$${OPTIO_RUN_HOME}";; esac`;
 
 /** Script lines that point Gemini at the run's own home, when it has one. */
 export const EXPORT_GEMINI_HOME: readonly string[] = [

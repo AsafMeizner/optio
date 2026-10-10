@@ -18,12 +18,14 @@ import { and, desc, eq, isNotNull, lt } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { agentPods, persistentAgents } from "../db/schema.js";
 import { getRuntime } from "./container-service.js";
-import type { ContainerSpec, ExecSession } from "@optio/shared";
+import type { ContainerSpec } from "@optio/shared";
 import { PersistentAgentPodLifecycle, parseIntEnv, type RepoImageConfig } from "@optio/shared";
 import { logger } from "../logger.js";
 import { resolveImage } from "./repo-pool-service.js";
 import * as podPool from "./agent-pod-pool.js";
-import { buildPooledExecScript, KEEP_POD_ALIVE } from "../utils/pod-env.js";
+import { buildPooledStartScript, KEEP_POD_ALIVE } from "../utils/pod-env.js";
+import { runHome } from "../utils/harness-config.js";
+import type { RunStartResult } from "@optio/container-runtime";
 
 const POD_PROVISION_TIMEOUT_MS = parseIntEnv("OPTIO_PERSISTENT_AGENT_POD_PROVISION_MS", 120_000);
 
@@ -208,24 +210,34 @@ function buildInitScript(): string {
 }
 
 /**
- * Execute a turn inside the agent's pod. Each turn isolates its working
- * directory under `/workspace/turns/<turnId>` so multiple turns over time
- * leave a clean per-turn artifact trail — unless the agent has a repo: then
- * every turn works in the pod's one checkout of it (`OPTIO_REPO_URL`).
+ * Starts a turn's agent in the agent's pod under the run protocol
+ * (run-protocol.ts): each turn works in `/workspace/turns/<turnId>` —
+ * unless the agent has a repo: then every turn works in the pod's one
+ * checkout of it (`OPTIO_REPO_URL`) — and the agent is launched under its
+ * supervisor; the exec returns once it runs, so any API instance can attach
+ * to the turn later. `initialStdin` is the turn's first stdin (Claude's
+ * first stream-json message).
  */
-export async function execTurnInPod(
-  pod: PersistentAgentPodHandle,
+export async function startTurnInPod(
+  pod: Pick<PersistentAgentPodHandle, "podId" | "podName">,
   turnId: string,
   agentCommand: string[],
   env: Record<string, string>,
-): Promise<ExecSession> {
-  const script = buildPooledExecScript({
+  opts: { initialStdin: string },
+): Promise<RunStartResult> {
+  const script = buildPooledStartScript({
     env: { ...env, OPTIO_PERSISTENT_AGENT_TURN_ID: turnId },
+    runId: turnId,
     workDir: `/workspace/turns/${turnId}`,
     agentCommand,
     checkout: !!env.OPTIO_REPO_URL,
   });
-  return getRuntime().exec(podPool.podHandle(pod), ["bash", "-c", script], { tty: false });
+  return getRuntime().startRun(podPool.podHandle(pod), {
+    runId: turnId,
+    runDir: runHome(turnId).podDir,
+    script,
+    initialStdin: opts.initialStdin,
+  });
 }
 
 /**
