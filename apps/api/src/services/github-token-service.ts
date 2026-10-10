@@ -8,6 +8,7 @@ import {
   deleteSecret,
 } from "./secret-service.js";
 import { isGitHubAppConfigured, getInstallationToken } from "./github-app-service.js";
+import { LeaseLostError, leaseHolder, withLease } from "./lease-service.js";
 import { logger } from "../logger.js";
 
 const refreshLocks = new Map<string, Promise<string>>();
@@ -65,16 +66,80 @@ async function getTokenForUser(userId: string, workspaceId?: string | null): Pro
   }
 }
 
+/**
+ * One refresh of a user's token at a time, across API instances. GitHub
+ * rotates the refresh token on use, so two instances refreshing the same
+ * user at once would leave one of them with a dead refresh token: the
+ * refresh runs under the lease `github-refresh:<userId>`; an instance that
+ * finds it held waits for the holder and then reads the token the holder
+ * stored, refreshing itself only if that token still isn't fresh. Within
+ * one instance concurrent callers share one promise, as before.
+ */
 async function refreshUserToken(userId: string, workspaceId?: string | null): Promise<string> {
   const existing = refreshLocks.get(userId);
   if (existing) return existing;
 
-  const refreshPromise = doRefreshUserToken(userId, workspaceId);
+  const refreshPromise = refreshUserTokenAcrossInstances(userId, workspaceId);
   refreshLocks.set(userId, refreshPromise);
   try {
     return await refreshPromise;
   } finally {
     refreshLocks.delete(userId);
+  }
+}
+
+const REFRESH_LEASE_TTL_MS = 30_000;
+const REFRESH_WAIT_MS = 30_000;
+
+async function refreshUserTokenAcrossInstances(
+  userId: string,
+  workspaceId?: string | null,
+): Promise<string> {
+  const key = `github-refresh:${userId}`;
+  const deadline = Date.now() + REFRESH_WAIT_MS;
+  for (;;) {
+    let result: string | null;
+    try {
+      result = await withLease(key, () => doRefreshUserToken(userId, workspaceId), {
+        ttlMs: REFRESH_LEASE_TTL_MS,
+      });
+    } catch (err) {
+      if (!(err instanceof LeaseLostError)) throw err;
+      // The lease lapsed under the refresh (the database away for longer
+      // than the TTL). Whatever the refresh did is stored: use it if it
+      // landed, else go round again.
+      logger.warn({ userId }, "GitHub token refresh outlived its lease");
+      const stored = await storedFreshToken(userId);
+      if (stored) return stored;
+      if (Date.now() < deadline) continue;
+      throw err;
+    }
+    if (result !== null) return result;
+
+    // Another instance is refreshing this user: wait for it to let go, then
+    // use what it stored.
+    await new Promise((r) => setTimeout(r, 250));
+    if (await leaseHolder(key)) {
+      if (Date.now() < deadline) continue;
+      logger.warn({ userId }, "Waited too long for another instance's GitHub token refresh");
+      return doRefreshUserToken(userId, workspaceId);
+    }
+    const stored = await storedFreshToken(userId);
+    if (stored) return stored;
+    // The other instance's refresh didn't leave a fresh token: refresh ourselves.
+  }
+}
+
+/** The user's stored access token while it is fresh, else null. */
+async function storedFreshToken(userId: string): Promise<string | null> {
+  try {
+    const accessToken = await retrieveSecret("GITHUB_USER_ACCESS_TOKEN", `user:${userId}`);
+    const expiresAt = await retrieveSecret("GITHUB_USER_TOKEN_EXPIRES_AT", `user:${userId}`);
+    return Date.now() < new Date(expiresAt).getTime() - TOKEN_REFRESH_BUFFER_MS
+      ? accessToken
+      : null;
+  } catch {
+    return null;
   }
 }
 

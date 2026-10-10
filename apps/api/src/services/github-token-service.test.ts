@@ -242,6 +242,13 @@ describe("github-token-service", () => {
       getInstallationToken: () => mockGetInstToken(),
     }));
 
+    // The refresh runs under a cross-instance lease; here it is always free.
+    vi.doMock("./lease-service.js", () => ({
+      withLease: (_key: string, fn: () => Promise<unknown>) => fn(),
+      leaseHolder: async () => null,
+      LeaseLostError: class LeaseLostError extends Error {},
+    }));
+
     const mod = await import("./github-token-service.js");
     getGitHubToken = mod.getGitHubToken;
     storeUserGitHubTokens = mod.storeUserGitHubTokens;
@@ -253,6 +260,7 @@ describe("github-token-service", () => {
     vi.doUnmock("../db/schema.js");
     vi.doUnmock("./secret-service.js");
     vi.doUnmock("./github-app-service.js");
+    vi.doUnmock("./lease-service.js");
     process.env = { ...originalEnv };
     globalThis.fetch = originalFetch;
   });

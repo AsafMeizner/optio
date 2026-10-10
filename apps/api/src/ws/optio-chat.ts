@@ -15,6 +15,9 @@ import { executeToolCall, truncateToolResult } from "../services/optio-tool-exec
 import { resolveLiveModelId } from "../services/agent-options-service.js";
 import { acceptWs } from "./ws-connection.js";
 import { isMessageWithinSizeLimit, WS_CLOSE_MESSAGE_TOO_LARGE } from "./ws-limits.js";
+import { randomUUID } from "node:crypto";
+import { INSTANCE_ID } from "../services/instance.js";
+import { acquireLease, releaseLease, renewLease } from "../services/lease-service.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -29,12 +32,17 @@ const DEFAULT_MAX_TURNS = 10;
 
 // ─── Per-user concurrency tracking ──────────────────────────────────────────
 
-/** Map of userId → active WebSocket (only one active conversation per user). */
-const activeConnections = new Map<string, WebSocket>();
+/**
+ * One active conversation per user, across every API instance: the socket
+ * holds the lease `chat:<userId>` (services/lease-service.ts) while open,
+ * renewed on an interval, released on close. A second socket for the same
+ * user — on this instance or another — finds the lease held.
+ */
+const CHAT_LEASE_TTL_MS = 90_000;
+const CHAT_LEASE_RENEW_MS = 30_000;
 
-/** @internal Reset active connections — only for tests. */
-export function _resetActiveConnections(): void {
-  activeConnections.clear();
+export function chatLeaseKey(userId: string): string {
+  return `chat:${userId}`;
 }
 
 // ─── Anthropic API types ────────────────────────────────────────────────────
@@ -416,8 +424,12 @@ export async function optioChatWs(app: FastifyInstance) {
     }
     if (conn.closed) return;
 
-    // Enforce one active conversation per user
-    if (activeConnections.has(userId)) {
+    // Enforce one active conversation per user (on any instance). Each
+    // socket is its own lease holder, so a second socket of the same user
+    // on this instance can't extend the first one's lease.
+    const leaseKey = chatLeaseKey(userId);
+    const leaseHolder = `${INSTANCE_ID}:${randomUUID()}`;
+    if (!(await acquireLease(leaseKey, CHAT_LEASE_TTL_MS, leaseHolder))) {
       socket.send(
         JSON.stringify({
           type: "error",
@@ -427,12 +439,25 @@ export async function optioChatWs(app: FastifyInstance) {
       socket.close(4409, "Concurrent conversation");
       return conn.discard();
     }
+    if (conn.closed) {
+      await releaseLease(leaseKey, leaseHolder).catch(() => {});
+      return;
+    }
 
-    activeConnections.set(userId, socket as unknown as WebSocket);
+    const renew = setInterval(() => {
+      renewLease(leaseKey, CHAT_LEASE_TTL_MS, leaseHolder)
+        .then((ok) => {
+          if (!ok) {
+            log.warn("Optio chat lease lost; closing");
+            socket.close(4409, "Concurrent conversation");
+          }
+        })
+        .catch(() => {});
+    }, CHAT_LEASE_RENEW_MS);
+    renew.unref?.();
     conn.onClose(() => {
-      if (activeConnections.get(userId) === (socket as unknown as WebSocket)) {
-        activeConnections.delete(userId);
-      }
+      clearInterval(renew);
+      releaseLease(leaseKey, leaseHolder).catch(() => {});
     });
     log.info("Optio chat connected");
 

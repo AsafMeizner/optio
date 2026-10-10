@@ -112,6 +112,7 @@ export async function configRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
+      // Waits for an apply running on another instance (the default).
       const result = await syncEnvSource({ dryRun: req.query.dryRun === "true" });
       if (!result) {
         return reply
