@@ -671,6 +671,10 @@ export const sessionChatTurns = pgTable(
     promptHash: text("prompt_hash").notNull(),
     state: text("state").$type<"running" | "completed" | "interrupted">().notNull(),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    // When the turn settled. Set on a turn that is still `running`, it means
+    // "interrupt requested at" (session-turn-service.ts `requestTurnInterrupt`):
+    // the instance running the turn stops it on its next control poll, and
+    // `finishSessionTurn` overwrites the time when it does.
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
   (t) => [

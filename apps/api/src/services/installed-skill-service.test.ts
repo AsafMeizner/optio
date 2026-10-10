@@ -18,6 +18,10 @@ vi.mock("../db/schema.js", () => ({
     resolvedSha: "installed_skills.resolved_sha",
     agentTypes: "installed_skills.agent_types",
   },
+  installedSkillFiles: {
+    skillId: "installed_skill_files.skill_id",
+    path: "installed_skill_files.path",
+  },
 }));
 
 import { db } from "../db/client.js";
@@ -159,14 +163,30 @@ describe("installed-skill-service", () => {
   });
 
   describe("recordSyncResult", () => {
-    it("writes manifest, sha, and clears error on success", async () => {
+    it("writes the files, manifest and sha and clears the error in one transaction on success", async () => {
       let captured: any;
-      (db.update as any) = vi.fn().mockReturnValue({
-        set: vi.fn().mockImplementation((vals: any) => {
-          captured = vals;
-          return { where: vi.fn().mockResolvedValue(undefined) };
+      let deletedFrom: unknown;
+      let inserted: any[] = [];
+      const tx = {
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(async (w: unknown) => {
+            deletedFrom = w;
+          }),
         }),
-      });
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((rows: any[]) => {
+            inserted = rows;
+            return { onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) };
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((vals: any) => {
+            captured = vals;
+            return { where: vi.fn().mockResolvedValue(undefined) };
+          }),
+        }),
+      };
+      (db as any).transaction = vi.fn().mockImplementation(async (fn: any) => fn(tx));
 
       await recordSyncResult("skill-1", {
         ok: true,
@@ -174,7 +194,26 @@ describe("installed-skill-service", () => {
         manifest: { files: [{ relativePath: "SKILL.md", sizeBytes: 10, executable: false }] },
         hasExecutableFiles: false,
         totalSizeBytes: 10,
+        files: [{ relativePath: "SKILL.md", content: Buffer.from("# hi"), executable: false }],
       });
+      expect(deletedFrom).toBeDefined();
+      expect(inserted).toEqual([
+        {
+          skillId: "skill-1",
+          path: "SKILL.md",
+          content: Buffer.from("# hi"),
+          executable: false,
+          resolvedSha: "abc",
+        },
+        // The sentinel: synced at this commit, whatever the files are.
+        {
+          skillId: "skill-1",
+          path: ".optio-synced",
+          content: Buffer.from("abc"),
+          executable: false,
+          resolvedSha: "abc",
+        },
+      ]);
       expect(captured.resolvedSha).toBe("abc");
       expect(captured.lastSyncError).toBeNull();
       expect(captured.cachedManifest.files).toHaveLength(1);

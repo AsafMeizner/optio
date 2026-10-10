@@ -99,6 +99,14 @@ Back them up if unpushed work matters. Inventory and remove retained claims only
 after confirming their work is no longer needed. Bare pods/pooled Jobs do not
 provide the same workspace persistence as repo StatefulSets.
 
+The API itself needs no volume. Marketplace skills are synced into PostgreSQL
+(`installed_skill_files`) and runs read them from there, so the chart no longer
+has the former `installedSkillsCache` ReadWriteOnce PVC (a value left in an
+override file is ignored). `helm upgrade` deletes the
+`<release>-installed-skills-cache` claim if it was enabled; nothing in it needs a
+backup, because the first sync after the upgrade re-clones each skill from its
+source and writes its files to the database.
+
 Agents use a separate service account, with no API-server RBAC and no automounted
 Kubernetes token. Configure `agent.serviceAccount.annotations` for an intentionally
 shared agent IAM role if required. Do not give it the API's permissions. An agent

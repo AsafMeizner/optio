@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
   users,
@@ -23,6 +23,7 @@ import {
   claimSessionTurn,
   finishSessionTurn,
   recoverSessionTurns,
+  turnLeaseKey,
 } from "./session-turn-service.js";
 
 vi.mock("./oauth/index.js", () => ({ isAuthDisabled: () => false }));
@@ -150,7 +151,12 @@ describe("durable turn receipts", () => {
   it("preserves an uncertain receipt across API recovery, requiring a new explicit prompt", async () => {
     const session = await insertSession();
     const requestId = randomUUID();
-    expect((await claimSessionTurn(session.id, requestId, "create something")).accepted).toBe(true);
+    const claim = await claimSessionTurn(session.id, requestId, "create something");
+    expect(claim.accepted).toBe(true);
+    // The instance running it went away: its turn lease lapses, then recovery settles it.
+    await db.execute(
+      sql`UPDATE leases SET expires_at = now() - interval '1 second' WHERE key = ${turnLeaseKey(claim.accepted ? claim.turn.id : "")}`,
+    );
     await recoverSessionTurns();
     expect(await claimSessionTurn(session.id, requestId, "create something")).toMatchObject({
       accepted: false,
