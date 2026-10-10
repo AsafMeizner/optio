@@ -60,7 +60,10 @@ export type RunExit =
 export interface RunAttachment {
   /** The output file's bytes from `fromByte` on, exactly, as they arrive. */
   output: Readable;
-  /** Resolves once `output` has ended. */
+  /**
+   * How the attachment ended. Settles only after `output` has ended, so a
+   * consumer that awaits it has seen every byte the attachment delivered.
+   */
   exit: Promise<RunExit>;
   /** Detach: sever the exec. The agent keeps running. */
   close(): void;

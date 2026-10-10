@@ -896,7 +896,7 @@ describe("KubernetesContainerRuntime run protocol", () => {
     const play: Array<{ stdout: string; stderr: string }> = [
       { stdout: "[optio] ready\n__OPTIO_RUN_STARTED__:12\n", stderr: "" },
       { stdout: "line\n", stderr: "__OPTIO_RUN_EXIT__:0\n" },
-      { stdout: "", stderr: "" },
+      { stdout: "__OPTIO_STDIN_DELIVERED__\n", stderr: "" },
       { stdout: "killed\n", stderr: "" },
     ];
     vi.spyOn(runtime, "exec").mockImplementation(async (_h, command) => {
@@ -942,9 +942,9 @@ describe("KubernetesContainerRuntime run protocol", () => {
       ["bash", "-c"],
       ["bash", "-c"],
     ]);
-    expect(calls[0][2]).toBe("export OPTIO_RUN_STDIN='x\n'\necho hi");
+    expect(calls[0][2]).toBe("exec 3<&0 0</dev/null\nexport OPTIO_RUN_STDIN_BYTES=2\necho hi");
     expect(calls[1][2]).toContain("tail -c +6 --pid=");
-    expect(calls[2][2]).toContain("OPTIO_STDIN_LINE='hello'");
+    expect(calls[2][2]).toContain('head -c 6 >> "$d/stdin.ndjson"');
     expect(calls[3][2]).toContain("kill -TERM -- -");
   });
 });

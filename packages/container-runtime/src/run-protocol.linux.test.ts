@@ -1,21 +1,24 @@
 /**
  * The protocol scripts, run for real: start a supervisor with bash, attach
- * with `tail --pid`, deliver stdin, close it with the sentinel, read the
- * exit, kill a hanging run. Needs GNU coreutils and util-linux (`setsid`),
- * so it runs on Linux (CI) and skips on macOS, where the Docker check in
- * docs/plans/scale-out.md covers the same ground by hand.
+ * with `tail --pid`, deliver stdin over the exec's stdin, close it with the
+ * sentinel, read the exit, kill a hanging run, and refuse a stale pid file.
+ * Needs GNU coreutils, util-linux (`setsid`) and /proc, so it runs on Linux
+ * (CI) and skips on macOS, where the Docker check in docs/plans/scale-out.md
+ * covers the same ground.
  */
 import { describe, expect, it } from "vitest";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   RUN_FILES,
+  STDIN_DELIVERED_MARKER,
   STDIN_EOF_SENTINEL,
   attachRunScript,
   deliverStdinScript,
   killRunScript,
+  startRunPrelude,
   superviseAgent,
 } from "./run-protocol.js";
 
@@ -30,12 +33,34 @@ const describeLinux = hasGnuTools() ? describe : describe.skip;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function bash(script: string, env: Record<string, string> = {}): string {
+/** Runs a script with bash, feeding `input` on stdin, returning stdout. */
+function bash(script: string, input: Buffer | string = ""): string {
   return execFileSync("bash", ["-c", script], {
     encoding: "utf8",
-    env: { ...process.env, ...env },
-    stdio: ["ignore", "pipe", "pipe"],
+    input,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
   });
+}
+
+/** The start script as the runtime runs it: prelude + script, stdin bytes fed. */
+function start(runDir: string, agent: string[], initialStdin: string, opts = {}): number {
+  const bytes = Buffer.from(initialStdin, "utf8");
+  const script = [
+    ...startRunPrelude(bytes.length),
+    "set -e",
+    ...superviseAgent(runDir, agent, opts),
+  ].join("\n");
+  const out = bash(script, bytes);
+  const pid = Number(out.match(/__OPTIO_RUN_STARTED__:(\d+)/)?.[1]);
+  expect(pid).toBeGreaterThan(0);
+  return pid;
+}
+
+function deliver(runDir: string, line: string): void {
+  const bytes = Buffer.from(`${line}\n`, "utf8");
+  const out = bash(deliverStdinScript(runDir, bytes.length), bytes);
+  expect(out).toContain(STDIN_DELIVERED_MARKER);
 }
 
 /** Runs the attach script, resolving with stdout, stderr once it ends. */
@@ -51,33 +76,35 @@ function attach(script: string): Promise<{ stdout: string; stderr: string }> {
   });
 }
 
+const ECHO_AGENT = [
+  "n=0",
+  `while IFS= read -r l; do n=$((n+1)); printf '{"len":%d,"n":%d}\\n' "\${#l}" "$n"; done`,
+  `printf '{"done":true,"n":%d}\\n' "$n"`,
+  "exit 7",
+];
+
 describeLinux("the run protocol scripts under bash", () => {
   it("starts a detached agent, streams its output, feeds stdin until the sentinel, records its exit", async () => {
     const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
     const runDir = join(dir, "run");
     try {
-      const agent = [
-        "n=0",
-        `while IFS= read -r l; do n=$((n+1)); printf '{"echo":%s,"n":%d}\\n' "$l" "$n"; done`,
-        `printf '{"done":true,"n":%d}\\n' "$n"`,
-        "exit 7",
-      ];
-      const started = bash(["set -e", ...superviseAgent(runDir, agent)].join("\n"), {
-        OPTIO_RUN_STDIN: '{"first":true}\n',
-      });
-      const pid = Number(started.match(/__OPTIO_RUN_STARTED__:(\d+)/)?.[1]);
-      expect(pid).toBeGreaterThan(0);
-      expect(readFileSync(join(runDir, RUN_FILES.pid), "utf8").trim()).toBe(String(pid));
+      const pid = start(runDir, ECHO_AGENT, '{"first":true}\n');
+      const [filePid, startTime] = readFileSync(join(runDir, RUN_FILES.pid), "utf8")
+        .trim()
+        .split(" ");
+      expect(Number(filePid)).toBe(pid);
+      expect(startTime).toMatch(/^\d+$/);
 
       const attached = attach(attachRunScript(runDir, 0));
       await sleep(300);
-      bash(`set -e\n${deliverStdinScript(runDir, '{"msg":"second"}')}`);
+      deliver(runDir, '{"msg":"second"}');
       await sleep(300);
-      bash(`set -e\n${deliverStdinScript(runDir, STDIN_EOF_SENTINEL)}`);
+      const sentAt = Date.now();
+      deliver(runDir, STDIN_EOF_SENTINEL);
       const { stdout, stderr } = await attached;
-      expect(stdout).toBe(
-        '{"echo":{"first":true},"n":1}\n{"echo":{"msg":"second"},"n":2}\n{"done":true,"n":2}\n',
-      );
+      // The sentinel closes the agent's stdin at once.
+      expect(Date.now() - sentAt).toBeLessThan(3_000);
+      expect(stdout).toBe('{"len":14,"n":1}\n{"len":16,"n":2}\n{"done":true,"n":2}\n');
       expect(stderr.trim()).toBe("__OPTIO_RUN_EXIT__:7");
       expect(readFileSync(join(runDir, RUN_FILES.exit), "utf8").trim()).toBe("7");
 
@@ -95,14 +122,36 @@ describeLinux("the run protocol scripts under bash", () => {
     }
   }, 30_000);
 
+  it("carries a 300 KB first message and a 200 KB delivered line byte-exact", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
+    const runDir = join(dir, "run");
+    try {
+      const big = `{"big":"${"x".repeat(300_000)}"}`;
+      start(runDir, ECHO_AGENT, `${big}\n`);
+      const attached = attach(attachRunScript(runDir, 0));
+      await sleep(300);
+      const line = `{"d":"${"é".repeat(100_000)}"}`; // 200 KB of UTF-8, 100 K characters
+      deliver(runDir, line);
+      await sleep(500);
+      deliver(runDir, STDIN_EOF_SENTINEL);
+      const { stdout, stderr } = await attached;
+      expect(stderr.trim()).toBe("__OPTIO_RUN_EXIT__:7");
+      expect(stdout).toBe(
+        `{"len":${big.length},"n":1}\n{"len":${line.length},"n":2}\n{"done":true,"n":2}\n`,
+      );
+      expect(readFileSync(join(runDir, RUN_FILES.stdin), "utf8")).toBe(
+        `${big}\n${line}\n${STDIN_EOF_SENTINEL}\n`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("kills a hanging run's whole process group and records 143; a SIGKILLed supervisor is lost", async () => {
     const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
     const runDir = join(dir, "run");
     try {
-      const started = bash(
-        ["set -e", ...superviseAgent(runDir, ["echo '{\"init\":1}'", "sleep 1000"])].join("\n"),
-      );
-      const pid = Number(started.match(/__OPTIO_RUN_STARTED__:(\d+)/)?.[1]);
+      const pid = start(runDir, ["echo '{\"init\":1}'", "sleep 1000"], "");
       const attached = attach(attachRunScript(runDir, 0));
       await sleep(300);
       expect(bash(killRunScript(runDir, "TERM")).trim()).toBe("killed");
@@ -115,10 +164,7 @@ describeLinux("the run protocol scripts under bash", () => {
       expect(spawnSync("kill", ["-0", String(pid)]).status).not.toBe(0);
 
       rmSync(runDir, { recursive: true, force: true });
-      const again = bash(
-        ["set -e", ...superviseAgent(runDir, ["echo '{\"init\":1}'", "sleep 1000"])].join("\n"),
-      );
-      const pid2 = Number(again.match(/__OPTIO_RUN_STARTED__:(\d+)/)?.[1]);
+      const pid2 = start(runDir, ["echo '{\"init\":1}'", "sleep 1000"], "");
       execFileSync("kill", ["-KILL", "--", `-${pid2}`]);
       await sleep(300);
       const lost = await attach(attachRunScript(runDir, 0));
@@ -129,18 +175,32 @@ describeLinux("the run protocol scripts under bash", () => {
     }
   }, 30_000);
 
-  it("a zero exit is recorded as 0 and the marker line keys on it", async () => {
+  it("a pid file naming a live process with another start time is a dead run", async () => {
     const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
     const runDir = join(dir, "run");
     try {
-      const started = bash(
-        [
-          "set -e",
-          ...superviseAgent(runDir, ["cat >/dev/null", "exit 0"], { markEnvReady: true }),
-        ].join("\n"),
-        { OPTIO_RUN_STDIN: `${STDIN_EOF_SENTINEL}\n` },
-      );
-      expect(started).toContain("__OPTIO_RUN_STARTED__:");
+      start(runDir, ["echo '{\"init\":1}'", "sleep 1000"], "");
+      const pid = Number(readFileSync(join(runDir, RUN_FILES.pid), "utf8").split(" ")[0]);
+      // Pretend the pid was reused after a pod restart: same pid, other start time.
+      writeFileSync(join(runDir, RUN_FILES.pid), `${pid} 1\n`);
+      expect(bash(killRunScript(runDir, "TERM")).trim()).toBe("none");
+      const lost = await attach(attachRunScript(runDir, 0));
+      expect(lost.stdout).toBe('{"init":1}\n');
+      expect(lost.stderr.trim()).toBe("__OPTIO_RUN_LOST__");
+      // The real process is still there: end it.
+      execFileSync("kill", ["-KILL", "--", `-${pid}`]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("a zero exit is recorded as 0", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
+    const runDir = join(dir, "run");
+    try {
+      start(runDir, ["cat >/dev/null", "exit 0"], `${STDIN_EOF_SENTINEL}\n`, {
+        markEnvReady: true,
+      });
       const { stderr } = await attach(attachRunScript(runDir, 0));
       expect(stderr.trim()).toBe("__OPTIO_RUN_EXIT__:0");
       expect(readFileSync(join(runDir, RUN_FILES.exit), "utf8").trim()).toBe("0");

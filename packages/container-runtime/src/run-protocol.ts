@@ -12,17 +12,28 @@
  *   stdin.pipe      the FIFO the agent reads stdin from
  *   output.ndjson   the agent's stdout, appended as it runs
  *   stderr.log      the agent's stderr
- *   pid             the supervisor's pid (a process-group leader, `setsid`)
+ *   pid             `<pid> <starttime>` of the supervisor (a process-group
+ *                   leader, `setsid`), written by the supervisor itself once
+ *                   its TERM trap is in place; starttime (field 22 of
+ *                   /proc/<pid>/stat) tells a live supervisor from a reused
+ *                   pid after a pod restart
  *   exit            the agent's exit code, written when it ends
  *
  * The four operations are short execs:
  *
- *   start    the caller's setup script, then `superviseAgent()`: launch the
- *            supervisor and print `__OPTIO_RUN_STARTED__:<pid>`
+ *   start    the caller's setup script, then `superviseAgent()`: prime stdin
+ *            from the exec's own stdin, launch the supervisor, wait for its
+ *            pid file, print `__OPTIO_RUN_STARTED__:<pid>`
  *   attach   `tail -c +<from+1> --pid=<pid> -f output.ndjson`, then
  *            `__OPTIO_RUN_EXIT__:<code>` (or `__OPTIO_RUN_LOST__`) on stderr
- *   deliver  append one line to stdin.ndjson
+ *   deliver  `head -c <n> >> stdin.ndjson` from the exec's stdin, then
+ *            `__OPTIO_STDIN_DELIVERED__` on stdout
  *   kill     signal the supervisor's process group
+ *
+ * Stdin bytes travel over the exec's stdin, never in the script or its
+ * environment (an argv is at most 128 KiB). The pod's pid 1 must reap: the
+ * supervisor is reparented to it when the start exec ends (`tini` in the
+ * agent image, images/base.Dockerfile).
  *
  * The Kubernetes and Docker runtimes run these scripts through `exec`; the
  * fake runtime plays them with local processes and the same files.
@@ -41,6 +52,7 @@ import type {
 export const RUN_STARTED_MARKER = "__OPTIO_RUN_STARTED__";
 export const RUN_EXIT_MARKER = "__OPTIO_RUN_EXIT__";
 export const RUN_LOST_MARKER = "__OPTIO_RUN_LOST__";
+export const STDIN_DELIVERED_MARKER = "__OPTIO_STDIN_DELIVERED__";
 /** The stdin line that closes the agent's stdin (how a Claude turn is ended). */
 export const STDIN_EOF_SENTINEL = "__OPTIO_STDIN_EOF__";
 
@@ -56,14 +68,16 @@ export const RUN_FILES = {
   exit: "exit",
 } as const;
 
-/** The env var the start script reads the run's first stdin lines from. */
-export const RUN_STDIN_ENV = "OPTIO_RUN_STDIN";
 /** The env var the supervisor reads the run directory from. */
 export const RUN_DIR_ENV = "OPTIO_RUN_DIR";
 /** Set to `1` for the supervisor to mark the pod's environment warm on success. */
 export const RUN_MARK_ENV_READY_ENV = "OPTIO_RUN_MARK_ENV_READY";
-/** The env var `deliverStdin`'s script reads the line from. */
-const STDIN_LINE_ENV = "OPTIO_STDIN_LINE";
+/** How many bytes of the exec's stdin the start script primes `stdin.ndjson` with. */
+export const RUN_STDIN_BYTES_ENV = "OPTIO_RUN_STDIN_BYTES";
+/** The exec's stdin, saved by the start prelude for the start script to read. */
+const STDIN_FD = 3;
+/** How long the start script waits for the supervisor's pid file (50 ms polls). */
+const START_WAIT_POLLS = 200;
 
 export const RUN_SIGNALS: readonly RunSignal[] = ["TERM", "KILL", "INT", "HUP"];
 
@@ -76,11 +90,39 @@ function assertRunDir(runDir: string): string {
   return runDir;
 }
 
+/** The byte offset an attach starts from, as a whole non-negative number. */
+export function normalizeFromByte(fromByte: number): number {
+  return Number.isFinite(fromByte) ? Math.max(0, Math.floor(fromByte)) : 0;
+}
+
+/** A process's start time: field 22 of /proc/<pid>/stat, read past the `(comm)` (which may hold spaces). */
+const PROC_STARTTIME = (pid: string) =>
+  `sed 's/.*) //' "/proc/${pid}/stat" 2>/dev/null | cut -d' ' -f20`;
+
+/**
+ * The shell helper every script that trusts a pid file shares:
+ * `optio_run_pid <runDir>` prints the supervisor's pid when the process is
+ * alive AND is the one that wrote the file (its start time matches); a dead,
+ * absent, or reused pid prints nothing and fails. One helper for attach,
+ * kill, and the pooled start guard.
+ */
+export const RUN_ALIVE_HELPER: readonly string[] = [
+  `optio_run_pid() {`,
+  `  [ -s "$1/${RUN_FILES.pid}" ] || return 1`,
+  `  read -r _optio_pid _optio_start < "$1/${RUN_FILES.pid}" || return 1`,
+  `  [ -n "$_optio_pid" ] && [ -n "$_optio_start" ] || return 1`,
+  `  kill -0 "$_optio_pid" 2>/dev/null || return 1`,
+  `  [ "$(${PROC_STARTTIME("$_optio_pid")})" = "$_optio_start" ] || return 1`,
+  `  printf '%s' "$_optio_pid"`,
+  `}`,
+];
+
 /**
  * The supervisor, as a file: launches the agent with its stdin fed from
- * `stdin.ndjson` through a FIFO, waits for it, and records its exit. It is
- * written by the start script with a quoted heredoc, so nothing in it
- * expands at write time.
+ * `stdin.ndjson` through a FIFO, writes its pid file once the TERM trap and
+ * the agent are in place (so a signal can never arrive before the trap),
+ * waits for the agent, and records its exit. Written by the start script
+ * with a quoted heredoc, so nothing in it expands at write time.
  */
 export const SUPERVISOR_SCRIPT: string = [
   `#!/bin/bash`,
@@ -90,9 +132,11 @@ export const SUPERVISOR_SCRIPT: string = [
   `bash "$d/${RUN_FILES.agent}" < "$d/${RUN_FILES.stdinPipe}" >> "$d/${RUN_FILES.output}" 2>> "$d/${RUN_FILES.stderr}" &`,
   `agent=$!`,
   // The feeder: every line of stdin.ndjson, as it arrives, until the EOF
-  // sentinel, which closes the FIFO and so the agent's stdin. `--pid` ends
-  // the tail when the agent is gone, whatever stdin still holds.
-  `( tail -n +1 --pid="$agent" -f "$d/${RUN_FILES.stdin}" | while IFS= read -r l; do if [ "$l" = "${STDIN_EOF_SENTINEL}" ]; then break; fi; printf '%s\\n' "$l"; done ) > "$d/${RUN_FILES.stdinPipe}" &`,
+  // sentinel. Only the loop holds the FIFO, so `break` closes the agent's
+  // stdin at once, whatever the tail is still doing; `--pid` ends the tail
+  // when the agent is gone.
+  `tail -n +1 --pid="$agent" -f "$d/${RUN_FILES.stdin}" | ( while IFS= read -r l; do if [ "$l" = "${STDIN_EOF_SENTINEL}" ]; then break; fi; printf '%s\\n' "$l"; done > "$d/${RUN_FILES.stdinPipe}" ) &`,
+  `printf '%s %s\\n' "$$" "$(${PROC_STARTTIME("$$")})" > "$d/${RUN_FILES.pid}.tmp" && mv "$d/${RUN_FILES.pid}.tmp" "$d/${RUN_FILES.pid}"`,
   `wait "$agent"`,
   `code=$?`,
   `echo "$code" > "$d/${RUN_FILES.exit}"`,
@@ -101,11 +145,23 @@ export const SUPERVISOR_SCRIPT: string = [
 ].join("\n");
 
 /**
+ * The lines a runtime puts before a start script: the exec's stdin saved on
+ * fd 3 for `superviseAgent()` to prime the run's stdin from (fd 0 then
+ * points at /dev/null, so nothing in the setup can eat those bytes), and
+ * how many bytes to take.
+ */
+export function startRunPrelude(stdinBytes: number): string[] {
+  if (!Number.isInteger(stdinBytes) || stdinBytes < 0) throw new Error("stdinBytes must be ≥ 0");
+  return [`exec ${STDIN_FD}<&0 0</dev/null`, `export ${RUN_STDIN_BYTES_ENV}=${stdinBytes}`];
+}
+
+/**
  * Script lines that end a start script: write the agent command and the
- * supervisor into `runDir`, prime stdin from `$OPTIO_RUN_STDIN`, launch the
- * supervisor in its own session (so the exec that started it can go away
- * and so `killRun` can signal the whole tree), and print the started marker.
- * `agentLines` run in the current directory with the current environment.
+ * supervisor into `runDir`, prime stdin from the exec's stdin
+ * (`startRunPrelude`), launch the supervisor in its own session (so the exec
+ * that started it can go away and so `killRun` can signal the whole tree),
+ * wait for its pid file, and print the started marker. `agentLines` run in
+ * the current directory with the current environment.
  */
 export function superviseAgent(
   runDir: string,
@@ -119,25 +175,27 @@ export function superviseAgent(
       throw new Error(`agent command contains the heredoc delimiter ${eof}`);
     }
   }
+  const D = `"\$${RUN_DIR_ENV}"`;
   return [
     `export ${RUN_DIR_ENV}=${d}`,
     ...(opts.markEnvReady ? [`export ${RUN_MARK_ENV_READY_ENV}=1`] : []),
-    `mkdir -p "\$${RUN_DIR_ENV}"`,
-    `cat > "\$${RUN_DIR_ENV}/${RUN_FILES.agent}" <<'__OPTIO_AGENT_SH__'`,
+    `mkdir -p ${D}`,
+    `cat > ${D}/${RUN_FILES.agent} <<'__OPTIO_AGENT_SH__'`,
     agentScript,
     `__OPTIO_AGENT_SH__`,
-    `cat > "\$${RUN_DIR_ENV}/${RUN_FILES.supervisor}" <<'__OPTIO_SUPERVISOR_SH__'`,
+    `cat > ${D}/${RUN_FILES.supervisor} <<'__OPTIO_SUPERVISOR_SH__'`,
     SUPERVISOR_SCRIPT.trimEnd(),
     `__OPTIO_SUPERVISOR_SH__`,
     // A fresh attempt: no exit or pid from a previous one, empty output.
-    `rm -f "\$${RUN_DIR_ENV}/${RUN_FILES.exit}" "\$${RUN_DIR_ENV}/${RUN_FILES.pid}" "\$${RUN_DIR_ENV}/${RUN_FILES.stdinPipe}"`,
-    `: > "\$${RUN_DIR_ENV}/${RUN_FILES.output}"`,
-    `: > "\$${RUN_DIR_ENV}/${RUN_FILES.stderr}"`,
-    `printf '%s' "\${${RUN_STDIN_ENV}:-}" > "\$${RUN_DIR_ENV}/${RUN_FILES.stdin}"`,
-    `mkfifo "\$${RUN_DIR_ENV}/${RUN_FILES.stdinPipe}"`,
-    `setsid bash "\$${RUN_DIR_ENV}/${RUN_FILES.supervisor}" > /dev/null 2>&1 < /dev/null &`,
-    `_optio_sup=$!`,
-    `echo "$_optio_sup" > "\$${RUN_DIR_ENV}/${RUN_FILES.pid}"`,
+    `rm -f ${D}/${RUN_FILES.exit} ${D}/${RUN_FILES.pid} ${D}/${RUN_FILES.stdinPipe}`,
+    `: > ${D}/${RUN_FILES.output}`,
+    `: > ${D}/${RUN_FILES.stderr}`,
+    `if [ -n "\${${RUN_STDIN_BYTES_ENV}:-}" ]; then head -c "\$${RUN_STDIN_BYTES_ENV}" <&${STDIN_FD} > ${D}/${RUN_FILES.stdin}; exec ${STDIN_FD}<&-; else : > ${D}/${RUN_FILES.stdin}; fi`,
+    `mkfifo ${D}/${RUN_FILES.stdinPipe}`,
+    `setsid bash ${D}/${RUN_FILES.supervisor} > /dev/null 2>&1 < /dev/null &`,
+    `for i in $(seq 1 ${START_WAIT_POLLS}); do [ -s ${D}/${RUN_FILES.pid} ] && break; sleep 0.05; done`,
+    `[ -s ${D}/${RUN_FILES.pid} ] || { echo "[optio] ERROR: the run supervisor did not start" >&2; exit 1; }`,
+    `read -r _optio_sup _optio_start < ${D}/${RUN_FILES.pid}`,
     `echo "${RUN_STARTED_MARKER}:$_optio_sup"`,
   ];
 }
@@ -145,16 +203,18 @@ export function superviseAgent(
 /**
  * The attach script: the output file from byte `fromByte` on, following it
  * while the supervisor lives, then the exit marker on stderr (stdout stays
- * pure file bytes, so the consumer's offset accounting is exact).
+ * pure file bytes, so the consumer's offset accounting is exact). A pid file
+ * whose process is gone, or belongs to another process now (a pod restart
+ * reused the pid), counts as not running.
  */
 export function attachRunScript(runDir: string, fromByte: number): string {
   const d = shellQuote(assertRunDir(runDir));
-  const from = Math.max(0, Math.floor(fromByte));
+  const from = normalizeFromByte(fromByte);
   return [
     `d=${d}`,
-    `pid=$(cat "$d/${RUN_FILES.pid}" 2>/dev/null || true)`,
-    `if [ -z "$pid" ] || [ ! -f "$d/${RUN_FILES.output}" ]; then echo "${RUN_LOST_MARKER}" >&2; exit 0; fi`,
-    `if kill -0 "$pid" 2>/dev/null; then`,
+    ...RUN_ALIVE_HELPER,
+    `if [ ! -f "$d/${RUN_FILES.output}" ]; then echo "${RUN_LOST_MARKER}" >&2; exit 0; fi`,
+    `if pid=$(optio_run_pid "$d"); then`,
     `  tail -c +${from + 1} --pid="$pid" -f "$d/${RUN_FILES.output}"`,
     `else`,
     `  tail -c +${from + 1} "$d/${RUN_FILES.output}"`,
@@ -164,25 +224,29 @@ export function attachRunScript(runDir: string, fromByte: number): string {
   ].join("\n");
 }
 
-/** The deliver script: one line appended to the run's stdin file. */
-export function deliverStdinScript(runDir: string, line: string): string {
+/**
+ * The deliver script: `byteLength` bytes of the exec's stdin appended to the
+ * run's stdin file, then the delivered marker on stdout. The bytes never
+ * touch the script or its environment.
+ */
+export function deliverStdinScript(runDir: string, byteLength: number): string {
   const d = shellQuote(assertRunDir(runDir));
-  if (line.includes("\n") || line.includes("\r")) {
-    throw new Error("a stdin line must not contain a newline");
-  }
+  if (!Number.isInteger(byteLength) || byteLength < 1) throw new Error("byteLength must be ≥ 1");
   return [
-    `export ${STDIN_LINE_ENV}=${shellQuote(line)}`,
-    `printf '%s\\n' "\$${STDIN_LINE_ENV}" >> ${d}/${RUN_FILES.stdin}`,
+    `d=${d}`,
+    `[ -d "$d" ] || { echo "no run directory at $d" >&2; exit 1; }`,
+    `head -c ${byteLength} >> "$d/${RUN_FILES.stdin}" && echo "${STDIN_DELIVERED_MARKER}"`,
   ].join("\n");
 }
 
-/** The kill script: the signal to the supervisor's process group. */
+/** The kill script: the signal to the supervisor's process group, when it is the live supervisor. */
 export function killRunScript(runDir: string, signal: RunSignal): string {
   const d = shellQuote(assertRunDir(runDir));
   if (!RUN_SIGNALS.includes(signal)) throw new Error(`Unsupported signal: ${signal}`);
   return [
-    `pid=$(cat ${d}/${RUN_FILES.pid} 2>/dev/null || true)`,
-    `if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then`,
+    `d=${d}`,
+    ...RUN_ALIVE_HELPER,
+    `if pid=$(optio_run_pid "$d"); then`,
     `  kill -${signal} -- -"$pid" 2>/dev/null || kill -${signal} "$pid" 2>/dev/null || true`,
     `  echo killed`,
     `else`,
@@ -201,6 +265,16 @@ function collect(stream: NodeJS.ReadableStream): Promise<string> {
     stream.on("end", () => resolve(buf));
     stream.on("error", reject);
   });
+}
+
+/** Writes `bytes` to the exec's stdin and closes it. */
+function feedStdin(session: ExecSession, bytes: Buffer): void {
+  try {
+    if (bytes.length > 0) session.stdin.write(bytes);
+    session.stdin.end();
+  } catch {
+    // The exec may have ended already; its output says what happened.
+  }
 }
 
 /** Parses `__OPTIO_RUN_EXIT__:<code>` / `__OPTIO_RUN_LOST__` out of a line, or null. */
@@ -251,9 +325,12 @@ export const execRunProtocol = {
     handle: ContainerHandle,
     input: { script: string; initialStdin: string },
   ): Promise<RunStartResult> {
-    const script = `export ${RUN_STDIN_ENV}=${shellQuote(input.initialStdin)}\n${input.script}`;
+    const stdin = Buffer.from(input.initialStdin, "utf8");
+    const script = [...startRunPrelude(stdin.length), input.script].join("\n");
     const session = await rt.exec(handle, ["bash", "-c", script], { tty: false });
-    const [stdout, stderr] = await Promise.all([collect(session.stdout), collect(session.stderr)]);
+    const collected = Promise.all([collect(session.stdout), collect(session.stderr)]);
+    feedStdin(session, stdin);
+    const [stdout, stderr] = await collected;
     const pid = parseRunStartedPid(stdout);
     if (pid === null) {
       const output = [stdout, stderr].filter(Boolean).join("\n");
@@ -276,7 +353,8 @@ export const execRunProtocol = {
       { tty: false },
     );
     let detached = false;
-    const exit = new Promise<RunExit>((resolve) => {
+    // The marker, from stderr; or "detached" when stderr ends without one.
+    const marker = new Promise<RunExit>((resolve) => {
       let buf = "";
       let settled = false;
       const settle = (value: RunExit) => {
@@ -303,12 +381,30 @@ export const execRunProtocol = {
       });
       session.stderr.on("error", () => settle({ kind: "detached", reason: "stream-ended" }));
     });
+    // The output must be fully delivered before the exit is reported, so a
+    // consumer that awaits `exit` has seen every byte. A consumer that
+    // closes the attachment abandons the output: that settles at once.
+    let outputDone: () => void = () => {};
+    const outputEnded = new Promise<void>((resolve) => {
+      outputDone = resolve;
+      // "end" needs a reader; "finish" is the writer's end (the exec closed
+      // its stream), which is what "every byte is in" means here.
+      session.stdout.on("end", () => resolve());
+      (session.stdout as Readable & { on(ev: "finish", fn: () => void): unknown }).on(
+        "finish",
+        () => resolve(),
+      );
+      session.stdout.on("close", () => resolve());
+      session.stdout.on("error", () => resolve());
+    });
+    const exit = Promise.all([marker, outputEnded]).then(([value]) => value);
     return {
       output: session.stdout as Readable,
       exit,
       close() {
         detached = true;
         session.close();
+        outputDone();
       },
     };
   },
@@ -318,14 +414,24 @@ export const execRunProtocol = {
     handle: ContainerHandle,
     input: { runDir: string; line: string },
   ): Promise<void> {
+    if (input.line.includes("\n") || input.line.includes("\r")) {
+      throw new Error("a stdin line must not contain a newline");
+    }
+    const bytes = Buffer.from(`${input.line}\n`, "utf8");
     const session = await rt.exec(
       handle,
-      ["bash", "-c", `set -e\n${deliverStdinScript(input.runDir, input.line)}`],
+      ["bash", "-c", deliverStdinScript(input.runDir, bytes.length)],
       { tty: false },
     );
-    const [stdout, stderr] = await Promise.all([collect(session.stdout), collect(session.stderr)]);
-    if (stderr.trim()) {
-      throw new RunDeliverError(`could not append to the run's stdin: ${stderr.trim()}`, stdout);
+    const collected = Promise.all([collect(session.stdout), collect(session.stderr)]);
+    feedStdin(session, bytes);
+    const [stdout, stderr] = await collected;
+    if (!stdout.includes(STDIN_DELIVERED_MARKER)) {
+      const output = [stdout, stderr].filter(Boolean).join("\n");
+      throw new RunDeliverError(
+        `could not append to the run's stdin: ${output.trim().split("\n").slice(-5).join(" | ") || "no output"}`,
+        output,
+      );
     }
   },
 
