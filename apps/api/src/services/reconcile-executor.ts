@@ -1,9 +1,18 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import { db } from "../db/client.js";
-import { tasks, workflowRuns, prReviews, persistentAgents } from "../db/schema.js";
+import {
+  tasks,
+  workflowRuns,
+  prReviews,
+  prReviewRuns,
+  persistentAgents,
+  persistentAgentTurns,
+} from "../db/schema.js";
 import type {
   Action,
+  CommonReattach,
+  CommonRequeueRun,
   PersistentAgentAction,
   PrReviewAction,
   RepoAction,
@@ -15,11 +24,14 @@ import {
   WorkflowRunState,
   PrReviewState,
   PersistentAgentState,
+  PrReviewRunState,
+  attachJobId,
   parsePrUrl,
   parseIntEnv,
 } from "@optio/shared";
 import * as taskService from "./task-service.js";
 import { enqueueReconcile } from "./reconcile-queue.js";
+import { NEW_ATTEMPT_EXECUTION } from "./run-log-service.js";
 import { classifyGitHubFailure, type GitHubFailure } from "./git-platform/github.js";
 import { logger } from "../logger.js";
 
@@ -121,6 +133,12 @@ export async function executeAction(
 
       case "markStale":
         return await applyMarkStale(snapshot);
+
+      case "reattach":
+        return await applyReattach(action, snapshot);
+
+      case "requeueRun":
+        return await applyRequeueRun(action, snapshot);
 
       default: {
         const _exhaustive: never = action;
@@ -534,6 +552,197 @@ function inferPrLabel(prUrl: string | null): string {
   return prUrl.includes("gitlab") ? "MR" : "PR";
 }
 
+// ── Run attachment (docs/plans/scale-out.md §2) ──────────────────────────────
+
+/**
+ * The run's agent goes on in its pod and nobody streams it: hand it to an
+ * instance through the kind's queue. Gated on the snapshot's version (a
+ * check that writes nothing, so a worker finishing the run concurrently
+ * never loses its own CAS to this); the job id names the attachment's
+ * expiry, so every pass that saw the same expiry asks for one job, and the
+ * handler's claim CAS makes a stale delivery a no-op.
+ */
+async function applyReattach(
+  action: CommonReattach,
+  snapshot: WorldSnapshot,
+): Promise<ExecuteOutcome> {
+  const table = tableForKind(snapshot.run.kind);
+  if (!(await versionStillMatches(table, snapshot.run.ref.id, snapshot.run.status.updatedAt))) {
+    return { status: "stale", reason: "cas_failed_reattach" };
+  }
+  const jobOpts = {
+    jobId: attachJobId(action.runId, action.attempt),
+    // Gone once done, so the id frees up for the next expiry's job.
+    removeOnComplete: true,
+    removeOnFail: true,
+  };
+  switch (snapshot.run.kind) {
+    case "repo": {
+      const { taskQueue } = await import("../workers/task-worker.js");
+      await taskQueue.add("attach-task", { taskId: action.runId }, jobOpts);
+      break;
+    }
+    case "standalone": {
+      const { workflowRunQueue } = await import("../workers/workflow-worker.js");
+      await workflowRunQueue.add("attach-workflow-run", { workflowRunId: action.runId }, jobOpts);
+      break;
+    }
+    case "pr-review": {
+      const { prReviewRunQueue } = await import("../workers/pr-review-worker.js");
+      await prReviewRunQueue.add("attach-pr-review-run", { runId: action.runId }, jobOpts);
+      break;
+    }
+    case "persistent-agent": {
+      const { persistentAgentTurnQueue } = await import("../workers/persistent-agent-worker.js");
+      await persistentAgentTurnQueue.add(
+        "attach-persistent-agent-turn",
+        { agentId: snapshot.run.ref.id, turnId: action.runId },
+        jobOpts,
+      );
+      break;
+    }
+  }
+  return { status: "applied", reason: `reattach:${jobOpts.jobId}` };
+}
+
+/**
+ * The instance setting the run up went away before its agent started: put
+ * the run back where its kind's own retry puts it.
+ */
+async function applyRequeueRun(
+  action: CommonRequeueRun,
+  snapshot: WorldSnapshot,
+): Promise<ExecuteOutcome> {
+  const message = "The instance starting the run went away before its agent started; queued again.";
+  const run = snapshot.run;
+  const version = run.status.updatedAt;
+  switch (run.kind) {
+    case "repo":
+      // provisioning → queued, as the worker's own provisioning retry does;
+      // the transition wakes the reconciler, whose queued pass enqueues it.
+      return applyRepoTransition(
+        {
+          kind: "transition",
+          to: TaskState.QUEUED,
+          statusPatch: { errorMessage: message },
+          trigger: action.trigger,
+          reason: action.reason,
+        },
+        snapshot,
+      );
+    case "standalone": {
+      // running → failed → queued, as the worker's provisioning retry does,
+      // without spending a retry: nothing ran. Only the first step is gated
+      // on the version; the reconciler's own failed pass may win the second
+      // (then the run is queued all the same).
+      const { transitionWorkflowRunCas } = await import("./workflow-service.js");
+      const failed = await transitionWorkflowRunCas(
+        run.ref.id,
+        WorkflowRunState.RUNNING,
+        WorkflowRunState.FAILED,
+        { errorMessage: message },
+        { version, wakeReconciler: false },
+      );
+      if (!failed) return { status: "stale", reason: "cas_failed_requeue_run" };
+      await transitionWorkflowRunCas(run.ref.id, WorkflowRunState.FAILED, WorkflowRunState.QUEUED, {
+        errorMessage: null,
+        finishedAt: null,
+      });
+      return { status: "applied", reason: `requeue_run:${action.trigger}` };
+    }
+    case "pr-review": {
+      if (!action.runId) return { status: "skipped", reason: "requeue_run_without_run" };
+      if (!(await versionStillMatches("pr_reviews", run.ref.id, version))) {
+        return { status: "stale", reason: "cas_failed_requeue_run" };
+      }
+      const [requeued] = await db
+        .update(prReviewRuns)
+        .set({
+          state: PrReviewRunState.QUEUED,
+          errorMessage: message,
+          ...NEW_ATTEMPT_EXECUTION,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(prReviewRuns.id, action.runId),
+            inArray(prReviewRuns.state, [PrReviewRunState.PROVISIONING, PrReviewRunState.RUNNING]),
+            isNull(prReviewRuns.execState),
+          ),
+        )
+        .returning({ id: prReviewRuns.id });
+      if (!requeued) return { status: "stale", reason: "review_run_moved_on" };
+      const { prReviewRunQueue } = await import("../workers/pr-review-worker.js");
+      await prReviewRunQueue.add(
+        "process-pr-review-run",
+        { runId: action.runId },
+        { jobId: `${action.runId}-requeue-${Date.now()}`, priority: 10 },
+      );
+      return { status: "applied", reason: `requeue_run:${action.trigger}` };
+    }
+    case "persistent-agent": {
+      if (!(await versionStillMatches("persistent_agents", run.ref.id, version))) {
+        return { status: "stale", reason: "cas_failed_requeue_run" };
+      }
+      // The turn ends as an error that never ran; its messages were not
+      // drained into it, so they wake the agent again.
+      if (action.runId) {
+        const paService = await import("./persistent-agent-service.js");
+        const [open] = await db
+          .select({ id: persistentAgentTurns.id })
+          .from(persistentAgentTurns)
+          .where(
+            and(
+              eq(persistentAgentTurns.id, action.runId),
+              isNull(persistentAgentTurns.finishedAt),
+              isNull(persistentAgentTurns.execState),
+            ),
+          );
+        if (open) {
+          await paService.haltPersistentAgentTurn({
+            turnId: action.runId,
+            haltReason: "error",
+            errorMessage: message,
+          });
+        }
+      }
+      const { transitionPersistentAgentState } = await import("./persistent-agent-service.js");
+      const moved = await transitionPersistentAgentState(
+        run.ref.id,
+        PersistentAgentState.IDLE,
+        version,
+        {},
+        action.trigger,
+      ).catch(() => false);
+      if (!moved) return { status: "stale", reason: "cas_failed_requeue_run" };
+      await enqueueReconcile(run.ref, { reason: "post_transition_idle" });
+      return { status: "applied", reason: `requeue_run:${action.trigger}` };
+    }
+  }
+}
+
+/** The run's row is still at the snapshot's version (a CAS that writes nothing). */
+async function versionStillMatches(
+  table: "tasks" | "workflow_runs" | "pr_reviews" | "persistent_agents",
+  id: string,
+  version: Date,
+): Promise<boolean> {
+  const t =
+    table === "tasks"
+      ? tasks
+      : table === "pr_reviews"
+        ? prReviews
+        : table === "persistent_agents"
+          ? persistentAgents
+          : workflowRuns;
+  const rows = await db
+    .update(t)
+    .set({ updatedAt: sql`${t.updatedAt}` })
+    .where(and(eq(t.id, id), updatedAtMatches(t.updatedAt, version)))
+    .returning({ id: t.id });
+  return rows.length > 0;
+}
+
 // ── CAS helpers ─────────────────────────────────────────────────────────────
 
 async function casUpdate(
@@ -819,6 +1028,12 @@ async function applyPersistentAgentTransition(
   if (casResult === "stale") return { status: "stale", reason: "cas_failed_pa_transition" };
 
   const fromState = snapshot.run.status.state;
+  const paService = await import("./persistent-agent-service.js");
+  if (paService.stopsRunningTurn(fromState, action.to)) {
+    await paService
+      .stopOpenTurns(id)
+      .catch((err) => logger.warn({ err, agentId: id }, "Failed to stop the agent's running turn"));
+  }
   const { publishPersistentAgentEvent } = await import("./event-bus.js");
   await publishPersistentAgentEvent({
     type: "persistent_agent:state_changed",
