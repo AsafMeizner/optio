@@ -33,6 +33,8 @@ export type SessionBusMessage =
       scope: SessionScope;
       sessionId: string;
       action: SessionControlAction;
+      /** For `interrupt`: the turn that was flagged; only its runner acts. */
+      turnId?: string;
       origin: string;
     };
 
@@ -89,47 +91,94 @@ export async function publishSessionBus(message: SessionBusMessage): Promise<voi
 }
 
 let subscriber: RedisClient | null = null;
+let subscribed = false;
 let starting: Promise<void> | null = null;
+let retryTimer: NodeJS.Timeout | null = null;
+let stopped = false;
+
+function onBusMessage(channel: string, raw: string): void {
+  if (channel !== SESSION_BUS_CHANNEL) return;
+  let message: SessionBusMessage;
+  try {
+    message = JSON.parse(raw) as SessionBusMessage;
+  } catch {
+    return;
+  }
+  if (!message || typeof message !== "object" || typeof message.sessionId !== "string") return;
+  try {
+    dispatchSessionBusMessage(message);
+  } catch (err) {
+    logger.warn({ err, kind: message.kind }, "session bus handler failed");
+  }
+}
+
+/** One attempt: a fresh subscriber, SUBSCRIBE, and only then "started". */
+async function subscribeOnce(): Promise<void> {
+  const sub = createSubscriber();
+  sub.on("message", onBusMessage);
+  try {
+    await sub.subscribe(SESSION_BUS_CHANNEL);
+  } catch (err) {
+    // Nothing half-started is left behind: the client goes, the state resets.
+    sub.disconnect();
+    throw err;
+  }
+  if (stopped) {
+    sub.disconnect();
+    return;
+  }
+  subscriber = sub;
+  subscribed = true;
+  logger.info({ channel: SESSION_BUS_CHANNEL }, "Session bus subscribed");
+}
 
 /**
- * Subscribes this instance to the bus. Idempotent; resolves once the
- * subscription is confirmed, so nothing published afterwards is missed.
- * ioredis re-subscribes by itself after a reconnect.
+ * Subscribes this instance to the bus, once. Resolves once the SUBSCRIBE is
+ * confirmed (so nothing published afterwards is missed) or rejects with the
+ * error; a failed attempt leaves no client behind. ioredis re-subscribes by
+ * itself after a reconnect.
  */
 export function startSessionBus(): Promise<void> {
+  if (subscribed) return Promise.resolve();
   if (starting) return starting;
-  starting = (async () => {
-    const sub = createSubscriber();
-    subscriber = sub;
-    sub.on("message", (channel: string, raw: string) => {
-      if (channel !== SESSION_BUS_CHANNEL) return;
-      let message: SessionBusMessage;
-      try {
-        message = JSON.parse(raw) as SessionBusMessage;
-      } catch {
-        return;
-      }
-      if (!message || typeof message !== "object" || typeof message.sessionId !== "string") return;
-      try {
-        dispatchSessionBusMessage(message);
-      } catch (err) {
-        logger.warn({ err, kind: message.kind }, "session bus handler failed");
-      }
-    });
-    await sub.subscribe(SESSION_BUS_CHANNEL);
-    logger.info({ channel: SESSION_BUS_CHANNEL }, "Session bus subscribed");
-  })();
-  starting.catch(() => {
+  stopped = false;
+  starting = subscribeOnce().finally(() => {
     starting = null;
   });
   return starting;
 }
 
+/**
+ * Boot: subscribes in the background, retrying with backoff (1 s doubling to
+ * 30 s) until it works. Never throws: the API serves REST while Redis is
+ * down, and until the bus is up, session frames and control simply stay on
+ * this instance (the database fallbacks still hold).
+ */
+export function startSessionBusInBackground(): void {
+  stopped = false;
+  attemptInBackground(0);
+}
+
+function attemptInBackground(attempt: number): void {
+  if (subscribed || stopped) return;
+  startSessionBus().catch((err) => {
+    if (stopped) return;
+    const delayMs = Math.min(30_000, 1_000 * 2 ** attempt);
+    logger.warn({ err, retryInMs: delayMs }, "session bus subscribe failed; retrying");
+    retryTimer = setTimeout(() => attemptInBackground(attempt + 1), delayMs);
+    retryTimer.unref?.();
+  });
+}
+
 /** Stops this instance's subscription (shutdown and tests). */
 export async function stopSessionBus(): Promise<void> {
+  stopped = true;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  await starting?.catch(() => {});
   const sub = subscriber;
   subscriber = null;
-  starting = null;
+  subscribed = false;
   if (!sub) return;
   try {
     await sub.unsubscribe(SESSION_BUS_CHANNEL);
@@ -139,7 +188,7 @@ export async function stopSessionBus(): Promise<void> {
   sub.disconnect();
 }
 
-/** Whether `startSessionBus` has been called and is live (for diagnostics and tests). */
+/** Whether this instance's SUBSCRIBE succeeded and is live (diagnostics and tests). */
 export function isSessionBusStarted(): boolean {
-  return subscriber !== null;
+  return subscribed;
 }

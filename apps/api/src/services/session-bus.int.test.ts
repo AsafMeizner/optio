@@ -8,7 +8,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { interactiveSessions, sessionChatTurns, users } from "../db/schema.js";
 import { insertWorkspace } from "../test-utils/integration/fixtures.js";
@@ -22,12 +22,15 @@ import {
   stopSessionBus,
   type SessionBusMessage,
 } from "./session-bus.js";
+import { leaseHolder } from "./lease-service.js";
 import {
   broadcastSessionChat,
   claimSessionTurn,
   finishSessionTurn,
   interruptSessionChat,
+  recoverSessionTurns,
   requestTurnInterrupt,
+  turnLeaseKey,
   sessionChatListenerCount,
   subscribeSessionChat,
   turnShouldStop,
@@ -145,16 +148,19 @@ describe("interrupt", () => {
     const turnId = claim.accepted ? claim.turn.id : "";
 
     expect(await turnShouldStop(turnId)).toBe(false);
-    expect(await requestTurnInterrupt(session.id)).toBe(true);
-    expect(await requestTurnInterrupt(session.id)).toBe(false); // already flagged
+    expect(await requestTurnInterrupt(session.id, randomUUID())).toEqual([]); // another turn
+    expect(await requestTurnInterrupt(session.id)).toEqual([turnId]);
+    expect(await requestTurnInterrupt(session.id)).toEqual([]); // already flagged
     expect(await turnShouldStop(turnId)).toBe(true);
     const [row] = await db.select().from(sessionChatTurns).where(eq(sessionChatTurns.id, turnId));
     expect(row.state).toBe("running"); // still running: the flag is the time, not the state
     expect(row.finishedAt).not.toBeNull();
 
+    expect(await leaseHolder(turnLeaseKey(turnId))).toBe(INSTANCE_ID);
     await finishSessionTurn(turnId, false);
     const [done] = await db.select().from(sessionChatTurns).where(eq(sessionChatTurns.id, turnId));
     expect(done.state).toBe("interrupted");
+    expect(await leaseHolder(turnLeaseKey(turnId))).toBeNull();
   });
 
   it("the watch fires this instance's interrupt from the bus, from the flag, and from the session ending", async () => {
@@ -164,11 +170,23 @@ describe("interrupt", () => {
     const a = await insertSession({ workspaceId: ws.id });
     const ca = await claimSessionTurn(a.id, randomUUID(), "a");
     const firedA = vi.fn();
-    const stopA = watchTurnControl(a.id, ca.accepted ? ca.turn.id : "", firedA);
+    const turnA = ca.accepted ? ca.turn.id : "";
+    const stopA = watchTurnControl(a.id, turnA, firedA);
+    // An interrupt naming another turn of the session (one that ended) is not this one's.
     dispatchSessionBusMessage({
       kind: "control",
       scope: "pod",
       sessionId: a.id,
+      turnId: randomUUID(),
+      action: "interrupt",
+      origin: "api-other:000000",
+    });
+    expect(firedA).not.toHaveBeenCalled();
+    dispatchSessionBusMessage({
+      kind: "control",
+      scope: "pod",
+      sessionId: a.id,
+      turnId: turnA,
       action: "interrupt",
       origin: "api-other:000000",
     });
@@ -177,6 +195,7 @@ describe("interrupt", () => {
       kind: "control",
       scope: "pod",
       sessionId: a.id,
+      turnId: turnA,
       action: "interrupt",
       origin: "api-other:000000",
     });
@@ -213,31 +232,125 @@ describe("interrupt", () => {
       kind: "control",
       scope: "pod",
       sessionId: d.id,
+      turnId: cd.accepted ? cd.turn.id : "",
       action: "interrupt",
       origin: "api-other:000000",
     });
     expect(firedD).not.toHaveBeenCalled();
   });
 
-  it("interruptSessionChat does all three: local exec, flag, bus", async () => {
+  it("interruptSessionChat flags the turn and stops it here, or names it on the bus, or does nothing", async () => {
     const ws = await insertWorkspace();
+
+    // The turn runs on this instance: flagged and stopped here, nothing published.
     const s = await insertSession({ workspaceId: ws.id });
     const claim = await claimSessionTurn(s.id, randomUUID(), "x");
+    const turnId = claim.accepted ? claim.turn.id : "";
     const fired = vi.fn();
-    const stop = watchTurnControl(s.id, claim.accepted ? claim.turn.id : "", fired);
+    const stop = watchTurnControl(s.id, turnId, fired);
     await interruptSessionChat(s.id);
     expect(fired).toHaveBeenCalledTimes(1);
-    expect(await turnShouldStop(claim.accepted ? claim.turn.id : "")).toBe(true);
-    await waitFor(() => seenFor(s.id).some((m) => m.kind === "control"));
-    expect(seenFor(s.id).find((m) => m.kind === "control")).toMatchObject({
+    expect(await turnShouldStop(turnId)).toBe(true);
+    stop();
+
+    // The turn runs elsewhere: flagged, and the bus names it.
+    const t = await insertSession({ workspaceId: ws.id });
+    const other = await claimSessionTurn(t.id, randomUUID(), "y");
+    const otherId = other.accepted ? other.turn.id : "";
+    await interruptSessionChat(t.id);
+    expect(await turnShouldStop(otherId)).toBe(true);
+    await waitFor(() => seenFor(t.id).some((m) => m.kind === "control"));
+    expect(seenFor(t.id).find((m) => m.kind === "control")).toMatchObject({
       action: "interrupt",
       scope: "pod",
+      turnId: otherId,
     });
-    stop();
+
+    // Nothing running: nothing flagged, nothing published.
+    const u = await insertSession({ workspaceId: ws.id });
+    await interruptSessionChat(u.id);
+    await broadcastSessionChat(u.id, { type: "marker" });
+    await waitFor(() => seenFor(u.id).length > 0);
+    expect(seenFor(u.id).map((m) => m.kind)).toEqual(["chat"]);
+    await finishSessionTurn(turnId, false);
+    await finishSessionTurn(otherId, false);
+  });
+});
+
+describe("recovery", () => {
+  it("settles only the running turns no instance holds, at boot or on the sweep", async () => {
+    const ws = await insertWorkspace();
+    const live = await insertSession({ workspaceId: ws.id });
+    const claimed = await claimSessionTurn(live.id, randomUUID(), "live");
+    const liveId = claimed.accepted ? claimed.turn.id : "";
+
+    // A turn whose instance crashed: its lease lapsed.
+    const crashed = await insertSession({ workspaceId: ws.id });
+    const lapsed = await claimSessionTurn(crashed.id, randomUUID(), "crashed");
+    const lapsedId = lapsed.accepted ? lapsed.turn.id : "";
+    await db.execute(
+      sql`UPDATE leases SET expires_at = now() - interval '1 second' WHERE key = ${turnLeaseKey(lapsedId)}`,
+    );
+    // A turn from before leases existed: none at all.
+    const legacy = await insertSession({ workspaceId: ws.id });
+    const [legacyTurn] = await db
+      .insert(sessionChatTurns)
+      .values({ sessionId: legacy.id, requestId: randomUUID(), promptHash: "x", state: "running" })
+      .returning();
+
+    expect(await recoverSessionTurns()).toBeGreaterThanOrEqual(2);
+    const state = async (id: string) =>
+      (await db.select().from(sessionChatTurns).where(eq(sessionChatTurns.id, id)))[0].state;
+    expect(await state(liveId)).toBe("running");
+    expect(await state(lapsedId)).toBe("interrupted");
+    expect(await state(legacyTurn.id)).toBe("interrupted");
+    // Viewers anywhere are told the settled session is idle.
+    await waitFor(() =>
+      seenFor(legacy.id).some((m) => m.kind === "chat" && m.frame.type === "status"),
+    );
+
+    await finishSessionTurn(liveId, true);
+    await finishSessionTurn(lapsedId, true); // already settled: stays interrupted
+    expect(await state(liveId)).toBe("completed");
+    expect(await state(lapsedId)).toBe("interrupted");
   });
 });
 
 describe("session end and share revocation", () => {
+  it("a socket on a session ended without a bus message closes on the next recheck", async () => {
+    const before = {
+      auth: process.env.OPTIO_AUTH_DISABLED,
+      every: process.env.OPTIO_SESSION_ACCESS_RECHECK_MS,
+    };
+    process.env.OPTIO_AUTH_DISABLED = "true";
+    process.env.OPTIO_SESSION_ACCESS_RECHECK_MS = "200";
+    try {
+      const ws = await insertWorkspace();
+      const session = await insertSession({ workspaceId: ws.id });
+      const socket = Object.assign(new EventEmitter(), { close: vi.fn() });
+      const mayInput = watchSessionAccess(
+        "pod",
+        session,
+        { id: session.userId!, workspaceId: ws.id },
+        socket,
+      );
+      expect(await mayInput()).toBe(true);
+      await db
+        .update(interactiveSessions)
+        .set({ state: "ended", endedAt: new Date() })
+        .where(eq(interactiveSessions.id, session.id));
+      await waitFor(() => socket.close.mock.calls.length > 0, 3000);
+      expect(socket.close).toHaveBeenCalledWith(4403, "Session ended");
+      expect(await mayInput()).toBe(false);
+      socket.emit("close");
+    } finally {
+      if (before.auth === undefined) delete process.env.OPTIO_AUTH_DISABLED;
+      else process.env.OPTIO_AUTH_DISABLED = before.auth;
+      if (before.every === undefined) delete process.env.OPTIO_SESSION_ACCESS_RECHECK_MS;
+      else process.env.OPTIO_SESSION_ACCESS_RECHECK_MS = before.every;
+    }
+  });
+
   it("close this instance's sockets now and tell every other instance", async () => {
     const ws = await insertWorkspace();
     const session = await insertSession({ workspaceId: ws.id });

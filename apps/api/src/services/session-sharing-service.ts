@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { parseIntEnv } from "@optio/shared";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
@@ -157,15 +158,29 @@ export async function redeemSessionShare(token: string, actor: SessionActor) {
 // Live streams are per instance: each instance keeps the sockets it holds
 // for a session, closes them at once when it revokes or ends the session
 // itself, and closes them when another instance says so over the session
-// bus. Membership and expiry are also revalidated periodically and before
-// input, so a socket on an instance that missed the bus message is closed
-// within the recheck interval anyway.
+// bus. Every socket is also rechecked periodically and before input — the
+// session still active (a pod session not ended), and, with auth on, the
+// person still a member with access — so a socket on an instance that
+// missed the bus message is closed within one recheck interval anyway.
+// (A Local terminal's stream outlives the terminal's exit on purpose: a
+// viewer replays its final screen.)
 type Socket = {
   close(code?: number, reason?: string): void;
   on(event: "close", cb: () => void): unknown;
 };
 const collaborators = new Map<string, Set<Socket>>();
 const sessionStreams = new Map<string, Set<Socket>>();
+
+/** Whether the session itself is still live: a pod session not ended. */
+async function sessionLive(kind: SessionKind, id: string): Promise<boolean> {
+  if (kind !== "pod") return true;
+  const [row] = await db
+    .select({ state: interactiveSessions.state })
+    .from(interactiveSessions)
+    .where(eq(interactiveSessions.id, id));
+  return row?.state === "active";
+}
+
 export function watchSessionAccess(
   kind: SessionKind,
   target: SessionTarget,
@@ -180,22 +195,38 @@ export function watchSessionAccess(
     streams.delete(socket);
     if (!streams.size) sessionStreams.delete(key);
   });
-  if (isAuthDisabled()) return async () => true;
+  const authOn = !isAuthDisabled();
   const sockets = collaborators.get(key) ?? new Set<Socket>();
-  if (target.userId !== actor.id) {
+  if (authOn && target.userId !== actor.id) {
     sockets.add(socket);
     collaborators.set(key, sockets);
   }
+  // The session's liveness is read on the timer (a database blip keeps the
+  // socket; the bus carries the end too); input checks the last answer
+  // rather than adding a query per keystroke.
+  let ended = false;
   const check = async () => {
+    if (ended) {
+      socket.close(4403, "Session ended");
+      return false;
+    }
+    if (!authOn) return true;
     const allowed = await (async () =>
       (await member(actor.id, target.workspaceId)) &&
       (await canJoinSession(kind, target, actor)))().catch(() => false);
     if (!allowed) socket.close(4403, "Session access expired or was revoked");
     return allowed;
   };
-  const timer = setInterval(() => {
-    void check();
-  }, 10_000);
+  const recheck = async () => {
+    if (!(await sessionLive(kind, target.id).catch(() => true))) ended = true;
+    await check();
+  };
+  const timer = setInterval(
+    () => {
+      void recheck();
+    },
+    parseIntEnv("OPTIO_SESSION_ACCESS_RECHECK_MS", 10_000),
+  );
   timer.unref();
   socket.on("close", () => {
     clearInterval(timer);

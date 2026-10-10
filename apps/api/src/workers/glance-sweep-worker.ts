@@ -9,12 +9,19 @@
  * `sweep:glance` lease, and the rows are claimed atomically
  * (`takeDueGlance`), so even two overlapping sweeps could not fire a timer
  * twice. A timer fires up to one interval late.
+ *
+ * The same tick settles chat turns orphaned by a crashed instance
+ * (session-turn-service.ts `recoverSessionTurns`: `running` turns whose
+ * `chat-turn:<id>` lease has lapsed), so one is settled within about a
+ * lease TTL plus one interval. That step needs no lease of its own: it is
+ * one idempotent UPDATE.
  */
 import { Queue, Worker } from "bullmq";
 import { parseIntEnv } from "@optio/shared";
 import { logger } from "../logger.js";
 import { sweepGlanceDue } from "../services/glance-service.js";
 import { withLease } from "../services/lease-service.js";
+import { recoverSessionTurns } from "../services/session-turn-service.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 
 export const GLANCE_SWEEP_QUEUE = "glance-sweep";
@@ -46,7 +53,8 @@ export function startGlanceSweepWorker(): { close(): Promise<void> } {
   const worker = new Worker(
     GLANCE_SWEEP_QUEUE,
     async () => {
-      await runGlanceSweep(intervalMs);
+      await runGlanceSweep(intervalMs).catch((err) => logger.warn({ err }, "glance sweep failed"));
+      await recoverSessionTurns().catch((err) => logger.warn({ err }, "chat turn recovery failed"));
     },
     { ...bullmqOpts, concurrency: 1 },
   );

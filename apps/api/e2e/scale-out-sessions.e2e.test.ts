@@ -185,6 +185,39 @@ describe("sessions across two API servers", () => {
     onB.ws.close();
   }, 90_000);
 
+  it("a third server booting leaves a turn running on server A alone (it holds the turn's lease)", async () => {
+    const onA = peer(0, 0, sessionId);
+    await onA.ready();
+    const requestId = randomUUID();
+    onA.ws.send(
+      JSON.stringify({
+        type: "message",
+        content: "Take your time [[mock:sleep:20000]]",
+        requestId,
+      }),
+    );
+    await waitFor(async () => (await turnState(sessionId, requestId))?.state === "running", {
+      label: "a turn is running on A",
+    });
+    const [lease] =
+      await sql`SELECT holder FROM leases WHERE key LIKE 'chat-turn:%' AND expires_at > now()`;
+    expect(lease?.holder).toBeTruthy();
+
+    // Boot recovery on the new server settles only turns no instance holds.
+    await cluster.add();
+    expect((await turnState(sessionId, requestId))?.state).toBe("running");
+    await waitFor(async () => (await turnState(sessionId, requestId))?.state === "completed", {
+      timeoutMs: 60_000,
+      label: "the turn on A completes normally",
+    });
+    await waitFor(
+      async () =>
+        onA.live().find((f) => f.type === "status" && f.status === "idle" && f.recovery === "live"),
+      { label: "A reports the turn completed" },
+    );
+    onA.ws.close();
+  }, 150_000);
+
   it("a share revoked through server B closes the collaborator connected to server A", async () => {
     const share = await call(0, 0, `/api/session-shares/pod/${sessionId}`, "POST", {});
     expect(share.status, JSON.stringify(share.body)).toBe(201);

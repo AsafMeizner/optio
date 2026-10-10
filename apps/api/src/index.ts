@@ -241,10 +241,6 @@ async function main() {
   const app = await buildServer();
   const { recoverSessionTurns } = await import("./services/session-turn-service.js");
   await recoverSessionTurns();
-  // Session chat frames and control from every other instance (session-bus.ts):
-  // subscribed before the first socket can connect, so none is missed.
-  const { startSessionBus, stopSessionBus } = await import("./services/session-bus.js");
-  await startSessionBus();
   const { recoverInterruptedExecutions } = await import("./services/execution-recovery-service.js");
   await recoverInterruptedExecutions();
 
@@ -254,6 +250,13 @@ async function main() {
   // dev tasks (e.g. @optio/web never starting).
   await app.listen({ port: PORT, host: HOST });
   logger.info(`API server listening on ${HOST}:${PORT}`);
+
+  // Session chat frames and control from every other instance (session-bus.ts).
+  // In the background, retried with backoff: REST serves while Redis is down,
+  // and a chat socket that connects before the bus is up gets other
+  // instances' frames from then on (a reconnect replays history).
+  const { startSessionBusInBackground, stopSessionBus } = await import("./services/session-bus.js");
+  startSessionBusInBackground();
 
   // Log TLS stack info and start observing negotiated key-exchange groups
   logTlsStackInfo();
