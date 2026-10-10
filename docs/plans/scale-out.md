@@ -8,8 +8,8 @@ of API pods share one Postgres and one Redis; the pod a run is attached to can
 be killed, and another pod picks the run up where it was, with every log line
 accounted for once.
 
-**Status (2026-10-10):** phase A (foundation) and phase B (re-attachable
-runs) built; C1, C2, D, E to come.
+**Status (2026-10-10):** phases A (foundation), B (re-attachable runs), C1
+(coordination) and C2 (sessions, glance, skills) built; D and E to come.
 Phases land as separate PRs; each leaves the system working on one replica.
 
 ## Vocabulary
@@ -102,9 +102,8 @@ What ties the system to one process, from the inventory that preceded this plan:
   no mid-run messages (there is no API for one), and a persistent agent's
   messages wake its next turn through the inbox, as before: case 5 covers
   Repo Tasks, and agents through the inbox. A persistent agent's "cancel"
-  is its archive. The claim-limit mutex is still per process until C1's
-  advisory locks land: case 3's limit assertion held in every run of the
-  suite, but only C1 makes it a guarantee across instances.
+  is its archive. Case 3's limit assertion holds across instances through
+  C1's advisory-lock claims (merged before this phase).
 
 ## Design
 
