@@ -125,6 +125,56 @@ describe("FakeContainerRuntime run protocol", () => {
     );
   });
 
+  it("[[mock:ticks:N:MS]] plays N numbered text events after init, each with its seq", async () => {
+    const runId = await start("busy [[mock:ticks:4:20]]");
+    const attachment = await a.attachRun(handle, {
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      fromByte: 0,
+    });
+    await sleep(400);
+    await a.deliverStdin(handle, {
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      line: STDIN_EOF_SENTINEL,
+    });
+    const { events } = await drain(attachment);
+    const ticks = events
+      .map((e) => e.message?.content?.[0]?.text)
+      .filter((t): t is string => !!t && t.startsWith("tick "));
+    expect(ticks).toEqual(["tick 1", "tick 2", "tick 3", "tick 4"]);
+    expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("a fresh start of the same run stops the previous attempt's agent first", async () => {
+    const runId = randomUUID();
+    started.push(runId);
+    const input = (prompt: string) => ({
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      script: AGENT_SCRIPT,
+      initialStdin: `${userMessage(prompt)}\n`,
+    });
+    const first = await a.startRun(handle, input("first [[mock:hang]]"));
+    const second = await a.startRun(handle, input("second"));
+    expect(second.pid).not.toBe(first.pid);
+    expect(() => process.kill(first.pid, 0)).toThrow();
+    await a.deliverStdin(handle, {
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      line: STDIN_EOF_SENTINEL,
+    });
+    const attachment = await a.attachRun(handle, {
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      fromByte: 0,
+    });
+    const { text } = await drain(attachment);
+    expect(await attachment.exit).toEqual({ kind: "exited", code: 0 });
+    expect(text).toContain("second");
+    expect(text).not.toContain("first [[mock:hang]]");
+  });
+
   it("re-attaching from the consumed offset yields the rest exactly once", async () => {
     const runId = await start("slow [[mock:sleep:600]]");
     const first = await a.attachRun(handle, { runId, runDir: `${RUN_DIR}/${runId}`, fromByte: 0 });

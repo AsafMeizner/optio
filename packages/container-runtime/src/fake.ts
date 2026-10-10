@@ -41,6 +41,10 @@
  *   [[mock:script:TEXT]] → also print `script TEXT=present|absent`, whether
  *                          the exec script contains TEXT (a launch flag, a
  *                          cleanup line)
+ *   [[mock:ticks:N:MS]]  → (run protocol only) N assistant text events
+ *                          `tick 1`…`tick N`, MS apart (default 100), after
+ *                          init — numbered lines a run that changes hands
+ *                          mid-way must store exactly once each
  *   [[mock:echo-stdin]]  → (run protocol only) every stdin line delivered
  *                          after the prompt becomes an assistant text event
  *                          `stdin: <text>` — proves a mid-run message
@@ -354,6 +358,16 @@ export class FakeContainerRuntime implements ContainerRuntime {
 
     const dir = this.runDir(input.runId);
     mkdirSync(dir, { recursive: true });
+    // Like the real start script: a previous attempt's agent still alive in
+    // this directory is stopped first — one run directory, one agent.
+    const previous = this.runPid(dir);
+    if (previous !== null) {
+      this.signal(previous, "TERM");
+      const until = Date.now() + 5_000;
+      while (this.pidAlive(previous) && Date.now() < until) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
     for (const f of [RUN_FILES.exit, RUN_FILES.pid]) rmSync(join(dir, f), { force: true });
     writeFileSync(join(dir, "container"), handle.id);
     writeFileSync(join(dir, "tape.json"), JSON.stringify(tape, null, 2));

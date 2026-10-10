@@ -175,6 +175,30 @@ describeLinux("the run protocol scripts under bash", () => {
     }
   }, 30_000);
 
+  it("a fresh start in the same run directory stops a previous attempt's supervisor first", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
+    const runDir = join(dir, "run");
+    try {
+      // An attempt whose starter went away before it was recorded: still alive.
+      const stale = start(runDir, ["echo '{\"stale\":1}'", "sleep 1000"], "");
+      expect(spawnSync("kill", ["-0", String(stale)]).status).toBe(0);
+      // The next attempt stops it (and its agent) before truncating the output.
+      const fresh = start(runDir, ECHO_AGENT, "only\n");
+      expect(fresh).not.toBe(stale);
+      await sleep(200);
+      expect(spawnSync("kill", ["-0", String(stale)]).status).not.toBe(0);
+      expect(spawnSync("pgrep", ["-f", "sleep 1000"]).status).not.toBe(0);
+      const attached = attach(attachRunScript(runDir, 0));
+      deliver(runDir, STDIN_EOF_SENTINEL);
+      const { stdout, stderr } = await attached;
+      // Only the fresh attempt's output: one run directory, one agent.
+      expect(stdout).toBe('{"len":4,"n":1}\n{"done":true,"n":1}\n');
+      expect(stderr.trim()).toBe("__OPTIO_RUN_EXIT__:7");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("a pid file naming a live process with another start time is a dead run", async () => {
     const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
     const runDir = join(dir, "run");

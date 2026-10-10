@@ -186,7 +186,12 @@ export function superviseAgent(
     `cat > ${D}/${RUN_FILES.supervisor} <<'__OPTIO_SUPERVISOR_SH__'`,
     SUPERVISOR_SCRIPT.trimEnd(),
     `__OPTIO_SUPERVISOR_SH__`,
-    // A fresh attempt: no exit or pid from a previous one, empty output.
+    // A fresh attempt: a previous attempt's supervisor still alive in this
+    // directory (its starter went away before recording it) is stopped
+    // first — one run directory, one agent — then no exit or pid from it,
+    // and empty output.
+    ...RUN_ALIVE_HELPER,
+    `if _optio_prev=$(optio_run_pid ${D}); then kill -TERM -- -"$_optio_prev" 2>/dev/null || kill -TERM "$_optio_prev" 2>/dev/null || true; for i in $(seq 1 100); do kill -0 "$_optio_prev" 2>/dev/null || break; sleep 0.05; done; fi`,
     `rm -f ${D}/${RUN_FILES.exit} ${D}/${RUN_FILES.pid} ${D}/${RUN_FILES.stdinPipe}`,
     `: > ${D}/${RUN_FILES.output}`,
     `: > ${D}/${RUN_FILES.stderr}`,
