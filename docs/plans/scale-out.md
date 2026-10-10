@@ -8,7 +8,8 @@ of API pods share one Postgres and one Redis; the pod a run is attached to can
 be killed, and another pod picks the run up where it was, with every log line
 accounted for once.
 
-**Status (2026-10-10):** phase A (foundation) built; B, C1, C2, D, E to come.
+**Status (2026-10-10):** phase A (foundation) and phase B (re-attachable
+runs) built; C1, C2, D, E to come.
 Phases land as separate PRs; each leaves the system working on one replica.
 
 ## Vocabulary
@@ -81,6 +82,29 @@ What ties the system to one process, from the inventory that preceded this plan:
   re-exports them beside the other script pieces. A `RunExit` has a third
   kind, `detached`, for an attach whose exec dropped without a marker (the
   attaching instance died, or closed it): neither exited nor lost.
+
+- Found while building phase B: a `running` run with no started agent
+  would be ambiguous (its starter may have died mid-setup, or it predates
+  the protocol), so a task or review run stays `provisioning`, and an
+  agent stays `provisioning` for its turn, until the start is recorded;
+  `running` always means an agent someone can attach to. Every transition
+  back to `queued` clears the attachment columns, or a new attempt would
+  inherit the last one's expired lease and `exited` state. The attach job
+  id is `attach__<run>__<expired lease ms>`, not `attach:<run>:<n>` (BullMQ
+  rejects `:` in custom ids but for a legacy three-part form a future major
+  drops; the codebase's ids use `__`), and the executor applies `reattach` under a
+  version CAS that writes nothing, so a worker finishing the run never loses
+  its own CAS to it. Spend is recorded with the exit in one statement
+  (`settleRun`); a holder that died between that and the run's transition
+  leaves `exec_state = exited`, which the next attach finishes without
+  adding the spend again. The adapters' result parsers read line by line
+  (`createResultParser`), so no worker holds a run's output. A Job run takes
+  no mid-run messages (there is no API for one), and a persistent agent's
+  messages wake its next turn through the inbox, as before: case 5 covers
+  Repo Tasks, and agents through the inbox. A persistent agent's "cancel"
+  is its archive. The claim-limit mutex is still per process until C1's
+  advisory locks land: case 3's limit assertion held in every run of the
+  suite, but only C1 makes it a guarantee across instances.
 
 ## Design
 

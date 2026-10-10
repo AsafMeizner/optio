@@ -92,6 +92,32 @@ The Persistent Agent decision function (`reconcile-persistent-agent.ts`) conside
 
 `paused` and `failed` require a manual `resume` control intent before the agent will act again. `archived` is terminal — the row is kept for history but no further turns are possible.
 
+## Attachment: runs that outlive an API process
+
+Every agent run — a Repo Task, a Job run, a persistent-agent turn, a PR-review run — lives in its pod under the **run protocol** (`packages/container-runtime/src/run-protocol.ts`, `docs/plans/scale-out.md` §1): a start exec launches the agent under a supervisor and returns; the agent's output goes to `output.ndjson` in its run directory; any API instance can attach to that file, append to the agent's stdin, or signal it. One instance at a time **streams** a run: the one holding its attachment.
+
+The run's row carries the attachment (`exec_state`, `exec_pid`, `consumed_bytes`, `attached_by`, `attach_lease_until`; on `tasks` for Repo Tasks and Job runs, on `persistent_agent_turns`, on `pr_review_runs`). `apps/api/src/services/run-attachment.ts` owns them:
+
+- **Hold.** The instance that claims a run (its state-machine claim) takes the lease and renews it every 20 s (`WHERE attached_by = me`); a lease lasts 60 s. A renewal that matches nothing means another instance took the run: the stream is severed at once and the worker returns.
+- **Start.** Once the supervisor runs, one update sets `exec_state = started`, `exec_pid`, `consumed_bytes = 0` (a fresh start truncates the output file) and renews the lease. A task or review run stays `provisioning` (an agent turn's agent stays `provisioning`) until then, so `running` always means an agent some instance can attach to.
+- **Stream** (`streamRun`, the one loop every kind uses). The attach reads the output from byte 0. Lines that end at or before `consumed_bytes` were stored by an earlier attachment: they only feed the in-memory derivations (the PR tool-call tracker, the session id, the terminal event, the result digest — cost, tokens, auth failures — and a command's exit receipt). The rest become log rows, each chunk's batch stored **with the new offset in one transaction** (`appendRunLogsBatch`: the offset write is a CAS on `attached_by = me` and the old offset), so a run that changes hands gets no duplicate and no gap. Offsets count bytes and move only at line ends.
+- **Settle.** When the agent exited and its output is consumed, `settleRun` records `exec_state = exited` with the run's spend in the same statement, iff this instance holds the run and nobody recorded the exit before — so cost is added once, whoever finishes the run. An instance that attaches to a run whose exit was recorded but whose state never moved finishes it without adding the spend again. The attached instance then removes the run directory.
+- **Detach.** On SIGTERM, before the workers close, every held stream is severed and every lease set to `now()`, so other instances pick the runs up in seconds.
+
+The reconciler decides from `snapshot.execution` (the row's attachment; the open turn's for an agent, the active run's for a review). A lease in the future is **attached**; a row with no lease yet is attached while it was written in the last two lease periods (claiming a run and taking its lease are two statements).
+
+| Run is…                                      | Attachment                                        | Decision                                                                                                                                                                                            |
+| -------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `running` / `provisioning`                   | `exec_state` started or exited, lease expired     | **`reattach`**: enqueue the kind's attach job `attach__<run>__<expired lease ms>`; its handler claims by CAS (`claimAttachment`) and finishes the run from `consumed_bytes`, or exits when it loses |
+| `provisioning` (a Job run: `running`)        | never started, lease expired, held by an instance | **`requeueRun`**: the kind's own retry — a task or review run back to `queued`, a Job run through `failed` to `queued` without spending a retry, a turn halted and its agent back to `idle`         |
+| `running`                                    | never started, never held                         | A run from before the protocol: a task needs attention, a Job run or agent fails as uncertain (what boot used to do)                                                                                |
+| `running`                                    | attached                                          | Stall detection as before — **only while attached**; an unattached run is re-attached first                                                                                                         |
+| any active state, pod `error` / `terminated` | any                                               | The existing pod-death transition                                                                                                                                                                   |
+
+The executor applies `reattach` under the version CAS without writing anything (`updated_at = updated_at`), so a worker finishing the run at the same moment never loses its own CAS. The attach job's id dedupes every pass that saw the same expiry; jobs are removed when done, so the next expiry gets a new one.
+
+A worker's job lasts as long as its stream, so the run queues use `lockDuration` 60 s and `stalledInterval` 30 s; a stale BullMQ re-delivery is a no-op (the run is no longer queued, or its claim CAS loses). Cancelling a run (any kind) signals its process group from whichever instance took the request (`signalRun`: the pod and run directory from the database); a mid-run message to a task is appended to its agent's stdin by the route (`task-message-delivery.ts`); the reconciler's stall and pod-death failures stop a still-running agent the same way. A boot fails nothing: it re-enqueues `queued` work, repairs pod slot counts, sweeps expired attachments and kicks a resync.
+
 ## Producers
 
 Several things enqueue a reconcile job:
@@ -101,7 +127,8 @@ Several things enqueue a reconcile job:
 3. **Pod-health events.** When `repo-cleanup-worker` detects a crashed or OOM-killed pod, it marks worktrees dirty and enqueues a reconcile for each affected task — the reconciler observes `pod.phase=error` from the snapshot and fires the FAILED transition.
 4. **Persistent Agent wakes.** `wakeAgent()` (called from the inbox API, the inter-agent HTTP API, the workflow-trigger worker on `target_type='persistent_agent'`, and the cleanup worker on warm-window expiry) enqueues a reconcile so the decision function picks up new messages or intents.
 5. **Control intents.** UI/API actions that set `control_intent` (`cancel`, `retry`, `resume`, `restart`, `pause`, `archive`) enqueue a reconcile so the decision function applies the intent.
-6. **Periodic resync.** Every 5 minutes (configurable) the resync worker scans non-terminal runs across all four tables and enqueues each one. Safety net for any signal that's lost.
+6. **Periodic resync.** Every 5 minutes (configurable) the resync worker scans non-terminal runs across all four tables and enqueues each one. Safety net for any signal that's lost. Every boot asks for one pass at once.
+7. **The attach sweep.** Every 30 s (`attach-sweep`, one BullMQ job scheduler every instance upserts) every active run whose attachment expired — on `tasks`, `pr_review_runs`, `persistent_agent_turns` — gets a reconcile pass, which re-attaches it. A killed instance's runs move on within a lease period plus a sweep.
 
 The queue dedups by `${kind}__${id}`, so multiple producers do not amplify load.
 
@@ -114,6 +141,9 @@ The queue dedups by `${kind}__${id}`, so multiple producers do not amplify load.
 | `OPTIO_RECONCILE_RESYNC_INTERVAL` | `300000` (5 min)  | Full sweep cadence for non-terminal runs                 |
 | `OPTIO_STALL_THRESHOLD_MS`        | `900000` (15 min) | Heartbeat staleness threshold the decision function uses |
 | `OPTIO_MAX_AUTO_RESUMES`          | `10`              | Cap on `auto_resume_*` events between manual actions     |
+| `OPTIO_ATTACH_LEASE_MS`           | `60000`           | How long a run's attachment lasts without a renewal      |
+| `OPTIO_ATTACH_RENEW_MS`           | `20000`           | How often the attached instance renews it                |
+| `OPTIO_ATTACH_SWEEP_INTERVAL_MS`  | `30000`           | How often expired attachments get a reconcile pass       |
 
 ## Schema
 
@@ -140,6 +170,10 @@ All three are nullable / default zero, so no backfill was required.
 | `apps/api/src/services/reconcile-snapshot.ts`                 | Builds the frozen world view                          |
 | `apps/api/src/services/reconcile-executor.ts`                 | CAS-gated mutations; delegates to `taskService`       |
 | `apps/api/src/services/reconcile-queue.ts`                    | Queue setup and dedup-aware enqueue helpers           |
+| `packages/shared/src/reconcile/attachment.ts`                 | The pure reading of a run's attachment                |
+| `apps/api/src/services/run-attachment.ts`                     | Hold, claim, stream, settle, detach; the attach job   |
+| `apps/api/src/services/run-output-digest.ts`                  | A run's result, read line by line as it streams       |
+| `apps/api/src/workers/attach-sweep-worker.ts`                 | Reconcile passes for expired attachments              |
 | `apps/api/src/db/migrations/1776686400_reconcile_columns.sql` | Schema columns for `tasks` + `workflow_runs`          |
 
 Decision logic is exhaustively tested in `packages/shared/src/reconcile/*.test.ts`. Because the decision functions are pure, every state machine edge case is covered without mocking I/O.
