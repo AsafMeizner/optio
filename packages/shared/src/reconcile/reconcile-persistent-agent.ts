@@ -5,6 +5,15 @@ import type {
   PersistentAgentRunStatus,
   WorldSnapshot,
 } from "./types.js";
+import { readExecution } from "./attachment.js";
+
+/**
+ * How long an agent may sit in `provisioning` or `running` with no open
+ * turn before the reconciler takes the instance that had it for gone.
+ * Getting a pod ready can take a couple of minutes before the turn row
+ * exists, and a finishing turn is halted a moment before the agent moves on.
+ */
+export const NO_OPEN_TURN_GRACE_MS = 5 * 60_000;
 
 /**
  * Pure decision function for Persistent Agents.
@@ -203,9 +212,51 @@ function decideProvisioning(snapshot: WorldSnapshot): PersistentAgentAction {
     };
   }
 
+  // The instance setting the turn up holds it (docs/plans/scale-out.md §2).
+  // One that went away left a started agent — attach to it — or nothing
+  // yet: halt the turn and let the agent wake again, its messages still
+  // pending.
+  const execution = readExecution(snapshot.execution, snapshot.now);
+  if (execution.kind === "detached") {
+    return {
+      kind: "reattach",
+      runId: snapshot.execution!.runId,
+      attempt: execution.attempt,
+      reason: "provisioning_turn_started_unattached",
+    };
+  }
+  if (execution.kind === "never_started") {
+    return {
+      kind: "requeueRun",
+      runId: snapshot.execution!.runId,
+      trigger: "turn_start_interrupted",
+      reason: "provisioning_turn_unattached_never_started",
+    };
+  }
+  if (noOpenTurnTooLong(snapshot)) {
+    return {
+      kind: "requeueRun",
+      runId: null,
+      trigger: "turn_start_interrupted",
+      reason: "provisioning_without_turn",
+    };
+  }
+
   // Worker handles the actual provisioning → running handoff inside its job.
   // Reconciler just waits.
   return { kind: "noop", reason: "provisioning_in_progress" };
+}
+
+/** The snapshot says there is no open turn, and the agent has not moved for a while. */
+function noOpenTurnTooLong(snapshot: WorldSnapshot): boolean {
+  return (
+    snapshot.execution === null &&
+    snapshot.now.getTime() - snapshot.run.status.updatedAt.getTime() > NO_OPEN_TURN_GRACE_MS
+  );
+}
+
+function podIsGone(snapshot: WorldSnapshot): boolean {
+  return !!snapshot.pod && (snapshot.pod.phase === "terminated" || snapshot.pod.phase === "error");
 }
 
 function decideRunning(snapshot: WorldSnapshot): PersistentAgentAction {
@@ -214,8 +265,58 @@ function decideRunning(snapshot: WorldSnapshot): PersistentAgentAction {
   }
   const { spec, status } = snapshot.run;
 
+  // Nobody streams the turn (docs/plans/scale-out.md §2): attach to its
+  // agent again, unless its pod is gone (below). Silence while unattached
+  // says nothing about the agent, so the stall clock counts only while an
+  // instance streams the turn.
+  const execution = readExecution(snapshot.execution, snapshot.now);
+  if (execution.kind === "detached" && !podIsGone(snapshot)) {
+    return {
+      kind: "reattach",
+      runId: snapshot.execution!.runId,
+      attempt: execution.attempt,
+      reason: "running_turn_unattached",
+    };
+  }
+  if (execution.kind === "never_started") {
+    if (execution.held) {
+      return {
+        kind: "requeueRun",
+        runId: snapshot.execution!.runId,
+        trigger: "turn_start_interrupted",
+        reason: "running_turn_unattached_never_started",
+      };
+    }
+    // Never held under the run protocol: the turn ran the old way, as an
+    // exec stream of a process that is gone.
+    const nextFailures = status.consecutiveFailures + 1;
+    return {
+      kind: "transition",
+      to: PersistentAgentState.FAILED,
+      statusPatch: {
+        errorMessage:
+          "Execution outcome uncertain; inspect before resuming. The turn's execution was interrupted (it predates re-attachable runs).",
+        lastFailureAt: snapshot.now,
+        lastFailureReason: "execution_interrupted",
+        consecutiveFailures: nextFailures,
+      },
+      trigger: "execution_interrupted",
+      reason: "running_turn_unattached_unheld",
+    };
+  }
+  if (noOpenTurnTooLong(snapshot)) {
+    // The turn was halted and the agent never moved on (the instance
+    // finishing it went away in between).
+    return {
+      kind: "requeueRun",
+      runId: null,
+      trigger: "turn_settle_interrupted",
+      reason: "running_without_open_turn",
+    };
+  }
+
   // Stall detection.
-  if (snapshot.heartbeat.isStale) {
+  if (execution.kind !== "detached" && snapshot.heartbeat.isStale) {
     const nextFailures = status.consecutiveFailures + 1;
     return {
       kind: "transition",
@@ -234,7 +335,7 @@ function decideRunning(snapshot: WorldSnapshot): PersistentAgentAction {
   }
 
   // Pod died.
-  if (snapshot.pod && (snapshot.pod.phase === "terminated" || snapshot.pod.phase === "error")) {
+  if (podIsGone(snapshot) && snapshot.pod) {
     const nextFailures = status.consecutiveFailures + 1;
     return {
       kind: "transition",

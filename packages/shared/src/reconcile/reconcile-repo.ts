@@ -6,6 +6,7 @@ import type {
   RepoRunStatus,
   DependencyObservation,
 } from "./types.js";
+import { readExecution } from "./attachment.js";
 
 /**
  * Pure decision function for Repo Task runs (tasks table).
@@ -274,8 +275,27 @@ function decideProvisioning(snapshot: WorldSnapshot): RepoAction {
       reason: `pod_phase=${pod.phase}`,
     };
   }
+  // The instance setting the run up holds it until its agent runs
+  // (docs/plans/scale-out.md §2). One that went away left either a started
+  // agent — attach to it — or nothing yet: queue the task again.
+  const execution = readExecution(snapshot.execution, snapshot.now);
+  if (execution.kind === "detached") {
+    return reattach(snapshot, execution.attempt, "provisioning_started_unattached");
+  }
+  if (execution.kind === "never_started") {
+    return {
+      kind: "requeueRun",
+      runId: snapshot.run.ref.id,
+      trigger: "provisioning_interrupted",
+      reason: "provisioning_unattached_never_started",
+    };
+  }
   // Otherwise let the worker drive provisioning → running.
   return { kind: "noop", reason: "provisioning_in_progress" };
+}
+
+function reattach(snapshot: WorldSnapshot, attempt: number, reason: string): RepoAction {
+  return { kind: "reattach", runId: snapshot.run.ref.id, attempt, reason };
 }
 
 function decideRunning(snapshot: WorldSnapshot): RepoAction {
@@ -314,7 +334,29 @@ function decideRunning(snapshot: WorldSnapshot): RepoAction {
     };
   }
 
-  // Stall detection.
+  // Nobody streams the run: its agent goes on in its pod, so attach to it
+  // again — silence while unattached says nothing about the agent.
+  const execution = readExecution(snapshot.execution, snapshot.now);
+  if (execution.kind === "detached") {
+    return reattach(snapshot, execution.attempt, "running_unattached");
+  }
+  if (execution.kind === "never_started") {
+    // A run reaches `running` only once its agent started, so this one ran
+    // the old way, as an exec stream of a process that is gone: what it did
+    // is unknown, and a person decides (as a restart used to leave it).
+    return {
+      kind: "transition",
+      to: TaskState.NEEDS_ATTENTION,
+      statusPatch: {
+        errorMessage:
+          "The run's execution was interrupted (it predates re-attachable runs). Workspace retained; outcome may be incomplete. Inspect before resuming.",
+      },
+      trigger: "execution_interrupted",
+      reason: "running_unattached_never_started",
+    };
+  }
+
+  // Stall detection: only while an instance streams the run.
   if (snapshot.heartbeat.isStale) {
     return {
       kind: "transition",

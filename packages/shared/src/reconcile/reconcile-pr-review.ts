@@ -1,5 +1,6 @@
 import { PrReviewState } from "../types/pr-review.js";
 import type { PrReviewAction, PrReviewRunSpec, PrReviewRunStatus, WorldSnapshot } from "./types.js";
+import { readExecution } from "./attachment.js";
 
 /**
  * Pure decision function for PR reviews. Inputs: a WorldSnapshot with
@@ -35,6 +36,27 @@ export function reconcilePrReview(snapshot: WorldSnapshot): PrReviewAction {
   // Control intent takes precedence.
   const intentAction = interpretIntent(status);
   if (intentAction) return intentAction;
+
+  // The review's active run (any kind, a chat turn too) whose instance went
+  // away (docs/plans/scale-out.md §2): attach to its agent again, or — when
+  // the agent never started — queue the run again. Neither needs the PR.
+  const execution = readExecution(snapshot.execution, snapshot.now);
+  if (execution.kind === "detached") {
+    return {
+      kind: "reattach",
+      runId: snapshot.execution!.runId,
+      attempt: execution.attempt,
+      reason: "review_run_unattached",
+    };
+  }
+  if (execution.kind === "never_started") {
+    return {
+      kind: "requeueRun",
+      runId: snapshot.execution!.runId,
+      trigger: "review_run_start_interrupted",
+      reason: "review_run_unattached_never_started",
+    };
+  }
 
   // Blocking read errors defer.
   if (snapshot.readErrors.length > 0) {
