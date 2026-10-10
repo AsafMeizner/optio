@@ -72,8 +72,6 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            - name: installed-skills-cache
-              mountPath: /opt/optio/skills-cache
             {{- if and .Values.configAsCode.enabled (or .Values.configAsCode.configMap .Values.configAsCode.files) }}
             - name: config-manifests
               mountPath: {{ .Values.configAsCode.mountPath | default "/etc/optio-config" }}
@@ -225,13 +223,6 @@ spec:
           emptyDir: {}
         - name: next-cache
           emptyDir: {}
-        - name: installed-skills-cache
-          {{- if .Values.installedSkillsCache.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-installed-skills-cache
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
         {{- if and .Values.configAsCode.enabled (or .Values.configAsCode.configMap .Values.configAsCode.files) }}
         - name: config-manifests
           configMap:

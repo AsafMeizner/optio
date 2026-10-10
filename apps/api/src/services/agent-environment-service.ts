@@ -391,7 +391,8 @@ export async function buildAgentEnvironment(
     let injected = 0;
     for (const skill of installed) {
       try {
-        const files = await readInstalledSkillFiles(skill.resolvedSha!, skill.subpath);
+        // From the database: synced on any instance, read on this one.
+        const files = await readInstalledSkillFiles(skill.id, skill.resolvedSha);
         for (const f of files) {
           setupFiles.push({
             path: `.claude/skills/${skill.name}/${f.relativePath}`,
@@ -404,7 +405,7 @@ export async function buildAgentEnvironment(
       } catch (err) {
         log.warn(
           { err, skillId: skill.id, name: skill.name },
-          "Skipping installed skill — cache miss or read error",
+          "Skipping installed skill — its files are not synced or could not be read",
         );
       }
     }

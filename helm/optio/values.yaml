@@ -231,24 +231,10 @@ outbound:
 networkPolicy:
   enabled: false  # Set to true when your cluster supports NetworkPolicy
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Installed-skills cache (Phase 2 of issue #497)
-#
-# When enabled, the API deployment mounts a PVC at /opt/optio/skills-cache.
-# The skill-sync worker writes content-addressable git clones there (keyed by
-# resolved commit SHA) so multiple installed-skill rows pinned to the same
-# SHA share a single copy and survive API rollouts.
-#
-# When disabled, /opt/optio/skills-cache falls back to an emptyDir, meaning
-# every API restart re-clones every installed skill from upstream. Fine for
-# dev; turn this on in production.
-# ──────────────────────────────────────────────────────────────────────────────
-installedSkillsCache:
-  enabled: false
-  storageClass: ""  # Empty = cluster default storage class
-  size: 5Gi
-  accessModes:
-    - ReadWriteOnce
+# Marketplace skills (issue #497) are synced into the database
+# (`installed_skill_files`), so every API pod serves them and no volume is
+# involved; the former `installedSkillsCache` PVC is gone and the value is
+# ignored.
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config as code (docs/config-as-code.md)

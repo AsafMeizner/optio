@@ -251,6 +251,13 @@ async function main() {
   await app.listen({ port: PORT, host: HOST });
   logger.info(`API server listening on ${HOST}:${PORT}`);
 
+  // Session chat frames and control from every other instance (session-bus.ts).
+  // In the background, retried with backoff: REST serves while Redis is down,
+  // and a chat socket that connects before the bus is up gets other
+  // instances' frames from then on (a reconnect replays history).
+  const { startSessionBusInBackground, stopSessionBus } = await import("./services/session-bus.js");
+  startSessionBusInBackground();
+
   // Log TLS stack info and start observing negotiated key-exchange groups
   logTlsStackInfo();
   initTlsObservability();
@@ -320,6 +327,10 @@ async function main() {
   const localSweepWorker = startLocalSweepWorker();
   logger.info("Local sweep worker started");
 
+  const { startGlanceSweepWorker } = await import("./workers/glance-sweep-worker.js");
+  const glanceSweepWorker = startGlanceSweepWorker();
+  logger.info("Glance sweep worker started");
+
   // Config as code: the configuration directory, when the deployment has one.
   const configSyncWorker = startConfigSyncWorker();
 
@@ -344,8 +355,10 @@ async function main() {
     await reconcileResyncWorker.close();
     await skillSyncWorker.close();
     await localSweepWorker.close();
+    await glanceSweepWorker.close();
     await configSyncWorker?.close();
     await app.close();
+    await stopSessionBus();
     await closeSharedRedisClients();
     // Flush pending OTel spans/metrics with 5s timeout
     await shutdownTelemetry();

@@ -18,9 +18,7 @@ vi.mock("../services/installed-skill-service.js", () => ({
 }));
 
 vi.mock("../workers/skill-sync-worker.js", () => ({
-  skillSyncQueue: {
-    add: (...args: unknown[]) => mockQueueAdd(...args),
-  },
+  enqueueSkillSync: (id: string) => mockQueueAdd("sync-one", { id }, {}),
 }));
 
 import { installedSkillRoutes } from "./installed-skills.js";

@@ -106,6 +106,17 @@ Snooze ("Later") is server-side so the Watch, widgets and web agree: while
 Attention state is untouched (the daemon owns it), so the item resurfaces when
 the window closes. `LocalTerminal.snoozedUntil` is in the shared types.
 
+The bookkeeping behind these pushes is shared by every API instance, in the
+`glance_state` table (`services/glance-state-service.ts`): the last attention
+state pushed per terminal, the last needs-you and running counts per user, the
+hosts already alerted offline, and two timers — the Watch's quiet-period end and
+a snooze's expiry — stored as rows with a due time. The timers are fired by a
+30 s sweep (`workers/glance-sweep-worker.ts`, a BullMQ job scheduler run under
+the `sweep:glance` lease), so a snooze resurfaces and a quiet Watch ends up to
+30 s late (`OPTIO_GLANCE_SWEEP_INTERVAL`). The one-second Watch coalescer
+(`watch-coalescer.ts`) stays per instance; its worst case is one duplicate
+push, which the collapse id folds on the device.
+
 ## Events → pushes
 
 Alerts go through the same per-user preference checks as web push

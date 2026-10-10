@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { parseIntEnv } from "@optio/shared";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
@@ -10,6 +11,8 @@ import {
 } from "../db/schema.js";
 import { podIsolationKey } from "./pod-isolation.js";
 import { isAuthDisabled } from "./oauth/index.js";
+import { INSTANCE_ID } from "./instance.js";
+import { onSessionBus, publishSessionBus } from "./session-bus.js";
 
 export type SessionKind = "pod" | "local";
 export interface SessionActor {
@@ -152,14 +155,32 @@ export async function redeemSessionShare(token: string, actor: SessionActor) {
   return { kind: share.kind, targetId: share.targetId, expiresAt: share.expiresAt };
 }
 
-// Single API replica owns live streams; close existing collaborators immediately
-// on revocation, and revalidate membership/expiry periodically and before input.
+// Live streams are per instance: each instance keeps the sockets it holds
+// for a session, closes them at once when it revokes or ends the session
+// itself, and closes them when another instance says so over the session
+// bus. Every socket is also rechecked periodically and before input — the
+// session still active (a pod session not ended), and, with auth on, the
+// person still a member with access — so a socket on an instance that
+// missed the bus message is closed within one recheck interval anyway.
+// (A Local terminal's stream outlives the terminal's exit on purpose: a
+// viewer replays its final screen.)
 type Socket = {
   close(code?: number, reason?: string): void;
   on(event: "close", cb: () => void): unknown;
 };
 const collaborators = new Map<string, Set<Socket>>();
 const sessionStreams = new Map<string, Set<Socket>>();
+
+/** Whether the session itself is still live: a pod session not ended. */
+async function sessionLive(kind: SessionKind, id: string): Promise<boolean> {
+  if (kind !== "pod") return true;
+  const [row] = await db
+    .select({ state: interactiveSessions.state })
+    .from(interactiveSessions)
+    .where(eq(interactiveSessions.id, id));
+  return row?.state === "active";
+}
+
 export function watchSessionAccess(
   kind: SessionKind,
   target: SessionTarget,
@@ -174,22 +195,38 @@ export function watchSessionAccess(
     streams.delete(socket);
     if (!streams.size) sessionStreams.delete(key);
   });
-  if (isAuthDisabled()) return async () => true;
+  const authOn = !isAuthDisabled();
   const sockets = collaborators.get(key) ?? new Set<Socket>();
-  if (target.userId !== actor.id) {
+  if (authOn && target.userId !== actor.id) {
     sockets.add(socket);
     collaborators.set(key, sockets);
   }
+  // The session's liveness is read on the timer (a database blip keeps the
+  // socket; the bus carries the end too); input checks the last answer
+  // rather than adding a query per keystroke.
+  let ended = false;
   const check = async () => {
+    if (ended) {
+      socket.close(4403, "Session ended");
+      return false;
+    }
+    if (!authOn) return true;
     const allowed = await (async () =>
       (await member(actor.id, target.workspaceId)) &&
       (await canJoinSession(kind, target, actor)))().catch(() => false);
     if (!allowed) socket.close(4403, "Session access expired or was revoked");
     return allowed;
   };
-  const timer = setInterval(() => {
-    void check();
-  }, 10_000);
+  const recheck = async () => {
+    if (!(await sessionLive(kind, target.id).catch(() => true))) ended = true;
+    await check();
+  };
+  const timer = setInterval(
+    () => {
+      void recheck();
+    },
+    parseIntEnv("OPTIO_SESSION_ACCESS_RECHECK_MS", 10_000),
+  );
   timer.unref();
   socket.on("close", () => {
     clearInterval(timer);
@@ -211,6 +248,33 @@ export async function listSessionShares(kind: SessionKind, targetId: string) {
     .where(and(eq(sessionShares.kind, kind), eq(sessionShares.targetId, targetId)));
 }
 
+/** This instance's collaborator sockets for the session, closed. */
+function closeLocalCollaborators(kind: SessionKind, targetId: string) {
+  for (const socket of collaborators.get(`${kind}:${targetId}`) ?? [])
+    socket.close(4403, "Session sharing revoked");
+}
+
+/** This instance's sockets (owner and collaborators) for the session, closed. */
+function closeLocalStreams(kind: SessionKind, id: string) {
+  for (const socket of sessionStreams.get(`${kind}:${id}`) ?? [])
+    socket.close(4403, "Session ended");
+}
+
+/** How many sockets this instance holds for the session (diagnostics / tests). */
+export function sessionStreamCount(kind: SessionKind, id: string): number {
+  return sessionStreams.get(`${kind}:${id}`)?.size ?? 0;
+}
+
+onSessionBus("control", (m) => {
+  if (m.action === "share_revoked") closeLocalCollaborators(m.scope, m.sessionId);
+  else if (m.action === "end") closeLocalStreams(m.scope, m.sessionId);
+});
+
+/**
+ * Revokes a share link: the grant is gone in the database (what every later
+ * check reads), this instance's collaborator sockets close now, and every
+ * other instance closes its own on the bus message.
+ */
 export async function revokeSessionShare(kind: SessionKind, targetId: string, id: string) {
   await db
     .update(sessionShares)
@@ -222,11 +286,28 @@ export async function revokeSessionShare(kind: SessionKind, targetId: string, id
         eq(sessionShares.targetId, targetId),
       ),
     );
-  for (const socket of collaborators.get(`${kind}:${targetId}`) ?? [])
-    socket.close(4403, "Session sharing revoked");
+  closeLocalCollaborators(kind, targetId);
+  await publishSessionBus({
+    kind: "control",
+    scope: kind,
+    sessionId: targetId,
+    action: "share_revoked",
+    origin: INSTANCE_ID,
+  });
 }
 
-export function closeSessionStreams(kind: SessionKind, id: string) {
-  for (const socket of sessionStreams.get(`${kind}:${id}`) ?? [])
-    socket.close(4403, "Session ended");
+/**
+ * The session ended: this instance's sockets for it close now, every other
+ * instance's on the bus message. The session row's state is what a socket
+ * that missed the message is checked against.
+ */
+export async function closeSessionStreams(kind: SessionKind, id: string): Promise<void> {
+  closeLocalStreams(kind, id);
+  await publishSessionBus({
+    kind: "control",
+    scope: kind,
+    sessionId: id,
+    action: "end",
+    origin: INSTANCE_ID,
+  });
 }
