@@ -714,6 +714,8 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
   hold.phase = "streaming";
   const attachment = await runtime.attachRun(handle, { runId: ref.id, runDir, fromByte: 0 });
   hold.attachment = attachment;
+  // Shutdown let the run go while the attach exec was opening: sever it now.
+  if (hold.released) attachment.close();
   const splitter = new LineSplitter(0);
   const lost = async (): Promise<StreamRunResult> => ({
     outcome: (await classifyLoss(hold)) === "taken" ? { kind: "taken" } : { kind: "reset" },
