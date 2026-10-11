@@ -4,13 +4,13 @@
  * a different API process — the e2e tier proves that one) attaches to it.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ContainerHandle, ContainerSpec } from "@optio/shared";
 import { FakeContainerRuntime } from "./fake.js";
-import { RUN_FILES, STDIN_EOF_SENTINEL } from "./run-protocol.js";
+import { RUN_FILES, RunStdinClosedError, STDIN_EOF_SENTINEL } from "./run-protocol.js";
 import type { RunAttachment } from "./types.js";
 
 const AGENT_SCRIPT = [
@@ -173,6 +173,67 @@ describe("FakeContainerRuntime run protocol", () => {
     expect(await attachment.exit).toEqual({ kind: "exited", code: 0 });
     expect(text).toContain("second");
     expect(text).not.toContain("first [[mock:hang]]");
+    // The first attempt's files were moved aside and removed, not reused.
+    await sleep(50);
+    expect(readdirSync(join(dir, "runs")).filter((f) => f.includes(".prev-"))).toEqual([]);
+  });
+
+  it("an attachment keeps reading its own attempt's output, never a later attempt's", async () => {
+    const runId = randomUUID();
+    started.push(runId);
+    const input = (prompt: string) => ({
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      script: AGENT_SCRIPT,
+      initialStdin: `${userMessage(prompt)}\n`,
+    });
+    await a.startRun(handle, input("first [[mock:hang]]"));
+    const old = await a.attachRun(handle, { runId, runDir: `${RUN_DIR}/${runId}`, fromByte: 0 });
+    await sleep(200);
+    await a.startRun(handle, input("second [[mock:ticks:3:10]]"));
+    old.close();
+    const { text } = await drain(old);
+    expect(text).not.toContain("tick 1");
+  });
+
+  it("[[mock:slow-start:MS]] holds the start that long before the agent launches", async () => {
+    const t0 = Date.now();
+    const runId = await start("slow [[mock:slow-start:600]]");
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(600);
+    await a.deliverStdin(handle, {
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      line: STDIN_EOF_SENTINEL,
+    });
+    const attachment = await a.attachRun(handle, {
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      fromByte: 0,
+    });
+    await drain(attachment);
+    expect(await attachment.exit).toEqual({ kind: "exited", code: 0 });
+  });
+
+  it("a line after the EOF sentinel is refused: the agent's stdin is closed", async () => {
+    const runId = await start("done soon");
+    const runDir = `${RUN_DIR}/${runId}`;
+    await a.deliverStdin(handle, { runId, runDir, line: STDIN_EOF_SENTINEL });
+    await expect(
+      a.deliverStdin(handle, { runId, runDir, line: userMessage("too late") }),
+    ).rejects.toBeInstanceOf(RunStdinClosedError);
+    expect(readFileSync(join(a.runDirectory(runId), RUN_FILES.stdin), "utf8")).not.toContain(
+      "too late",
+    );
+  });
+
+  it("a pid-scoped kill signals only that attempt", async () => {
+    const runId = await start("hang [[mock:hang]]");
+    const runDir = `${RUN_DIR}/${runId}`;
+    const pid = Number(
+      readFileSync(join(a.runDirectory(runId), RUN_FILES.pid), "utf8").split(" ")[0],
+    );
+    expect(await a.killRun(handle, { runId, runDir, signal: "TERM", pid: pid + 1 })).toBe(false);
+    expect(await a.killRun(handle, { runId, runDir, signal: "TERM", pid })).toBe(true);
   });
 
   it("re-attaching from the consumed offset yields the rest exactly once", async () => {

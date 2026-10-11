@@ -49,6 +49,10 @@
  *                          after the prompt becomes an assistant text event
  *                          `stdin: <text>` — proves a mid-run message
  *                          reached the agent
+ *   [[mock:slow-start:MS]] → (run protocol only) the start takes MS longer
+ *                          before the agent launches, as a slow setup in the
+ *                          start exec would: a window to cancel a run that
+ *                          is still being set up
  *
  * The run protocol (startRun / attachRun / deliverStdin / killRun,
  * run-protocol.ts) is played by a process of its own: `startRun` writes the
@@ -80,6 +84,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -100,13 +105,15 @@ import type {
   RunStartResult,
   RunStdinInput,
 } from "./types.js";
-import { RUN_FILES, RUN_SIGNALS } from "./run-protocol.js";
+import { RUN_FILES, RUN_SIGNALS, RunStdinClosedError, STDIN_EOF_SENTINEL } from "./run-protocol.js";
 import {
   AGENT_EXEC_MARKER,
   COMMAND_RUN_MARKER,
   CURSOR_EXEC_MARKER,
   UNSUPPORTED_AGENT_MARKERS,
+  collectDirectiveHaystack,
   directive,
+  directiveArg,
   extractPromptText,
   extractScriptExport,
   noPromptResult,
@@ -358,17 +365,45 @@ export class FakeContainerRuntime implements ContainerRuntime {
 
     const dir = this.runDir(input.runId);
     mkdirSync(dir, { recursive: true });
+    // A slow setup in the start exec, before the agent launches.
+    const slowStart = Number(
+      tape.kind === "agent"
+        ? (directiveArg(
+            collectDirectiveHaystack(script, String(tape.initialPrompt ?? "")),
+            "slow-start",
+          ) ?? 0)
+        : 0,
+    );
+    if (slowStart > 0) await new Promise((r) => setTimeout(r, slowStart));
     // Like the real start script: a previous attempt's agent still alive in
-    // this directory is stopped first — one run directory, one agent.
+    // this directory is stopped first — TERM, then KILL — and one that will
+    // not go fails the start with nothing touched: one run directory, one
+    // agent. Its files are then moved aside, never truncated in place.
     const previous = this.runPid(dir);
     if (previous !== null) {
-      this.signal(previous, "TERM");
-      const until = Date.now() + 5_000;
-      while (this.pidAlive(previous) && Date.now() < until) {
-        await new Promise((r) => setTimeout(r, 50));
+      for (const signal of ["TERM", "KILL"] as const) {
+        if (!this.pidAlive(previous)) break;
+        this.signal(previous, signal);
+        const until = Date.now() + 5_000;
+        while (this.pidAlive(previous) && Date.now() < until) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
+      if (this.pidAlive(previous)) {
+        throw new Error(
+          `a previous attempt's agent (pid ${previous}) is still running in the run directory and would not stop`,
+        );
       }
     }
-    for (const f of [RUN_FILES.exit, RUN_FILES.pid]) rmSync(join(dir, f), { force: true });
+    const old = `${dir}.prev-${Date.now()}-${randomBytes(3).toString("hex")}`;
+    let moved = false;
+    for (const f of Object.values(RUN_FILES)) {
+      if (!existsSync(join(dir, f))) continue;
+      if (!moved) mkdirSync(old, { recursive: true });
+      moved = true;
+      renameSync(join(dir, f), join(old, f));
+    }
+    if (moved) setImmediate(() => rmSync(old, { recursive: true, force: true }));
     writeFileSync(join(dir, "container"), handle.id);
     writeFileSync(join(dir, "tape.json"), JSON.stringify(tape, null, 2));
     writeFileSync(join(dir, RUN_FILES.output), "");
@@ -421,26 +456,36 @@ export class FakeContainerRuntime implements ContainerRuntime {
     }
 
     let deadSince: number | null = null;
-    const pump = (): boolean => {
-      let fd: number;
+    // The output file as it was at attach, by descriptor (like `tail -f`):
+    // a later attempt's start moves it aside and writes a new one, which
+    // this attachment never reads.
+    let fd: number | null = null;
+    try {
+      fd = openSync(outputPath, "r");
+    } catch {
+      fd = null;
+    }
+    const release = () => {
+      if (fd === null) return;
       try {
-        fd = openSync(outputPath, "r");
-      } catch {
-        return false;
-      }
-      try {
-        const size = fstatSync(fd).size;
-        if (size > offset) {
-          const buf = Buffer.alloc(size - offset);
-          readSync(fd, buf, 0, buf.length, offset);
-          offset = size;
-          output.push(buf);
-          return true;
-        }
-        return false;
-      } finally {
         closeSync(fd);
+      } catch {
+        // already closed
       }
+      fd = null;
+    };
+    exit.then(release, release);
+    const pump = (): boolean => {
+      if (fd === null) return false;
+      const size = fstatSync(fd).size;
+      if (size > offset) {
+        const buf = Buffer.alloc(size - offset);
+        readSync(fd, buf, 0, buf.length, offset);
+        offset = size;
+        output.push(buf);
+        return true;
+      }
+      return false;
     };
     const tick = () => {
       if (closed) return;
@@ -477,7 +522,11 @@ export class FakeContainerRuntime implements ContainerRuntime {
     }
     const dir = this.runDir(input.runId);
     if (!existsSync(dir)) throw new Error(`fake run ${input.runId} not found`);
-    appendFileSync(join(dir, RUN_FILES.stdin), `${input.line}\n`);
+    // Like the real deliver script: once the sentinel is in, stdin is closed.
+    const stdinPath = join(dir, RUN_FILES.stdin);
+    const sofar = existsSync(stdinPath) ? readFileSync(stdinPath, "utf8") : "";
+    if (sofar.split("\n").includes(STDIN_EOF_SENTINEL)) throw new RunStdinClosedError(input.runDir);
+    appendFileSync(stdinPath, `${input.line}\n`);
   }
 
   async killRun(_handle: ContainerHandle, input: RunKillInput): Promise<boolean> {
@@ -489,6 +538,8 @@ export class FakeContainerRuntime implements ContainerRuntime {
     if (existsSync(join(dir, RUN_FILES.exit))) return false;
     const pid = this.runPid(dir);
     if (pid === null || !this.pidAlive(pid)) return false;
+    // Only the attempt the caller means.
+    if (input.pid !== undefined && pid !== input.pid) return false;
     return this.signal(pid, input.signal);
   }
 

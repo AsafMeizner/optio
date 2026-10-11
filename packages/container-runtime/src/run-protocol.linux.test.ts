@@ -8,11 +8,12 @@
  */
 import { describe, expect, it } from "vitest";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   RUN_FILES,
+  STDIN_CLOSED_MARKER,
   STDIN_DELIVERED_MARKER,
   STDIN_EOF_SENTINEL,
   attachRunScript,
@@ -44,14 +45,24 @@ function bash(script: string, input: Buffer | string = ""): string {
 }
 
 /** The start script as the runtime runs it: prelude + script, stdin bytes fed. */
-function start(runDir: string, agent: string[], initialStdin: string, opts = {}): number {
-  const bytes = Buffer.from(initialStdin, "utf8");
-  const script = [
+function startScript(
+  runDir: string,
+  agent: string[],
+  bytes: Buffer,
+  opts = {},
+  pre: string[] = [],
+) {
+  return [
     ...startRunPrelude(bytes.length),
     "set -e",
+    ...pre,
     ...superviseAgent(runDir, agent, opts),
   ].join("\n");
-  const out = bash(script, bytes);
+}
+
+function start(runDir: string, agent: string[], initialStdin: string, opts = {}): number {
+  const bytes = Buffer.from(initialStdin, "utf8");
+  const out = bash(startScript(runDir, agent, bytes, opts), bytes);
   const pid = Number(out.match(/__OPTIO_RUN_STARTED__:(\d+)/)?.[1]);
   expect(pid).toBeGreaterThan(0);
   return pid;
@@ -194,6 +205,116 @@ describeLinux("the run protocol scripts under bash", () => {
       // Only the fresh attempt's output: one run directory, one agent.
       expect(stdout).toBe('{"len":4,"n":1}\n{"done":true,"n":1}\n');
       expect(stderr.trim()).toBe("__OPTIO_RUN_EXIT__:7");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("a stale supervisor that ignores TERM is KILLed; a straggler's late writes never reach the new attempt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
+    const runDir = join(dir, "run");
+    try {
+      // The agent ignores TERM (so its supervisor's trap waits on it), and
+      // leaves a straggler in a session of its own, still holding the
+      // output file open, that writes after the next attempt started.
+      const stale = start(
+        runDir,
+        [
+          "trap '' TERM",
+          `( setsid bash -c 'sleep 7; echo "{\\"straggler\\":1}"' & )`,
+          "echo '{\"stale\":1}'",
+          "while :; do sleep 0.2; done",
+        ],
+        "",
+      );
+      await sleep(300);
+      const t0 = Date.now();
+      const fresh = start(runDir, ECHO_AGENT, "only\n");
+      // TERM did not do it: the start waited its 5 s, then KILLed the group.
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(4_500);
+      expect(fresh).not.toBe(stale);
+      expect(spawnSync("kill", ["-0", String(stale)]).status).not.toBe(0);
+      // The straggler (sleep 7 from the stale start) writes now.
+      await sleep(Math.max(0, 7_500 - (Date.now() - t0)));
+      const attached = attach(attachRunScript(runDir, 0));
+      deliver(runDir, STDIN_EOF_SENTINEL);
+      const { stdout, stderr } = await attached;
+      expect(stdout).toBe('{"len":4,"n":1}\n{"done":true,"n":1}\n');
+      expect(stdout).not.toContain("straggler");
+      expect(stderr.trim()).toBe("__OPTIO_RUN_EXIT__:7");
+      // The moved-aside files are removed in the background.
+      await sleep(300);
+      expect(readdirSync(dir).filter((f) => f.includes(".prev-"))).toEqual([]);
+    } finally {
+      spawnSync("pkill", ["-f", "sleep 7"]);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it("a stale supervisor that survives KILL fails the start, touching nothing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
+    const runDir = join(dir, "run");
+    let stale = 0;
+    try {
+      stale = start(runDir, ["echo '{\"stale\":1}'", "sleep 1000"], "");
+      await sleep(300);
+      const before = Object.fromEntries(
+        [RUN_FILES.agent, RUN_FILES.output, RUN_FILES.pid, RUN_FILES.stdin].map((f) => [
+          f,
+          readFileSync(join(runDir, f), "utf8"),
+        ]),
+      );
+      // Signals that never land: `kill` only answers `-0` (the probe).
+      const shim = [`kill() { case "$1" in -0) builtin kill "$@";; *) return 0;; esac; }`];
+      const bytes = Buffer.from("fresh\n", "utf8");
+      const t0 = Date.now();
+      const res = spawnSync("bash", ["-c", startScript(runDir, ECHO_AGENT, bytes, {}, shim)], {
+        input: bytes,
+        encoding: "utf8",
+      });
+      expect(res.status).not.toBe(0);
+      expect(res.stderr).toContain("would not stop");
+      expect(res.stdout).not.toContain("__OPTIO_RUN_STARTED__");
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(9_000);
+      for (const [f, content] of Object.entries(before)) {
+        expect(readFileSync(join(runDir, f), "utf8")).toBe(content);
+      }
+      expect(readdirSync(dir).filter((f) => f.includes(".prev-"))).toEqual([]);
+      expect(spawnSync("kill", ["-0", String(stale)]).status).toBe(0);
+    } finally {
+      if (stale) spawnSync("kill", ["-KILL", "--", `-${stale}`]);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it("a line delivered after the EOF sentinel is refused: the agent's stdin is closed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
+    const runDir = join(dir, "run");
+    try {
+      start(runDir, ECHO_AGENT, "first\n");
+      const attached = attach(attachRunScript(runDir, 0));
+      deliver(runDir, STDIN_EOF_SENTINEL);
+      const late = Buffer.from("too late\n", "utf8");
+      const out = bash(deliverStdinScript(runDir, late.length), late);
+      expect(out.trim()).toBe(STDIN_CLOSED_MARKER);
+      expect(readFileSync(join(runDir, RUN_FILES.stdin), "utf8")).not.toContain("too late");
+      const { stdout } = await attached;
+      expect(stdout).toBe('{"len":5,"n":1}\n{"done":true,"n":1}\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("a pid-scoped kill leaves another attempt's supervisor alone", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "optio-proto-"));
+    const runDir = join(dir, "run");
+    try {
+      const pid = start(runDir, ["echo '{\"init\":1}'", "sleep 1000"], "");
+      expect(bash(killRunScript(runDir, "TERM", pid + 1)).trim()).toBe("none");
+      expect(spawnSync("kill", ["-0", String(pid)]).status).toBe(0);
+      expect(bash(killRunScript(runDir, "TERM", pid)).trim()).toBe("killed");
+      const { stderr } = await attach(attachRunScript(runDir, 0));
+      expect(stderr.trim()).toBe("__OPTIO_RUN_EXIT__:143");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
