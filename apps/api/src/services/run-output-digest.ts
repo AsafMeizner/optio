@@ -36,12 +36,15 @@ export class RunOutputDigest {
 
   /**
    * The verdict once the agent exited with `exitCode`. With `inferExitCode`
-   * (tasks and review runs, as their workers always read it) the output
-   * decides first: a Claude-style `result` event seen is authoritative
-   * (`is_error` decides, whatever the process exit), then an agent's
-   * failure signals (failure even on a zero exit); only an output that says
-   * neither leaves it to the process's exit code. Without it (Job runs,
-   * agent turns) the process's exit code is the code, as it always was.
+   * (tasks and review runs) the output decides, as those workers always
+   * read it: for Claude (and Cursor, which emits Claude's result event) a
+   * `result` event seen is authoritative (`is_error` decides, whatever the
+   * process exit), then a fatal raw line, and only an output that says
+   * neither leaves it to the process's exit code; every other agent's code
+   * is its failure signals alone (1 or 0) — its process's exit code is
+   * ignored, as it was before the run protocol. Without `inferExitCode`
+   * (Job runs, agent turns) the process's exit code is the code, as it
+   * always was.
    */
   finish(exitCode: number, opts: { inferExitCode?: boolean } = {}): RunOutputVerdict {
     const code = opts.inferExitCode ? this.inference.resolve(exitCode) : exitCode;
@@ -109,11 +112,14 @@ export class ExitCodeInference {
   }
 
   /**
-   * The run's exit code, the output read with the process's own: a result
-   * event seen decides (its `is_error`); else a failure signal is 1; else
-   * the process's exit code.
+   * The run's exit code, the output read with the process's own. Claude and
+   * Cursor: a result event seen decides (its `is_error`); else a failure
+   * signal is 1; else the process's exit code. Every other agent: its
+   * failure signals alone — the exit code is not consulted (the old
+   * whole-output `inferExitCode` of the task and review workers).
    */
   resolve(processExitCode: number): number {
+    if (this.kind !== "claude-code" && this.kind !== "cursor") return this.flagged ? 1 : 0;
     if (this.firstResult !== null) return this.firstResult;
     if (this.flagged) return 1;
     return processExitCode;

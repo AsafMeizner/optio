@@ -90,10 +90,19 @@ describe("RunOutputDigest", () => {
       ).toBe(0);
     });
 
-    it("other agents: a failure signal fails the run on a zero exit; otherwise the exit code decides", () => {
-      expect(verdict("codex", ['{"type":"error","message":"quota"}'], 0).exitCode).toBe(1);
-      expect(verdict("codex", ['{"type":"message"}'], 0).exitCode).toBe(0);
-      expect(verdict("codex", ['{"type":"message"}'], 3).exitCode).toBe(3);
+    it("other agents keep the old rule exactly: their failure signals decide, the exit code is ignored", () => {
+      const quota = '{"type":"error","message":"quota"}';
+      const fine = '{"type":"message"}';
+      // As the task and review workers read it before the run protocol
+      // (`inferExitCode(agentType, allLogs)`, the process status unused).
+      for (const exit of [0, 1, 3, 143]) {
+        expect(verdict("codex", [quota], exit).exitCode).toBe(1);
+        expect(verdict("codex", [fine], exit).exitCode).toBe(0);
+        expect(verdict("codex", [fine], exit).result.success).toBe(true);
+        expect(verdict("codex", [fine], exit).exitCode).toBe(inferExitCode("codex", fine));
+      }
+      expect(verdict("gemini", ["turn limit reached"], 0).exitCode).toBe(1);
+      expect(verdict("copilot", ["all good"], 2).exitCode).toBe(0);
     });
 
     it("without inference (Job runs, agent turns) the process's exit code is the code", () => {
