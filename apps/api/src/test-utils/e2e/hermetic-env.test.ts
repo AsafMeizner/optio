@@ -1,4 +1,5 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFile, execFileSync, execSync } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -90,6 +91,34 @@ describe("createHermeticEnv", () => {
     }
     expect(readdirSync(hermetic.env.HOME)).toEqual([]);
     expect(readdirSync(hermetic.env.CLAUDE_CONFIG_DIR)).toEqual([]);
+  });
+
+  it("answers git platform hosts itself (no request leaves the machine), lets anything else through", async () => {
+    hermetic = await createHermeticEnv();
+    const script = `
+      const show = async (url) => {
+        const res = await fetch(url);
+        return res.status + " " + (await res.text()).slice(0, 120);
+      };
+      console.log(JSON.stringify({
+        api: await show("https://api.github.com/repos/e2e-org/scale-a/pulls/1"),
+        ghe: await show(new URL("https://uploads.github.com/x")),
+        gitlab: await show(new Request("https://gitlab.com/api/v4/projects/1")),
+        local: await show(${JSON.stringify(`${"${KUBE}"}/api/v1/nodes`)}.replace("\${KUBE}", process.env.KUBE)),
+      }));
+    `;
+    // Asynchronously: the fake Kubernetes API answering "local" is served by this process.
+    const { stdout: out } = await promisify(execFile)(
+      process.execPath,
+      ["--input-type=module", "-e", script],
+      { env: { ...process.env, ...hermetic.env, KUBE: hermetic.kubeUrl }, encoding: "utf8" },
+    );
+    const result = JSON.parse(out.trim().split("\n").at(-1)!) as Record<string, string>;
+    for (const key of ["api", "ghe", "gitlab"]) {
+      expect(result[key], key).toMatch(/^401 .*hermetic test server: no network/);
+    }
+    expect(result.local).toMatch(/^200 .*test-node/);
+    expect(hermetic.env.NODE_OPTIONS).toContain("--import=file://");
   });
 
   it("keeps the stubs first on a PATH the caller brought (e.g. its own shims)", async () => {

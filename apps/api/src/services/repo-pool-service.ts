@@ -6,7 +6,8 @@ import { agentPods, tasks, interactiveSessions, workspaces } from "../db/schema.
 import * as podPool from "./agent-pod-pool.js";
 import { podIsolationKey, isolatedPodResource, type PodIsolation } from "./pod-isolation.js";
 import { getRuntime } from "./container-service.js";
-import type { ContainerHandle, ContainerSpec, ExecSession, RepoImageConfig } from "@optio/shared";
+import type { ContainerHandle, ContainerSpec, RepoImageConfig } from "@optio/shared";
+import type { RunStartResult } from "@optio/container-runtime";
 import {
   DEFAULT_AGENT_IMAGE,
   PRESET_IMAGES,
@@ -38,7 +39,7 @@ import {
   superviseAgent,
   WRITE_SETUP_FILES,
 } from "../utils/pod-env.js";
-import { REMOVE_RUN_HOME, removeRunHome, runHome } from "../utils/harness-config.js";
+import { removeRunHome, runHome } from "../utils/harness-config.js";
 import { resolveSecretsForSetup, workspaceRestrictsPodSecrets } from "./secret-service.js";
 
 /** The run env a repo pod starts with: git sign-in and the repo's setup. */
@@ -924,49 +925,13 @@ function taskSetupLines(
 }
 
 /**
- * The classic exec script: runs the agent inline, kills it when the exec
- * stream breaks (the EPIPE watchdog), and removes the run home on exit.
- * Kept until every worker is on the run protocol (docs/plans/scale-out.md).
- */
-export function buildTaskExecScript(
-  taskId: string,
-  env: Record<string, string>,
-  agentCommand: string[],
-  opts: TaskScriptOptions = {},
-): string {
-  const setup = taskSetupLines(taskId, env, opts);
-  const script = [
-    ...setup,
-    // EXIT trap: kill child processes (agent + watchdog) then clean up internal worktrees.
-    // This ensures orphaned agent processes are killed when the exec stream is severed
-    // (e.g. API pod restart closes the SPDY connection but kubelet doesn't send SIGHUP).
-    `_optio_main_pid=$$`,
-    // The run's own home (its runtime's MCP config, Codex / Gemini session
-    // files) goes with the run; a retry writes it afresh (harness-config.ts).
-    `trap 'kill $(jobs -p) 2>/dev/null; wait 2>/dev/null; cd /workspace/repo 2>/dev/null; git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true; git worktree prune 2>/dev/null || true; ${REMOVE_RUN_HOME}' EXIT`,
-    // Background heartbeat: detect broken stdout pipe (EPIPE) from severed exec stream.
-    // Writes an empty line every 30s (skipped by the NDJSON parser). If stdout is broken
-    // (API pod died), sends SIGTERM to the main script which triggers the EXIT trap.
-    `(trap '' PIPE; while sleep 30; do printf '\\n' 2>/dev/null || { kill -TERM $_optio_main_pid 2>/dev/null; exit; }; done) &`,
-    ...RUN_WORK_SETUP_COMMANDS,
-    `set +e`,
-    ...agentCommand,
-    `AGENT_EXIT=$?`,
-    `[ $AGENT_EXIT -eq 0 ] && touch /home/agent/.optio-env-ready`,
-    `exit $AGENT_EXIT`,
-  ];
-  return script.join("\n");
-}
-
-/**
- * The start script of the run protocol (run-protocol.ts): the same setup,
- * the stale `-wt` worktree and worktree records pruned (the exec script's
- * trap did that at exit), then the agent launched under the supervisor in
- * the task's run home, so the exec returns as soon as the agent runs and any
- * API instance can attach later. No trap, no watchdog. The run home stays
- * until the attached worker removes it — when the run is terminal and
- * `consumed_bytes` equals the output file's size (phase B) — with the
- * run-home sweep (`run-home-sweep-service.ts`) as the backstop.
+ * The start script of the run protocol (run-protocol.ts): the task's
+ * setup, the stale `-wt` worktree and worktree records pruned, then the
+ * agent launched under the supervisor in the task's run home, so the exec
+ * returns as soon as the agent runs and any API instance can attach later.
+ * The run home stays until the attached worker removes it — when the run is
+ * terminal and every byte of its output is a log row — with the run-home
+ * sweep (`run-home-sweep-service.ts`) as the backstop.
  */
 export function buildTaskStartScript(
   taskId: string,
@@ -984,44 +949,56 @@ export function buildTaskStartScript(
 }
 
 /**
- * Execute a task in a repo pod using a git worktree.
- * Returns an ExecSession for streaming output.
+ * Starts a task's agent in a repo pod under the run protocol
+ * (run-protocol.ts): the worktree and setup, then the agent launched
+ * under its supervisor, and the exec returns once it runs. The task holds a slot on the pod from here (given back when the
+ * run ends, by whichever instance finishes it) and `lastPodId` says where
+ * to attach. `initialStdin` is the run's first stdin (Claude's first
+ * stream-json message), primed before the agent starts.
  */
-export async function execTaskInRepoPod(
+export async function startTaskInRepoPod(
   pod: RepoPod,
   taskId: string,
   agentCommand: string[],
   env: Record<string, string>,
-  opts?: { resetWorktree?: boolean },
-): Promise<ExecSession> {
+  opts: { resetWorktree?: boolean; initialStdin: string },
+): Promise<RunStartResult> {
   return withSpan(
-    "k8s.pod.exec",
+    "k8s.pod.startRun",
     { "k8s.pod.name": pod.podName ?? "unknown", "task.id": taskId },
     async () => {
       const rt = getRuntime();
       const handle: ContainerHandle = { id: pod.podId ?? pod.podName!, name: pod.podName! };
 
-      // Take a slot on the pod
+      // Take a slot on the pod; given back if the start fails.
       await podPool.acquireSlot(pod.id);
+      try {
+        // Mark pod as non-disruptable while tasks are running (Karpenter)
+        if (isStatefulSetEnabled() && pod.podName) {
+          getWorkloadManager()
+            .patchPodAnnotations(pod.podName, { "karpenter.sh/do-not-disrupt": "true" })
+            .catch((err) => logger.warn({ err }, "Failed to set do-not-disrupt annotation"));
+        }
 
-      // Mark pod as non-disruptable while tasks are running (Karpenter)
-      if (isStatefulSetEnabled() && pod.podName) {
-        getWorkloadManager()
-          .patchPodAnnotations(pod.podName, { "karpenter.sh/do-not-disrupt": "true" })
-          .catch((err) => logger.warn({ err }, "Failed to set do-not-disrupt annotation"));
+        // Update task worktree state to active and record which pod it's running on
+        await db
+          .update(tasks)
+          .set({ worktreeState: "active", lastPodId: pod.id, updatedAt: new Date() })
+          .where(eq(tasks.id, taskId));
+
+        const script = buildTaskStartScript(taskId, env, agentCommand, {
+          resetWorktree: opts.resetWorktree,
+        });
+        return await rt.startRun(handle, {
+          runId: taskId,
+          runDir: runHome(taskId).podDir,
+          script,
+          initialStdin: opts.initialStdin,
+        });
+      } catch (err) {
+        await podPool.releaseSlot(pod.id).catch(() => {});
+        throw err;
       }
-
-      // Update task worktree state to active and record which pod it's running on
-      await db
-        .update(tasks)
-        .set({ worktreeState: "active", lastPodId: pod.id, updatedAt: new Date() })
-        .where(eq(tasks.id, taskId));
-
-      const script = buildTaskExecScript(taskId, env, agentCommand, {
-        resetWorktree: opts?.resetWorktree,
-      });
-
-      return rt.exec(handle, ["bash", "-c", script], { tty: false });
     },
   );
 }

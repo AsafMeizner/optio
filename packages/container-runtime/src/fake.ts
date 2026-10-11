@@ -41,10 +41,25 @@
  *   [[mock:script:TEXT]] → also print `script TEXT=present|absent`, whether
  *                          the exec script contains TEXT (a launch flag, a
  *                          cleanup line)
+ *   [[mock:ticks:N:MS]]  → (run protocol only) N assistant text events
+ *                          `tick 1`…`tick N`, MS apart (default 100), after
+ *                          init — numbered lines a run that changes hands
+ *                          mid-way must store exactly once each
  *   [[mock:echo-stdin]]  → (run protocol only) every stdin line delivered
  *                          after the prompt becomes an assistant text event
  *                          `stdin: <text>` — proves a mid-run message
  *                          reached the agent
+ *   [[mock:mark:N:TEXT]] → (run protocol only) an assistant text event TEXT
+ *                          right after tick N: a line of the test's choosing
+ *                          in the middle of a run
+ *   [[mock:slow-start:MS]] → (run protocol only) the start takes MS longer
+ *                          before the agent launches, as a slow setup in the
+ *                          start exec would: a window to cancel a run that
+ *                          is still being set up
+ *   [[mock:stderr:TEXT]] → (run protocol only) the agent's stderr.log holds
+ *                          TEXT; a utility exec reading the tail of a run's
+ *                          stderr.log (as the API does for a failed run)
+ *                          gets it
  *
  * The run protocol (startRun / attachRun / deliverStdin / killRun,
  * run-protocol.ts) is played by a process of its own: `startRun` writes the
@@ -76,6 +91,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -96,13 +112,15 @@ import type {
   RunStartResult,
   RunStdinInput,
 } from "./types.js";
-import { RUN_FILES, RUN_SIGNALS } from "./run-protocol.js";
+import { RUN_FILES, RUN_SIGNALS, RunStdinClosedError, STDIN_EOF_SENTINEL } from "./run-protocol.js";
 import {
   AGENT_EXEC_MARKER,
   COMMAND_RUN_MARKER,
   CURSOR_EXEC_MARKER,
   UNSUPPORTED_AGENT_MARKERS,
+  collectDirectiveHaystack,
   directive,
+  directiveArg,
   extractPromptText,
   extractScriptExport,
   noPromptResult,
@@ -218,6 +236,20 @@ export class FakeContainerRuntime implements ContainerRuntime {
       if (/\bpkill\b|\bkill\b/.test(script)) {
         for (const closeSession of this.sessionClosers.get(handle.id) ?? []) closeSession();
         this.killRunsOf(handle.id, "TERM");
+      }
+      // The tail of a run's stderr (read for a failed run's message).
+      const tail = script.match(
+        /tail -c (\d+) '\/home\/agent\/optio\/runs\/([^'/]+)\/stderr\.log'/,
+      );
+      if (tail) {
+        let text = "";
+        try {
+          const all = readFileSync(join(this.runDir(tail[2]), RUN_FILES.stderr));
+          text = all.subarray(Math.max(0, all.length - Number(tail[1]))).toString("utf8");
+        } catch {
+          // no such run, or no stderr
+        }
+        return this.utilitySession(text);
       }
       return this.utilitySession();
     }
@@ -354,11 +386,47 @@ export class FakeContainerRuntime implements ContainerRuntime {
 
     const dir = this.runDir(input.runId);
     mkdirSync(dir, { recursive: true });
-    for (const f of [RUN_FILES.exit, RUN_FILES.pid]) rmSync(join(dir, f), { force: true });
+    // A slow setup in the start exec, before the agent launches.
+    const haystack =
+      tape.kind === "agent"
+        ? collectDirectiveHaystack(script, String(tape.initialPrompt ?? ""))
+        : "";
+    const slowStart = Number(directiveArg(haystack, "slow-start") ?? 0);
+    if (slowStart > 0) await new Promise((r) => setTimeout(r, slowStart));
+    // Like the real start script: a previous attempt's agent still alive in
+    // this directory is stopped first — TERM, then KILL — and one that will
+    // not go fails the start with nothing touched: one run directory, one
+    // agent. Its files are then moved aside, never truncated in place.
+    const previous = this.runPid(dir);
+    if (previous !== null) {
+      for (const signal of ["TERM", "KILL"] as const) {
+        if (!this.pidAlive(previous)) break;
+        this.signal(previous, signal);
+        const until = Date.now() + 5_000;
+        while (this.pidAlive(previous) && Date.now() < until) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
+      if (this.pidAlive(previous)) {
+        throw new Error(
+          `a previous attempt's agent (pid ${previous}) is still running in the run directory and would not stop`,
+        );
+      }
+    }
+    const old = `${dir}.prev-${Date.now()}-${randomBytes(3).toString("hex")}`;
+    let moved = false;
+    for (const f of Object.values(RUN_FILES)) {
+      if (!existsSync(join(dir, f))) continue;
+      if (!moved) mkdirSync(old, { recursive: true });
+      moved = true;
+      renameSync(join(dir, f), join(old, f));
+    }
+    if (moved) setImmediate(() => rmSync(old, { recursive: true, force: true }));
     writeFileSync(join(dir, "container"), handle.id);
     writeFileSync(join(dir, "tape.json"), JSON.stringify(tape, null, 2));
     writeFileSync(join(dir, RUN_FILES.output), "");
-    writeFileSync(join(dir, RUN_FILES.stderr), "");
+    const stderrText = directiveArg(haystack, "stderr");
+    writeFileSync(join(dir, RUN_FILES.stderr), stderrText ? `${stderrText}\n` : "");
     writeFileSync(join(dir, RUN_FILES.stdin), input.initialStdin);
 
     // Detached, in a session of its own, and unreferenced: it outlives us.
@@ -407,26 +475,36 @@ export class FakeContainerRuntime implements ContainerRuntime {
     }
 
     let deadSince: number | null = null;
-    const pump = (): boolean => {
-      let fd: number;
+    // The output file as it was at attach, by descriptor (like `tail -f`):
+    // a later attempt's start moves it aside and writes a new one, which
+    // this attachment never reads.
+    let fd: number | null = null;
+    try {
+      fd = openSync(outputPath, "r");
+    } catch {
+      fd = null;
+    }
+    const release = () => {
+      if (fd === null) return;
       try {
-        fd = openSync(outputPath, "r");
-      } catch {
-        return false;
-      }
-      try {
-        const size = fstatSync(fd).size;
-        if (size > offset) {
-          const buf = Buffer.alloc(size - offset);
-          readSync(fd, buf, 0, buf.length, offset);
-          offset = size;
-          output.push(buf);
-          return true;
-        }
-        return false;
-      } finally {
         closeSync(fd);
+      } catch {
+        // already closed
       }
+      fd = null;
+    };
+    exit.then(release, release);
+    const pump = (): boolean => {
+      if (fd === null) return false;
+      const size = fstatSync(fd).size;
+      if (size > offset) {
+        const buf = Buffer.alloc(size - offset);
+        readSync(fd, buf, 0, buf.length, offset);
+        offset = size;
+        output.push(buf);
+        return true;
+      }
+      return false;
     };
     const tick = () => {
       if (closed) return;
@@ -463,7 +541,11 @@ export class FakeContainerRuntime implements ContainerRuntime {
     }
     const dir = this.runDir(input.runId);
     if (!existsSync(dir)) throw new Error(`fake run ${input.runId} not found`);
-    appendFileSync(join(dir, RUN_FILES.stdin), `${input.line}\n`);
+    // Like the real deliver script: once the sentinel is in, stdin is closed.
+    const stdinPath = join(dir, RUN_FILES.stdin);
+    const sofar = existsSync(stdinPath) ? readFileSync(stdinPath, "utf8") : "";
+    if (sofar.split("\n").includes(STDIN_EOF_SENTINEL)) throw new RunStdinClosedError(input.runDir);
+    appendFileSync(stdinPath, `${input.line}\n`);
   }
 
   async killRun(_handle: ContainerHandle, input: RunKillInput): Promise<boolean> {
@@ -475,6 +557,8 @@ export class FakeContainerRuntime implements ContainerRuntime {
     if (existsSync(join(dir, RUN_FILES.exit))) return false;
     const pid = this.runPid(dir);
     if (pid === null || !this.pidAlive(pid)) return false;
+    // Only the attempt the caller means.
+    if (input.pid !== undefined && pid !== input.pid) return false;
     return this.signal(pid, input.signal);
   }
 
@@ -508,11 +592,12 @@ export class FakeContainerRuntime implements ContainerRuntime {
   }
 
   /** Empty session for non-agent shell execs: ends immediately, exit-ok. */
-  private utilitySession(): ExecSession {
+  private utilitySession(output = ""): ExecSession {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     const stdin = new Writable({ write: (_c, _e, cb) => cb() });
-    stdout.end();
+    if (output) stdout.end(output);
+    else stdout.end();
     stderr.end();
     return {
       stdin,

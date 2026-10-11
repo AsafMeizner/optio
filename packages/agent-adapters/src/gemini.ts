@@ -5,7 +5,8 @@ import type {
   GeminiAuthMode,
 } from "@optio/shared";
 import { TASK_BRANCH_PREFIX } from "@optio/shared";
-import type { AgentAdapter } from "./types.js";
+import type { AgentAdapter, AgentResultParser } from "./types.js";
+import { firstMatch, parseAllLines } from "./types.js";
 
 /**
  * Gemini CLI (`gemini -p ... --output-format stream-json`) outputs NDJSON events.
@@ -123,39 +124,56 @@ export class GeminiAdapter implements AgentAdapter {
   }
 
   parseResult(exitCode: number, logs: string): AgentResult {
-    // Extract PR URL from anywhere in the logs (GitHub PR + GitLab MR)
-    const prMatch = logs.match(
+    return parseAllLines(this.createResultParser(), exitCode, logs);
+  }
+
+  createResultParser(): AgentResultParser {
+    // Extract the PR URL from anywhere in the output (its first mention)
+    const pr = firstMatch(
       /https:\/\/(?![\w.-]+\/api\/)[^\s"]+\/(?:pull\/\d+|-\/merge_requests\/\d+)/,
     );
-
-    // Parse NDJSON lines to extract structured data
-    const { costUsd, errorMessage, hasError, summary, inputTokens, outputTokens, model } =
-      this.parseLogs(logs);
-
-    const success = exitCode === 0 && !hasError;
-
+    const parsed = this.logParser();
     return {
-      success,
-      prUrl: prMatch?.[0],
-      costUsd,
-      summary:
-        summary ??
-        (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
-      error: !success ? (errorMessage ?? `Exit code: ${exitCode}`) : undefined,
-      inputTokens,
-      outputTokens,
-      model,
+      push(line) {
+        pr.push(line);
+        parsed.push(line);
+      },
+      finish(exitCode) {
+        const prMatch = pr.value;
+
+        // Parse NDJSON lines to extract structured data
+        const { costUsd, errorMessage, hasError, summary, inputTokens, outputTokens, model } =
+          parsed.done();
+
+        const success = exitCode === 0 && !hasError;
+
+        return {
+          success,
+          prUrl: prMatch?.[0],
+          costUsd,
+          summary:
+            summary ??
+            (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
+          error: !success ? (errorMessage ?? `Exit code: ${exitCode}`) : undefined,
+          inputTokens,
+          outputTokens,
+          model,
+        };
+      },
     };
   }
 
-  private parseLogs(logs: string): {
-    costUsd?: number;
-    errorMessage?: string;
-    hasError: boolean;
-    summary?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    model?: string;
+  private logParser(): {
+    push(line: string): void;
+    done(): {
+      costUsd?: number;
+      errorMessage?: string;
+      hasError: boolean;
+      summary?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      model?: string;
+    };
   } {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -164,8 +182,8 @@ export class GeminiAdapter implements AgentAdapter {
     let hasError = false;
     let lastAssistantMessage: string | undefined;
 
-    for (const line of logs.split("\n")) {
-      if (!line.trim()) continue;
+    const push = (line: string): void => {
+      if (!line.trim()) return;
 
       let event: any;
       try {
@@ -178,7 +196,7 @@ export class GeminiAdapter implements AgentAdapter {
           // Log raw error for diagnostics (helps catch API key issues, auth failures, etc.)
           console.warn(`[gemini] Raw error: ${errorMessage}`);
         }
-        continue;
+        return;
       }
 
       // Extract model name from init or result events
@@ -190,7 +208,7 @@ export class GeminiAdapter implements AgentAdapter {
       if (event.type === "error") {
         errorMessage = event.message ?? event.error ?? JSON.stringify(event);
         hasError = true;
-        continue;
+        return;
       }
 
       // Track assistant messages for summary
@@ -237,26 +255,30 @@ export class GeminiAdapter implements AgentAdapter {
           totalInputTokens += usage.cache_creation_input_tokens;
         if (usage.cache_read_input_tokens) totalInputTokens += usage.cache_read_input_tokens;
       }
-    }
-
-    // Calculate cost from token counts
-    let costUsd: number | undefined;
-    if (totalInputTokens > 0 || totalOutputTokens > 0) {
-      const pricing = model ? (GEMINI_MODEL_PRICING[model] ?? DEFAULT_PRICING) : DEFAULT_PRICING;
-      costUsd =
-        (totalInputTokens / 1_000_000) * pricing.input +
-        (totalOutputTokens / 1_000_000) * pricing.output;
-    }
-
-    return {
-      costUsd,
-      errorMessage,
-      hasError,
-      summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,
-      inputTokens: totalInputTokens || undefined,
-      outputTokens: totalOutputTokens || undefined,
-      model,
     };
+
+    const done = () => {
+      // Calculate cost from token counts
+      let costUsd: number | undefined;
+      if (totalInputTokens > 0 || totalOutputTokens > 0) {
+        const pricing = model ? (GEMINI_MODEL_PRICING[model] ?? DEFAULT_PRICING) : DEFAULT_PRICING;
+        costUsd =
+          (totalInputTokens / 1_000_000) * pricing.input +
+          (totalOutputTokens / 1_000_000) * pricing.output;
+      }
+
+      return {
+        costUsd,
+        errorMessage,
+        hasError,
+        summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,
+        inputTokens: totalInputTokens || undefined,
+        outputTokens: totalOutputTokens || undefined,
+        model,
+      };
+    };
+
+    return { push, done };
   }
 
   private buildPrompt(input: AgentTaskInput): string {

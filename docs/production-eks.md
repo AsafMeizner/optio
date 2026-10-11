@@ -15,8 +15,10 @@ Postgres advisory lock, every periodic sweep runs under a lease in `leases` and 
 safe to overlap anyway (ticket claims, a compare-and-swap on a schedule's next
 tick, one active review per PR), inbound webhook deliveries and WebSocket upgrade
 tokens are rows, and repeat jobs are BullMQ job schedulers with stable ids, so pods
-booting in any order leave one schedule per tick. Session chat reaches viewers on
-every pod over the session bus. An **Optio Local** daemon is one WebSocket on one
+booting in any order leave one schedule per tick. An agent run is attached to one
+pod at a time and outlives it: when that pod goes away another one re-attaches from
+the run's consumed offset ([docs/reconciliation.md](reconciliation.md#attachment-runs-that-outlive-an-api-process)).
+Session chat reaches viewers on every pod over the session bus. An **Optio Local** daemon is one WebSocket on one
 pod, which holds the host's lease (`local-host:<id>`); viewers, REST calls and
 workers on the other pods reach it over Redis pub/sub, and when that pod goes away
 the daemon reconnects to another and its viewers follow

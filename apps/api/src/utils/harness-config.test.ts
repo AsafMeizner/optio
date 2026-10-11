@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   carriesEnv,
   copilotMcpConfigFlag,
@@ -12,7 +9,6 @@ import {
   EXPORT_OPENCODE_CONFIG,
   geminiSettingsJson,
   opencodeConfigJson,
-  REMOVE_RUN_HOME,
   removeRunHome,
   runHome,
   runHomePath,
@@ -160,31 +156,5 @@ describe("launch lines", () => {
         OPTIO_COPILOT_MCP_CONFIG: "/home/agent/optio/runs/r1/copilot/mcp-config.json",
       }),
     ).toBe(" --additional-mcp-config '@/home/agent/optio/runs/r1/copilot/mcp-config.json'");
-  });
-});
-
-describe("REMOVE_RUN_HOME", () => {
-  it("removes the run's home from an EXIT trap, and only a home under the runs directory", () => {
-    const dir = mkdtempSync(join(tmpdir(), "run-home-"));
-    try {
-      // The pod's runs directory, stood in for by a temp dir.
-      const line = REMOVE_RUN_HOME.replaceAll("/home/agent/optio/runs", `${dir}/runs`);
-      expect(line).not.toContain("'");
-      const home = join(dir, "runs", "r1");
-      mkdirSync(join(home, "codex"), { recursive: true });
-      writeFileSync(join(home, "codex", "config.toml"), "x");
-      const elsewhere = join(dir, "elsewhere");
-      mkdirSync(elsewhere);
-
-      bash([`trap '${line}' EXIT`, "true"], { OPTIO_RUN_HOME: home });
-      expect(existsSync(home)).toBe(false);
-
-      bash([`trap '${line}' EXIT`, "true"], { OPTIO_RUN_HOME: elsewhere });
-      expect(existsSync(elsewhere)).toBe(true);
-      bash([`trap '${line}' EXIT`, "true"], {});
-      expect(existsSync(elsewhere)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });

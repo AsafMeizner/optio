@@ -9,6 +9,8 @@ import {
   RUN_STARTED_MARKER,
   RunDeliverError,
   RunStartError,
+  RunStdinClosedError,
+  STDIN_CLOSED_MARKER,
   STDIN_DELIVERED_MARKER,
   STDIN_EOF_SENTINEL,
   SUPERVISOR_SCRIPT,
@@ -34,6 +36,8 @@ describe("the pid helper", () => {
     expect(helper).toContain(`read -r _optio_pid _optio_start < "$1/${RUN_FILES.pid}" || return 1`);
     expect(helper).toContain('[ -n "$_optio_pid" ] && [ -n "$_optio_start" ] || return 1');
     expect(helper).toContain('kill -0 "$_optio_pid" 2>/dev/null || return 1');
+    // Never pid 0 or 1: `kill -- -1` would signal the whole pod.
+    expect(helper).toContain('[ "$_optio_pid" -gt 1 ] 2>/dev/null || return 1');
     expect(helper).toContain(`[ "$(${STARTTIME})" = "$_optio_start" ] || return 1`);
     expect(helper).toContain(`printf '%s' "$_optio_pid"`);
   });
@@ -101,11 +105,49 @@ describe("superviseAgent", () => {
     expect(script).not.toContain("OPTIO_RUN_STDIN=");
   });
 
-  it("starts a fresh attempt: truncated output, no stale exit, pid or FIFO", () => {
+  it("stops a stale supervisor first: TERM, up to 5 s, KILL, up to 5 s, else fails with nothing touched", () => {
+    const stop = script.indexOf(`if _optio_prev=$(optio_run_pid "$OPTIO_RUN_DIR"); then`);
+    expect(stop).toBeGreaterThan(0);
+    const term = script.indexOf(`kill -TERM -- -"$_optio_prev"`, stop);
+    const kill = script.indexOf(`kill -KILL -- -"$_optio_prev"`, stop);
+    const fail = script.indexOf("would not stop", stop);
+    expect(term).toBeGreaterThan(stop);
+    expect(kill).toBeGreaterThan(term);
+    expect(fail).toBeGreaterThan(kill);
+    expect(script.slice(fail, script.indexOf("\n", fail))).toContain("exit 1");
+    expect(
+      script.match(
+        /for i in \$\(seq 1 100\); do optio_alive "\$_optio_prev" \|\| break; sleep 0.05; done/g,
+      ),
+    ).toHaveLength(2);
+    // A zombie answers `kill -0`; it is not alive.
+    expect(RUN_ALIVE_HELPER.join("\n")).toContain(`cut -d' ' -f1)" != "Z" ]`);
+    // Nothing of the run directory is written before the stale supervisor is gone.
+    for (const file of [RUN_FILES.agent, RUN_FILES.supervisor, RUN_FILES.output, RUN_FILES.stdin]) {
+      expect(script.indexOf(`> "$OPTIO_RUN_DIR"/${file}`)).toBeGreaterThan(fail);
+    }
+  });
+
+  it("moves the previous attempt's files aside, never truncating them in place, and starts fresh ones", () => {
+    const move = script.indexOf(`mv -f "$OPTIO_RUN_DIR"/"$_optio_f" "$_optio_old"/`);
+    expect(move).toBeGreaterThan(0);
+    expect(script).toContain(`_optio_old="$OPTIO_RUN_DIR".prev-$(date +%s)-$$`);
+    for (const file of [
+      RUN_FILES.output,
+      RUN_FILES.stderr,
+      RUN_FILES.stdin,
+      RUN_FILES.pid,
+      RUN_FILES.exit,
+      RUN_FILES.stdinPipe,
+    ]) {
+      expect(script).toMatch(new RegExp(`for _optio_f in [^;]*\\b${file.replace(".", "\\.")}\\b`));
+    }
+    // Removed in the background, holding none of the start exec's descriptors.
     expect(script).toContain(
-      `rm -f "$OPTIO_RUN_DIR"/${RUN_FILES.exit} "$OPTIO_RUN_DIR"/${RUN_FILES.pid} "$OPTIO_RUN_DIR"/${RUN_FILES.stdinPipe}`,
+      `if [ -n "$_optio_old" ]; then ( rm -rf "$_optio_old" ) < /dev/null > /dev/null 2>&1 3<&- 7>&- 9>&- & fi`,
     );
-    expect(script).toContain(`: > "$OPTIO_RUN_DIR"/${RUN_FILES.output}`);
+    expect(script.indexOf(`: > "$OPTIO_RUN_DIR"/${RUN_FILES.output}`)).toBeGreaterThan(move);
+    expect(script).not.toContain(`rm -f "$OPTIO_RUN_DIR"/${RUN_FILES.exit}`);
     expect(script).toContain(`mkfifo "$OPTIO_RUN_DIR"/${RUN_FILES.stdinPipe}`);
   });
 
@@ -114,7 +156,9 @@ describe("superviseAgent", () => {
     const outsideHeredocs = script.replace(/<<'(__OPTIO_\w+__)'\n[\s\S]*?\n\1/g, "");
     expect(outsideHeredocs).not.toContain("trap");
     expect(script).not.toContain(" EXIT");
-    expect(script).not.toContain("rm -rf");
+    // The only removal is the previous attempt's moved-aside files.
+    expect(script.match(/rm -rf/g)).toEqual(["rm -rf"]);
+    expect(script).not.toContain('rm -rf "$OPTIO_RUN_DIR"');
     expect(script).not.toContain("kill -TERM $_optio_main_pid");
     expect(script).not.toContain("printf '\\n'");
   });
@@ -202,6 +246,17 @@ describe("deliverStdinScript", () => {
     expect(s).not.toContain("OPTIO_STDIN_LINE");
   });
 
+  it("refuses once the run's stdin holds the EOF sentinel, under the stdin lock", () => {
+    const s = deliverStdinScript(RUN_DIR, 42);
+    const lock = s.indexOf("flock -x 8");
+    const check = s.indexOf(`grep -qxF '${STDIN_EOF_SENTINEL}' "$d/${RUN_FILES.stdin}"`);
+    const append = s.indexOf("head -c 42");
+    expect(lock).toBeGreaterThan(0);
+    expect(check).toBeGreaterThan(lock);
+    expect(append).toBeGreaterThan(check);
+    expect(s).toContain(`then echo "${STDIN_CLOSED_MARKER}"; exit 0; fi`);
+  });
+
   it("refuses a byte count below one", () => {
     expect(() => deliverStdinScript(RUN_DIR, 0)).toThrow(/byteLength/);
     expect(() => deliverStdinScript(RUN_DIR, 2.5)).toThrow(/byteLength/);
@@ -222,6 +277,13 @@ describe("killRunScript", () => {
 
   it("only knows the four signals", () => {
     expect(() => killRunScript(RUN_DIR, "USR1" as never)).toThrow(/Unsupported signal/);
+  });
+
+  it("with a pid, signals only that attempt's supervisor", () => {
+    const s = killRunScript(RUN_DIR, "TERM", 4242);
+    expect(s).toContain(`if pid=$(optio_run_pid "$d") && [ "$pid" = "4242" ]; then`);
+    expect(() => killRunScript(RUN_DIR, "TERM", 1)).toThrow(/Invalid pid/);
+    expect(() => killRunScript(RUN_DIR, "TERM", 2.5)).toThrow(/Invalid pid/);
   });
 });
 
@@ -432,6 +494,14 @@ describe("execRunProtocol", () => {
     await expect(
       execRunProtocol.deliverStdin(bad.rt, HANDLE, { runDir: RUN_DIR, line: "a\nb" }),
     ).rejects.toThrow(/newline/);
+
+    const closed = stubExec((_cmd, s) => {
+      s.stdoutW.end(`${STDIN_CLOSED_MARKER}\n`);
+      s.stderrW.end();
+    });
+    await expect(
+      execRunProtocol.deliverStdin(closed.rt, HANDLE, { runDir: RUN_DIR, line: "late" }),
+    ).rejects.toBeInstanceOf(RunStdinClosedError);
   });
 
   it("killRun reports whether anything was signalled", async () => {
@@ -450,5 +520,7 @@ describe("execRunProtocol", () => {
     expect(
       await execRunProtocol.killRun(none.rt, HANDLE, { runDir: RUN_DIR, signal: "KILL" }),
     ).toBe(false);
+    await execRunProtocol.killRun(none.rt, HANDLE, { runDir: RUN_DIR, signal: "TERM", pid: 77 });
+    expect(none.calls[1][2]).toBe(killRunScript(RUN_DIR, "TERM", 77));
   });
 });

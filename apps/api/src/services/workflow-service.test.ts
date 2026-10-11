@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../db/client.js", () => ({
-  db: {
+vi.mock("../db/client.js", () => {
+  const db: Record<string, unknown> = {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
     execute: vi.fn(),
-  },
-}));
+  };
+  // A transaction runs on the same mocked client.
+  db.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
+  return { db };
+});
 
 vi.mock("../db/schema.js", () => ({
   workDefinitions: {
@@ -23,6 +26,12 @@ vi.mock("../db/schema.js", () => ({
     workflowId: "workflow_runs.workflow_id",
     state: "workflow_runs.state",
     createdAt: "workflow_runs.created_at",
+  },
+  workRuns: {
+    id: "tasks.id",
+    execState: "tasks.exec_state",
+    execPid: "tasks.exec_pid",
+    lastPodId: "tasks.last_pod_id",
   },
   workflowTriggers: {
     id: "workflow_triggers.id",
@@ -504,9 +513,15 @@ describe("workflow-service", () => {
 
   describe("retryWorkflowRun", () => {
     it("retries a failed workflow run", async () => {
+      const rows = [{ id: "wr-1", state: "failed", retryCount: 0 }];
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ id: "wr-1", state: "failed", retryCount: 0 }]),
+          // The run read, and the new attempt's locked read of the last one.
+          where: vi
+            .fn()
+            .mockReturnValue(
+              Object.assign(Promise.resolve(rows), { for: vi.fn().mockResolvedValue(rows) }),
+            ),
         }),
       });
 

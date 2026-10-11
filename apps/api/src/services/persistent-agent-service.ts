@@ -339,6 +339,12 @@ export async function transitionPersistentAgentState(
     timestamp: new Date().toISOString(),
     errorMessage: extras.errorMessage ?? undefined,
   });
+  // A failed or archived agent's running turn stops (see stopsRunningTurn).
+  if (stopsRunningTurn(fromState, toState)) {
+    void stopOpenTurns(agentId).catch((err) =>
+      logger.warn({ err, agentId }, "Failed to stop the agent's running turn"),
+    );
+  }
   if (toState === PersistentAgentState.FAILED) {
     // iOS + Android: "agent stopped" alert to the creator (no-op unless APNs or FCM is configured).
     import("./glance-service.js")
@@ -445,6 +451,37 @@ export async function listRecentMessages(agentId: string, limit = 100) {
  * turn id after the turn has been created so the messages and the turn link
  * up. Returns the count actually drained.
  */
+/**
+ * Whether a transition ends the turn the agent is running: it failed (the
+ * reconciler's stall or pod-death call) or was archived. Its agent must
+ * stop, from whichever instance made the call (docs/plans/scale-out.md §1);
+ * the worker's own failure comes after the agent exited, so it signals
+ * nothing.
+ */
+export function stopsRunningTurn(from: PersistentAgentState, to: PersistentAgentState): boolean {
+  return (
+    (to === PersistentAgentState.FAILED || to === PersistentAgentState.ARCHIVED) &&
+    (from === PersistentAgentState.RUNNING || from === PersistentAgentState.PROVISIONING)
+  );
+}
+
+/** Signals the agent of every open turn whose agent runs in its pod. */
+export async function stopOpenTurns(agentId: string): Promise<void> {
+  const open = await db
+    .select({ id: persistentAgentTurns.id, podId: persistentAgentTurns.podId })
+    .from(persistentAgentTurns)
+    .where(
+      and(
+        eq(persistentAgentTurns.agentId, agentId),
+        isNull(persistentAgentTurns.finishedAt),
+        eq(persistentAgentTurns.execState, "started"),
+      ),
+    );
+  if (open.length === 0) return;
+  const { signalRun } = await import("./run-attachment.js");
+  for (const turn of open) await signalRun(turn.podId, turn.id, "TERM");
+}
+
 export async function drainMessagesIntoTurn(
   agentId: string,
   turnId: string,

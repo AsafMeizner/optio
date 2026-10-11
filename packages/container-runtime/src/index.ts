@@ -16,6 +16,7 @@ export {
   RUN_EXIT_MARKER,
   RUN_LOST_MARKER,
   STDIN_DELIVERED_MARKER,
+  STDIN_CLOSED_MARKER,
   STDIN_EOF_SENTINEL,
   RUN_FILES,
   RUN_DIR_ENV,
@@ -34,6 +35,7 @@ export {
   parseRunStartedPid,
   RunStartError,
   RunDeliverError,
+  RunStdinClosedError,
 } from "./run-protocol.js";
 export { DockerContainerRuntime } from "./docker.js";
 export type { DockerRuntimeOptions } from "./docker.js";

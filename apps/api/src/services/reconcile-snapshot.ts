@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
   tasks,
@@ -46,6 +46,7 @@ import type {
   PersistentAgentRunSpec,
   PersistentAgentRunStatus,
   PersistentAgentControlIntent,
+  RunExecution,
 } from "@optio/shared";
 import { getGitPlatformForRepo } from "./git-token-service.js";
 import { determineCheckStatus, determineReviewStatus } from "../workers/pr-watcher-worker.js";
@@ -173,9 +174,33 @@ async function buildRepoSnapshot(ref: RunRef): Promise<WorldSnapshot | null> {
       recentAutoResumeCount,
     },
     readErrors,
+    // A run on a machine has no execution here: its daemon owns the agent.
+    execution: row.runTarget === "local" ? null : executionOf(row, row.updatedAt),
   };
 
   return Object.freeze(snapshot);
+}
+
+/**
+ * The attachment columns of a run row as the reconciler reads them
+ * (docs/plans/scale-out.md §2). `touchedAt` is the row's last write.
+ */
+function executionOf(
+  row: {
+    id: string;
+    execState: "started" | "exited" | null;
+    attachedBy: string | null;
+    attachLeaseUntil: Date | null;
+  },
+  touchedAt: Date | null,
+): RunExecution {
+  return {
+    runId: row.id,
+    execState: row.execState ?? null,
+    attachedBy: row.attachedBy ?? null,
+    attachLeaseUntil: row.attachLeaseUntil ?? null,
+    touchedAt,
+  };
 }
 
 /** The later of two times (either may be missing). */
@@ -470,6 +495,10 @@ async function buildStandaloneSnapshot(ref: RunRef): Promise<WorldSnapshot | nul
       recentAutoResumeCount: 0,
     },
     readErrors,
+    execution:
+      workflowRow.runTarget === "local" || row.localTerminalId
+        ? null
+        : executionOf(row, row.updatedAt),
   };
 
   return Object.freeze(snapshot);
@@ -569,12 +598,13 @@ async function buildPrReviewSnapshot(ref: RunRef): Promise<WorldSnapshot | null>
   };
   const runWithAuto: Run = { ...run, spec: specWithAuto } as Run;
 
-  const [prResult, recentAutoRereviewCount] = await Promise.all([
+  const [prResult, recentAutoRereviewCount, activeRun] = await Promise.all([
     loadPrStatusForReview(row).catch((err) => {
       readErrors.push({ source: "pr", message: String(err) });
       return null;
     }),
     countRecentAutoRereviews(row.id).catch(() => 0),
+    loadActiveReviewRun(row.id),
   ]);
 
   const stallThresholdMs = parseIntEnv("OPTIO_STALL_THRESHOLD_MS", DEFAULT_STALL_THRESHOLD_MS);
@@ -604,9 +634,26 @@ async function buildPrReviewSnapshot(ref: RunRef): Promise<WorldSnapshot | null>
       recentAutoResumeCount: recentAutoRereviewCount,
     },
     readErrors,
+    execution: activeRun ? executionOf(activeRun, activeRun.updatedAt) : null,
   };
 
   return Object.freeze(snapshot);
+}
+
+/** The review's run that is being set up or runs now (the newest, if several). */
+async function loadActiveReviewRun(prReviewId: string) {
+  const [run] = await db
+    .select()
+    .from(prReviewRuns)
+    .where(
+      and(
+        eq(prReviewRuns.prReviewId, prReviewId),
+        inArray(prReviewRuns.state, [PrReviewRunState.PROVISIONING, PrReviewRunState.RUNNING]),
+      ),
+    )
+    .orderBy(desc(prReviewRuns.createdAt))
+    .limit(1);
+  return run ?? null;
 }
 
 function buildPrReviewSpec(
@@ -729,7 +776,12 @@ async function buildPersistentAgentSnapshot(ref: RunRef): Promise<WorldSnapshot 
       readErrors.push({ source: "deps", message: String(err) });
       return { pending: 0, oldest: null as Date | null };
     }),
-    loadLastRunningTurn(ref.id).catch(() => null),
+    // The open turn is the agent's execution: without it the reconciler
+    // cannot tell an unattached turn from none, so a failed read defers.
+    loadLastRunningTurn(ref.id).catch((err) => {
+      readErrors.push({ source: "pod", message: String(err) });
+      return null;
+    }),
   ]);
 
   const spec: PersistentAgentRunSpec = {
@@ -805,6 +857,8 @@ async function buildPersistentAgentSnapshot(ref: RunRef): Promise<WorldSnapshot 
       recentAutoResumeCount: 0,
     },
     readErrors,
+    // The open turn's execution; null when no turn is open.
+    execution: lastTurn ? executionOf(lastTurn, lastTurn.startedAt ?? lastTurn.createdAt) : null,
   };
   return Object.freeze(snapshot);
 }

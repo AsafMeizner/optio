@@ -5,6 +5,7 @@ import type {
   StandaloneRunSpec,
   StandaloneRunStatus,
 } from "./types.js";
+import { readExecution } from "./attachment.js";
 
 /**
  * Pure decision function for Standalone Task runs (workflow_runs).
@@ -250,6 +251,45 @@ function decideRunning(snapshot: WorldSnapshot): StandaloneAction {
     return { kind: "noop", reason: "running_local" };
   }
 
+  // Nobody streams the run (docs/plans/scale-out.md §2): attach to its
+  // agent again, or — when the instance claiming it went away before the
+  // agent started — queue it again. Silence while unattached says nothing
+  // about the agent, so stall counts only while attached.
+  const execution = readExecution(snapshot.execution, snapshot.now);
+  if (execution.kind === "detached") {
+    if (podIsGone(snapshot)) return podDied(snapshot);
+    return {
+      kind: "reattach",
+      runId: snapshot.run.ref.id,
+      attempt: execution.attempt,
+      reason: "running_unattached",
+    };
+  }
+  if (execution.kind === "never_started") {
+    if (execution.held) {
+      return {
+        kind: "requeueRun",
+        runId: snapshot.run.ref.id,
+        trigger: "start_interrupted",
+        reason: "running_unattached_never_started",
+      };
+    }
+    // Never held under the run protocol: an exec stream of a process that
+    // is gone. What its agent did is unknown.
+    return {
+      kind: "transition",
+      to: WorkflowRunState.FAILED,
+      statusPatch: {
+        recoveryRequired: true,
+        errorMessage:
+          "Execution outcome unknown: the run's execution was interrupted (it predates re-attachable runs). Inspect before retrying.",
+        finishedAt: snapshot.now,
+      },
+      trigger: "execution_interrupted",
+      reason: "running_unattached_unheld",
+    };
+  }
+
   // Stall detection.
   if (snapshot.heartbeat.isStale) {
     return {
@@ -268,21 +308,28 @@ function decideRunning(snapshot: WorldSnapshot): StandaloneAction {
   }
 
   // Pod died.
-  if (snapshot.pod && (snapshot.pod.phase === "terminated" || snapshot.pod.phase === "error")) {
-    return {
-      kind: "transition",
-      to: WorkflowRunState.FAILED,
-      statusPatch: {
-        recoveryRequired: true,
-        errorMessage: snapshot.pod.lastError ?? `Pod ${snapshot.pod.phase}`,
-        finishedAt: snapshot.now,
-      },
-      trigger: "pod_died",
-      reason: `pod_phase=${snapshot.pod.phase}`,
-    };
-  }
+  if (podIsGone(snapshot)) return podDied(snapshot);
 
   return { kind: "noop", reason: "running_healthy" };
+}
+
+function podIsGone(snapshot: WorldSnapshot): boolean {
+  return !!snapshot.pod && (snapshot.pod.phase === "terminated" || snapshot.pod.phase === "error");
+}
+
+function podDied(snapshot: WorldSnapshot): StandaloneAction {
+  const pod = snapshot.pod!;
+  return {
+    kind: "transition",
+    to: WorkflowRunState.FAILED,
+    statusPatch: {
+      recoveryRequired: true,
+      errorMessage: pod.lastError ?? `Pod ${pod.phase}`,
+      finishedAt: snapshot.now,
+    },
+    trigger: "pod_died",
+    reason: `pod_phase=${pod.phase}`,
+  };
 }
 
 function capacityRequeueDelay(): number {

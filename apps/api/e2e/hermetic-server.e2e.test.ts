@@ -2,8 +2,9 @@
  * E2E: the API servers the test tiers start (this tier and the web e2e stack,
  * both via startApiServer) are hermetic. They run next to the developer's
  * real Optio, so they must never reach its cluster or its Claude login:
- * cluster routes are served by a fake read-only Kubernetes API, and the
- * host's Keychain / ~/.claude credentials are invisible
+ * cluster routes are served by a fake read-only Kubernetes API, the host's
+ * Keychain / ~/.claude credentials are invisible, and a request to a git
+ * platform (the dummy GITHUB_TOKEN the tiers seed) is answered in-process
  * (src/test-utils/e2e/hermetic-env.ts).
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -46,5 +47,18 @@ describe("test API servers are isolated from this machine", () => {
     const status = await get("/api/auth/status");
     expect(status.status).toBe(200);
     expect(status.body.subscription.available).toBe(false);
+  });
+
+  it("answers its GitHub calls itself: a dummy token never reaches api.github.com", async () => {
+    const secret = await fetch(`${server.baseUrl}/api/secrets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "GITHUB_TOKEN", value: "e2e-dummy-token", scope: "global" }),
+    });
+    expect(secret.status).toBe(201);
+    const { status, body } = await get("/api/repos/github/accessible");
+    expect(status, JSON.stringify(body)).toBe(200);
+    expect(body.error).toBe("GitHub returned 401");
+    expect(server.logs()).toContain("[hermetic] answered GET https://api.github.com locally");
   });
 });

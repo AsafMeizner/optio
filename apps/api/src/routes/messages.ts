@@ -5,7 +5,7 @@ import { z } from "zod";
 import { TaskState } from "@optio/shared";
 import * as taskService from "../services/task-service.js";
 import * as messageService from "../services/task-message-service.js";
-import { publishTaskMessage } from "../services/task-message-bus.js";
+import { deliverTaskMessage } from "../services/task-message-delivery.js";
 import { publishEvent } from "../services/event-bus.js";
 import { getRedisClient } from "../services/event-bus.js";
 import { taskQueue } from "../workers/task-worker.js";
@@ -60,8 +60,9 @@ export async function messageRoutes(rawApp: FastifyInstance) {
         summary: "Send a message to a running or stopped task",
         description:
           "Deliver a user message to a task. Behavior depends on state:\n\n" +
-          "- **running**: mid-turn delivery via the Redis channel → task-worker " +
-          "→ stream-json stdin. Claude Code only; other agents return 501.\n" +
+          "- **running**: mid-turn delivery, appended to the agent's stream-json " +
+          "stdin in its pod by whichever API instance takes the request. Claude " +
+          "Code only; other agents return 501.\n" +
           "- **needs_attention / pr_opened / failed / cancelled**: resumes the " +
           "agent with the message as the new prompt (re-enqueues the task, " +
           "reusing the stored session id when available). Works for any agent " +
@@ -180,13 +181,10 @@ export async function messageRoutes(rawApp: FastifyInstance) {
       });
 
       if (isRunning) {
-        // Deliver mid-turn via the Redis channel → task-worker → stream-json stdin.
-        await publishTaskMessage(id, {
-          messageId: message.id,
-          content,
-          mode,
-          userDisplayName,
-        });
+        // Deliver mid-turn: appended to the agent's stdin in its pod, from
+        // any API instance (run-attachment.ts). A failure is recorded on the
+        // message for the UI.
+        await deliverTaskMessage(task, { messageId: message.id, content, mode });
       } else {
         // Stopped + resumable: transition to queued and enqueue a resume run
         // with the user's message as the new prompt. The agent picks up from

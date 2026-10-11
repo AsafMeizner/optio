@@ -674,3 +674,133 @@ describe("reconcile-executor", () => {
     });
   });
 });
+
+// ─── Run attachment (docs/plans/scale-out.md §2) ───
+
+describe("reconcile-executor — reattach and requeueRun", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const reattach = (runId: string): Action => ({
+    kind: "reattach",
+    runId,
+    attempt: 1_760_000_000_000,
+    reason: "running_unattached",
+  });
+
+  it("reattach checks the version, then asks the kind's queue for one attach job per expiry", async () => {
+    mockDbUpdate.mockReturnValueOnce(chainable([{ id: "task-1" }]));
+    const snap = repoSnapshot();
+    snap.run.status.state = TaskState.RUNNING;
+
+    const outcome = await executeAction(reattach("task-1"), snap);
+
+    expect(outcome).toEqual({
+      status: "applied",
+      reason: "reattach:attach__task-1__1760000000000",
+    });
+    expect(mockTaskQueueAdd).toHaveBeenCalledWith(
+      "attach-task",
+      { taskId: "task-1" },
+      { jobId: "attach__task-1__1760000000000", removeOnComplete: true, removeOnFail: true },
+    );
+  });
+
+  it("reattach from a stale snapshot enqueues nothing", async () => {
+    mockDbUpdate.mockReturnValueOnce(chainable([]));
+    const outcome = await executeAction(reattach("task-1"), repoSnapshot());
+    expect(outcome.status).toBe("stale");
+    expect(mockTaskQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it("reattach writes nothing but the version it checks (updated_at = updated_at)", async () => {
+    const chain = chainable([{ id: "task-1" }]);
+    mockDbUpdate.mockReturnValueOnce(chain);
+    await executeAction(reattach("task-1"), repoSnapshot());
+    const set = (chain.set as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>;
+    expect(Object.keys(set)).toEqual(["updatedAt"]);
+    expect(set.updatedAt).not.toBeInstanceOf(Date);
+  });
+
+  it("reattach of a Job run goes to the Job run queue", async () => {
+    mockDbUpdate.mockReturnValueOnce(chainable([{ id: "run-1" }]));
+    const outcome = await executeAction(reattach("run-1"), standaloneSnapshot());
+    expect(outcome.status).toBe("applied");
+    expect(mockWorkflowQueueAdd).toHaveBeenCalledWith(
+      "attach-workflow-run",
+      { workflowRunId: "run-1" },
+      expect.objectContaining({ jobId: "attach__run-1__1760000000000" }),
+    );
+  });
+
+  it("requeueRun puts a provisioning task back in the queue (the worker's provisioning retry)", async () => {
+    mockDbUpdate.mockReturnValueOnce(chainable([{ id: "task-1" }]));
+    mockTransitionTask.mockResolvedValueOnce({});
+    const snap = repoSnapshot();
+    snap.run.status.state = TaskState.PROVISIONING;
+
+    const outcome = await executeAction(
+      {
+        kind: "requeueRun",
+        runId: "task-1",
+        trigger: "provisioning_interrupted",
+        reason: "provisioning_unattached_never_started",
+      },
+      snap,
+    );
+
+    expect(outcome.status).toBe("applied");
+    expect(mockTransitionTask).toHaveBeenCalledWith(
+      "task-1",
+      TaskState.QUEUED,
+      "provisioning_interrupted",
+      "provisioning_unattached_never_started",
+    );
+  });
+
+  it("requeueRun takes a Job run through failed back to queued without spending a retry", async () => {
+    mockTransitionWorkflowRunCas.mockResolvedValueOnce({ id: "run-1" });
+    mockTransitionWorkflowRunCas.mockResolvedValueOnce({ id: "run-1" });
+    const snap = standaloneSnapshot();
+    snap.run.status.state = WorkflowRunState.RUNNING;
+
+    const outcome = await executeAction(
+      { kind: "requeueRun", runId: "run-1", trigger: "start_interrupted", reason: "r" },
+      snap,
+    );
+
+    expect(outcome.status).toBe("applied");
+    expect(mockTransitionWorkflowRunCas).toHaveBeenNthCalledWith(
+      1,
+      "run-1",
+      WorkflowRunState.RUNNING,
+      WorkflowRunState.FAILED,
+      expect.objectContaining({
+        errorMessage: expect.stringContaining("before its agent started"),
+      }),
+      { version: BASE_VERSION, wakeReconciler: false },
+    );
+    expect(mockTransitionWorkflowRunCas).toHaveBeenNthCalledWith(
+      2,
+      "run-1",
+      WorkflowRunState.FAILED,
+      WorkflowRunState.QUEUED,
+      { errorMessage: null, finishedAt: null },
+    );
+    // No retryCount in either step: nothing ran.
+    for (const call of mockTransitionWorkflowRunCas.mock.calls) {
+      expect(call[3]).not.toHaveProperty("retryCount");
+    }
+  });
+
+  it("requeueRun of a Job run from a stale snapshot stops at the first step", async () => {
+    mockTransitionWorkflowRunCas.mockResolvedValueOnce(null);
+    const outcome = await executeAction(
+      { kind: "requeueRun", runId: "run-1", trigger: "start_interrupted", reason: "r" },
+      standaloneSnapshot(),
+    );
+    expect(outcome.status).toBe("stale");
+    expect(mockTransitionWorkflowRunCas).toHaveBeenCalledTimes(1);
+  });
+});

@@ -124,6 +124,54 @@ describe("pickPod", () => {
     expect(picked.instanceIndex).toBe(0);
   });
 
+  it("a row its creator abandoned just short of stale is waited on only until it is, then taken over", async () => {
+    const k = nextKey();
+    // Its creator died mid-creation: the row will never be marked ready.
+    const stuck = await pod(k, {
+      state: "provisioning",
+      podName: null,
+      createdAt: new Date(Date.now() - podPool.STALE_PROVISIONING_MS + 1_500),
+    });
+    expect(podPool.provisioningAbandoned(stuck)).toBe(false);
+    const { create, created } = creator(k);
+    const t0 = Date.now();
+    const picked = await podPool.pickPod("standalone", k, {
+      isolationKey: "test-boundary",
+      maxAgentsPerPod: 2,
+      maxPodInstances: 1,
+      create,
+    });
+    // Seconds, not the 120 s a provisioning wait used to take before failing.
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(await podPool.getPod(stuck.id)).toBeNull();
+    expect(created).toEqual([0]);
+    expect(picked.state).toBe("ready");
+  });
+
+  it("waitForProvisioning returns the pod its live creator finishes, and null for an abandoned one", async () => {
+    const k = nextKey();
+    const coming = await pod(k, { state: "provisioning", podName: null });
+    setTimeout(() => {
+      void podPool.markPodReady(coming.id, { podName: "finished", podId: null });
+    }, 300);
+    expect(await podPool.waitForProvisioning(coming, 10_000)).toMatchObject({ state: "ready" });
+
+    const gone = await pod(nextKey(), {
+      state: "provisioning",
+      podName: null,
+      createdAt: new Date(Date.now() - podPool.STALE_PROVISIONING_MS + 500),
+    });
+    expect(await podPool.waitForProvisioning(gone, 10_000)).toBeNull();
+    // A StatefulSet's pod is never anyone's to take over.
+    const managed = await pod(nextKey(), {
+      state: "provisioning",
+      podName: null,
+      managedBy: "statefulset",
+      createdAt: new Date(Date.now() - 2 * podPool.STALE_PROVISIONING_MS),
+    });
+    expect(podPool.provisioningAbandoned(managed)).toBe(false);
+  });
+
   it("scales up at the lowest free instance index", async () => {
     const k = nextKey();
     await pod(k, { activeCount: 2, instanceIndex: 0 });
