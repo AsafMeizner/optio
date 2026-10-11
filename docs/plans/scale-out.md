@@ -105,6 +105,20 @@ What ties the system to one process, from the inventory that preceded this plan:
   is its archive. Case 3's limit assertion holds across instances through
   C1's advisory-lock claims (merged before this phase).
 
+- Found in phase B's review: `attached_by` names the hold
+  (`<instance>/<nonce>`), not only the instance, and every column write is
+  a CAS on it, so one instance's old-attempt job and new-attempt job never
+  pass for each other. A claim takes only an expired lease of a run still
+  active. One rule stops an agent its job left behind (`endRunJob`: an
+  error halfway, a cancel or requeue under it), pid-scoped so a newer
+  attempt in the same directory is never hit; every requeue path stops the
+  last attempt's agent after its commit (`resetRunAttempt`). A settle or
+  stream that lost its run says `taken` or `reset`. A fresh start escalates
+  a stale supervisor TERM → KILL and moves the old attempt's files aside
+  instead of truncating them. Shutdown lets streaming runs go and waits
+  (≤ 20 s) for runs past their stream to settle. A line delivered after the
+  stdin EOF is refused. A re-attach reads the output by what the attempt ran.
+
 ## Design
 
 ### 1. The run protocol: start, attach, deliver, kill
@@ -203,10 +217,12 @@ same columns on `pr_review_runs` and `persistent_agent_turns`):
 | `attach_lease_until` | When that attachment expires                                                    |
 
 **Claiming an attachment** is one CAS:
-`UPDATE … SET attached_by = $me, attach_lease_until = now() + 60s WHERE id = $id AND (attached_by IS NULL OR attach_lease_until < now())`.
+`UPDATE … SET attached_by = $hold, attach_lease_until = now() + 60s WHERE id = $id AND exec_state IN ('started','exited') AND <run still active> AND (attach_lease_until IS NULL OR attach_lease_until < now())`
+(`$hold` is `<instance>/<nonce>`: the claiming job's own mark).
 The attached worker renews every 20 s. On SIGTERM it **detaches**: closes the
 exec, sets `attach_lease_until = now()`, and lets the process exit, so another
-instance picks the run up in seconds rather than after a lease expiry.
+instance picks the run up in seconds rather than after a lease expiry; a run
+already past its stream settles first, keeping its lease.
 
 **The reconciler** (one new action per run kind, `reattach`, plus the existing
 `requeue`) decides from the snapshot:
