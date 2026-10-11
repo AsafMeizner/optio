@@ -1,5 +1,5 @@
 import type { WsEvent } from "@optio/shared";
-import { createRedisClient, type RedisClient } from "./redis-config.js";
+import { createOrderedSubscriber, createRedisClient, type RedisClient } from "./redis-config.js";
 import { getCurrentTraceId } from "../telemetry/spans.js";
 
 let publisher: RedisClient | null = null;
@@ -94,4 +94,13 @@ export function getRedisClient(): RedisClient {
  */
 export function createSubscriber(): RedisClient {
   return createRedisClient({ connectionName: "optio-subscriber" });
+}
+
+/**
+ * A dedicated connection for a bus that relies on publish order — sharded
+ * pub/sub in cluster mode (`publishOrdered` in redis-config.ts). Callers
+ * disconnect it when done.
+ */
+export function createOrderedBusSubscriber(): RedisClient {
+  return createOrderedSubscriber("optio-ordered-subscriber");
 }

@@ -248,6 +248,70 @@ describe.skipIf(!clusterUp)("Redis Cluster mode", () => {
     }, 30_000);
   });
 
+  it("keeps publish order on one channel for the Local bus and the session bus (sharded pub/sub)", async () => {
+    // A classic PUBLISH goes to whichever master ioredis picks and reaches
+    // subscribers through the cluster bus, so order on a channel is not
+    // kept; the ordered buses use SPUBLISH / SSUBSCRIBE (one shard per
+    // channel). 1000 frames sent back to back must arrive as sent.
+    const FRAMES = 1000;
+    const { LocalBus, localTermOutChannel, localHostInChannel } = await import("./local-bus.js");
+    const a = new LocalBus({ instanceId: `it-a-${randomUUID()}` });
+    const b = new LocalBus({ instanceId: `it-b-${randomUUID()}` });
+    await a.start();
+    await b.start();
+    try {
+      const channel = localTermOutChannel(randomUUID());
+      const got: number[] = [];
+      expect(await b.listen(channel, (m) => got.push(Number(m.header.n))).ready).toBe(true);
+      const counts = await Promise.all(
+        Array.from({ length: FRAMES }, (_, n) =>
+          a.publishCount(channel, { k: "out", n }, Buffer.from(`frame ${n}\r\n`)),
+        ),
+      );
+      // SPUBLISH counts the channel's subscribers on its shard: all of them.
+      expect(counts.every((c) => c === 1)).toBe(true);
+      await until(async () => got.length >= FRAMES, 20_000);
+      expect(got).toEqual(Array.from({ length: FRAMES }, (_, n) => n));
+
+      // A request and its reply cross the cluster; nobody listening is null at once.
+      const hostIn = localHostInChannel(randomUUID());
+      await b.listen(hostIn, (m) => void b.reply(m, { ok: true })).ready;
+      expect((await a.request(hostIn, { k: "send" }, 5_000))?.header.ok).toBe(true);
+      const started = Date.now();
+      expect(await a.request(localHostInChannel(randomUUID()), { k: "send" }, 5_000)).toBeNull();
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      await a.stop();
+      await b.stop();
+    }
+
+    const sessionBus = await import("./session-bus.js");
+    await sessionBus.startSessionBus();
+    const sessionId = randomUUID();
+    const seen: number[] = [];
+    const off = sessionBus.onSessionBus("chat", (m) => {
+      if (m.sessionId === sessionId) seen.push(Number(m.frame.n));
+    });
+    try {
+      const pub = cfg.createRedisClient({ connectionName: "it-session-pub" });
+      clients.push(pub);
+      await Promise.all(
+        Array.from({ length: FRAMES }, (_, n) =>
+          cfg.publishOrdered(
+            pub,
+            sessionBus.SESSION_BUS_CHANNEL,
+            JSON.stringify({ kind: "chat", sessionId, frame: { n }, origin: "it-other-instance" }),
+          ),
+        ),
+      );
+      await until(async () => seen.length >= FRAMES, 20_000);
+      expect(seen).toEqual(Array.from({ length: FRAMES }, (_, n) => n));
+    } finally {
+      off();
+      await sessionBus.stopSessionBus();
+    }
+  });
+
   it("keeps processing after every connection is killed (worker + producer reconnect)", async () => {
     const q = queue("reconnect");
     const done: string[] = [];

@@ -18,11 +18,13 @@
  *
  * Messages are binary envelopes: a JSON header (`k` = kind, `o` = the
  * publishing instance) and an optional raw payload, so terminal bytes cross
- * without base64. One subscriber connection per instance (ioredis
- * `messageBuffer`), started after `listen` and retried with backoff, as the
- * session bus does; channels are added and dropped on it as viewers and
- * daemons come and go. An instance never sees its own messages: what it
- * publishes it has already acted on locally.
+ * without base64. One subscriber connection per instance, started after
+ * `listen` and retried with backoff, as the session bus does; channels are
+ * added and dropped on it as viewers and daemons come and go. Messages on a
+ * channel arrive in the order they were published: in cluster mode every
+ * channel is sharded pub/sub (`publishOrdered` in redis-config.ts). An
+ * instance never sees its own messages: what it publishes it has already
+ * acted on locally.
  *
  * Redis is transport only. Ownership is a lease in Postgres
  * (`local-host:<id>`, local-relay.ts); a lost message costs a frame or a
@@ -30,8 +32,14 @@
  */
 import { randomUUID } from "node:crypto";
 import { INSTANCE_ID } from "./instance.js";
-import { createSubscriber as createSharedSubscriber, getRedisClient } from "./event-bus.js";
-import type { RedisClient } from "./redis-config.js";
+import { createOrderedBusSubscriber, getRedisClient } from "./event-bus.js";
+import {
+  onOrderedMessage,
+  publishOrdered,
+  subscribeOrdered,
+  unsubscribeOrdered,
+  type RedisClient,
+} from "./redis-config.js";
 import { logger } from "../logger.js";
 
 export const localHostInChannel = (hostId: string) => `optio:local:host:${hostId}:in`;
@@ -128,7 +136,7 @@ export class LocalBus {
     this.replyChannel = localReplyChannel(opts.instanceId);
     // Resolved when used, not here: importing this module never touches Redis.
     this.publisher = opts.publisher ?? (() => getRedisClient());
-    this.newSubscriber = opts.createSubscriber ?? (() => createSharedSubscriber());
+    this.newSubscriber = opts.createSubscriber ?? (() => createOrderedBusSubscriber());
   }
 
   /** Whether this instance's subscriber is up (remote routing works). */
@@ -160,7 +168,7 @@ export class LocalBus {
         if (entry.handlers.size > 0 || this.subs.get(channel) !== entry) return;
         this.subs.delete(channel);
         const s = this.subscriber;
-        if (s) void s.unsubscribe(channel).catch(() => {});
+        if (s) void unsubscribeOrdered(s, [channel]).catch(() => {});
       },
     };
   }
@@ -178,7 +186,7 @@ export class LocalBus {
   private subscribeChannel(channel: string): Promise<boolean> {
     const s = this.subscriber;
     if (!s) return Promise.resolve(false);
-    return s.subscribe(channel).then(
+    return subscribeOrdered(s, [channel]).then(
       () => true,
       (err) => {
         logger.warn({ err, channel }, "local bus: subscribe failed");
@@ -187,41 +195,57 @@ export class LocalBus {
     );
   }
 
-  /** Publishes to every instance listening on `channel` (never back to this one). */
-  async publish(
+  /**
+   * Publishes to every instance listening on `channel` (never back to this
+   * one). Resolves with how many subscribers got it, or null when the
+   * publish failed.
+   */
+  async publishCount(
     channel: string,
     header: { k: string; [field: string]: unknown },
     payload?: Buffer,
-  ) {
+  ): Promise<number | null> {
     try {
-      await this.publisher().publish(
+      const receivers = await publishOrdered(
+        this.publisher(),
         channel,
         encodeEnvelope({ ...header, o: this.instanceId }, payload),
       );
       this.publishFailures = 0;
-      return true;
+      return receivers;
     } catch (err) {
       // The caller already acted locally; the other instances miss this
       // frame (a viewer reconnect replays the screen) or a request times out.
       if (this.publishFailures++ === 0) {
         logger.warn({ err, channel, kind: header.k }, "local bus publish failed");
       }
-      return false;
+      return null;
     }
   }
 
+  /** `publishCount`, as "it went out" (whoever listens). */
+  async publish(
+    channel: string,
+    header: { k: string; [field: string]: unknown },
+    payload?: Buffer,
+  ): Promise<boolean> {
+    return (await this.publishCount(channel, header, payload)) !== null;
+  }
+
   /**
-   * Publishes a request and waits for its reply (or null after
-   * `timeoutMs`, or at once when the bus is down). The header gets `rid`
-   * (the request id) and `rt` (this instance's reply channel name).
+   * Publishes a request and waits for its reply. `"unheard"` when nobody
+   * listens on the channel or the bus is down (it was not delivered);
+   * `"timeout"` when someone heard it and no reply came within `timeoutMs`
+   * (it may have been acted on). The header gets `rid` (the request id) and
+   * `rt` (this instance's reply channel name).
    */
-  async request(
+  async ask(
     channel: string,
     header: { k: string; [field: string]: unknown },
     timeoutMs: number,
     payload?: Buffer,
-  ): Promise<BusMessage | null> {
-    if (!this.started) return null;
+  ): Promise<BusMessage | "unheard" | "timeout"> {
+    if (!this.started) return "unheard";
     const rid = randomUUID();
     const answer = new Promise<BusMessage | null>((resolve) => {
       const timer = setTimeout(() => {
@@ -231,10 +255,28 @@ export class LocalBus {
       timer.unref?.();
       this.requests.set(rid, { resolve, timer });
     });
-    if (!(await this.publish(channel, { ...header, rid, rt: this.instanceId }, payload))) {
+    const receivers = await this.publishCount(
+      channel,
+      { ...header, rid, rt: this.instanceId },
+      payload,
+    );
+    if (!receivers) {
+      // Nobody heard it: nothing will answer.
       this.settle(rid, null);
+      return "unheard";
     }
-    return answer;
+    return (await answer) ?? "timeout";
+  }
+
+  /** `ask`, as the reply or null (unheard or timed out). */
+  async request(
+    channel: string,
+    header: { k: string; [field: string]: unknown },
+    timeoutMs: number,
+    payload?: Buffer,
+  ): Promise<BusMessage | null> {
+    const answer = await this.ask(channel, header, timeoutMs, payload);
+    return typeof answer === "string" ? null : answer;
   }
 
   /** Answers a request that arrived on the bus (`message.header.rid` / `rt`). */
@@ -307,11 +349,9 @@ export class LocalBus {
   /** One attempt: a fresh subscriber on the reply channel and every channel listened on. */
   private async subscribeOnce(): Promise<void> {
     const sub = this.newSubscriber();
-    sub.on("messageBuffer", (channel: Buffer | string, raw: Buffer) => {
-      this.deliver(typeof channel === "string" ? channel : channel.toString("utf-8"), raw);
-    });
+    onOrderedMessage(sub, (channel, raw) => this.deliver(channel, raw));
     try {
-      await sub.subscribe(this.replyChannel);
+      await subscribeOrdered(sub, [this.replyChannel]);
     } catch (err) {
       sub.disconnect();
       throw err;
@@ -326,7 +366,7 @@ export class LocalBus {
     const waiting = [...this.subs.keys()];
     if (waiting.length > 0) {
       try {
-        await sub.subscribe(...waiting);
+        await subscribeOrdered(sub, waiting);
         for (const channel of waiting) {
           const entry = this.subs.get(channel);
           if (entry) entry.ready = Promise.resolve(true);
@@ -380,7 +420,7 @@ export class LocalBus {
     this.subscriber = null;
     if (!sub) return;
     try {
-      await sub.unsubscribe();
+      await unsubscribeOrdered(sub, [this.replyChannel, ...this.subs.keys()]);
     } catch {
       // Already gone.
     }

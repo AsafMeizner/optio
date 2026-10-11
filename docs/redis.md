@@ -82,6 +82,21 @@ the cluster tests and `redis:smoke` judge delivery by the message arriving.
 Optio uses plain channels only;
 `PSUBSCRIBE` is unavailable on ElastiCache Serverless and is not used.
 
+**Ordered buses use sharded pub/sub.** A broadcast `PUBLISH` reaches the
+subscriber through whichever node took it, so two messages on one channel can
+arrive in either order. The buses whose subscribers rely on publish order — the
+session bus (chat frames) and the Optio Local bus (a terminal's snapshot, then
+its output) — use `SPUBLISH` / `SSUBSCRIBE` in cluster mode (Redis 7, which
+ElastiCache Serverless runs): a channel lives on the shard that owns its slot,
+and one connection's messages to it arrive in order. The choice is made in one
+place, `publishOrdered` / `createOrderedSubscriber` in `redis-config.ts`
+(standalone keeps `PUBLISH` / `SUBSCRIBE`); the ordered subscriber is a cluster
+client with `shardedSubscribers` (one extra connection per master), and
+`SPUBLISH`'s reply is an exact count (every subscriber of a channel is on its
+shard), which the Local bus uses to fail a request at once when nobody listens.
+`redis-cluster.int.test.ts` sends 1000 frames on one channel through each bus and
+checks they arrive in order.
+
 **TLS and host names.** With `rediss://`, the cluster client keeps the node
 names `CLUSTER SLOTS` returns instead of resolving them to IPs first
 (`dnsLookup` passthrough), so the certificate's host name matches. This is

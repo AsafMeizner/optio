@@ -216,6 +216,20 @@ describe("LocalBus", () => {
     expect(await up.publish(localHostInChannel("h1"), { k: "x" })).toBe(false);
   });
 
+  it("settles at once when nobody listens on the channel, and tells unheard from unanswered", async () => {
+    const hub = new Hub();
+    const asker = await bus(hub, "asker");
+    const owner = await bus(hub, "owner");
+    const started = Date.now();
+    expect(await asker.request(localHostInChannel("nobody"), { k: "send" }, 10_000)).toBeNull();
+    expect(await asker.ask(localHostInChannel("nobody"), { k: "send" }, 10_000)).toBe("unheard");
+    expect(Date.now() - started).toBeLessThan(1_000);
+    // Heard but never answered: a timeout, which may have been acted on.
+    owner.listen(localHostInChannel("h1"), () => {});
+    await settle();
+    expect(await asker.ask(localHostInChannel("h1"), { k: "send" }, 30)).toBe("timeout");
+  });
+
   it("delivers direct messages by kind to the one instance addressed", async () => {
     const hub = new Hub();
     const a = await bus(hub, "a");
