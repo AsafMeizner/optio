@@ -34,6 +34,16 @@ export interface Grid {
   rows: number;
 }
 
+/**
+ * A grid a daemon or another instance named, when it is a sane one
+ * (integers, 1–1000 each way); undefined otherwise (older daemons name none).
+ */
+export function saneGrid(cols: unknown, rows: unknown): Grid | undefined {
+  const ok = (n: unknown): n is number =>
+    Number.isInteger(n) && (n as number) > 0 && (n as number) <= 1000;
+  return ok(cols) && ok(rows) ? { cols, rows } : undefined;
+}
+
 export function sameGrid(a: Grid | null | undefined, b: Grid | null | undefined): boolean {
   return !!a && !!b && a.cols === b.cols && a.rows === b.rows;
 }

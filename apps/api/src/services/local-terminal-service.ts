@@ -379,7 +379,7 @@ async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null>
   });
   if (!claimed) return getTerminal(row.id);
   // To the daemon wherever it is connected (acknowledged by its owner).
-  const sent = await relay.sendToHost(row.hostId, {
+  const delivery = await relay.deliverToHost(row.hostId, {
     type: "spawn",
     terminalId: row.id,
     dir: row.dir,
@@ -387,8 +387,12 @@ async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null>
     rows: LOCAL_DEFAULT_ROWS,
     spec: row.spec as unknown as LocalTerminalSpec,
   });
-  if (sent) return claimed;
-  // The daemon dropped between the liveness check and the send: un-claim.
+  // Unacknowledged is not "not sent": the daemon may be starting it. The
+  // row stays `launching` and the spawn is never sent again; `started`
+  // settles it, or the stuck-launching sweep fails it after its threshold.
+  if (delivery !== "offline") return claimed;
+  // Certainly not delivered (the daemon dropped between the liveness check
+  // and the send): un-claim, so the next hello starts it.
   return transitionTerminal(row.id, ["launching"], {
     state: "pending",
     pendingReason: "host_offline",
@@ -520,11 +524,14 @@ export async function handleStarted(hostId: string, terminalId: string): Promise
   const row = await getTerminal(terminalId);
   if (!row || row.hostId !== hostId) return;
   const spec = row.spec as unknown as LocalTerminalSpec;
+  // `pending` too: the daemon's word that it runs settles a row whose spawn
+  // was judged undelivered (it got there after all).
   await transitionTerminal(
     terminalId,
-    ["launching"],
+    ["launching", "pending"],
     {
       state: "running",
+      pendingReason: null,
       startedAt: new Date(),
       attentionState: spec.kind === "shell" ? "idle" : "working",
       attentionReason: null,
@@ -1442,16 +1449,16 @@ export async function noteInteraction(terminalId: string): Promise<void> {
   const now = Date.now();
   const last = interactionWrittenAt.get(terminalId);
   if (last !== undefined && now - last < INTERACTION_WRITE_INTERVAL_MS) return;
-  interactionWrittenAt.set(terminalId, now);
   if (interactionWrittenAt.size > 5000) {
     for (const [id, at] of interactionWrittenAt) {
       if (now - at > INTERACTION_WRITE_INTERVAL_MS) interactionWrittenAt.delete(id);
     }
   }
   try {
-    // The throttle above is this instance's; the condition keeps it once a
-    // minute across instances.
-    const [row] = await db
+    // Written only when the stored stamp is a minute old (whichever instance
+    // wrote it); either way this instance's throttle starts from the stamp
+    // as stored, not from now.
+    const [written] = await db
       .update(localTerminals)
       .set({ lastInteractedAt: new Date(now) })
       .where(
@@ -1464,8 +1471,21 @@ export async function noteInteraction(terminalId: string): Promise<void> {
         ),
       )
       .returning();
-    if (row) {
-      await publishLocalChanged({ terminalId: row.id, hostId: row.hostId, userId: row.userId });
+    if (written) {
+      interactionWrittenAt.set(terminalId, written.lastInteractedAt?.getTime() ?? now);
+      await publishLocalChanged({
+        terminalId: written.id,
+        hostId: written.hostId,
+        userId: written.userId,
+      });
+      return;
+    }
+    const [stored] = await db
+      .select({ lastInteractedAt: localTerminals.lastInteractedAt })
+      .from(localTerminals)
+      .where(eq(localTerminals.id, terminalId));
+    if (stored?.lastInteractedAt) {
+      interactionWrittenAt.set(terminalId, stored.lastInteractedAt.getTime());
     }
   } catch (err) {
     logger.warn({ err, terminalId }, "local: failed to record interaction");

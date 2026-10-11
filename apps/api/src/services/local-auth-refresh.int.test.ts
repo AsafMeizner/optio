@@ -193,3 +193,60 @@ describe("automatic refresh", () => {
     expect(await getCachedTokenValidation()).toMatchObject({ valid: true });
   });
 });
+
+describe("across API instances (the token never crosses Redis)", () => {
+  it("runs the whole refresh on the daemon's instance and sends back only the outcome", async () => {
+    const { LocalBus, localBus, localHostInChannel } = await import("./local-bus.js");
+    const { createSubscriber } = await import("./event-bus.js");
+    const { leaseHolder } = await import("./lease-service.js");
+    await localBus.start();
+    relay.enableLocalCluster();
+    const asker = new LocalBus({ instanceId: `asker-${Math.random().toString(36).slice(2, 8)}` });
+    await asker.start();
+    // Everything published on the Local channels while this runs.
+    const tap = createSubscriber();
+    const seen: string[] = [];
+    tap.on("pmessageBuffer", (_p: Buffer, _ch: Buffer, raw: Buffer) =>
+      seen.push(raw.toString("latin1")),
+    );
+    await tap.psubscribe("optio:local:*");
+    try {
+      const { host, daemon } = await makeHost(true, () => ({ token: GOOD_TOKEN }));
+      await relay.claimHost(host.id, daemon);
+      const holder = await leaseHolder(relay.hostLeaseKey(host.id));
+      expect(holder).toBeTruthy();
+
+      // Another instance asks this one (the owner) to refresh.
+      const answer = await asker.ask(
+        localHostInChannel(host.id),
+        { k: "task", h: holder, task: "refresh-claude-token" },
+        10_000,
+        Buffer.from(JSON.stringify({ trigger: "manual" })),
+      );
+      expect(typeof answer).not.toBe("string");
+      const outcome = JSON.parse((answer as { payload: Buffer }).payload.toString("utf-8"));
+      expect(outcome).toEqual({ ok: true, hostId: host.id });
+      expect(await retrieveSecret("CLAUDE_CODE_OAUTH_TOKEN")).toBe(GOOD_TOKEN);
+      expect(daemon.sent.filter((m) => m.type === "credentials")).toHaveLength(1);
+
+      // Asking the daemon for credentials directly from elsewhere is refused.
+      const direct = await asker.ask(
+        localHostInChannel(host.id),
+        { k: "send", h: holder },
+        500,
+        Buffer.from(JSON.stringify({ type: "credentials", requestId: "smuggled" })),
+      );
+      expect(direct).toBe("timeout");
+      expect(daemon.sent.filter((m) => m.type === "credentials")).toHaveLength(1);
+
+      await new Promise((r) => setTimeout(r, 100));
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.some((raw) => raw.includes("sk-ant-oat01"))).toBe(false);
+    } finally {
+      await tap.punsubscribe("optio:local:*").catch(() => {});
+      tap.disconnect();
+      await asker.stop();
+      await localBus.stop();
+    }
+  });
+});

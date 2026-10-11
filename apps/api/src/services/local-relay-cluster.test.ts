@@ -15,15 +15,30 @@ interface Published {
   header: Record<string, unknown>;
   payload?: Buffer;
 }
-const { leases, published, listeners, direct } = vi.hoisted(() => ({
+const { leases, published, listeners, direct, ctl } = vi.hoisted(() => ({
   leases: new Map<string, string>(),
   published: [] as Published[],
   listeners: new Map<string, Set<(m: unknown) => void>>(),
   direct: new Map<string, (m: unknown) => void>(),
+  ctl: {
+    /** How the owner answers a request: ack, no ack in time, or nobody listening. */
+    ask: "ok" as "ok" | "timeout" | "unheard",
+    /** Holds a seize until released (a claim in flight). */
+    seizeGate: null as Promise<void> | null,
+    /** Holds an `attach` publish until released. */
+    attachGate: null as Promise<void> | null,
+    /** How many lease reads the heartbeat made. */
+    holderReads: 0,
+  },
 }));
 vi.mock("./lease-service.js", () => ({
   leaseHolder: async (key: string) => leases.get(key) ?? null,
+  leaseHolders: async (keys: string[]) => {
+    ctl.holderReads++;
+    return new Map(keys.filter((k) => leases.has(k)).map((k) => [k, leases.get(k)!]));
+  },
   seizeLease: async (key: string, _ttl: number, holder: string) => {
+    if (ctl.seizeGate) await ctl.seizeGate;
     leases.set(key, holder);
   },
   renewLease: async (key: string, _ttl: number, holder: string) => leases.get(key) === holder,
@@ -45,6 +60,15 @@ vi.mock("../db/client.js", () => {
 
 vi.mock("./local-bus.js", async () => {
   const actual = await vi.importActual<typeof import("./local-bus.js")>("./local-bus.js");
+  const publishCount = async (
+    channel: string,
+    header: Record<string, unknown>,
+    payload?: Buffer,
+  ) => {
+    if (header.k === "attach" && ctl.attachGate) await ctl.attachGate;
+    published.push({ channel, header, payload });
+    return 1;
+  };
   return {
     ...actual,
     localBus: {
@@ -61,23 +85,29 @@ vi.mock("./local-bus.js", async () => {
           },
         };
       },
+      publishCount,
       async publish(channel: string, header: Record<string, unknown>, payload?: Buffer) {
-        published.push({ channel, header, payload });
-        return true;
+        return (await publishCount(channel, header, payload)) !== null;
       },
-      async request(
-        channel: string,
+      async ask(channel: string, header: Record<string, unknown>, _t: number, payload?: Buffer) {
+        if (ctl.ask === "unheard") return "unheard";
+        published.push({ channel, header, payload });
+        if (ctl.ask === "timeout") return "timeout";
+        return {
+          header: { k: "reply", ok: true },
+          payload: Buffer.from(JSON.stringify({ ran: header.task ?? null })),
+          channel: "",
+        };
+      },
+      async reply(
+        to: { header: Record<string, unknown> },
         header: Record<string, unknown>,
-        _t: number,
         payload?: Buffer,
       ) {
-        published.push({ channel, header, payload });
-        return { header: { k: "reply", ok: true }, payload: Buffer.alloc(0), channel: "" };
-      },
-      async reply(to: { header: Record<string, unknown> }, header: Record<string, unknown>) {
         published.push({
           channel: `reply:${String(to.header.rt)}`,
           header: { ...header, rid: to.header.rid },
+          payload,
         });
         return true;
       },
@@ -99,16 +129,22 @@ import {
   claimHost,
   daemonDisconnected,
   deliverScrollback,
+  deliverToHost,
   enableLocalCluster,
   forwardDaemonReply,
   forwardOutput,
   forwardSize,
+  hostHolderForTests,
   hostLeaseKey,
   isHostOnline,
+  onForwardedDaemonReply,
+  onOwnerTask,
   registerDaemon,
   resetRelayForTests,
+  runOnOwner,
   runRelayHeartbeatForTests,
   sendToHost,
+  type DaemonReply,
   type RelaySocket,
 } from "./local-relay.js";
 
@@ -151,6 +187,10 @@ beforeEach(() => {
   leases.clear();
   published.length = 0;
   listeners.clear();
+  ctl.ask = "ok";
+  ctl.seizeGate = null;
+  ctl.attachGate = null;
+  ctl.holderReads = 0;
   enableLocalCluster();
 });
 afterEach(() => resetRelayForTests());
@@ -398,5 +438,186 @@ describe("a viewer of a daemon owned elsewhere", () => {
     const req = sentOn(localHostInChannel("h9"), "send")[0];
     expect(req.header.h).toBe(HOLDER);
     expect(JSON.parse(req.payload!.toString())).toMatchObject({ type: "kill" });
+  });
+});
+
+/** A promise and the function that settles it. */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
+}
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+describe("review fixes", () => {
+  it("(2) says unacknowledged — not offline — when the owner heard a frame but didn't ack it", async () => {
+    leases.set(hostLeaseKey("h9"), "inst-a:1#c1");
+    ctl.ask = "timeout";
+    expect(await deliverToHost("h9", { type: "kill", terminalId: "t9" })).toBe("unacknowledged");
+    // It may have reached the daemon: callers treat it as sent.
+    expect(await sendToHost("h9", { type: "kill", terminalId: "t9" })).toBe(true);
+    ctl.ask = "unheard";
+    expect(await deliverToHost("h9", { type: "kill", terminalId: "t9" })).toBe("offline");
+    ctl.ask = "ok";
+    expect(await deliverToHost("h9", { type: "kill", terminalId: "t9" })).toBe("sent");
+  });
+
+  it("(3, 4) a host-taken heard before the claim completes is re-read after it: the lease is ours, we stay", async () => {
+    const seize = gate();
+    ctl.seizeGate = seize.promise;
+    const daemon = new FakeSocket();
+    registerDaemon("h1", null, daemon);
+    const claiming = claimHost("h1", daemon);
+    await tick();
+    // A rival seized first and said so while we were still claiming.
+    leases.set(hostLeaseKey("h1"), "inst-b:1#rival");
+    arrive(localHostInChannel("h1"), { k: "host-taken", o: "inst-b:1" });
+    await tick();
+    expect(daemon.closedWith).toBeNull();
+    // Our seize lands last: the lease is ours.
+    seize.open();
+    await claiming;
+    expect(leases.get(hostLeaseKey("h1"))).toBe(hostHolderForTests("h1"));
+    await tick();
+    expect(daemon.closedWith).toBeNull();
+  });
+
+  it("(4) a frame naming this connection that arrives before its claim lands is handled right after it", async () => {
+    const seize = gate();
+    ctl.seizeGate = seize.promise;
+    const daemon = new FakeSocket();
+    registerDaemon("h1", null, daemon);
+    const claiming = claimHost("h1", daemon);
+    await tick();
+    const holder = hostHolderForTests("h1")!;
+    arrive(
+      localHostInChannel("h1"),
+      { k: "send", o: "inst-b:1", h: holder, rid: "r", rt: "inst-b:1" },
+      Buffer.from(JSON.stringify({ type: "kill", terminalId: "t1" })),
+    );
+    // Not before the claim...
+    expect(daemon.json().some((m) => m.type === "kill")).toBe(false);
+    seize.open();
+    await claiming;
+    // ...and right after it, acknowledged.
+    expect(daemon.last("kill")).toMatchObject({ terminalId: "t1" });
+    expect(sentOn("reply:inst-b:1")[0].header).toMatchObject({ ok: true, rid: "r" });
+    // A frame naming some other connection is never this one's.
+    arrive(
+      localHostInChannel("h1"),
+      { k: "send", o: "inst-b:1", h: "inst-c:1#other", rid: "r2", rt: "inst-b:1" },
+      Buffer.from(JSON.stringify({ type: "kill", terminalId: "t2" })),
+    );
+    expect(daemon.json().some((m) => m.terminalId === "t2")).toBe(false);
+  });
+
+  it("(3) a connection that lost the lease gives up on host-taken; one that holds it never does", async () => {
+    const { daemon } = await ownHost("h1");
+    // host-taken while the lease is still ours: a re-read, nothing more.
+    arrive(localHostInChannel("h1"), { k: "host-taken", o: "inst-b:1" });
+    await tick();
+    expect(daemon.closedWith).toBeNull();
+    leases.set(hostLeaseKey("h1"), "inst-b:1#newer");
+    arrive(localHostInChannel("h1"), { k: "host-taken", o: "inst-b:1" });
+    await vi.waitFor(() => expect(daemon.closedWith?.code).toBe(4000));
+  });
+
+  it("(5) relayed daemon answers are delivered in order per host, even when one is slow", async () => {
+    const order: string[] = [];
+    const first = gate();
+    onForwardedDaemonReply(async (_hostId, msg: DaemonReply) => {
+      const id = (msg as { requestId: string; done?: boolean }).requestId;
+      if ((msg as { entries?: unknown[] }).entries?.length === 1) await first.promise;
+      order.push(`${id}:${(msg as { done?: boolean }).done ? "done" : "part"}`);
+    });
+    const relayed = (msg: Record<string, unknown>) =>
+      direct.get("daemon-reply")!({
+        channel: "",
+        header: { k: "daemon-reply", o: "inst-a:1", h: "h1" },
+        payload: Buffer.from(JSON.stringify(msg)),
+      });
+    relayed({ type: "transcript-backfill", requestId: "bf", terminalId: "t", entries: [1] });
+    relayed({
+      type: "transcript-backfill",
+      requestId: "bf",
+      terminalId: "t",
+      entries: [],
+      done: true,
+    });
+    await tick();
+    expect(order).toEqual([]);
+    first.open();
+    await vi.waitFor(() => expect(order).toEqual(["bf:part", "bf:done"]));
+  });
+
+  it("(7) a viewer whose attach is still going out isn't reported to the owner", async () => {
+    leases.set(hostLeaseKey("h9"), "inst-a:1#c1");
+    const attachOut = gate();
+    ctl.attachGate = attachOut.promise;
+    const pending = attachViewer("h9", "t9", new FakeSocket());
+    await tick();
+    await runRelayHeartbeatForTests();
+    expect(sentOn(localHostInChannel("h9"), "viewers")).toHaveLength(0);
+    attachOut.open();
+    expect(await pending).not.toBeNull();
+    await runRelayHeartbeatForTests();
+    expect(sentOn(localHostInChannel("h9"), "viewers")).toHaveLength(1);
+  });
+
+  it("(8) never relays a credentials answer, and never asks for credentials for another instance", async () => {
+    const { daemon, holder } = await ownHost("h1");
+    const before = daemon.sent.length;
+    arrive(
+      localHostInChannel("h1"),
+      { k: "send", o: "inst-b:1", h: holder, rid: "r1", rt: "inst-b:1" },
+      Buffer.from(JSON.stringify({ type: "credentials", requestId: "cr" })),
+    );
+    expect(daemon.sent.length).toBe(before);
+    expect(sentOn("reply:inst-b:1")).toHaveLength(0);
+    expect(
+      forwardDaemonReply("h1", {
+        type: "credentials-result",
+        requestId: "cr",
+        token: "sk-ant-oat01-secret",
+      }),
+    ).toBe(false);
+    expect(published.some((p) => p.payload?.toString().includes("sk-ant"))).toBe(false);
+  });
+
+  it("(8) runs owner work where the daemon is and returns only its result", async () => {
+    onOwnerTask("echo-task", async (hostId, args) => ({ hostId, got: args.n }));
+    const { holder } = await ownHost("h1");
+    // Here: run directly.
+    expect(await runOnOwner("h1", "echo-task", { n: 1 }, 1_000)).toEqual({
+      result: { hostId: "h1", got: 1 },
+    });
+    // Asked from another instance: the reply carries the result.
+    arrive(
+      localHostInChannel("h1"),
+      { k: "task", o: "inst-b:1", h: holder, task: "echo-task", rid: "t1", rt: "inst-b:1" },
+      Buffer.from(JSON.stringify({ n: 2 })),
+    );
+    await vi.waitFor(() => expect(sentOn("reply:inst-b:1")).toHaveLength(1));
+    const reply = sentOn("reply:inst-b:1")[0];
+    expect(JSON.parse(reply.payload!.toString())).toEqual({ hostId: "h1", got: 2 });
+    // Elsewhere: through the owner.
+    leases.set(hostLeaseKey("h9"), "inst-a:1#c1");
+    expect(await runOnOwner("h9", "echo-task", { n: 3 }, 1_000)).toEqual({
+      result: { ran: "echo-task" },
+    });
+  });
+
+  it("(10) one heartbeat at a time, with one lease read for every host", async () => {
+    leases.set(hostLeaseKey("h7"), "inst-a:1#c1");
+    leases.set(hostLeaseKey("h8"), "inst-b:1#c2");
+    await attachViewer("h7", "t7", new FakeSocket());
+    await attachViewer("h8", "t8", new FakeSocket());
+    ctl.holderReads = 0;
+    await Promise.all([runRelayHeartbeatForTests(), runRelayHeartbeatForTests()]);
+    expect(ctl.holderReads).toBe(1);
+    expect(sentOn(localHostInChannel("h7"), "viewers")).toHaveLength(1);
+    expect(sentOn(localHostInChannel("h8"), "viewers")).toHaveLength(1);
   });
 });

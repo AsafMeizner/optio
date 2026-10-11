@@ -9,24 +9,15 @@
  * `--no-remote-dirs` (or from before this existed) doesn't advertise
  * `manageDirs` and is never asked.
  */
-import { randomUUID } from "node:crypto";
 import type { LocalDaemonMessage, LocalDirOp } from "@optio/shared";
 import { logger } from "../logger.js";
 import * as relay from "./local-relay.js";
+import { HostRequests } from "./local-host-requests.js";
 import { setHostDirs, type LocalHostRow } from "./local-host-service.js";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
 type DirsResult = Extract<LocalDaemonMessage, { type: "dirs-result" }>;
-
-interface Pending {
-  hostId: string;
-  resolve: (r: DirsResult) => void;
-  reject: (err: Error) => void;
-  timer: NodeJS.Timeout;
-}
-
-const pending = new Map<string, Pending>();
 
 /** A change the machine couldn't make, with the HTTP status that says why. */
 export class HostDirError extends Error {
@@ -38,42 +29,15 @@ export class HostDirError extends Error {
   }
 }
 
-/**
- * Ask a host's daemon — connected here or to another instance — to change
- * its allowlist. Rejects when offline or silent.
- */
-function requestDirChange(hostId: string, op: LocalDirOp, path: string): Promise<DirsResult> {
-  const requestId = randomUUID();
-  const answer = new Promise<DirsResult>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(requestId);
-      reject(new HostDirError("The machine did not answer in time", 504));
-    }, REQUEST_TIMEOUT_MS);
-    pending.set(requestId, { hostId, resolve, reject, timer });
-  });
-  // Pending before the frame goes out: the answer may beat the owner's
-  // acknowledgement back.
-  void relay
-    .sendToHost(hostId, { type: "dirs", requestId, op, path })
-    .catch(() => false)
-    .then((sent) => {
-      const p = pending.get(requestId);
-      if (sent || !p) return;
-      clearTimeout(p.timer);
-      pending.delete(requestId);
-      p.reject(new HostDirError("The machine is offline", 409));
-    });
-  return answer;
-}
+const requests = new HostRequests<DirsResult>({
+  timeoutMs: REQUEST_TIMEOUT_MS,
+  timeoutError: () => new HostDirError("The machine did not answer in time", 504),
+  offlineError: () => new HostDirError("The machine is offline", 409),
+});
 
 /** A daemon answered. Ignored unless the request is pending for that same host. */
 export function deliverDirsResult(hostId: string, msg: DirsResult): boolean {
-  const p = pending.get(msg.requestId);
-  if (!p || p.hostId !== hostId) return false;
-  clearTimeout(p.timer);
-  pending.delete(msg.requestId);
-  p.resolve(msg);
-  return true;
+  return requests.deliver(hostId, msg);
 }
 
 /**
@@ -99,7 +63,12 @@ export async function changeHostDir(
       409,
     );
   }
-  const result = await requestDirChange(host.id, op, path);
+  const result = await requests.ask(host.id, (requestId) => ({
+    type: "dirs",
+    requestId,
+    op,
+    path,
+  }));
   if (result.error || !result.dirs) {
     throw new HostDirError(result.error ?? "The machine sent no directory list", 400);
   }
@@ -111,6 +80,5 @@ export async function changeHostDir(
 
 /** Test-only: forget pending requests. */
 export function resetDirRequestsForTests(): void {
-  for (const p of pending.values()) clearTimeout(p.timer);
-  pending.clear();
+  requests.reset();
 }

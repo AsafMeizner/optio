@@ -120,8 +120,8 @@ describe("host ownership", () => {
     expect(await relay.isHostOnline(elsewhere.id)).toBe(false);
     await seizeLease(relay.hostLeaseKey(elsewhere.id), 30_000, "other:1#c");
     expect(await relay.isHostOnline(elsewhere.id)).toBe(true);
-    expect(await relay.hostHasClaudeCredentials(elsewhere.id)).toBe(true);
-    expect(await relay.hostCanManageDirs(elsewhere.id)).toBe(false);
+    expect((await relay.hostCapabilities(elsewhere.id))?.claudeCredentials).toBe(true);
+    expect((await relay.hostCapabilities(elsewhere.id))?.manageDirs).toBe(false);
     expect((await relay.hostsWithClaudeCredentials()).map((h) => h.hostId)).toContain(elsewhere.id);
     await releaseLease(relay.hostLeaseKey(elsewhere.id), "other:1#c");
     expect(await relay.isHostOnline(elsewhere.id)).toBe(false);

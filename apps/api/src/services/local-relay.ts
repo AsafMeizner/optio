@@ -53,9 +53,15 @@ import { db } from "../db/client.js";
 import { localHosts } from "../db/schema.js";
 import { logger } from "../logger.js";
 import { INSTANCE_ID } from "./instance.js";
-import { leaseHolder, releaseLease, renewLease, seizeLease } from "./lease-service.js";
+import {
+  leaseHolder,
+  leaseHolders,
+  releaseLease,
+  renewLease,
+  seizeLease,
+} from "./lease-service.js";
 import { localBus, localHostInChannel, localTermOutChannel, type BusMessage } from "./local-bus.js";
-import { GridArbiter, type Grid, type ViewReport } from "./local-grid.js";
+import { GridArbiter, saneGrid, type Grid, type ViewReport } from "./local-grid.js";
 
 /** Minimal socket surface shared by @fastify/websocket sockets. */
 export interface RelaySocket {
@@ -113,7 +119,7 @@ export const VIEWER_HEARTBEAT_MS = parseIntEnv("OPTIO_LOCAL_VIEWER_HEARTBEAT_MS"
 /** A remote viewer not reported for this long is dropped by the owner. */
 const REMOTE_VIEWER_TTL_MS = VIEWER_HEARTBEAT_MS * 3;
 /** How long a frame for a daemon owned elsewhere waits for the owner's acknowledgement. */
-const SEND_ACK_TIMEOUT_MS = 5_000;
+const SEND_ACK_TIMEOUT_MS = parseIntEnv("OPTIO_LOCAL_SEND_ACK_TIMEOUT_MS", 5_000);
 /** How long a viewer attached through another instance waits for its snapshot. */
 const REMOTE_ATTACH_TIMEOUT_MS = 10_000;
 /** How long the owner remembers who asked for a daemon's answer. */
@@ -159,6 +165,13 @@ interface DaemonConn {
   renewTimer: NodeJS.Timeout | null;
   /** The host's inbound bus channel, while this connection owns the host. */
   inbox: { close(): void } | null;
+  /**
+   * Bus messages for this connection that arrived before its claim
+   * completed, handled right after it; null once claimed.
+   */
+  backlog: BusMessage[] | null;
+  /** The claim in flight (`claimHost`), if any. */
+  claiming: Promise<void> | null;
   /** Settles once a dropped connection's lease is released. */
   released: Promise<void>;
 }
@@ -282,6 +295,8 @@ export function registerDaemon(
     dropped: false,
     renewTimer: null,
     inbox: null,
+    backlog: [],
+    claiming: null,
     released: Promise.resolve(),
   });
   // Viewers here that were streaming through another instance were
@@ -293,17 +308,28 @@ export function registerDaemon(
  * Makes this instance the host's owner for the cluster: listens on the
  * host's inbound channel, records what the daemon can do, seizes the lease
  * (the newest daemon wins) and tells the previous owner, then renews the
- * lease while the connection lasts. A no-op outside a cluster. Throws when
- * the lease can't be written (the caller closes the daemon, which
- * reconnects).
+ * lease while the connection lasts. Frames for this connection that arrive
+ * before the claim completes are handled right after it. A no-op outside a
+ * cluster. Throws when the lease can't be written (the caller closes the
+ * daemon, which reconnects). A connection that closes meanwhile gives its
+ * lease back once the claim is done (`daemonDisconnected` waits for that).
  */
-export async function claimHost(hostId: string, socket: RelaySocket): Promise<void> {
+export function claimHost(hostId: string, socket: RelaySocket): Promise<void> {
   const conn = daemonsByHost.get(hostId);
-  if (!clustered || !conn || conn.socket !== socket || conn.dropped) return;
+  if (!clustered || !conn || conn.socket !== socket || conn.dropped) return Promise.resolve();
+  const claiming = claim(conn).finally(() => {
+    if (conn.claiming === claiming) conn.claiming = null;
+  });
+  conn.claiming = claiming;
+  return claiming;
+}
+
+async function claim(conn: DaemonConn): Promise<void> {
+  const hostId = conn.hostId;
   // Listen before the lease says we own it, so nothing sent to the new
   // owner is lost; bounded, as Redis may be down (then only this instance
   // reaches the daemon until the bus is up).
-  const inbox = localBus.listen(localHostInChannel(hostId), (m) => onHostIn(hostId, m));
+  const inbox = localBus.listen(localHostInChannel(hostId), (m) => onHostIn(conn, m));
   conn.inbox = inbox;
   await Promise.race([inbox.ready, new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]);
   if (conn.dropped) return;
@@ -314,7 +340,7 @@ export async function claimHost(hostId: string, socket: RelaySocket): Promise<vo
   if (conn.dropped) return;
   await seizeLease(hostLeaseKey(hostId), HOST_LEASE_TTL_MS, conn.holder);
   if (conn.dropped) {
-    // Closed while we were seizing it: give it back.
+    // Closed while we were seizing it: give back exactly what we took.
     await releaseLease(hostLeaseKey(hostId), conn.holder).catch(() => {});
     return;
   }
@@ -322,6 +348,9 @@ export async function claimHost(hostId: string, socket: RelaySocket): Promise<vo
   void localBus.publish(localHostInChannel(hostId), { k: "host-taken" });
   conn.renewTimer = setInterval(() => void renewHost(conn), HOST_LEASE_RENEW_MS);
   conn.renewTimer.unref?.();
+  const backlog = conn.backlog ?? [];
+  conn.backlog = null;
+  for (const m of backlog) handleHostIn(conn, m);
 }
 
 async function renewHost(conn: DaemonConn): Promise<void> {
@@ -415,6 +444,9 @@ export async function daemonDisconnected(hostId: string, socket: RelaySocket): P
   const existing = daemonsByHost.get(hostId);
   if (!existing || existing.socket !== socket) return false;
   dropDaemon(existing, { release: true });
+  // A claim in flight gives back the lease it took once it lands; only then
+  // may the caller mark the host offline.
+  await existing.claiming?.catch(() => {});
   await existing.released;
   return true;
 }
@@ -445,19 +477,30 @@ export async function hostCapabilities(hostId: string): Promise<HostCapabilities
   return rows.length > 0 ? toCapabilities(rows[0].capabilities) : null;
 }
 
+/**
+ * What a host row's connected daemon can do, from the row alone (no query):
+ * this instance's connection when it has one, else, in a cluster, the
+ * capabilities stored on the row while its lease-derived state is online
+ * (`listHosts` / `getHost` derive it). Null while offline.
+ */
+export function capabilitiesOf(host: {
+  id: string;
+  state: string;
+  capabilities?: Record<string, unknown> | null;
+}): HostCapabilities | null {
+  const conn = localConn(host.id);
+  if (conn) return conn.caps;
+  if (!clustered || host.state !== "online") return null;
+  return toCapabilities(host.capabilities);
+}
+
 const can = (cap: keyof HostCapabilities) => async (hostId: string) =>
   (await hostCapabilities(hostId))?.[cap] === true;
 
-/** Whether the host's connected daemon can supply a Claude OAuth token (false when offline). */
-export const hostHasClaudeCredentials = can("claudeCredentials");
 /** Whether the host's connected daemon can read a finished session's transcript off disk (false when offline). */
 export const hostCanBackfillTranscripts = can("transcriptBackfill");
-/** Whether the host's connected daemon adds / removes allowlisted dirs on request (false when offline). */
-export const hostCanManageDirs = can("manageDirs");
 /** Whether the host's connected daemon runs agents through a model provider (false when offline). */
 export const hostCanUseModelProviders = can("modelProviders");
-/** Whether the host's connected daemon refreshes agent limits on request (false when offline). */
-export const hostCanRefreshLimits = can("refreshLimits");
 /** Whether the host's connected daemon answers its terminals' queries itself (false when offline). */
 export const hostAnswersQueries = can("answersQueries");
 
@@ -490,43 +533,122 @@ function sendToLocalDaemon(hostId: string, message: LocalServerMessage): boolean
 }
 
 /**
- * Send a control message to a host's daemon, wherever it is connected.
- * Resolves false when the host is offline — or, for a daemon on another
- * instance, when its owner didn't acknowledge the frame in time.
+ * How a frame for a daemon went: `sent` (to its socket here, or
+ * acknowledged by its owner), `offline` (nobody owns the host, or nobody
+ * listened: it went nowhere), or `unacknowledged` (the owner heard it but
+ * didn't acknowledge in time: it may have reached the daemon, so it must
+ * never be sent again as if it hadn't).
  */
-export async function sendToHost(hostId: string, message: LocalServerMessage): Promise<boolean> {
-  if (sendToLocalDaemon(hostId, message)) return true;
-  if (!clustered || !localBus.started) return false;
+export type HostDelivery = "sent" | "offline" | "unacknowledged";
+
+/** Send a control message to a host's daemon, wherever it is connected. */
+export async function deliverToHost(
+  hostId: string,
+  message: LocalServerMessage,
+): Promise<HostDelivery> {
+  if (sendToLocalDaemon(hostId, message)) return "sent";
+  if (!clustered || !localBus.started) return "offline";
   const holder = await leaseHolder(hostLeaseKey(hostId));
   // Nobody holds it, or we do and the socket just went: nobody to ask.
-  if (holder === null || instanceOfHolder(holder) === INSTANCE_ID) return false;
-  const ack = await localBus.request(
+  if (holder === null || instanceOfHolder(holder) === INSTANCE_ID) return "offline";
+  const ack = await localBus.ask(
     localHostInChannel(hostId),
     { k: "send", h: holder },
     SEND_ACK_TIMEOUT_MS,
     Buffer.from(JSON.stringify(message), "utf-8"),
   );
-  return ack?.header.ok === true;
+  if (ack === "unheard") return "offline";
+  if (ack === "timeout") {
+    logger.warn({ hostId, type: message.type }, "local: owner did not acknowledge a frame in time");
+    return "unacknowledged";
+  }
+  return ack.header.ok === true ? "sent" : "unacknowledged";
 }
 
-/** Daemon answers that answer a request by id (`requestId`). */
-type DaemonReply = Extract<
+/**
+ * `deliverToHost` as "it may have reached the daemon": false only when it
+ * certainly did not (the host is offline).
+ */
+export async function sendToHost(hostId: string, message: LocalServerMessage): Promise<boolean> {
+  return (await deliverToHost(hostId, message)) !== "offline";
+}
+
+// ── Work only the owner may do ───────────────────────────────────────────────
+
+/** A piece of work run on the host's owner (where its daemon is), returning a plain result. */
+export type OwnerTask = (hostId: string, args: Record<string, unknown>) => Promise<unknown>;
+
+const ownerTasks = new Map<string, OwnerTask>();
+
+/** Registers what this instance does when asked to run `name` as a host's owner. */
+export function onOwnerTask(name: string, task: OwnerTask): void {
+  ownerTasks.set(name, task);
+}
+
+/**
+ * Runs `name` on the host's owner — here when the daemon is connected here,
+ * else on its owner through the bus — and resolves with its result, or
+ * `offline` / `timeout`. For work whose inputs must not cross Redis (a
+ * Claude token): the owner does it all and returns only the outcome.
+ */
+export async function runOnOwner(
+  hostId: string,
+  name: string,
+  args: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<{ result: unknown } | "offline" | "timeout"> {
+  const task = ownerTasks.get(name);
+  if (localConn(hostId)) {
+    if (!task) throw new Error(`No owner task ${name}`);
+    return { result: await task(hostId, args) };
+  }
+  if (!clustered || !localBus.started) return "offline";
+  const holder = await leaseHolder(hostLeaseKey(hostId));
+  if (holder === null || instanceOfHolder(holder) === INSTANCE_ID) return "offline";
+  const answer = await localBus.ask(
+    localHostInChannel(hostId),
+    { k: "task", h: holder, task: name },
+    timeoutMs,
+    Buffer.from(JSON.stringify(args), "utf-8"),
+  );
+  if (answer === "unheard") return "offline";
+  if (answer === "timeout") return "timeout";
+  if (typeof answer.header.err === "string") throw new Error(answer.header.err);
+  try {
+    return { result: JSON.parse(answer.payload.toString("utf-8")) as unknown };
+  } catch {
+    return { result: null };
+  }
+}
+
+/** Daemon answers to a request by id (`requestId`): the one type for them. */
+export type DaemonReply = Extract<
   LocalDaemonMessage,
   {
     type: "credentials-result" | "dirs-result" | "limits-refresh-result" | "transcript-backfill";
   }
 >;
 
-const REQUEST_TYPES = new Set(["credentials", "dirs", "limits-refresh", "transcript-request"]);
+/**
+ * Requests whose answers the owner relays to the instance that asked. Not
+ * `credentials`: its answer carries a Claude token, which never crosses
+ * Redis (the owner runs the whole refresh: `runOnOwner`).
+ */
+const RELAYED_REQUEST_TYPES = new Set(["dirs", "limits-refresh", "transcript-request"]);
 
-let forwardedReplyHandler: ((hostId: string, msg: DaemonReply) => void) | null = null;
+let forwardedReplyHandler: ((hostId: string, msg: DaemonReply) => Promise<void> | void) | null =
+  null;
+/** Relayed answers, delivered in order per host (a backfill's frames commit in order). */
+const replyChains = new Map<string, Promise<void>>();
 
 /**
  * What this instance does with a daemon's answer to a request it sent
  * through another instance (ws/local-daemon.ts: the same delivery as a
  * daemon connected here).
  */
-export function onForwardedDaemonReply(handler: (hostId: string, msg: DaemonReply) => void): void {
+export function onForwardedDaemonReply(
+  handler: (hostId: string, msg: DaemonReply) => Promise<void> | void,
+): void {
   forwardedReplyHandler = handler;
 }
 
@@ -535,6 +657,8 @@ export function onForwardedDaemonReply(handler: (hostId: string, msg: DaemonRepl
  * there and say so (true); false means it is this instance's to deliver.
  */
 export function forwardDaemonReply(hostId: string, msg: DaemonReply): boolean {
+  // Never relayed (and never forwarded, so nobody elsewhere waits for it).
+  if (msg.type === "credentials-result") return false;
   const requestId = (msg as { requestId?: unknown }).requestId;
   if (typeof requestId !== "string") return false;
   const asked = forwardedRequests.get(requestId);
@@ -551,14 +675,23 @@ export function forwardDaemonReply(hostId: string, msg: DaemonReply): boolean {
 
 localBus.onDirect("daemon-reply", (m) => {
   const hostId = m.header.h;
-  if (typeof hostId !== "string" || !forwardedReplyHandler) return;
+  const handler = forwardedReplyHandler;
+  if (typeof hostId !== "string" || !handler) return;
   let msg: DaemonReply;
   try {
     msg = JSON.parse(m.payload.toString("utf-8")) as DaemonReply;
   } catch {
     return;
   }
-  forwardedReplyHandler(hostId, msg);
+  if (msg.type === "credentials-result") return;
+  // One after another per host, as they would be off the daemon's socket.
+  const next = (replyChains.get(hostId) ?? Promise.resolve())
+    .then(() => handler(hostId, msg))
+    .catch((err) => logger.warn({ err, hostId, type: msg.type }, "local: relayed reply failed"));
+  replyChains.set(hostId, next);
+  void next.then(() => {
+    if (replyChains.get(hostId) === next) replyChains.delete(hostId);
+  });
 });
 
 // ── Viewers attached on this instance (owner side) ───────────────────────────
@@ -791,25 +924,33 @@ function proxyFor(m: BusMessage, hostId: string): RemoteViewer | null {
   return proxy && proxy.hostId === hostId && proxy.terminalId === terminalId ? proxy : null;
 }
 
-function onHostIn(hostId: string, m: BusMessage): void {
-  const conn = localConn(hostId);
-  if (!conn) return;
+/**
+ * A message on the host's inbound channel, for this connection. Everything
+ * but `host-taken` names the connection it is for (the lease holder its
+ * sender read): while a host changes hands the previous owner may still be
+ * listening, and must not act on what is the new one's. What arrives before
+ * this connection's claim completes waits for it.
+ */
+function onHostIn(conn: DaemonConn, m: BusMessage): void {
+  if (conn.dropped || conn.socket.readyState !== WS_OPEN) return;
+  if (m.header.k !== "host-taken" && m.header.h !== conn.holder) return;
+  if (conn.backlog) {
+    conn.backlog.push(m);
+    return;
+  }
+  handleHostIn(conn, m);
+}
+
+function handleHostIn(conn: DaemonConn, m: BusMessage): void {
+  if (conn.dropped) return;
+  const hostId = conn.hostId;
   const { header } = m;
-  // Everything but `host-taken` names the connection it is for (the lease
-  // holder its sender read): while a host changes hands, the previous owner
-  // may still be listening, and must not act on what is the new one's.
-  if (header.k !== "host-taken" && (!conn.claimed || header.h !== conn.holder)) return;
   const terminalId = typeof header.t === "string" ? header.t : null;
   switch (header.k) {
     case "host-taken":
-      // Another connection seized the lease. Make sure it still holds it:
-      // two daemons racing would otherwise both give up.
-      void leaseHolder(hostLeaseKey(hostId))
-        .then((holder) => {
-          if (holder !== null && holder !== conn.holder)
-            supersede(conn, "taken by a newer connection");
-        })
-        .catch(() => {});
+      // Only a nudge to look: a connection gives the host up only when it
+      // holds a claim and the lease, read now, names another connection.
+      void recheckOwnership(conn);
       return;
     case "send": {
       let message: LocalServerMessage;
@@ -818,12 +959,29 @@ function onHostIn(hostId: string, m: BusMessage): void {
       } catch {
         return;
       }
+      // A token request is never sent on another instance's behalf.
+      if (message.type === "credentials") return;
       const requestId = (message as { requestId?: unknown }).requestId;
-      if (REQUEST_TYPES.has(message.type) && typeof requestId === "string") {
+      if (RELAYED_REQUEST_TYPES.has(message.type) && typeof requestId === "string") {
         rememberForwarded(requestId, m.header.o, hostId);
       }
-      sendToLocalDaemon(hostId, message);
-      void localBus.reply(m, { ok: true });
+      if (sendToLocalDaemon(hostId, message)) void localBus.reply(m, { ok: true });
+      return;
+    }
+    case "task": {
+      const task = typeof header.task === "string" ? ownerTasks.get(header.task) : undefined;
+      if (!task) return;
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(m.payload.toString("utf-8") || "{}") as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      void task(hostId, args).then(
+        (result) => localBus.reply(m, {}, Buffer.from(JSON.stringify(result ?? null), "utf-8")),
+        (err: unknown) =>
+          localBus.reply(m, { err: err instanceof Error ? err.message : String(err) }),
+      );
       return;
     }
     case "attach": {
@@ -853,10 +1011,10 @@ function onHostIn(hostId: string, m: BusMessage): void {
       return;
     }
     case "claim": {
-      const g = header.g;
+      const g = Array.isArray(header.g) ? saneGrid(header.g[0], header.g[1]) : undefined;
       const proxy = proxyFor(m, hostId);
-      if (!proxy || !terminalId || !isGridPair(g)) return;
-      viewerClaim(hostId, terminalId, proxy, { cols: g[0], rows: g[1] });
+      if (!proxy || !terminalId || !g) return;
+      viewerClaim(hostId, terminalId, proxy, g);
       return;
     }
     case "view": {
@@ -878,12 +1036,18 @@ function onHostIn(hostId: string, m: BusMessage): void {
   }
 }
 
-function isGridPair(g: unknown): g is [number, number] {
-  return (
-    Array.isArray(g) &&
-    g.length === 2 &&
-    g.every((n) => Number.isInteger(n) && (n as number) > 0 && (n as number) <= 1000)
-  );
+/** Another connection says it took the host: re-read the lease, give it up only if so. */
+async function recheckOwnership(conn: DaemonConn): Promise<void> {
+  if (!conn.claimed || conn.dropped) return;
+  let holder: string | null;
+  try {
+    holder = await leaseHolder(hostLeaseKey(conn.hostId));
+  } catch {
+    return; // the next renew decides
+  }
+  if (conn.claimed && !conn.dropped && holder !== conn.holder) {
+    supersede(conn, "taken by a newer connection");
+  }
 }
 
 function rememberForwarded(requestId: string, origin: string, hostId: string): void {
@@ -943,6 +1107,8 @@ interface HomeViewer {
   enrolled: boolean;
   /** Its attach was answered (snapshot, error, or close). */
   settled: boolean;
+  /** Its `attach` went out: the heartbeat reports it from now on. */
+  attached: boolean;
   timer: NodeJS.Timeout | null;
   closed: boolean;
 }
@@ -998,9 +1164,9 @@ function onTermOut(terminalId: string, m: BusMessage): void {
   if (header.k !== "close" && header.o !== hv.owner) return;
   switch (header.k) {
     case "sb": {
-      const g = header.g;
+      const g = Array.isArray(header.g) ? saneGrid(header.g[0], header.g[1]) : undefined;
       if (payload.length > 0) {
-        if (isGridPair(g)) sendToViewer(hv.socket, { type: "replay", cols: g[0], rows: g[1] });
+        if (g) sendToViewer(hv.socket, { type: "replay", cols: g.cols, rows: g.rows });
         safeSend(hv.socket, payload);
       }
       hv.enrolled = true;
@@ -1150,6 +1316,7 @@ async function attachThrough(
     socket,
     enrolled: false,
     settled: false,
+    attached: false,
     timer: null,
     closed: false,
   };
@@ -1162,19 +1329,21 @@ async function attachThrough(
   set.add(hv.viewerId);
   // Subscribed before asking, so the snapshot can't go by unheard.
   const listening = await watchTerm(terminalId);
-  const asked =
-    listening &&
-    !hv.closed &&
-    (await localBus.publish(localHostInChannel(hostId), {
-      k: "attach",
-      h: holder,
-      t: terminalId,
-      v: hv.viewerId,
-    }));
-  if (!asked) {
+  // Somebody (the owner) must hear the attach, or nothing will answer it.
+  const heard =
+    listening && !hv.closed
+      ? await localBus.publishCount(localHostInChannel(hostId), {
+          k: "attach",
+          h: holder,
+          t: terminalId,
+          v: hv.viewerId,
+        })
+      : null;
+  if (!heard || hv.closed) {
     forgetHome(hv);
     return null;
   }
+  hv.attached = true;
   hv.timer = setTimeout(() => {
     hv.timer = null;
     if (hv.settled || hv.closed) return;
@@ -1212,7 +1381,19 @@ async function attachThrough(
  * went away, or another took over: they reconnect to the new one), and, as
  * an owner, drop remote viewers whose instance stopped reporting them.
  */
-async function heartbeat(): Promise<void> {
+let heartbeatRunning: Promise<void> | null = null;
+
+/** One heartbeat at a time: a slow tick is not overlapped by the next. */
+function heartbeat(): Promise<void> {
+  if (!heartbeatRunning) {
+    heartbeatRunning = beat().finally(() => {
+      heartbeatRunning = null;
+    });
+  }
+  return heartbeatRunning;
+}
+
+async function beat(): Promise<void> {
   const now = Date.now();
   for (const proxy of [...remoteViewers.values()]) {
     if (now - proxy.seenAt > REMOTE_VIEWER_TTL_MS) {
@@ -1223,31 +1404,42 @@ async function heartbeat(): Promise<void> {
   if (!localBus.started) return;
   const byHost = new Map<string, HomeViewer[]>();
   for (const hv of homeViewers.values()) {
+    // An attach still going out is not the owner's to know yet.
+    if (!hv.attached || hv.closed) continue;
     const list = byHost.get(hv.hostId) ?? [];
     list.push(hv);
     byHost.set(hv.hostId, list);
   }
+  if (byHost.size === 0) return;
+  let holders: Map<string, string>;
+  try {
+    holders = await leaseHolders([...byHost.keys()].map(hostLeaseKey));
+  } catch (err) {
+    logger.debug({ err }, "local relay heartbeat: lease read failed");
+    return;
+  }
   for (const [hostId, viewers] of byHost) {
-    try {
-      const holder = await leaseHolder(hostLeaseKey(hostId));
-      if (holder === null) {
-        closeHomeViewersOfHost(hostId, "Host disconnected");
-        continue;
-      }
-      // Attached through a daemon connection that no longer owns the host.
-      closeHomeViewersOfHost(hostId, "Host reconnected", holder);
-      const still = viewers.filter((hv) => !hv.closed);
-      if (still.length > 0) {
-        await localBus.publish(localHostInChannel(hostId), {
-          k: "viewers",
-          h: holder,
-          vs: still.map((hv) => [hv.terminalId, hv.viewerId]),
-        });
-      }
-    } catch (err) {
-      logger.debug({ err, hostId }, "local relay heartbeat failed");
+    const holder = holders.get(hostLeaseKey(hostId)) ?? null;
+    if (holder === null) {
+      closeHomeViewersOfHost(hostId, "Host disconnected");
+      continue;
+    }
+    // Attached through a daemon connection that no longer owns the host.
+    closeHomeViewersOfHost(hostId, "Host reconnected", holder);
+    const still = viewers.filter((hv) => !hv.closed);
+    if (still.length > 0) {
+      await localBus.publish(localHostInChannel(hostId), {
+        k: "viewers",
+        h: holder,
+        vs: still.map((hv) => [hv.terminalId, hv.viewerId]),
+      });
     }
   }
+}
+
+/** The lease holder id of this instance's connection for a host (tests). */
+export function hostHolderForTests(hostId: string): string | null {
+  return daemonsByHost.get(hostId)?.holder ?? null;
 }
 
 /** Runs one heartbeat now (tests). */
@@ -1274,6 +1466,7 @@ export function resetRelayForTests(): void {
   gridByTerminal.clear();
   remoteViewers.clear();
   forwardedRequests.clear();
+  replyChains.clear();
   for (const hv of homeViewers.values()) if (hv.timer) clearTimeout(hv.timer);
   homeViewers.clear();
   homeByTerminal.clear();

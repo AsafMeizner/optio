@@ -27,22 +27,16 @@ import {
   maybeRefreshOnHello,
 } from "../services/local-auth-refresh-service.js";
 import { deliverDirsResult } from "../services/local-dirs-service.js";
+import { saneGrid } from "../services/local-grid.js";
 
 const HELLO_TIMEOUT_MS = 10_000;
-
-type ReplyFrame = Extract<
-  LocalDaemonMessage,
-  {
-    type: "credentials-result" | "dirs-result" | "limits-refresh-result" | "transcript-backfill";
-  }
->;
 
 /**
  * A daemon's answer to a request, delivered to the request that is waiting
  * on this instance — whether the daemon is connected here or its owner
  * relayed the answer from another instance.
  */
-async function deliverReply(hostId: string, msg: ReplyFrame): Promise<void> {
+async function deliverReply(hostId: string, msg: relay.DaemonReply): Promise<void> {
   switch (msg.type) {
     case "credentials-result":
       deliverCredentialsResult(hostId, msg);
@@ -59,11 +53,9 @@ async function deliverReply(hostId: string, msg: ReplyFrame): Promise<void> {
   }
 }
 
-relay.onForwardedDaemonReply((hostId, msg) => {
-  deliverReply(hostId, msg).catch((err) =>
-    logger.warn({ err, hostId, type: msg.type }, "local-daemon: relayed reply failed"),
-  );
-});
+// Answers the owner relayed from another instance: in order per host (the
+// relay chains them), delivered as if the daemon were connected here.
+relay.onForwardedDaemonReply(deliverReply);
 
 export async function localDaemonWs(app: FastifyInstance) {
   app.get("/ws/local/daemon", { websocket: true }, async (socket, req) => {
@@ -181,7 +173,7 @@ export async function localDaemonWs(app: FastifyInstance) {
           relay.deliverScrollback(
             msg.attachId,
             Buffer.from(msg.dataB64, "base64"),
-            replayGrid(msg.cols, msg.rows),
+            saneGrid(msg.cols, msg.rows),
           );
           return;
         case "attach-error":
@@ -279,11 +271,4 @@ export async function localDaemonWs(app: FastifyInstance) {
     // Replays the frames that arrived during auth (hello first), in order.
     conn.ready(onMessage);
   });
-}
-
-/** The grid a daemon's snapshot names, when it names a sane one (older daemons don't). */
-function replayGrid(cols: unknown, rows: unknown): { cols: number; rows: number } | undefined {
-  const ok = (n: unknown): n is number =>
-    Number.isInteger(n) && (n as number) > 0 && (n as number) <= 1000;
-  return ok(cols) && ok(rows) ? { cols, rows } : undefined;
 }

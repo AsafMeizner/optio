@@ -14,7 +14,7 @@ import {
   resetDirRequestsForTests,
 } from "./local-dirs-service.js";
 import {
-  hostCanManageDirs,
+  hostCapabilities,
   registerDaemon,
   resetRelayForTests,
   type RelaySocket,
@@ -62,7 +62,7 @@ describe("local-dirs-service", () => {
   it("asks the daemon, then mirrors its new list onto the host", async () => {
     const socket = new FakeSocket();
     registerDaemon("h1", "u1", socket, { manageDirs: true });
-    expect(await hostCanManageDirs("h1")).toBe(true);
+    expect((await hostCapabilities("h1"))?.manageDirs).toBe(true);
 
     const pending = changeHostDir(host, "add", "~/app");
     await flush();
@@ -122,7 +122,7 @@ describe("local-dirs-service", () => {
     });
 
     registerDaemon("h1", "u1", new FakeSocket()); // an older daemon: no manageDirs
-    expect(await hostCanManageDirs("h1")).toBe(false);
+    expect((await hostCapabilities("h1"))?.manageDirs).toBe(false);
     const err = await changeHostDir(host, "add", "/Users/me/app").catch((e) => e);
     expect(err).toBeInstanceOf(HostDirError);
     expect(err.status).toBe(409);
