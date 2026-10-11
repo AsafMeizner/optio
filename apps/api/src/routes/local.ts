@@ -166,10 +166,12 @@ const TriggersResponse = z.object({ triggers: z.array(LocalTriggerSchema) });
  */
 /**
  * A host row plus what its connected daemon can do right now (all false
- * while it is offline), wherever the daemon is connected.
+ * while it is offline), wherever the daemon is connected — read off the row
+ * as `listHosts` / `getHost` loaded it (lease-derived state, stored
+ * capabilities): no query per host.
  */
-async function withLiveCapabilities<T extends { id: string }>(host: T) {
-  const caps = await relay.hostCapabilities(host.id);
+function withLiveCapabilities<T extends hostService.LocalHostRow>(host: T) {
+  const caps = relay.capabilitiesOf(host);
   return {
     ...host,
     claudeCredentials: caps?.claudeCredentials === true,
@@ -197,7 +199,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       const hosts = await hostService.listHosts(req.user?.id ?? null);
-      reply.send({ hosts: await Promise.all(hosts.map(withLiveCapabilities)) });
+      reply.send({ hosts: hosts.map(withLiveCapabilities) });
     },
   );
 
@@ -300,7 +302,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       const moved = await hostService.mergeHosts(source.id, target.id);
       await terminalService.flushParkedTerminals(target.id);
       const host = (await hostService.getHost(target.id))!;
-      reply.send({ host: await withLiveCapabilities(host), moved });
+      reply.send({ host: withLiveCapabilities(host), moved });
     },
   );
 
@@ -382,7 +384,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       }
       try {
         const changed = await changeHostDir(host, "add", req.body.path);
-        reply.send({ host: await withLiveCapabilities(changed.host), path: changed.path });
+        reply.send({ host: withLiveCapabilities(changed.host), path: changed.path });
       } catch (err) {
         if (err instanceof HostDirError)
           return reply.status(err.status).send({ error: err.message });
@@ -421,7 +423,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       }
       try {
         const changed = await changeHostDir(host, "remove", req.query.path);
-        reply.send({ host: await withLiveCapabilities(changed.host), path: changed.path });
+        reply.send({ host: withLiveCapabilities(changed.host), path: changed.path });
       } catch (err) {
         if (err instanceof HostDirError)
           return reply.status(err.status).send({ error: err.message });

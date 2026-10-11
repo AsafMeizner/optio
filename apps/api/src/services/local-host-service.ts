@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, isNull, lt, sql } from "drizzle-orm";
 import {
   normalizeRepoUrl,
   LOCAL_HOST_OFFLINE_AFTER_MS,
@@ -142,13 +142,33 @@ export async function registerHost(input: RegisterHostInput): Promise<LocalHostR
   return created;
 }
 
+/** A daemon connection holds the host's lease (local-relay.ts `hostLeaseKey`). */
+const liveLease = sql<boolean>`EXISTS (
+  SELECT 1 FROM "leases"
+  WHERE "leases"."key" = 'local-host:' || "local_hosts"."id"::text AND "leases"."expires_at" > now())`;
+/** No daemon connection holds it. */
+const noLiveLease = sql`NOT ${liveLease}`;
+
+const HOST_WITH_LEASE = { ...getTableColumns(localHosts), live: liveLease };
+
+/**
+ * Online is one answer everywhere: with several API instances it is the
+ * host's lease, read with the row, so every instance says the same. The
+ * `state` column stays the last-known state the online / offline alerts
+ * and the sweep go by. (Without a cluster, the column is all there is.)
+ */
+function withLiveState({ live, ...host }: LocalHostRow & { live: boolean }): LocalHostRow {
+  return relay.isLocalClusterEnabled() ? { ...host, state: live ? "online" : "offline" } : host;
+}
+
 export async function getHost(id: string): Promise<LocalHostRow | null> {
-  const [row] = await db.select().from(localHosts).where(eq(localHosts.id, id));
-  return row ?? null;
+  const [row] = await db.select(HOST_WITH_LEASE).from(localHosts).where(eq(localHosts.id, id));
+  return row ? withLiveState(row) : null;
 }
 
 export async function listHosts(userId: string | null | undefined): Promise<LocalHostRow[]> {
-  return db.select().from(localHosts).where(ownedBy(userId));
+  const rows = await db.select(HOST_WITH_LEASE).from(localHosts).where(ownedBy(userId));
+  return rows.map(withLiveState);
 }
 
 export async function deleteHost(id: string): Promise<boolean> {
@@ -257,13 +277,9 @@ export async function setHostDirs(id: string, dirs: LocalHostDir[]): Promise<Loc
   await publishLocalChanged({ terminalId: null, hostId: row.id, userId: row.userId }).catch((err) =>
     logger.warn({ err, hostId: row.id }, "local: failed to publish host dirs change"),
   );
-  return row;
+  // As every read returns it: online from the lease.
+  return getHost(row.id);
 }
-
-/** No daemon connection holds the host's lease (local-relay.ts `hostLeaseKey`). */
-const noLiveLease = sql`NOT EXISTS (
-  SELECT 1 FROM "leases"
-  WHERE "leases"."key" = 'local-host:' || "local_hosts"."id"::text AND "leases"."expires_at" > now())`;
 
 /**
  * The host's daemon disconnected. Not marked when the host's lease is live —
@@ -460,7 +476,12 @@ export async function pickOnlineHost(
   const rows = await db
     .select()
     .from(localHosts)
-    .where(and(ownedBy(userId), eq(localHosts.state, "online")));
+    .where(
+      and(
+        ownedBy(userId),
+        relay.isLocalClusterEnabled() ? liveLease : eq(localHosts.state, "online"),
+      ),
+    );
   rows.sort((a, b) => (b.lastSeenAt?.getTime() ?? 0) - (a.lastSeenAt?.getTime() ?? 0));
   return rows[0] ?? null;
 }
