@@ -5,6 +5,10 @@
  */
 
 import type {
+  UsageQuery,
+  UsageResponse,
+  SaveUsageBudget,
+  UsageBudget,
   SecretRef,
   WorkEnvironmentEntry,
   UpdateConnectionInput,
@@ -701,6 +705,42 @@ export const api = {
         error?: string;
       };
     }>(`/api/auth/usage${opts?.fresh ? "?fresh=1" : ""}`),
+
+  getUsageAnalytics: (query: UsageQuery = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query))
+      if (value !== undefined && value !== "") params.set(key, String(value));
+    return request<UsageResponse>(`/api/analytics/usage?${params}`);
+  },
+  saveUsageBudget: (body: SaveUsageBudget) =>
+    request<{ budgets: UsageBudget[] }>("/api/usage/budgets", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteUsageBudget: (id: string) =>
+    request<void>(`/api/usage/budgets/${id}`, { method: "DELETE" }),
+  listTriggerDeliveries: (query: { state?: string; before?: string; workId?: string } = {}) =>
+    request<{
+      rows: Array<{
+        id: string;
+        targetId: string;
+        targetType: string;
+        name: string;
+        source: string;
+        state: string;
+        attempts: number;
+        receivedAt: string;
+        nextAttemptAt: string;
+        error: string | null;
+        result: { kind: string; id: string } | null;
+        canRetry: boolean;
+      }>;
+      next: string | null;
+    }>(
+      `/api/trigger-deliveries?${new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined) as Array<[string, string]>)}`,
+    ),
+  retryTriggerDelivery: (id: string) =>
+    request<{ id: string }>(`/api/trigger-deliveries/${id}/retry`, { method: "POST" }),
 
   // Bulk operations
   bulkRetryFailed: () =>

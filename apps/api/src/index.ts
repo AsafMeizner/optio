@@ -336,6 +336,8 @@ async function main() {
   logger.info("Local sweep worker started");
 
   const sweepWorker = startSweepWorker();
+  const { startDeliveryWorker } = await import("./workers/trigger-delivery-worker.js");
+  const deliveryWorker = startDeliveryWorker();
   logger.info("Housekeeping worker started");
 
   const { startGlanceSweepWorker } = await import("./workers/glance-sweep-worker.js");
@@ -380,6 +382,7 @@ async function main() {
     await skillSyncWorker.close();
     await localSweepWorker.close();
     await sweepWorker.close();
+    await deliveryWorker.close();
     await glanceSweepWorker.close();
     await configSyncWorker?.close();
     await app.close();

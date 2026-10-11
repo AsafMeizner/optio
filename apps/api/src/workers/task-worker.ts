@@ -1,3 +1,4 @@
+import { runBudgetHold } from "../services/usage-budget-service.js";
 import { workCredentialProfile } from "../services/pod-isolation.js";
 import {
   credentialRuntime,
@@ -27,7 +28,7 @@ import { checkExistingPr, type ExistingPr } from "../services/pr-detection-servi
 import { detectTaskPrs } from "../services/task-pr-service.js";
 import { db } from "../db/client.js";
 import { tasks, workRuns } from "../db/schema.js";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, and } from "drizzle-orm";
 import * as taskService from "../services/task-service.js";
 import * as repoPool from "../services/repo-pool-service.js";
 import { publishEvent } from "../services/event-bus.js";
@@ -151,6 +152,26 @@ export function startTaskWorker() {
           log.info({ state: currentTask?.state }, "Skipping — task is not in queued state");
           return;
         }
+
+        const budgetHold = await runBudgetHold("task", taskId);
+        if (budgetHold) {
+          await db
+            .update(tasks)
+            .set({ errorMessage: budgetHold, reconcileBackoffUntil: new Date(Date.now() + 60_000) })
+            .where(eq(tasks.id, taskId));
+          await taskQueue.add(job.name, job.data, {
+            jobId: `${taskId}-budget-${Date.now()}`,
+            delay: 60_000,
+            removeOnComplete: true,
+          });
+          return;
+        }
+        await db
+          .update(tasks)
+          .set({ errorMessage: null })
+          .where(
+            and(eq(tasks.id, taskId), sql`${tasks.errorMessage} LIKE 'Usage budget reached:%'`),
+          );
 
         // ── Dependency check ──────────────────────────────────────────
         // If this task has unsatisfied dependencies, re-queue with a delay.

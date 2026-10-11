@@ -178,7 +178,7 @@ describe("CodexAdapter", () => {
     it("extracts cost from usage data in JSON events", () => {
       const logs = [
         '{"type":"message","role":"assistant","content":"Working on it"}',
-        '{"type":"message","role":"assistant","content":"Done","usage":{"input_tokens":1000,"output_tokens":500}}',
+        '{"type":"message","role":"assistant","content":"Done","model":"gpt-5.4","usage":{"input_tokens":1000,"output_tokens":500}}',
       ].join("\n");
       const result = adapter.parseResult(0, logs);
       expect(result.costUsd).toBeDefined();
@@ -187,7 +187,7 @@ describe("CodexAdapter", () => {
 
     it("extracts cost from OpenAI-style token naming", () => {
       const logs = [
-        '{"type":"message","role":"assistant","content":"Done","usage":{"prompt_tokens":2000,"completion_tokens":1000}}',
+        '{"type":"message","role":"assistant","content":"Done","model":"gpt-5.4","usage":{"prompt_tokens":2000,"completion_tokens":1000}}',
       ].join("\n");
       const result = adapter.parseResult(0, logs);
       expect(result.costUsd).toBeDefined();
@@ -258,7 +258,9 @@ describe("CodexAdapter", () => {
       const logs =
         '{"type":"message","role":"assistant","content":"Done","usage":{"input_tokens":50,"output_tokens":200,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5000}}';
       const result = adapter.parseResult(0, logs);
-      expect(result.costUsd).toBeDefined();
+      expect(result.costUsd).toBeUndefined();
+      expect(result.inputTokens).toBe(6050);
+      expect(result.outputTokens).toBe(200);
     });
 
     it("accounts for cached tokens in cost calculation", () => {

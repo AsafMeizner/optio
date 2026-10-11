@@ -1,6 +1,7 @@
 import {
   pgTable,
   bigint,
+  numeric,
   uuid,
   text,
   timestamp,
@@ -148,7 +149,10 @@ function runColumns() {
     resultSummary: text("result_summary"),
     costUsd: text("cost_usd"), // stored as string to avoid float precision issues
     inputTokens: integer("input_tokens"), // total input tokens used
-    outputTokens: integer("output_tokens"), // total output tokens used
+    outputTokens: integer("output_tokens"),
+    cacheReadTokens: bigint("cache_read_tokens", { mode: "number" }),
+    cacheWriteTokens: bigint("cache_write_tokens", { mode: "number" }),
+    costBasis: text("cost_basis"), // total output tokens used
     modelUsed: text("model_used"), // model ID used (e.g., "claude-sonnet-4-20250514")
     errorMessage: text("error_message"),
     ticketSource: text("ticket_source"),
@@ -663,6 +667,7 @@ export const interactiveSessions = pgTable(
 export const sessionChatTurns = pgTable(
   "session_chat_turns",
   {
+    usage: jsonb("usage").$type<Record<string, unknown>>(),
     id: uuid("id").primaryKey().defaultRandom(),
     sessionId: uuid("session_id")
       .notNull()
@@ -947,6 +952,9 @@ export const workflowRuns = pgTable("workflow_runs", {
   costUsd: text("cost_usd"),
   inputTokens: integer("input_tokens"),
   outputTokens: integer("output_tokens"),
+  cacheReadTokens: bigint("cache_read_tokens", { mode: "number" }),
+  cacheWriteTokens: bigint("cache_write_tokens", { mode: "number" }),
+  costBasis: text("cost_basis"),
   modelUsed: text("model_used"),
   errorMessage: text("error_message"),
   sessionId: text("session_id"),
@@ -1582,6 +1590,9 @@ export const prReviewRuns = pgTable(
     costUsd: text("cost_usd"),
     inputTokens: integer("input_tokens"),
     outputTokens: integer("output_tokens"),
+    cacheReadTokens: bigint("cache_read_tokens", { mode: "number" }),
+    cacheWriteTokens: bigint("cache_write_tokens", { mode: "number" }),
+    costBasis: text("cost_basis"),
     modelUsed: text("model_used"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
@@ -1969,6 +1980,10 @@ export const persistentAgentTurns = pgTable(
     costUsd: text("cost_usd"),
     inputTokens: integer("input_tokens"),
     outputTokens: integer("output_tokens"),
+    cacheReadTokens: bigint("cache_read_tokens", { mode: "number" }),
+    cacheWriteTokens: bigint("cache_write_tokens", { mode: "number" }),
+    costBasis: text("cost_basis"),
+    modelUsed: text("model_used"),
     sessionId: text("session_id"),
     summary: text("summary"),
     // Scale-out (docs/plans/scale-out.md): the run protocol and attachment.
@@ -2236,3 +2251,54 @@ export const localTerminalTranscripts = pgTable(
   },
   (table) => [primaryKey({ columns: [table.terminalId, table.seq] })],
 );
+
+// Durable trigger ingress and per-target dispatch receipts.
+export const triggerEvents = pgTable(
+  "trigger_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    source: text("source").notNull(),
+    deliveryKey: text("delivery_key").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    state: text("state").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    error: text("error"),
+  },
+  (t) => [unique("trigger_events_source_key").on(t.source, t.deliveryKey)],
+);
+export const triggerOccurrences = pgTable("trigger_occurrences", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  occurrenceKey: text("occurrence_key").notNull().unique(),
+  triggerId: uuid("trigger_id").notNull(),
+  targetType: text("target_type").notNull(),
+  targetId: uuid("target_id").notNull(),
+  targetName: text("target_name").notNull().default("Work"),
+  workspaceId: uuid("workspace_id"),
+  ownerUserId: uuid("owner_user_id"),
+  source: text("source").notNull(),
+  firing: jsonb("firing").$type<Record<string, unknown>>().notNull(),
+  state: text("state").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  result: jsonb("result").$type<Record<string, unknown>>(),
+  error: text("error"),
+});
+
+export const usageBudgets = pgTable("usage_budgets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id").notNull(),
+  subjectKind: text("subject_kind").notNull(),
+  subjectId: uuid("subject_id"),
+  name: text("name").notNull(),
+  tokenLimit: bigint("token_limit", { mode: "number" }),
+  costLimit: numeric("cost_limit"),
+  action: text("action").notNull().default("notify"),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

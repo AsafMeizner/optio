@@ -338,6 +338,23 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
         return reply.status(401).send({ error: "Invalid signature" });
       }
 
+      const event = req.headers["x-github-event"];
+      const rawPayload = req.body;
+      const payload = rawPayload as Record<string, Record<string, unknown> | string | undefined>;
+      if (typeof event === "string") {
+        const { normalizeGitHubEvent } = await import("../services/event-trigger-service.js");
+        const { acceptTriggerEvent } = await import("../services/trigger-delivery.js");
+        const normalized = normalizeGitHubEvent(event, rawPayload);
+        if (normalized)
+          await acceptTriggerEvent(
+            "github",
+            typeof req.headers["x-github-delivery"] === "string"
+              ? req.headers["x-github-delivery"]
+              : undefined,
+            normalized,
+          );
+      }
+
       // GitHub signs no timestamp, so a captured delivery stays validly
       // signed forever. Drop replays (and GitHub's own redeliveries) by the
       // unique X-GitHub-Delivery id, claimed in the database so every API
@@ -346,30 +363,6 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
       if (typeof delivery === "string" && !(await claimDelivery("github", delivery))) {
         logger.info({ delivery }, "Ignoring already-processed GitHub delivery");
         return reply.status(200).send({ ok: true });
-      }
-
-      const event = req.headers["x-github-event"];
-      const rawPayload = req.body;
-      const payload = rawPayload as Record<string, Record<string, unknown> | string | undefined>;
-
-      // Event triggers: review requests, @-mentions, assignments, new PRs /
-      // issues → start whatever listens for them (a Job, a scheduled Task, a
-      // Local automation, a persistent agent).
-      if (typeof event === "string") {
-        try {
-          const { normalizeGitHubEvent, fireEventTriggers } =
-            await import("../services/event-trigger-service.js");
-          const normalized = normalizeGitHubEvent(event, rawPayload);
-          // Fire-and-forget: GitHub gives us 10 s to answer, and a fan-out
-          // that spawns N runs mustn't eat it.
-          if (normalized) {
-            fireEventTriggers("github", normalized).catch((err: unknown) => {
-              logger.warn({ err, event }, "GitHub event trigger dispatch failed");
-            });
-          }
-        } catch (err) {
-          logger.warn({ err, event }, "GitHub event trigger dispatch failed");
-        }
       }
 
       if (event === "issues" && payload.action === "labeled") {

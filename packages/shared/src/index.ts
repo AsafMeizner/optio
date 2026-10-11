@@ -55,3 +55,5 @@ export * from "./types/config.js";
 export * from "./config/manifest.js";
 export * from "./config/inline.js";
 export * from "./config/stable.js";
+
+export * from "./usage/index.js";

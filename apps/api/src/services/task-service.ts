@@ -42,6 +42,7 @@ export class StateRaceError extends Error {
 
 export async function createTask(
   input: CreateTaskInput & {
+    id?: string;
     workspaceId?: string | null;
     /** The work definition (scheduled Task) spawning it. */
     workId?: string | null;
@@ -53,12 +54,17 @@ export async function createTask(
     settings?: WorkSettings | null;
   },
 ) {
+  if (input.id) {
+    const existing = await getTask(input.id);
+    if (existing) return existing;
+  }
   // No branch given = the repo's default branch, not "main" (#643).
   const repoBranch =
     input.repoBranch?.trim() || (await repoDefaultBranch(input.repoUrl, input.workspaceId));
   const [task] = await db
     .insert(tasks)
     .values({
+      ...(input.id ? { id: input.id } : {}),
       title: input.title,
       prompt: input.prompt,
       repoUrl: normalizeRepoUrl(input.repoUrl),

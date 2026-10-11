@@ -43,6 +43,21 @@ vi.mock("../services/task-config-service.js", () => ({
   instantiateTask: (...args: unknown[]) => mockInstantiateTask(...args),
 }));
 
+vi.mock("../services/trigger-delivery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/trigger-delivery.js")>();
+  return {
+    ...actual,
+    fireTriggerDurably: async (trigger: unknown, firing: unknown) => {
+      const { fireTrigger } = await import("../services/trigger-dispatch.js");
+      try {
+        return await fireTrigger(trigger as never, firing as never);
+      } catch {
+        throw new actual.DeliveryPendingError("saved-delivery");
+      }
+    },
+  };
+});
+
 import { hookRoutes } from "./hooks.js";
 
 // ─── Helpers ───
@@ -534,13 +549,13 @@ describe("POST /api/hooks/pylon/:triggerId", () => {
     });
   });
 
-  it("answers 404 when the target can't start (not a 500)", async () => {
+  it("acknowledges a saved delivery while dispatch will retry", async () => {
     mockFireTrigger.mockResolvedValueOnce(null);
     const gone = await post({ "x-optio-secret": "pylon-shared" });
     expect(gone.statusCode).toBe(404);
     mockFireTrigger.mockRejectedValueOnce(new Error("no host"));
     const failed = await post({ "x-optio-secret": "pylon-shared" });
-    expect(failed.statusCode).toBe(404);
-    expect(failed.json().error).toBe("no host");
+    expect(failed.statusCode).toBe(202);
+    expect(failed.json()).toMatchObject({ queued: true, deliveryId: "saved-delivery" });
   });
 });

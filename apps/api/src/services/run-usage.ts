@@ -25,6 +25,9 @@ export interface Usage {
   inputTokens?: number | null;
   outputTokens?: number | null;
   model?: string | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  costBasis?: string | null;
 }
 
 /**
@@ -38,6 +41,8 @@ export function addUsage(
     costUsd: AnyColumn;
     inputTokens: AnyColumn;
     outputTokens: AnyColumn;
+    cacheReadTokens?: AnyColumn;
+    cacheWriteTokens?: AnyColumn;
   },
   usage: Usage,
 ): {
@@ -45,6 +50,9 @@ export function addUsage(
   inputTokens?: SQL<number>;
   outputTokens?: SQL<number>;
   modelUsed?: string;
+  cacheReadTokens?: SQL<number>;
+  cacheWriteTokens?: SQL<number>;
+  costBasis?: string;
 } {
   return {
     ...(usage.costUsd != null ? { costUsd: plusCost(table.costUsd, usage.costUsd) } : {}),
@@ -54,6 +62,13 @@ export function addUsage(
     ...(usage.outputTokens != null
       ? { outputTokens: plusTokens(table.outputTokens, usage.outputTokens) }
       : {}),
+    ...(table.cacheReadTokens && usage.cacheReadTokens != null
+      ? { cacheReadTokens: plusTokens(table.cacheReadTokens, usage.cacheReadTokens) }
+      : {}),
+    ...(table.cacheWriteTokens && usage.cacheWriteTokens != null
+      ? { cacheWriteTokens: plusTokens(table.cacheWriteTokens, usage.cacheWriteTokens) }
+      : {}),
+    ...(usage.costBasis ? { costBasis: usage.costBasis } : {}),
     ...(usage.model ? { modelUsed: usage.model } : {}),
   };
 }

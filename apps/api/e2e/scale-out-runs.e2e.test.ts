@@ -463,7 +463,8 @@ describe("one server", () => {
       const live = cluster.live()[0];
       const i = cluster.servers.indexOf(live);
       const api = cluster.client(i);
-      const N = 50;
+      // Keep both agents running through a cold tsx/API boot on busy runners.
+      const N = 200;
       const taskId = await createTask(api, REPO_B, `[[mock:pr]] ${ticks(N)}`);
       const runId = await createJobRun(api, "boot-12 job", ticks(N));
       await waitStreaming(() => workRun(taskId), "task");

@@ -848,6 +848,20 @@
       "when": 1792020000000,
       "tag": "1792020000_local_host_capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1792030000000,
+      "tag": "1792030000_trigger_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1792030001000,
+      "tag": "1792030001_usage_ledger",
+      "breakpoints": true
     }
   ]
 }

@@ -25,7 +25,7 @@ const VIEWS = [
      WITH CASCADED CHECK OPTION`,
   `CREATE VIEW "workflow_runs" AS
      SELECT "id", "kind", "work_id" AS "workflow_id", "trigger_id", "params", "title", "state",
-       "output", "cost_usd", "input_tokens", "output_tokens", "model_used", "error_message",
+       "output", "cost_usd", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_basis", "model_used", "error_message",
        "session_id", "container_id" AS "pod_name", "pod_id", "last_pod_id", "local_terminal_id",
        "retry_count", "recovery_required", "started_at", "completed_at" AS "finished_at", "control_intent",
        "reconcile_backoff_until", "reconcile_attempts", "workspace_id", "owner_user_id",

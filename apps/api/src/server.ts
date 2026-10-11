@@ -36,6 +36,8 @@ import { bulkRoutes } from "./routes/bulk.js";
 import { issueRoutes } from "./routes/issues.js";
 import { prReviewRoutes } from "./routes/pr-reviews.js";
 import { subtaskRoutes } from "./routes/subtasks.js";
+import { usageRoutes } from "./routes/usage.js";
+import { triggerDeliveryRoutes } from "./routes/trigger-deliveries.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import { sessionRoutes } from "./routes/sessions.js";
@@ -310,6 +312,8 @@ export async function buildServer() {
   await app.register(prReviewRoutes);
   await app.register(subtaskRoutes);
   await app.register(analyticsRoutes);
+  await app.register(usageRoutes);
+  await app.register(triggerDeliveryRoutes);
   await app.register(webhookRoutes);
   await app.register(sessionRoutes);
   await app.register(sessionSharingRoutes);

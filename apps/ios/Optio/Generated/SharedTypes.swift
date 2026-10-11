@@ -735,6 +735,23 @@ public struct AgentContainerConfig: Codable, Hashable, Sendable {
 }
 
 public struct AgentResult: Codable, Hashable, Sendable {
+    public enum CostBasis: String, Codable, Hashable, Sendable, CaseIterable {
+        case reported = "reported"
+        case estimated = "estimated"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [CostBasis] = [.reported, .estimated]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = CostBasis(rawValue: raw) ?? .unknown
+        }
+    }
+
+    public let cacheReadTokens: Double?
+    public let cacheWriteTokens: Double?
+    public let costBasis: CostBasis?
     public let success: Bool
     public let prUrl: String?
     public let summary: String?
@@ -745,6 +762,9 @@ public struct AgentResult: Codable, Hashable, Sendable {
     public let model: String?
 
     private enum CodingKeys: String, CodingKey {
+        case cacheReadTokens = "cacheReadTokens"
+        case cacheWriteTokens = "cacheWriteTokens"
+        case costBasis = "costBasis"
         case success = "success"
         case prUrl = "prUrl"
         case summary = "summary"
@@ -756,6 +776,9 @@ public struct AgentResult: Codable, Hashable, Sendable {
     }
 
     public init(
+        cacheReadTokens: Double? = nil,
+        cacheWriteTokens: Double? = nil,
+        costBasis: CostBasis? = nil,
         success: Bool,
         prUrl: String? = nil,
         summary: String? = nil,
@@ -765,6 +788,9 @@ public struct AgentResult: Codable, Hashable, Sendable {
         outputTokens: Double? = nil,
         model: String? = nil
     ) {
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+        self.costBasis = costBasis
         self.success = success
         self.prUrl = prUrl
         self.summary = summary

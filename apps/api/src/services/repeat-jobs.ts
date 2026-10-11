@@ -21,6 +21,7 @@ import { logger } from "../logger.js";
  * boot-time cleanup keeps exactly these.
  */
 export const REPEAT_SCHEDULERS = {
+  "trigger-delivery": ["trigger-delivery.drain"],
   "pr-watcher": ["pr-watcher.check-prs"],
   "external-pr-review": ["external-pr-review.poll-external-prs"],
   "repo-cleanup": ["repo-cleanup.health-check", "repo-cleanup.stall-check"],

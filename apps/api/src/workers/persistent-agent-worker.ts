@@ -1,3 +1,5 @@
+import { db } from "../db/client.js";
+import { runBudgetHold } from "../services/usage-budget-service.js";
 // Persistent Agent worker — executes one turn for a Persistent Agent.
 //
 // Lifecycle per turn:
@@ -26,7 +28,7 @@ import {
   type PersistentAgentWakeSource,
   describeError,
 } from "@optio/shared";
-import { eq } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { persistentAgents } from "../db/schema.js";
 import * as paService from "../services/persistent-agent-service.js";
 import * as paPool from "../services/persistent-agent-pool-service.js";
@@ -178,6 +180,32 @@ export function startPersistentAgentWorker() {
         log.info("Agent disabled, skipping");
         return;
       }
+
+      const budgetHold = await runBudgetHold("agent", agentId);
+      if (budgetHold) {
+        await db
+          .update(persistentAgents)
+          .set({
+            lastFailureReason: budgetHold,
+            reconcileBackoffUntil: new Date(Date.now() + 60_000),
+          })
+          .where(eq(persistentAgents.id, agentId));
+        await persistentAgentTurnQueue.add(job.name, job.data, {
+          jobId: `${agentId}-budget-${Date.now()}`,
+          delay: 60_000,
+          removeOnComplete: true,
+        });
+        return;
+      }
+      await db
+        .update(persistentAgents)
+        .set({ lastFailureReason: null })
+        .where(
+          and(
+            eq(persistentAgents.id, agentId),
+            sql`${persistentAgents.lastFailureReason} LIKE 'Usage budget reached:%'`,
+          ),
+        );
 
       const claimed = await paService.transitionPersistentAgentState(
         agentId,
@@ -592,6 +620,10 @@ async function finishTurn(input: FinishTurnInput): Promise<RunEnd> {
     haltReason: success ? "natural" : "error",
     errorMessage: success ? null : (effectiveError ?? "Turn failed"),
     costUsd: result?.costUsd != null ? String(result.costUsd) : null,
+    cacheReadTokens: result?.cacheReadTokens,
+    cacheWriteTokens: result?.cacheWriteTokens,
+    costBasis: result?.costBasis,
+    modelUsed: result?.model,
     inputTokens: result?.inputTokens ?? null,
     outputTokens: result?.outputTokens ?? null,
     sessionId: capturedSessionId ?? null,

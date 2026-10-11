@@ -1,3 +1,4 @@
+import { runBudgetHold } from "../services/usage-budget-service.js";
 import { workCredentialProfile } from "../services/pod-isolation.js";
 import { Worker, Queue } from "bullmq";
 import {
@@ -10,7 +11,7 @@ import {
 import { getEventParser } from "../services/event-parsers.js";
 import { db } from "../db/client.js";
 import { workflowRuns, workRuns } from "../db/schema.js";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import * as workflowService from "../services/workflow-service.js";
 import {
@@ -170,6 +171,29 @@ export function startWorkflowWorker() {
           );
           return;
         }
+
+        const budgetHold = await runBudgetHold("job", workflowRunId);
+        if (budgetHold) {
+          await db
+            .update(workflowRuns)
+            .set({ errorMessage: budgetHold, reconcileBackoffUntil: new Date(Date.now() + 60_000) })
+            .where(eq(workflowRuns.id, workflowRunId));
+          await workflowRunQueue.add(job.name, job.data, {
+            jobId: `${workflowRunId}-budget-${Date.now()}`,
+            delay: 60_000,
+            removeOnComplete: true,
+          });
+          return;
+        }
+        await db
+          .update(workflowRuns)
+          .set({ errorMessage: null })
+          .where(
+            and(
+              eq(workflowRuns.id, workflowRunId),
+              sql`${workflowRuns.errorMessage} LIKE 'Usage budget reached:%'`,
+            ),
+          );
 
         // ── Local run: hand off to the owner's machine ─────────────────
         // No pod, no cluster concurrency. The Optio Local daemon runs the

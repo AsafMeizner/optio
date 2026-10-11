@@ -4,7 +4,12 @@ import { timingSafeEqual, createHmac } from "node:crypto";
 import { z } from "zod";
 import type { SelfSecretTriggerType } from "@optio/shared";
 import { getTrigger, getWebhookTriggerByPath } from "../services/trigger-service.js";
-import { fireTrigger, type TriggerFireResult } from "../services/trigger-dispatch.js";
+import type { TriggerFireResult } from "../services/trigger-dispatch.js";
+import {
+  fireTriggerDurably as fireTrigger,
+  DeliveryPendingError,
+  deliveryKey,
+} from "../services/trigger-delivery.js";
 import {
   firingFor,
   normalizeAlertmanagerEvent,
@@ -29,6 +34,8 @@ const webhookBodySchema = z
 
 const WebhookAcceptedResponseSchema = z
   .object({
+    deliveryId: z.string().optional(),
+    queued: z.boolean().optional(),
     runId: z.string().optional().describe("Workflow run id when the target is a job"),
     taskId: z.string().optional().describe("Task id when the target is a task_config"),
     terminalId: z
@@ -232,22 +239,24 @@ export async function hookRoutes(rawApp: FastifyInstance) {
       // itself was valid.
       let fired;
       try {
-        fired = await fireTrigger(trigger, {
-          source: "webhook",
-          params,
-          message:
-            typeof body === "string"
-              ? body
-              : `Webhook payload:\n${JSON.stringify(params ?? body, null, 2)}`,
-        });
-      } catch (err) {
-        logger.warn(
-          { err, triggerId: trigger.id, targetType: trigger.targetType },
-          "Webhook trigger failed to start its target",
+        fired = await fireTrigger(
+          trigger,
+          {
+            source: "webhook",
+            params,
+            message:
+              typeof body === "string"
+                ? body
+                : `Webhook payload:\n${JSON.stringify(params ?? body, null, 2)}`,
+          },
+          typeof req.headers["idempotency-key"] === "string"
+            ? `hook:${trigger.id}:${deliveryKey(req.headers["idempotency-key"])}`
+            : undefined,
         );
-        return reply
-          .status(404)
-          .send({ error: err instanceof Error ? err.message : "Trigger target failed to start" });
+      } catch (err) {
+        if (err instanceof DeliveryPendingError)
+          return reply.status(202).send({ queued: true, deliveryId: err.deliveryId });
+        throw err;
       }
       if (!fired) {
         return reply.status(404).send({ error: "Trigger target not found or disabled" });
@@ -310,15 +319,17 @@ export async function hookRoutes(rawApp: FastifyInstance) {
 
         let fired;
         try {
-          fired = await fireTrigger(trigger, rest);
-        } catch (err) {
-          logger.warn(
-            { err, triggerId: trigger.id, targetType: trigger.targetType, type },
-            `${receiver.name} trigger failed to start its target`,
+          fired = await fireTrigger(
+            trigger,
+            rest,
+            typeof req.headers["idempotency-key"] === "string"
+              ? `hook:${trigger.id}:${deliveryKey(req.headers["idempotency-key"])}`
+              : undefined,
           );
-          return reply.status(404).send({
-            error: err instanceof Error ? err.message : "Trigger target failed to start",
-          });
+        } catch (err) {
+          if (err instanceof DeliveryPendingError)
+            return reply.status(202).send({ queued: true, deliveryId: err.deliveryId });
+          throw err;
         }
         if (!fired) {
           return reply.status(404).send({ error: "Trigger target not found or disabled" });

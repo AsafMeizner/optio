@@ -1,3 +1,5 @@
+import { getAdapter } from "@optio/agent-adapters";
+import type { AgentResult } from "@optio/shared";
 import { randomUUID } from "node:crypto";
 import {
   claimSessionTurn,
@@ -20,14 +22,13 @@ import {
 } from "../services/interactive-session-service.js";
 import { getSettings } from "../services/optio-settings-service.js";
 import { db } from "../db/client.js";
-import { repos, interactiveSessions } from "../db/schema.js";
+import { repos, interactiveSessions, sessionChatTurns } from "../db/schema.js";
 import { getPod } from "../services/agent-pod-pool.js";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { parseClaudeEvent } from "../services/agent-event-parser.js";
 import type { AgentLogEntry, ExecSession } from "@optio/shared";
 import { shellQuote } from "@optio/shared";
-import { plusCost } from "../services/run-usage.js";
 import {
   buildClaudeChatCommand,
   inspectClaudeLine,
@@ -267,9 +268,6 @@ export async function sessionChatWs(app: FastifyInstance) {
 
         // Add this turn to the stored total (never overwrite it with this
         // socket's view, which would drop spend from earlier connections).
-        addSessionCost(sessionId, turnCost).catch((err) => {
-          log.warn({ err }, "Failed to update session cost");
-        });
       }
     };
 
@@ -324,6 +322,13 @@ export async function sessionChatWs(app: FastifyInstance) {
       let exitCode: number | null = null;
       let rawOutput = "";
       let heldBack: AgentLogEntry[] = [];
+      const usageParser = getAdapter("claude-code").createResultParser();
+      const saveUsage = () => {
+        const usage = usageParser.finish(exitCode ?? 0);
+        persistChain = persistChain
+          .then(() => recordSessionUsage(turnId, sessionId, usage))
+          .catch((err) => log.warn({ err }, "Failed to record session usage"));
+      };
 
       const flushHeldBack = () => {
         for (const entry of heldBack) emitEntry(entry);
@@ -336,6 +341,12 @@ export async function sessionChatWs(app: FastifyInstance) {
         if (sentinel !== null) {
           exitCode = sentinel;
           return;
+        }
+        usageParser.push(line);
+        try {
+          if (JSON.parse(line).type === "result") saveUsage();
+        } catch {
+          /* non-JSON output */
         }
         const info = inspectClaudeLine(line);
         if (info.isInit) {
@@ -417,6 +428,10 @@ export async function sessionChatWs(app: FastifyInstance) {
       } else {
         flushHeldBack();
       }
+      if (!fallback) {
+        saveUsage();
+        await persistChain;
+      }
       return { fallback, completed: exitCode === 0 && !interrupted, interrupted };
     };
 
@@ -430,6 +445,16 @@ export async function sessionChatWs(app: FastifyInstance) {
         return;
       }
 
+      const { usageBudgetHold } = await import("../services/usage-budget-service.js");
+      const budgetHold = await usageBudgetHold({
+        workspaceId: session.workspaceId,
+        ownerUserId: session.userId,
+        workId: sessionId,
+      });
+      if (budgetHold) {
+        send({ type: "error", message: budgetHold });
+        return;
+      }
       // Enforce max turns from settings
       promptCount++;
       if (promptCount > optioSettings.maxTurns) {
@@ -621,13 +646,48 @@ async function buildAuthEnv(
  * SQL, so connections that overlap (a reconnect racing the old socket, two
  * tabs) all add rather than overwrite each other's totals.
  */
-async function addSessionCost(sessionId: string, turnCostUsd: number) {
-  await db
-    .update(interactiveSessions)
-    .set({
-      costUsd: plusCost(interactiveSessions.costUsd, turnCostUsd),
-    })
-    .where(eq(interactiveSessions.id, sessionId));
+export async function recordSessionUsage(turnId: string, sessionId: string, usage: AgentResult) {
+  await db.transaction(async (tx) => {
+    const [turn] = await tx
+      .select()
+      .from(sessionChatTurns)
+      .where(eq(sessionChatTurns.id, turnId))
+      .for("update");
+    if (!turn || turn.sessionId !== sessionId) return;
+    const prior = turn.usage ?? {};
+    const cost = usage.costUsd ?? null;
+    const addsCost = cost != null && cost > Number(prior.costUsd ?? 0);
+    await tx
+      .update(sessionChatTurns)
+      .set({
+        usage: {
+          ...prior,
+          ...(cost != null
+            ? { costUsd: Math.max(cost, Number(prior.costUsd ?? 0)), costBasis: "reported" }
+            : {}),
+          ...(usage.inputTokens != null
+            ? { inputTokens: Math.max(usage.inputTokens, Number(prior.inputTokens ?? 0)) }
+            : {}),
+          ...(usage.outputTokens != null
+            ? { outputTokens: Math.max(usage.outputTokens, Number(prior.outputTokens ?? 0)) }
+            : {}),
+          cacheReadTokens: Math.max(usage.cacheReadTokens ?? 0, Number(prior.cacheReadTokens ?? 0)),
+          cacheWriteTokens: Math.max(
+            usage.cacheWriteTokens ?? 0,
+            Number(prior.cacheWriteTokens ?? 0),
+          ),
+          model: usage.model ?? prior.model ?? null,
+        },
+      })
+      .where(eq(sessionChatTurns.id, turnId));
+    if (addsCost)
+      await tx
+        .update(interactiveSessions)
+        .set({
+          costUsd: sql<string>`trim_scale(COALESCE(NULLIF(${interactiveSessions.costUsd},''),'0')::numeric + GREATEST(0,${String(cost)}::numeric-${String(prior.costUsd ?? 0)}::numeric))::text`,
+        })
+        .where(eq(interactiveSessions.id, sessionId));
+  });
 }
 
 /** The stored row for one agent chat event. */

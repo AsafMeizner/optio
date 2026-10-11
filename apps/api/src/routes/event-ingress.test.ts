@@ -3,13 +3,7 @@ import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
 
-const mockFire = vi.fn();
-vi.mock("../services/event-trigger-service.js", async () => {
-  const actual = await vi.importActual<typeof import("../services/event-trigger-service.js")>(
-    "../services/event-trigger-service.js",
-  );
-  return { ...actual, fireEventTriggers: (...args: unknown[]) => mockFire(...args) };
-});
+const mockPersist = vi.fn();
 vi.mock("../db/client.js", () => ({ db: {} }));
 vi.mock("../services/trigger-dispatch.js", () => ({ fireTrigger: vi.fn() }));
 // Every receiver claims the delivery id in the database first
@@ -23,6 +17,20 @@ const mockClaim = vi.fn(async (source: string, id: string) => {
 });
 vi.mock("../services/inbound-delivery-service.js", () => ({
   claimInboundDelivery: (...args: unknown[]) => mockClaim(...(args as [string, string])),
+}));
+
+// The receiver waits for durable acceptance; dispatch is tested against Postgres.
+vi.mock("../services/trigger-delivery.js", () => ({
+  acceptTriggerEvent: async (source: string, id: string, event: unknown) => {
+    if (!(await mockClaim(source, id))) return { duplicate: true };
+    try {
+      await mockPersist(source, event);
+    } catch (err) {
+      claimed.delete(`${source}:${id}`);
+      throw err;
+    }
+    return {};
+  },
 }));
 
 import {
@@ -84,7 +92,7 @@ beforeEach(async () => {
   process.env.SLACK_SIGNING_SECRET = SLACK_SECRET;
   process.env.LINEAR_WEBHOOK_SECRET = LINEAR_SECRET;
   process.env.PAGERDUTY_WEBHOOK_SECRET = PAGERDUTY_SECRET;
-  mockFire.mockReset().mockResolvedValue([]);
+  mockPersist.mockReset().mockResolvedValue([]);
   mockClaim.mockClear();
   claimed.clear();
   app = await buildRouteTestApp(eventIngressRoutes, { user: null });
@@ -132,7 +140,7 @@ describe("POST /api/webhooks/slack/events", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ challenge: "abc" });
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 
   it("rejects bad signatures and a missing secret", async () => {
@@ -155,7 +163,7 @@ describe("POST /api/webhooks/slack/events", () => {
     expect(unset.statusCode).toBe(401);
   });
 
-  it("dispatches human messages once, ignoring retries and duplicate event ids", async () => {
+  it("persists human messages once, ignoring retries and duplicate event ids", async () => {
     const raw = JSON.stringify({
       type: "event_callback",
       event_id: "Ev42",
@@ -169,8 +177,8 @@ describe("POST /api/webhooks/slack/events", () => {
     });
     expect(first.statusCode).toBe(200);
     await flush();
-    expect(mockFire).toHaveBeenCalledTimes(1);
-    expect(mockFire).toHaveBeenCalledWith(
+    expect(mockPersist).toHaveBeenCalledTimes(1);
+    expect(mockPersist).toHaveBeenCalledWith(
       "slack",
       expect.objectContaining({ channelId: "C1", text: "hi", eventId: "Ev42" }),
     );
@@ -188,12 +196,37 @@ describe("POST /api/webhooks/slack/events", () => {
       payload: raw,
     });
     await flush();
-    expect(mockFire).toHaveBeenCalledTimes(1);
+    expect(mockPersist).toHaveBeenCalledTimes(1);
   });
 });
 
+it("does not acknowledge a failed durable write and accepts a Slack retry", async () => {
+  const raw = JSON.stringify({
+    type: "event_callback",
+    event_id: "Retry42",
+    event: { type: "message", channel: "C1", user: "U1", text: "hi", ts: "1.0" },
+  });
+  mockPersist.mockRejectedValueOnce(Error("database unavailable"));
+  const first = await app.inject({
+    method: "POST",
+    url: "/api/webhooks/slack/events",
+    headers: slackHeaders(raw),
+    payload: raw,
+  });
+  expect(first.statusCode).toBe(500);
+  const retry = await app.inject({
+    method: "POST",
+    url: "/api/webhooks/slack/events",
+    headers: { ...slackHeaders(raw), "x-slack-retry-num": "1" },
+    payload: raw,
+  });
+  expect(retry.statusCode).toBe(200);
+  expect(retry.json().duplicate).not.toBe(true);
+  expect(mockPersist).toHaveBeenCalledTimes(2);
+});
+
 describe("POST /api/webhooks/linear", () => {
-  it("verifies the signature and dispatches issue events", async () => {
+  it("verifies the signature and persists issue events", async () => {
     const raw = JSON.stringify({
       action: "create",
       type: "Issue",
@@ -213,7 +246,7 @@ describe("POST /api/webhooks/linear", () => {
     });
     expect(res.statusCode).toBe(200);
     await flush();
-    expect(mockFire).toHaveBeenCalledWith(
+    expect(mockPersist).toHaveBeenCalledWith(
       "linear",
       expect.objectContaining({ identifier: "ENG-1", kinds: expect.arrayContaining(["created"]) }),
     );
@@ -228,12 +261,12 @@ describe("POST /api/webhooks/linear", () => {
       payload: raw.replace("create", "update"),
     });
     expect(res.statusCode).toBe(401);
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 });
 
 describe("POST /api/webhooks/pagerduty", () => {
-  it("verifies the signature and dispatches the normalized incident event", async () => {
+  it("verifies the signature and persists the normalized incident event", async () => {
     const raw = pagerDutyIncident();
     const res = await app.inject({
       method: "POST",
@@ -244,8 +277,8 @@ describe("POST /api/webhooks/pagerduty", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
     await flush();
-    expect(mockFire).toHaveBeenCalledTimes(1);
-    expect(mockFire).toHaveBeenCalledWith(
+    expect(mockPersist).toHaveBeenCalledTimes(1);
+    expect(mockPersist).toHaveBeenCalledWith(
       "pagerduty",
       expect.objectContaining({
         kind: "incident.triggered",
@@ -278,7 +311,7 @@ describe("POST /api/webhooks/pagerduty", () => {
     });
     expect(res.statusCode).toBe(200);
     await flush();
-    expect(mockFire).toHaveBeenCalledWith(
+    expect(mockPersist).toHaveBeenCalledWith(
       "pagerduty",
       expect.objectContaining({ kind: "incident.resolved", id: "PINC2" }),
     );
@@ -313,7 +346,7 @@ describe("POST /api/webhooks/pagerduty", () => {
     expect(unset.statusCode).toBe(401);
     expect(unset.json().error).toMatch(/not configured/);
     await flush();
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 
   it("drops a redelivery with the same X-Webhook-Id", async () => {
@@ -334,7 +367,7 @@ describe("POST /api/webhooks/pagerduty", () => {
     expect(again.statusCode).toBe(200);
     expect(again.json()).toEqual({ ok: true, duplicate: true });
     await flush();
-    expect(mockFire).toHaveBeenCalledTimes(1);
+    expect(mockPersist).toHaveBeenCalledTimes(1);
   });
 
   it("acks events it doesn't act on (pings, unknown types) without dispatching", async () => {
@@ -347,6 +380,6 @@ describe("POST /api/webhooks/pagerduty", () => {
     });
     expect(res.statusCode).toBe(200);
     await flush();
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 });

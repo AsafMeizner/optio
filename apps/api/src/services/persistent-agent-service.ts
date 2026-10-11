@@ -359,6 +359,7 @@ export async function transitionPersistentAgentState(
 // ── Inbox / messages ────────────────────────────────────────────────────────
 
 export interface ReceiveMessageInput {
+  id?: string;
   agentId: string;
   senderType: PersistentAgentMessageSenderType;
   senderId?: string | null;
@@ -369,12 +370,20 @@ export interface ReceiveMessageInput {
 }
 
 export async function receivePersistentAgentMessage(input: ReceiveMessageInput) {
+  if (input.id) {
+    const [existing] = await db
+      .select()
+      .from(persistentAgentMessages)
+      .where(eq(persistentAgentMessages.id, input.id));
+    if (existing) return existing;
+  }
   const agent = await getPersistentAgentUnscoped(input.agentId);
   if (!agent) throw new Error(`Persistent agent ${input.agentId} not found`);
 
   const [msg] = await db
     .insert(persistentAgentMessages)
     .values({
+      ...(input.id ? { id: input.id } : {}),
       agentId: input.agentId,
       senderType: input.senderType,
       senderId: input.senderId ?? null,
@@ -564,6 +573,10 @@ export async function setPersistentAgentTurnPod(
 }
 
 export interface HaltTurnInput {
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  costBasis?: string | null;
+  modelUsed?: string | null;
   turnId: string;
   haltReason: PersistentAgentTurnHaltReason;
   errorMessage?: string | null;
@@ -578,6 +591,10 @@ export async function haltPersistentAgentTurn(input: HaltTurnInput) {
   const [turn] = await db
     .update(persistentAgentTurns)
     .set({
+      cacheReadTokens: input.cacheReadTokens,
+      cacheWriteTokens: input.cacheWriteTokens,
+      costBasis: input.costBasis,
+      modelUsed: input.modelUsed,
       haltReason: input.haltReason,
       errorMessage: input.errorMessage ?? null,
       costUsd: input.costUsd ?? null,
@@ -694,6 +711,7 @@ export async function listTurnLogs(turnId: string, limit = 1000) {
 // pass. The reconciler decides whether to start a turn now or wait.
 
 export interface WakeAgentInput {
+  messageId?: string;
   agentId: string;
   source: PersistentAgentWakeSource;
   body: string;
@@ -722,6 +740,7 @@ async function enqueueReconcileLazy(agentId: string, reason: string) {
 export async function wakeAgent(input: WakeAgentInput) {
   const senderType = input.senderType ?? deriveSenderType(input.source);
   await receivePersistentAgentMessage({
+    id: input.messageId,
     agentId: input.agentId,
     senderType,
     senderId: input.senderId ?? null,

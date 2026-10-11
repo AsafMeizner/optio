@@ -486,12 +486,13 @@ export async function advanceScheduleCas(
   id: string,
   cronExpression: string,
   seen: Date | null,
+  tx: Db = db,
 ): Promise<boolean> {
   if (!seen) return false;
   const now = new Date();
-  const rows = await db
+  const rows = await tx
     .update(workflowTriggers)
-    .set({ lastFiredAt: now, nextFireAt: computeNextFire(cronExpression), updatedAt: now })
+    .set({ nextFireAt: computeNextFire(cronExpression), updatedAt: now })
     .where(
       and(
         eq(workflowTriggers.id, id),

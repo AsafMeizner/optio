@@ -353,6 +353,9 @@ data class AgentContainerConfig(
 
 @Serializable
 data class AgentResult(
+    val cacheReadTokens: Double? = null,
+    val cacheWriteTokens: Double? = null,
+    val costBasis: CostBasis? = null,
     val success: Boolean,
     val prUrl: String? = null,
     val summary: String? = null,
@@ -361,7 +364,17 @@ data class AgentResult(
     val inputTokens: Double? = null,
     val outputTokens: Double? = null,
     val model: String? = null,
-)
+) {
+    @Serializable(with = CostBasis.Companion::class)
+    enum class CostBasis(override val raw: String) : RawEnum {
+        REPORTED("reported"),
+        ESTIMATED("estimated"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<CostBasis>("dev.optio.core.model.AgentResult.CostBasis", entries, UNKNOWN)
+    }
+}
 
 @Serializable
 data class AgentConfig(

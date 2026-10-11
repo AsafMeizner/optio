@@ -135,6 +135,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     // Extract error, token usage, model, and result text from Claude's NDJSON events
     let totalInputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheWriteTokens = 0;
     let totalOutputTokens = 0;
     let model: string | undefined;
 
@@ -175,6 +177,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             (usage.cache_creation_input_tokens || 0) +
             (usage.cache_read_input_tokens || 0);
           totalOutputTokens += usage.output_tokens || 0;
+          cacheReadTokens += usage.cache_read_input_tokens || 0;
+          cacheWriteTokens += usage.cache_creation_input_tokens || 0;
           if (!model && event.message.model) {
             model = event.message.model;
           }
@@ -262,6 +266,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         success,
         prUrl: pr.value?.[0],
         costUsd: lastResultCostUsd ?? costFromRegex,
+        costBasis: "reported",
+        cacheReadTokens,
+        cacheWriteTokens,
         inputTokens: totalInputTokens > 0 ? totalInputTokens : undefined,
         outputTokens: totalOutputTokens > 0 ? totalOutputTokens : undefined,
         model,

@@ -435,8 +435,12 @@ export async function jobRunCapacity(
 
 export async function createWorkflowRun(
   workflowId: string,
-  opts?: { params?: Record<string, unknown>; triggerId?: string },
+  opts?: { params?: Record<string, unknown>; triggerId?: string; id?: string },
 ) {
+  if (opts?.id) {
+    const existing = await getWorkflowRun(opts.id);
+    if (existing) return existing;
+  }
   const workflow = await getWorkflow(workflowId);
   if (!workflow) throw new Error("Workflow not found");
   if (!workflow.enabled) throw new Error("Workflow is disabled");
@@ -444,6 +448,7 @@ export async function createWorkflowRun(
   const [run] = await db
     .insert(workflowRuns)
     .values({
+      ...(opts?.id ? { id: opts.id } : {}),
       workflowId,
       triggerId: opts?.triggerId,
       params: opts?.params,

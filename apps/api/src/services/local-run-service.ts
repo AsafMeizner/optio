@@ -23,7 +23,7 @@
  */
 import { modelProviderIdFrom } from "@optio/shared";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   TASK_BRANCH_PREFIX,
   TaskState,
@@ -471,38 +471,30 @@ export function buildLocalTaskPrompt(
 
 // ── Terminal → run sync (local-terminal-service.notifyChanged) ──────────────
 
-/** Fold the daemon's usage summary into the run's cost columns. */
-function usagePatch(terminal: LocalTerminalRow): {
-  costUsd?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  modelUsed?: string;
-} | null {
+/** Sum every Local attempt in SQL. Clamping against the stored total keeps
+ * an older concurrent notification from rolling a run's usage backwards. */
+function usagePatch(terminal: LocalTerminalRow, table: typeof tasks | typeof workflowRuns) {
   const u = terminal.usage;
   if (!u) return null;
+  const linked = terminal.taskId
+    ? sql`task_id = ${terminal.taskId}::uuid`
+    : sql`workflow_run_id = ${terminal.workflowRunId}::uuid`;
+  const sum = (field: string) =>
+    sql`(SELECT SUM(COALESCE((usage->>${field})::numeric,0)) FROM local_terminals WHERE ${linked} AND usage IS NOT NULL)`;
+  const input = sql`${sum("inputTokens")} + ${sum("cacheReadTokens")} + ${sum("cacheWriteTokens")}`;
   return {
-    ...(u.costUsd != null ? { costUsd: String(u.costUsd) } : {}),
-    inputTokens: Math.round(u.inputTokens),
-    outputTokens: Math.round(u.outputTokens),
+    ...(u.costUsd != null
+      ? {
+          costUsd: sql<string>`trim_scale(GREATEST(COALESCE(NULLIF(${table.costUsd},'')::numeric,0),COALESCE(${sum("costUsd")},${u.costUsd})))::text`,
+        }
+      : {}),
+    inputTokens: sql<number>`GREATEST(COALESCE(${table.inputTokens},0),COALESCE(${input},${u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens}))`,
+    outputTokens: sql<number>`GREATEST(COALESCE(${table.outputTokens},0),COALESCE(${sum("outputTokens")},${u.outputTokens}))`,
+    cacheReadTokens: sql<number>`GREATEST(COALESCE(${table.cacheReadTokens},0),COALESCE(${sum("cacheReadTokens")},${u.cacheReadTokens}))`,
+    cacheWriteTokens: sql<number>`GREATEST(COALESCE(${table.cacheWriteTokens},0),COALESCE(${sum("cacheWriteTokens")},${u.cacheWriteTokens}))`,
+    costBasis: "estimated",
     ...(u.model ? { modelUsed: u.model } : {}),
   };
-}
-
-function usageChanged(
-  row: {
-    costUsd: string | null;
-    inputTokens: number | null;
-    outputTokens: number | null;
-    modelUsed: string | null;
-  },
-  patch: NonNullable<ReturnType<typeof usagePatch>>,
-): boolean {
-  return (
-    (patch.costUsd !== undefined && patch.costUsd !== row.costUsd) ||
-    (patch.inputTokens !== undefined && patch.inputTokens !== row.inputTokens) ||
-    (patch.outputTokens !== undefined && patch.outputTokens !== row.outputTokens) ||
-    (patch.modelUsed !== undefined && patch.modelUsed !== row.modelUsed)
-  );
 }
 
 /** Why a dead terminal is dead, for the run's error message. */
@@ -546,7 +538,7 @@ async function syncWorkflowRun(terminal: LocalTerminalRow): Promise<void> {
   const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId));
   if (!run) return;
   if (run.localTerminalId && run.localTerminalId !== terminal.id) return;
-  const usage = usagePatch(terminal);
+  const usage = usagePatch(terminal, workflowRuns);
   const state = run.state as WorkflowRunState;
 
   switch (terminal.state) {
@@ -561,7 +553,7 @@ async function syncWorkflowRun(terminal: LocalTerminalRow): Promise<void> {
         });
         return;
       }
-      if (state === WorkflowRunState.RUNNING && usage && usageChanged(run, usage)) {
+      if (state === WorkflowRunState.RUNNING && usage) {
         // Live cost while the session runs. No updatedAt bump: this is not a
         // state change and must not invalidate an in-flight reconcile.
         await db.update(workflowRuns).set(usage).where(eq(workflowRuns.id, runId));
@@ -718,8 +710,8 @@ async function syncTask(terminal: LocalTerminalRow): Promise<void> {
   if (terminal.agentSessionId && task.sessionId !== terminal.agentSessionId) {
     await taskService.updateTaskSession(task.id, terminal.agentSessionId);
   }
-  const usage = usagePatch(terminal);
-  if (usage && usageChanged(task, usage)) {
+  const usage = usagePatch(terminal, tasks);
+  if (usage) {
     await db.update(tasks).set(usage).where(eq(tasks.id, task.id));
   }
 

@@ -1,3 +1,4 @@
+import { runBudgetHold, usageBudgetHold } from "./usage-budget-service.js";
 /**
  * Optio Local terminals: DB state machine + spawn orchestration over the
  * daemon relay. See docs/optio-local.md.
@@ -270,6 +271,13 @@ export interface CreateTerminalInput {
  * flushed on the daemon's next hello.
  */
 export async function createTerminal(input: CreateTerminalInput): Promise<LocalTerminalRow> {
+  if (input.id) {
+    const existing = await getTerminal(input.id);
+    if (existing)
+      return existing.state !== "pending" || existing.pendingReason === "hold"
+        ? existing
+        : ((await trySpawn(existing)) ?? existing);
+  }
   if (!isDirAllowed(input.host, input.dir)) {
     throw new Error(`Directory not in the host's allowlist: ${input.dir}`);
   }
@@ -356,6 +364,21 @@ export async function createTerminal(input: CreateTerminalInput): Promise<LocalT
  * Returns the current row when someone else already claimed it.
  */
 async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null> {
+  const budgetHold = row.taskId
+    ? await runBudgetHold("task", row.taskId)
+    : row.workflowRunId
+      ? await runBudgetHold("job", row.workflowRunId)
+      : await usageBudgetHold({
+          workspaceId: row.workspaceId,
+          ownerUserId: row.userId,
+          workId: row.blueprintId ?? row.id,
+        });
+  if (budgetHold)
+    return transitionTerminal(row.id, ["pending"], {
+      state: "error",
+      errorMessage: budgetHold,
+      endedAt: new Date(),
+    });
   if (!(await relay.isHostOnline(row.hostId))) {
     return updateTerminal(row.id, { state: "pending", pendingReason: "host_offline" });
   }
@@ -1255,7 +1278,20 @@ export async function handleUsage(
   const [row] = await db
     .update(localTerminals)
     .set({ usage: clean, updatedAt: new Date() })
-    .where(and(eq(localTerminals.id, terminalId), eq(localTerminals.hostId, hostId)))
+    .where(
+      and(
+        eq(localTerminals.id, terminalId),
+        eq(localTerminals.hostId, hostId),
+        sql`(${localTerminals.usage} IS NULL OR (
+      (${localTerminals.usage}->>'updatedAt')::timestamptz < ${clean.updatedAt}::timestamptz
+      AND COALESCE((${localTerminals.usage}->>'inputTokens')::numeric,0) <= ${clean.inputTokens}
+      AND COALESCE((${localTerminals.usage}->>'outputTokens')::numeric,0) <= ${clean.outputTokens}
+      AND COALESCE((${localTerminals.usage}->>'cacheReadTokens')::numeric,0) <= ${clean.cacheReadTokens}
+      AND COALESCE((${localTerminals.usage}->>'cacheWriteTokens')::numeric,0) <= ${clean.cacheWriteTokens}
+      AND (${clean.costUsd}::numeric IS NULL OR COALESCE((${localTerminals.usage}->>'costUsd')::numeric,0) <= ${clean.costUsd}::numeric)
+    ))`,
+      ),
+    )
     .returning();
   // Once per agent turn at most — cheap enough to nudge the header live.
   if (row) await notifyChanged(row);

@@ -4,7 +4,7 @@ import type {
   AgentResult,
   CodexAuthMode,
 } from "@optio/shared";
-import { TASK_BRANCH_PREFIX } from "@optio/shared";
+import { TASK_BRANCH_PREFIX, priceForModel } from "@optio/shared";
 import type { AgentAdapter, AgentResultParser } from "./types.js";
 import { firstMatch, parseAllLines } from "./types.js";
 
@@ -32,8 +32,6 @@ const CODEX_MODEL_PRICING: Record<string, { input: number; output: number; cache
     "gpt-4.1-mini": { input: 0.4, output: 1.6, cachedInput: 0.1 },
     "gpt-4.1-nano": { input: 0.1, output: 0.4, cachedInput: 0.025 },
   };
-
-const DEFAULT_PRICING = CODEX_MODEL_PRICING["codex-mini"];
 
 export class CodexAdapter implements AgentAdapter {
   readonly type = "codex";
@@ -125,7 +123,17 @@ export class CodexAdapter implements AgentAdapter {
         const prMatch = pr.value;
 
         // Parse NDJSON lines to extract structured data
-        const { costUsd, errorMessage, hasError, summary } = parsed.done();
+        const {
+          costUsd,
+          errorMessage,
+          hasError,
+          summary,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          costBasis,
+          model,
+        } = parsed.done();
 
         const success = exitCode === 0 && !hasError;
 
@@ -133,6 +141,11 @@ export class CodexAdapter implements AgentAdapter {
           success,
           prUrl: prMatch?.[0],
           costUsd,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          costBasis,
+          model,
           summary:
             summary ??
             (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
@@ -145,7 +158,12 @@ export class CodexAdapter implements AgentAdapter {
   private logParser(): {
     push(line: string): void;
     done(): {
+      model?: string;
       costUsd?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      costBasis?: "reported" | "estimated";
       errorMessage?: string;
       hasError: boolean;
       summary?: string;
@@ -215,6 +233,7 @@ export class CodexAdapter implements AgentAdapter {
         if (usage.prompt_tokens) totalInputTokens += usage.prompt_tokens;
         if (usage.completion_tokens) totalOutputTokens += usage.completion_tokens;
         // Cached tokens (discounted pricing)
+        if (usage.cached_input_tokens) totalCachedTokens += usage.cached_input_tokens;
         if (usage.cached_tokens) totalCachedTokens += usage.cached_tokens;
         if (usage.prompt_tokens_details?.cached_tokens)
           totalCachedTokens += usage.prompt_tokens_details.cached_tokens;
@@ -231,18 +250,29 @@ export class CodexAdapter implements AgentAdapter {
       // Prefer direct cost from the agent over token-calculated cost
       let costUsd: number | undefined = directCost;
       if (costUsd == null && (totalInputTokens > 0 || totalOutputTokens > 0)) {
-        const pricing = model ? (CODEX_MODEL_PRICING[model] ?? DEFAULT_PRICING) : DEFAULT_PRICING;
+        const shared = priceForModel(model);
+        const pricing = shared
+          ? { ...shared, cachedInput: shared.cacheRead }
+          : model
+            ? CODEX_MODEL_PRICING[model]
+            : undefined;
         // Cached tokens are a subset of input tokens and charged at a discounted rate
         const nonCachedInputTokens = Math.max(0, totalInputTokens - totalCachedTokens);
-        const cachedRate = pricing.cachedInput ?? pricing.input * 0.25;
-        costUsd =
-          (nonCachedInputTokens / 1_000_000) * pricing.input +
-          (totalCachedTokens / 1_000_000) * cachedRate +
-          (totalOutputTokens / 1_000_000) * pricing.output;
+        const cachedRate = pricing ? (pricing.cachedInput ?? pricing.input * 0.25) : 0;
+        costUsd = pricing
+          ? (nonCachedInputTokens / 1_000_000) * pricing.input +
+            (totalCachedTokens / 1_000_000) * cachedRate +
+            (totalOutputTokens / 1_000_000) * pricing.output
+          : undefined;
       }
 
       return {
         costUsd,
+        model,
+        inputTokens: totalInputTokens || undefined,
+        outputTokens: totalOutputTokens || undefined,
+        cacheReadTokens: totalCachedTokens,
+        costBasis: directCost == null ? ("estimated" as const) : ("reported" as const),
         errorMessage,
         hasError,
         summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,

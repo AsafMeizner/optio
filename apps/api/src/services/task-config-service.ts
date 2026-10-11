@@ -209,6 +209,7 @@ export async function deleteTaskConfig(id: string): Promise<boolean> {
 export async function instantiateTask(
   taskConfigId: string,
   opts?: {
+    id?: string;
     triggerId?: string | null;
     params?: Record<string, unknown> | null;
     /** The ticket / PR / issue the firing was about, so the task links back to it. */
@@ -253,6 +254,7 @@ export async function instantiateTask(
   }
 
   const task = await taskService.createTask({
+    ...(opts?.id ? { id: opts.id } : {}),
     title: effectiveTitle,
     prompt: effectivePrompt,
     repoUrl: config.repoUrl,
@@ -287,7 +289,9 @@ export async function instantiateTask(
     },
   });
 
-  await taskService.transitionTask(task.id, TaskState.QUEUED, "task_config");
+  if (task.state === TaskState.PENDING)
+    await taskService.transitionTask(task.id, TaskState.QUEUED, "task_config");
+  else if (task.state !== TaskState.QUEUED) return task;
 
   // Dynamic import to avoid a cycle: task-worker imports services, services
   // import task-config-service.

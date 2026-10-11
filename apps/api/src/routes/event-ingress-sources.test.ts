@@ -1,19 +1,13 @@
 /**
  * The GitLab, Jira and Sentry receivers: each verifies its provider's token
- * or signature, drops redeliveries, normalizes, and fans out after the ack.
+ * or signature, drops redeliveries, normalizes, and persists before acknowledging.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
 
-const mockFire = vi.fn();
-vi.mock("../services/event-trigger-service.js", async () => {
-  const actual = await vi.importActual<typeof import("../services/event-trigger-service.js")>(
-    "../services/event-trigger-service.js",
-  );
-  return { ...actual, fireEventTriggers: (...args: unknown[]) => mockFire(...args) };
-});
+const mockPersist = vi.fn();
 vi.mock("../db/client.js", () => ({ db: {} }));
 vi.mock("../services/trigger-dispatch.js", () => ({ fireTrigger: vi.fn() }));
 // Every receiver claims the delivery id in the database first
@@ -27,6 +21,15 @@ const mockClaim = vi.fn(async (source: string, id: string) => {
 });
 vi.mock("../services/inbound-delivery-service.js", () => ({
   claimInboundDelivery: (...args: unknown[]) => mockClaim(...(args as [string, string])),
+}));
+
+// The receiver waits for durable acceptance; dispatch is tested against Postgres.
+vi.mock("../services/trigger-delivery.js", () => ({
+  acceptTriggerEvent: async (source: string, id: string, event: unknown) => {
+    if (!(await mockClaim(source, id))) return { duplicate: true };
+    await mockPersist(source, event);
+    return {};
+  },
 }));
 
 import { eventIngressRoutes } from "./event-ingress.js";
@@ -44,7 +47,7 @@ beforeEach(async () => {
   process.env.GITLAB_WEBHOOK_SECRET = GITLAB_SECRET;
   process.env.JIRA_WEBHOOK_SECRET = JIRA_SECRET;
   process.env.SENTRY_WEBHOOK_SECRET = SENTRY_SECRET;
-  mockFire.mockReset().mockResolvedValue([]);
+  mockPersist.mockReset().mockResolvedValue([]);
   mockClaim.mockClear();
   claimed.clear();
   app = await buildRouteTestApp(eventIngressRoutes, { user: null });
@@ -76,13 +79,13 @@ describe("POST /api/webhooks/gitlab", () => {
       payload,
     });
 
-  it("takes the secret token, remembers the event uuid, and dispatches the push", async () => {
+  it("takes the secret token, remembers the event uuid, and persists the push", async () => {
     const res = await post({ "x-gitlab-token": GITLAB_SECRET, "x-gitlab-event-uuid": "u-1" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
     await flush();
-    expect(mockFire).toHaveBeenCalledTimes(1);
-    expect(mockFire).toHaveBeenCalledWith(
+    expect(mockPersist).toHaveBeenCalledTimes(1);
+    expect(mockPersist).toHaveBeenCalledWith(
       "gitlab",
       expect.objectContaining({ kinds: ["push"], project: "acme/optio", sourceBranch: "main" }),
     );
@@ -90,7 +93,7 @@ describe("POST /api/webhooks/gitlab", () => {
     const again = await post({ "x-gitlab-token": GITLAB_SECRET, "x-gitlab-event-uuid": "u-1" });
     expect(again.json()).toEqual({ ok: true, duplicate: true });
     await flush();
-    expect(mockFire).toHaveBeenCalledTimes(1);
+    expect(mockPersist).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a wrong or missing token, and everything when the secret is unset", async () => {
@@ -101,7 +104,7 @@ describe("POST /api/webhooks/gitlab", () => {
     expect(unset.statusCode).toBe(401);
     expect(unset.json().error).toMatch(/not configured/);
     await flush();
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 
   it("acks what nobody automates on without dispatching", async () => {
@@ -111,7 +114,7 @@ describe("POST /api/webhooks/gitlab", () => {
     );
     expect(res.statusCode).toBe(200);
     await flush();
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 });
 
@@ -138,7 +141,7 @@ describe("POST /api/webhooks/jira", () => {
       payload: raw,
     });
 
-  it("verifies X-Hub-Signature and dispatches issue events", async () => {
+  it("verifies X-Hub-Signature and persists issue events", async () => {
     const raw = JSON.stringify({
       webhookEvent: "jira:issue_created",
       timestamp: 1700000000000,
@@ -149,7 +152,7 @@ describe("POST /api/webhooks/jira", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
     await flush();
-    expect(mockFire).toHaveBeenCalledWith(
+    expect(mockPersist).toHaveBeenCalledWith(
       "jira",
       expect.objectContaining({ key: "ENG-42", kinds: ["created"] }),
     );
@@ -175,8 +178,8 @@ describe("POST /api/webhooks/jira", () => {
       duplicate: true,
     });
     await flush();
-    expect(mockFire).toHaveBeenCalledTimes(1);
-    expect(mockFire).toHaveBeenCalledWith(
+    expect(mockPersist).toHaveBeenCalledTimes(1);
+    expect(mockPersist).toHaveBeenCalledWith(
       "jira",
       expect.objectContaining({ kinds: ["commented"], commentBody: "ping" }),
     );
@@ -190,7 +193,7 @@ describe("POST /api/webhooks/jira", () => {
     delete process.env.JIRA_WEBHOOK_SECRET;
     expect((await post(raw, `sha256=${hex(JIRA_SECRET, raw)}`)).statusCode).toBe(401);
     await flush();
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 });
 
@@ -225,12 +228,12 @@ describe("POST /api/webhooks/sentry", () => {
     "sentry-hook-timestamp": stamp,
   });
 
-  it("verifies the signature, reads the resource header, and dispatches the issue", async () => {
+  it("verifies the signature, reads the resource header, and persists the issue", async () => {
     const res = await post(issueCreated, signed(issueCreated, "issue"));
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
     await flush();
-    expect(mockFire).toHaveBeenCalledWith(
+    expect(mockPersist).toHaveBeenCalledWith(
       "sentry",
       expect.objectContaining({ kind: "issue_created", shortId: "API-1A", project: "api" }),
     );
@@ -239,7 +242,7 @@ describe("POST /api/webhooks/sentry", () => {
     const again = await post(issueCreated, signed(issueCreated, "issue"));
     expect(again.json()).toEqual({ ok: true, duplicate: true });
     await flush();
-    expect(mockFire).toHaveBeenCalledTimes(1);
+    expect(mockPersist).toHaveBeenCalledTimes(1);
   });
 
   it("acks the installation handshake and the error resource without dispatching", async () => {
@@ -248,7 +251,7 @@ describe("POST /api/webhooks/sentry", () => {
     const error = JSON.stringify({ action: "created", data: { error: { event_id: "e" } } });
     expect((await post(error, signed(error, "error"))).statusCode).toBe(200);
     await flush();
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 
   it("rejects a bad or missing signature, and everything when the secret is unset", async () => {
@@ -262,6 +265,6 @@ describe("POST /api/webhooks/sentry", () => {
     delete process.env.SENTRY_WEBHOOK_SECRET;
     expect((await post(issueCreated, signed(issueCreated, "issue"))).statusCode).toBe(401);
     await flush();
-    expect(mockFire).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 });

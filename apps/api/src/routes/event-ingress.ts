@@ -15,11 +15,11 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { acceptTriggerEvent } from "../services/trigger-delivery.js";
 import { logger } from "../logger.js";
 import { claimInboundDelivery, type DeliverySource } from "../services/inbound-delivery-service.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
 import {
-  fireEventTriggers,
   normalizeGitLabEvent,
   normalizeJiraEvent,
   normalizeLinearEvent,
@@ -101,19 +101,11 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
         return reply.status(200).send({ challenge: body.challenge });
       }
 
-      // Slack re-delivers on slow acks; we already handled the first copy.
-      if (req.headers["x-slack-retry-num"]) return reply.status(200).send({ ok: true });
-
       const event = normalizeSlackEvent(body);
       if (!event) return reply.status(200).send({ ok: true });
-      if (event.eventId && !(await claimDelivery("slack", event.eventId))) {
-        return reply.status(200).send({ ok: true, duplicate: true });
-      }
 
-      await reply.status(200).send({ ok: true });
-      fireEventTriggers("slack", event).catch((err: unknown) => {
-        logger.warn({ err, channelId: event.channelId }, "Slack event trigger dispatch failed");
-      });
+      const accepted = await acceptTriggerEvent("slack", event.eventId, event);
+      return reply.status(200).send({ ok: true, ...accepted });
     },
   });
 
@@ -152,14 +144,9 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
       // identifies a delivery well enough to drop retries of it.
       const data = (body.data ?? {}) as Record<string, unknown>;
       const deliveryKey = `${body.type}:${body.action}:${data.id ?? ""}:${body.webhookTimestamp ?? ""}`;
-      if (!(await claimDelivery("linear", deliveryKey))) {
-        return reply.status(200).send({ ok: true, duplicate: true });
-      }
 
-      await reply.status(200).send({ ok: true });
-      fireEventTriggers("linear", event).catch((err: unknown) => {
-        logger.warn({ err, identifier: event.identifier }, "Linear event trigger dispatch failed");
-      });
+      const accepted = await acceptTriggerEvent("linear", deliveryKey, event);
+      return reply.status(200).send({ ok: true, ...accepted });
     },
   });
 
@@ -197,17 +184,12 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
       const deliveryId =
         (req.headers["x-webhook-id"] as string | undefined) ||
         (typeof eventObj.id === "string" ? eventObj.id : "");
-      if (deliveryId && !(await claimDelivery("pagerduty", deliveryId))) {
-        return reply.status(200).send({ ok: true, duplicate: true });
-      }
 
       const event = normalizePagerDutyEvent(body);
       if (!event) return reply.status(200).send({ ok: true });
 
-      await reply.status(200).send({ ok: true });
-      fireEventTriggers("pagerduty", event).catch((err: unknown) => {
-        logger.warn({ err, incidentId: event.id }, "PagerDuty event trigger dispatch failed");
-      });
+      const accepted = await acceptTriggerEvent("pagerduty", deliveryId, event);
+      return reply.status(200).send({ ok: true, ...accepted });
     },
   });
 
@@ -238,17 +220,16 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
       }
 
       const deliveryId = req.headers["x-gitlab-event-uuid"];
-      if (typeof deliveryId === "string" && !(await claimDelivery("gitlab", deliveryId))) {
-        return reply.status(200).send({ ok: true, duplicate: true });
-      }
 
       const event = normalizeGitLabEvent(req.body);
       if (!event) return reply.status(200).send({ ok: true });
 
-      await reply.status(200).send({ ok: true });
-      fireEventTriggers("gitlab", event).catch((err: unknown) => {
-        logger.warn({ err, project: event.project }, "GitLab event trigger dispatch failed");
-      });
+      const accepted = await acceptTriggerEvent(
+        "gitlab",
+        typeof deliveryId === "string" ? deliveryId : undefined,
+        event,
+      );
+      return reply.status(200).send({ ok: true, ...accepted });
     },
   });
 
@@ -293,14 +274,9 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
       const deliveryKey = event.kinds.includes("commented")
         ? `comment:${issue.id ?? event.key}:${comment.id ?? ""}`
         : `${event.event}:${issue.id ?? event.key}:${body.timestamp ?? ""}`;
-      if (!(await claimDelivery("jira", deliveryKey))) {
-        return reply.status(200).send({ ok: true, duplicate: true });
-      }
 
-      await reply.status(200).send({ ok: true });
-      fireEventTriggers("jira", event).catch((err: unknown) => {
-        logger.warn({ err, key: event.key }, "Jira event trigger dispatch failed");
-      });
+      const accepted = await acceptTriggerEvent("jira", deliveryKey, event);
+      return reply.status(200).send({ ok: true, ...accepted });
     },
   });
 
@@ -340,14 +316,9 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
       // Sentry sends no delivery id; the resource, action, object and the
       // delivery's own timestamp name it.
       const stamp = String(req.headers["sentry-hook-timestamp"] ?? "");
-      if (!(await claimDelivery("sentry", `${event.eventId}:${stamp}`))) {
-        return reply.status(200).send({ ok: true, duplicate: true });
-      }
 
-      await reply.status(200).send({ ok: true });
-      fireEventTriggers("sentry", event).catch((err: unknown) => {
-        logger.warn({ err, issueId: event.issueId }, "Sentry event trigger dispatch failed");
-      });
+      const accepted = await acceptTriggerEvent("sentry", `${event.eventId}:${stamp}`, event);
+      return reply.status(200).send({ ok: true, ...accepted });
     },
   });
 }

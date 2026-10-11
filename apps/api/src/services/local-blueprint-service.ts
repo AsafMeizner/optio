@@ -306,6 +306,7 @@ async function effectiveTemplate(blueprint: LocalBlueprintRow): Promise<string> 
 export async function spawnFromBlueprint(
   blueprint: LocalBlueprintRow,
   opts: {
+    id?: string;
     params?: Record<string, unknown>;
     triggerId?: string;
     spawnedBy?: "trigger" | "blueprint" | "ticket";
@@ -379,6 +380,7 @@ export async function spawnFromBlueprint(
   }
 
   return createTerminal({
+    id: opts.id,
     host,
     userId: blueprint.userId,
     workspaceId: blueprint.workspaceId,

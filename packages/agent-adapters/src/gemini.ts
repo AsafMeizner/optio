@@ -29,8 +29,6 @@ const GEMINI_MODEL_PRICING: Record<string, { input: number; output: number }> = 
   "gemini-3-flash": { input: 0.15, output: 0.6 },
 };
 
-const DEFAULT_PRICING = GEMINI_MODEL_PRICING["gemini-2.5-pro"];
-
 export class GeminiAdapter implements AgentAdapter {
   readonly type = "gemini";
   readonly displayName = "Google Gemini";
@@ -151,6 +149,7 @@ export class GeminiAdapter implements AgentAdapter {
           success,
           prUrl: prMatch?.[0],
           costUsd,
+          costBasis: "estimated",
           summary:
             summary ??
             (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
@@ -261,10 +260,11 @@ export class GeminiAdapter implements AgentAdapter {
       // Calculate cost from token counts
       let costUsd: number | undefined;
       if (totalInputTokens > 0 || totalOutputTokens > 0) {
-        const pricing = model ? (GEMINI_MODEL_PRICING[model] ?? DEFAULT_PRICING) : DEFAULT_PRICING;
-        costUsd =
-          (totalInputTokens / 1_000_000) * pricing.input +
-          (totalOutputTokens / 1_000_000) * pricing.output;
+        const pricing = model ? GEMINI_MODEL_PRICING[model] : undefined;
+        costUsd = pricing
+          ? (totalInputTokens / 1_000_000) * pricing.input +
+            (totalOutputTokens / 1_000_000) * pricing.output
+          : undefined;
       }
 
       return {

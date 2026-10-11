@@ -3,7 +3,8 @@ import { parseIntEnv } from "@optio/shared";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { advanceScheduleCas, listDueScheduleTriggers } from "../services/trigger-service.js";
-import { fireTrigger } from "../services/trigger-dispatch.js";
+import { db } from "../db/client.js";
+import { enqueueOccurrence, drainTriggerDeliveries } from "../services/trigger-delivery.js";
 import { scheduleRepeat } from "../services/repeat-jobs.js";
 import { underPollerLease } from "../services/poller-lease.js";
 
@@ -13,15 +14,9 @@ export const workflowTriggerQueue = new Queue("workflow-trigger-checker", {
   ...bullmqOpts,
 });
 
-/**
- * Polls for due schedule triggers and hands each to the trigger dispatcher,
- * which starts whatever the trigger targets (a Job run, a Task, a Local
- * terminal, an agent turn, a re-review). A sweep runs on one instance at a
- * time (a poller lease), and each trigger is advanced **before** it fires,
- * by compare-and-swap on the `next_fire_at` the sweep saw: two sweeps that
- * overlap anyway both see the trigger due, and only the one whose update
- * lands fires it. The schedule is advanced whether or not the dispatch
- * succeeds, so one broken target can't re-fire every tick.
+/** Advances each due schedule and saves its occurrence in one transaction.
+ * The delivery worker starts that occurrence using its fixed run identity;
+ * transient dispatch failures never consume the schedule without durable work.
  */
 export function startWorkflowTriggerWorker() {
   void scheduleRepeat(
@@ -69,7 +64,17 @@ export async function checkDueScheduleTriggers(): Promise<number> {
     // the tick the sweep saw. A sweep that lost the race skips the trigger.
     let advanced = false;
     try {
-      advanced = await advanceScheduleCas(trigger.id, cronExpression, trigger.nextFireAt);
+      advanced = await db.transaction(async (tx) => {
+        const won = await advanceScheduleCas(trigger.id, cronExpression, trigger.nextFireAt, tx);
+        if (won)
+          await enqueueOccurrence(
+            trigger,
+            { source: "schedule", params: trigger.paramMapping ?? undefined },
+            `schedule:${trigger.id}:${trigger.nextFireAt!.toISOString()}`,
+            tx,
+          );
+        return won;
+      });
     } catch (err) {
       logger.error({ err, triggerId: trigger.id }, "Failed to advance schedule trigger");
       continue;
@@ -79,23 +84,8 @@ export async function checkDueScheduleTriggers(): Promise<number> {
       continue;
     }
 
-    try {
-      await fireTrigger(trigger, {
-        source: "schedule",
-        params: trigger.paramMapping ?? undefined,
-      });
-      fired++;
-    } catch (err) {
-      logger.error(
-        {
-          err,
-          triggerId: trigger.id,
-          targetType: trigger.targetType,
-          targetId: trigger.targetId,
-        },
-        "Failed to fire schedule trigger",
-      );
-    }
+    fired++;
   }
+  await drainTriggerDeliveries();
   return fired;
 }

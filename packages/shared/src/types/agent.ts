@@ -80,6 +80,9 @@ export interface AgentContainerConfig {
 }
 
 export interface AgentResult {
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costBasis?: "reported" | "estimated";
   success: boolean;
   prUrl?: string;
   summary?: string;

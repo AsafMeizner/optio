@@ -1,3 +1,4 @@
+import { runBudgetHold } from "../services/usage-budget-service.js";
 /**
  * PR Review worker — executes pr_review_runs on repo-pod infrastructure.
  *
@@ -185,6 +186,29 @@ export function startPrReviewWorker() {
         });
         return;
       }
+
+      const budgetHold = await runBudgetHold("review", runId);
+      if (budgetHold) {
+        await db
+          .update(prReviewRuns)
+          .set({ errorMessage: budgetHold })
+          .where(eq(prReviewRuns.id, runId));
+        await prReviewRunQueue.add(job.name, job.data, {
+          jobId: `${runId}-budget-${Date.now()}`,
+          delay: 60_000,
+          removeOnComplete: true,
+        });
+        return;
+      }
+      await db
+        .update(prReviewRuns)
+        .set({ errorMessage: null })
+        .where(
+          and(
+            eq(prReviewRuns.id, runId),
+            sql`${prReviewRuns.errorMessage} LIKE 'Usage budget reached:%'`,
+          ),
+        );
 
       // Claim: queued → provisioning (idempotent). Use the same CAS idiom
       // as task-worker to guard against duplicate workers grabbing the job.

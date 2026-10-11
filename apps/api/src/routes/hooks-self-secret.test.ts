@@ -36,6 +36,21 @@ vi.mock("../services/workflow-service.js", () => ({
 }));
 vi.mock("../services/task-config-service.js", () => ({ instantiateTask: vi.fn() }));
 
+vi.mock("../services/trigger-delivery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/trigger-delivery.js")>();
+  return {
+    ...actual,
+    fireTriggerDurably: async (trigger: unknown, firing: unknown) => {
+      const { fireTrigger } = await import("../services/trigger-dispatch.js");
+      try {
+        return await fireTrigger(trigger as never, firing as never);
+      } catch {
+        throw new actual.DeliveryPendingError("saved-delivery");
+      }
+    },
+  };
+});
+
 import { hookRoutes } from "./hooks.js";
 
 const WORKFLOW = { id: "wf-1", kind: "standalone", name: "On call", enabled: true, prompt: "p" };

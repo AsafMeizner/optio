@@ -384,7 +384,7 @@ describe("one of two callers", () => {
     expect([a, b].filter(Boolean)).toHaveLength(1);
     const after = await getTrigger(trigger.id);
     expect(after!.nextFireAt!.getTime()).toBeGreaterThan(Date.now());
-    expect(after!.lastFiredAt).not.toBeNull();
+    expect(after!.lastFiredAt).toBeNull();
 
     // Two whole sweeps overlapping on another due trigger: one run.
     const second = await insertWorkflowTrigger(workflow.id, {

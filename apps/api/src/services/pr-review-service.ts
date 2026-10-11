@@ -554,11 +554,31 @@ export async function enqueueReviewRun(
   opts: {
     prompt?: string;
     resumeSessionId?: string;
+    id?: string;
     prContext?: Awaited<ReturnType<typeof fetchPrContext>>;
     repoConfig?: RepoConfigLike;
     createdBy?: string;
   },
 ): Promise<PrReviewRun> {
+  if (opts.id) {
+    const [existing] = await db.select().from(prReviewRuns).where(eq(prReviewRuns.id, opts.id));
+    if (existing) {
+      if (existing.state === PrReviewRunState.QUEUED) {
+        const parent = await getPrReview(prReviewId);
+        if (parent && parent.state !== PrReviewState.REVIEWING)
+          await transitionPrReview(prReviewId, PrReviewState.REVIEWING, `launch_${kind}`, {
+            runId: existing.id,
+          });
+        const { prReviewRunQueue } = await import("../workers/pr-review-worker.js");
+        await prReviewRunQueue.add(
+          "process-pr-review-run",
+          { runId: existing.id },
+          { jobId: existing.id },
+        );
+      }
+      return existing;
+    }
+  }
   const [review] = await db.select().from(prReviews).where(eq(prReviews.id, prReviewId));
   if (!review) throw new Error(`PR review ${prReviewId} not found`);
 
@@ -616,6 +636,7 @@ export async function enqueueReviewRun(
   const [run] = await db
     .insert(prReviewRuns)
     .values({
+      ...(opts.id ? { id: opts.id } : {}),
       prReviewId,
       kind,
       state: PrReviewRunState.QUEUED,
@@ -849,6 +870,7 @@ export async function submitReview(
 export async function reReview(
   id: string,
   userId?: string,
+  runId?: string,
 ): Promise<{ review: PrReview; run: PrReviewRun }> {
   const [review] = await db.select().from(prReviews).where(eq(prReviews.id, id));
   if (!review) throw new Error("PR review not found");
@@ -860,7 +882,10 @@ export async function reReview(
     .set({ origin: "manual", userEngaged: true, updatedAt: new Date() })
     .where(eq(prReviews.id, id));
 
-  const run = await enqueueReviewRun(id, "rereview", { createdBy: userId });
+  const run = await enqueueReviewRun(id, "rereview", {
+    createdBy: userId,
+    ...(runId ? { id: runId } : {}),
+  });
   const [fresh] = await db.select().from(prReviews).where(eq(prReviews.id, id));
   return { review: fresh, run };
 }

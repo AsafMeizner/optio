@@ -252,7 +252,7 @@ describe("schedule trigger dispatch (workflow-trigger-worker)", () => {
     expect(await runsFor(workflow.id)).toHaveLength(0);
     // dispatch skipped the disabled target, but the tick was still consumed
     const after = await triggerService.getTrigger(trigger.id);
-    expect(after!.lastFiredAt).not.toBeNull();
+    expect(after!.lastFiredAt).toBeNull();
     expect(after!.nextFireAt!.getTime()).toBeGreaterThan(past.getTime());
   });
 

@@ -278,8 +278,14 @@ describe("local job runs", () => {
     const cancelled = await cancelWorkflowRun(run.id);
     expect(cancelled.state).toBe(WorkflowRunState.FAILED);
     expect(cancelled.errorMessage).toBe("Cancelled by user");
-    await settle();
-    expect(daemon.messages().some((m) => m.type === "kill" && m.terminalId === t.id)).toBe(true);
+    await vi.waitFor(
+      () => {
+        expect(daemon.messages().some((m) => m.type === "kill" && m.terminalId === t.id)).toBe(
+          true,
+        );
+      },
+      { timeout: 2000 },
+    );
 
     // The daemon's exit for the killed process changes nothing further.
     await handleExit(host.id, t.id, 143);

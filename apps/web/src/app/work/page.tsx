@@ -182,6 +182,9 @@ function WorkList() {
         description="A clear view of what’s moving and what needs your attention."
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <ButtonLink href="/work/deliveries" variant="ghost" size="sm">
+              Trigger history
+            </ButtonLink>
             <button
               onClick={refetch}
               className="p-2 rounded-lg hover:bg-bg-hover text-text-muted transition-all btn-press hover:text-text"

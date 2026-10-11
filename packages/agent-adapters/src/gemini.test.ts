@@ -313,8 +313,8 @@ describe("GeminiAdapter", () => {
         '{"type":"message","role":"assistant","content":"Done","usage":{"input_tokens":500,"output_tokens":200}}',
       ].join("\n");
       const result = adapter.parseResult(0, logs);
-      expect(result.costUsd).toBeDefined();
-      expect(result.costUsd).toBeGreaterThan(0);
+      expect(result.costUsd).toBeUndefined();
+      expect(result.costBasis).toBe("estimated");
       expect(result.inputTokens).toBe(500);
       expect(result.outputTokens).toBe(200);
     });
@@ -324,7 +324,7 @@ describe("GeminiAdapter", () => {
       const result = adapter.parseResult(0, logs);
       expect(result.inputTokens).toBe(1000);
       expect(result.outputTokens).toBe(500);
-      expect(result.costUsd).toBeDefined();
+      expect(result.costUsd).toBeUndefined();
     });
 
     it("includes cache_read and cache_creation tokens from inline usage in input total", () => {

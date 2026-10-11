@@ -60,8 +60,9 @@ export type TriggerFireResult =
 export async function fireTrigger(
   trigger: Pick<TriggerRow, "id" | "targetType" | "targetId">,
   firing: TriggerFiring,
+  runId?: string,
 ): Promise<TriggerFireResult | null> {
-  const result = await dispatch(trigger, firing);
+  const result = await dispatch(trigger, firing, runId);
   if (result) {
     await markTriggerFired(trigger.id).catch(() => {});
     logger.info(
@@ -75,6 +76,7 @@ export async function fireTrigger(
 async function dispatch(
   trigger: Pick<TriggerRow, "id" | "targetType" | "targetId">,
   firing: TriggerFiring,
+  runId?: string,
 ): Promise<TriggerFireResult | null> {
   const skip = (what: string) => {
     logger.warn(
@@ -89,7 +91,7 @@ async function dispatch(
     const definition = await getDefinition(trigger.targetId, kind);
     if (!definition) return skip("missing");
     if (!definition.enabled) return skip("disabled");
-    return startDefinition(definition, trigger.id, firing);
+    return startDefinition(definition, trigger.id, firing, runId);
   }
 
   switch (trigger.targetType) {
@@ -101,6 +103,7 @@ async function dispatch(
       if (!agent.enabled) return skip("disabled");
       const label = firing.ticket ? `${firing.source}:${firing.ticket.source}` : firing.source;
       await wakeAgent({
+        messageId: runId,
         agentId: agent.id,
         source: firing.source,
         body: firing.message ?? defaultAgentMessage(trigger.id, firing),
@@ -114,7 +117,7 @@ async function dispatch(
 
     case "pr_review": {
       const { reReview } = await import("./pr-review-service.js");
-      const result = await reReview(trigger.targetId);
+      const result = await reReview(trigger.targetId, undefined, runId);
       return { kind: "pr_review_run", id: result.run.id };
     }
 
@@ -128,10 +131,12 @@ async function startDefinition(
   definition: WorkDefinition,
   triggerId: string,
   firing: TriggerFiring,
+  runId?: string,
 ): Promise<TriggerFireResult> {
   switch (definition.kind) {
     case "standalone": {
       const run = await workflowService.createWorkflowRun(definition.id, {
+        ...(runId ? { id: runId } : {}),
         triggerId,
         params: firing.params,
       });
@@ -139,6 +144,7 @@ async function startDefinition(
     }
     case "repo-blueprint": {
       const task = await taskConfigService.instantiateTask(definition.id, {
+        ...(runId ? { id: runId } : {}),
         triggerId,
         params: firing.params,
         // A ticket link closes the issue when the task completes — right for
@@ -151,6 +157,7 @@ async function startDefinition(
     case "local-blueprint": {
       const { spawnFromBlueprint, toLocalBlueprint } = await import("./local-blueprint-service.js");
       const terminal = await spawnFromBlueprint(toLocalBlueprint(definition), {
+        id: runId,
         triggerId,
         spawnedBy: firing.source === "ticket" ? "ticket" : "trigger",
         params: firing.params,
@@ -204,19 +211,24 @@ export async function fireTicketTriggers(ticket: TicketFiring): Promise<TicketFi
   for (const trigger of candidates) {
     if (!ticketTriggerMatches((trigger.config ?? {}) as Record<string, unknown>, ticket)) continue;
     try {
-      const fired = await fireTrigger(trigger, {
-        source: "ticket",
-        params: ticketTriggerParams(ticket),
-        ticket: { source: ticket.source, externalId: ticket.externalId, url: ticket.url },
-        title: `${ticket.externalId} ${ticket.title}`,
-        message: [
-          `Ticket ${ticket.externalId} (${ticket.source}): ${ticket.title}`,
-          ticket.url ?? null,
-          ticket.body ? `\n${ticket.body}` : null,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-      });
+      const { fireTriggerDurably } = await import("./trigger-delivery.js");
+      const fired = await fireTriggerDurably(
+        trigger,
+        {
+          source: "ticket",
+          params: ticketTriggerParams(ticket),
+          ticket: { source: ticket.source, externalId: ticket.externalId, url: ticket.url },
+          title: `${ticket.externalId} ${ticket.title}`,
+          message: [
+            `Ticket ${ticket.externalId} (${ticket.source}): ${ticket.title}`,
+            ticket.url ?? null,
+            ticket.body ? `\n${ticket.body}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        },
+        `ticket:${trigger.id}:${ticket.source}:${ticket.externalId}`,
+      );
       if (fired) results.push({ ...fired, triggerId: trigger.id });
     } catch (err) {
       logger.error(

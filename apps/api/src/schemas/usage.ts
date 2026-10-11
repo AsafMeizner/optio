@@ -1,0 +1,68 @@
+import { z } from "zod";
+const cost = z.string().nullable();
+export const UsageMetricsSchema = z.object({
+  tokens: z.number(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cachedTokens: z.number(),
+  costUsd: cost,
+  reportedCostUsd: cost,
+  estimatedCostUsd: cost,
+  runs: z.number(),
+  completedRuns: z.number(),
+  unpricedRuns: z.number(),
+  unmeasuredRuns: z.number(),
+  historicalRuns: z.number(),
+  retryCostUsd: z.string(),
+});
+export const UsageBudgetSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  subjectKind: z.enum(["organization", "person", "work"]),
+  subjectId: z.string().nullable(),
+  tokenLimit: z.number().nullable(),
+  costLimit: cost,
+  action: z.enum(["notify", "pause_new"]),
+  enabled: z.boolean(),
+  usedTokens: z.number(),
+  usedCostUsd: z.string(),
+  fraction: z.number(),
+});
+export const UsageResponseSchema = z.object({
+  start: z.string(),
+  end: z.string(),
+  summary: UsageMetricsSchema,
+  previous: UsageMetricsSchema,
+  daily: z.array(z.object({ date: z.string(), tokens: z.number(), costUsd: cost })),
+  leaderboard: z.array(
+    UsageMetricsSchema.extend({
+      id: z.string(),
+      kind: z.enum(["person", "work"]),
+      name: z.string(),
+      avatarUrl: z.string().nullable(),
+      rank: z.number(),
+      changePercent: z.number().nullable(),
+      trend: z.array(z.number()),
+    }),
+  ),
+  totalEntries: z.number(),
+  page: z.number(),
+  pageSize: z.number(),
+  models: z.array(
+    z.object({ model: z.string(), tokens: z.number(), costUsd: cost, runs: z.number() }),
+  ),
+  budgets: z.array(UsageBudgetSchema),
+  canManageBudgets: z.boolean(),
+  canInspect: z.boolean(),
+  activity: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      href: z.string(),
+      tokens: z.number(),
+      costUsd: cost,
+      model: z.string().nullable(),
+      lastUsed: z.string(),
+    }),
+  ),
+});

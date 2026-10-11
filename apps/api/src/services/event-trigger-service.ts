@@ -2538,6 +2538,7 @@ export function firingFor<S extends EventTriggerType>(
 export async function fireEventTriggers<S extends EventTriggerType>(
   source: S,
   event: EventOf<S>,
+  receiptId?: string,
 ): Promise<EventFireResult[]> {
   const candidates = await listEnabledTriggersOfType(source);
   if (candidates.length === 0) return [];
@@ -2591,6 +2592,11 @@ export async function fireEventTriggers<S extends EventTriggerType>(
       }
 
       const { matched, ...rest } = firing;
+      if (receiptId) {
+        const { enqueueOccurrence } = await import("./trigger-delivery.js");
+        await enqueueOccurrence(trigger, rest, `${receiptId}:${trigger.id}`);
+        continue;
+      }
       const fired = await fireTrigger(trigger, rest);
       if (fired) results.push({ ...fired, triggerId: trigger.id, matched });
     } catch (err) {
@@ -2598,6 +2604,7 @@ export async function fireEventTriggers<S extends EventTriggerType>(
         { err, source, triggerId: trigger.id, targetType: trigger.targetType },
         "Event trigger failed to start its target",
       );
+      if (receiptId) throw err;
     }
   }
   return results;
