@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-11
+
 ### Added
 
 - **Usage** (`/usage`): a combined people and organization-work leaderboard, token and cost trends, model and repository filters, private activity drilldowns, and monthly organization/person/work budgets. An atomic usage ledger preserves unknown prices, separates reported and estimated costs, and counts Local attempts once. See `docs/usage.md`.
