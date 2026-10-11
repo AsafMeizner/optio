@@ -7,7 +7,10 @@ metadata:
     app: optio-api
     {{- include "optio.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.api.autoscaling.enabled }}
   replicas: {{ .Values.api.replicas }}
+  {{- end }}
+  # Migrations run at boot: no old and new version serve side by side.
   strategy:
     type: Recreate
   selector:

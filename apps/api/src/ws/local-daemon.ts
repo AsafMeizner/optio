@@ -2,7 +2,8 @@
  * Daemon uplink for Optio Local (/ws/local/daemon). One outbound connection
  * per host, authenticated like any WS (the CLI's PAT via
  * Sec-WebSocket-Protocol). The first frame must be a `hello` naming a host
- * that belongs to the authenticated user. See docs/optio-local.md.
+ * that belongs to the authenticated user; the instance it lands on becomes
+ * the host's owner (local-relay.ts `claimHost`). See docs/optio-local.md.
  */
 import { deliverLimitsResult } from "../services/local-limits-service.js";
 import type { FastifyInstance } from "fastify";
@@ -26,8 +27,35 @@ import {
   maybeRefreshOnHello,
 } from "../services/local-auth-refresh-service.js";
 import { deliverDirsResult } from "../services/local-dirs-service.js";
+import { saneGrid } from "../services/local-grid.js";
 
 const HELLO_TIMEOUT_MS = 10_000;
+
+/**
+ * A daemon's answer to a request, delivered to the request that is waiting
+ * on this instance — whether the daemon is connected here or its owner
+ * relayed the answer from another instance.
+ */
+async function deliverReply(hostId: string, msg: relay.DaemonReply): Promise<void> {
+  switch (msg.type) {
+    case "credentials-result":
+      deliverCredentialsResult(hostId, msg);
+      return;
+    case "dirs-result":
+      deliverDirsResult(hostId, msg);
+      return;
+    case "limits-refresh-result":
+      deliverLimitsResult(hostId, msg);
+      return;
+    case "transcript-backfill":
+      await terminalService.handleTranscriptBackfill(hostId, msg);
+      return;
+  }
+}
+
+// Answers the owner relayed from another instance: in order per host (the
+// relay chains them), delivered as if the daemon were connected here.
+relay.onForwardedDaemonReply(deliverReply);
 
 export async function localDaemonWs(app: FastifyInstance) {
   app.get("/ws/local/daemon", { websocket: true }, async (socket, req) => {
@@ -99,6 +127,16 @@ export async function localDaemonWs(app: FastifyInstance) {
           refreshLimits: msg.refreshLimits === true,
           answersQueries: msg.answersQueries === true,
         });
+        // The host's lease and bus channel: from here every API instance
+        // routes this host's frames to this socket.
+        try {
+          await relay.claimHost(host.id, socket);
+        } catch (err) {
+          log.warn({ err, hostId: host.id }, "local daemon: could not claim the host; closing");
+          socket.close(1011, "Could not register the host — reconnecting");
+          return;
+        }
+        if (conn.closed) return;
         await markHostOnline(host.id, {
           dirs: msg.dirs,
           daemonVersion: msg.daemonVersion,
@@ -135,7 +173,7 @@ export async function localDaemonWs(app: FastifyInstance) {
           relay.deliverScrollback(
             msg.attachId,
             Buffer.from(msg.dataB64, "base64"),
-            replayGrid(msg.cols, msg.rows),
+            saneGrid(msg.cols, msg.rows),
           );
           return;
         case "attach-error":
@@ -183,9 +221,6 @@ export async function localDaemonWs(app: FastifyInstance) {
         case "transcript":
           await terminalService.handleTranscript(hostId, msg.terminalId, msg.entries);
           return;
-        case "transcript-backfill":
-          await terminalService.handleTranscriptBackfill(hostId, msg);
-          return;
         case "session":
           await terminalService.handleSession(hostId, msg.terminalId, msg.agentSessionId);
           return;
@@ -196,13 +231,12 @@ export async function localDaemonWs(app: FastifyInstance) {
           await handleAgentModels(hostId, msg.models);
           return;
         case "credentials-result":
-          deliverCredentialsResult(hostId, msg);
-          return;
         case "dirs-result":
-          deliverDirsResult(hostId, msg);
-          return;
         case "limits-refresh-result":
-          deliverLimitsResult(hostId, msg);
+        case "transcript-backfill":
+          // Asked from another instance: the answer goes back there.
+          if (relay.forwardDaemonReply(hostId, msg)) return;
+          await deliverReply(hostId, msg);
           return;
         case "preview":
           await terminalService.handlePreview(
@@ -219,21 +253,22 @@ export async function localDaemonWs(app: FastifyInstance) {
 
     conn.onClose(() => {
       clearTimeout(helloTimer);
-      if (hostId && relay.unregisterDaemon(hostId, socket)) {
-        log.info({ hostId }, "local daemon disconnected");
-        void terminalService.handleHostDisconnect(hostId).catch((err) => {
-          log.warn({ err, hostId }, "local-daemon: disconnect handling failed");
+      if (!hostId) return;
+      const closedHost = hostId;
+      // False when a newer connection (here or on another instance)
+      // replaced this one: the host is not offline then.
+      void relay
+        .daemonDisconnected(closedHost, socket)
+        .then(async (wasCurrent) => {
+          if (!wasCurrent) return;
+          log.info({ hostId: closedHost }, "local daemon disconnected");
+          await terminalService.handleHostDisconnect(closedHost);
+        })
+        .catch((err) => {
+          log.warn({ err, hostId: closedHost }, "local-daemon: disconnect handling failed");
         });
-      }
     });
     // Replays the frames that arrived during auth (hello first), in order.
     conn.ready(onMessage);
   });
-}
-
-/** The grid a daemon's snapshot names, when it names a sane one (older daemons don't). */
-function replayGrid(cols: unknown, rows: unknown): { cols: number; rows: number } | undefined {
-  const ok = (n: unknown): n is number =>
-    Number.isInteger(n) && (n as number) > 0 && (n as number) <= 1000;
-  return ok(cols) && ok(rows) ? { cols, rows } : undefined;
 }

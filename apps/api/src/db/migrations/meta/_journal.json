@@ -841,6 +841,13 @@
       "when": 1792010000000,
       "tag": "1792010000_scale_out",
       "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1792020000000,
+      "tag": "1792020000_local_host_capabilities",
+      "breakpoints": true
     }
   ]
 }

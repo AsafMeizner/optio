@@ -194,7 +194,7 @@ describe("handleTranscript / getTranscript", () => {
 describe("transcript backfill", () => {
   it("asks a finished session's host for its conversation and stores the answer", async () => {
     const { host, terminal } = await finishedSession();
-    expect(requestTranscriptBackfill(terminal)).toBe(true);
+    expect(await requestTranscriptBackfill(terminal)).toBe(true);
     const [req] = host.daemon.requests();
     expect(req).toMatchObject({
       terminalId: terminal.id,
@@ -203,7 +203,7 @@ describe("transcript backfill", () => {
       prompt: "hi",
     });
     // In flight: asking again waits on the same request.
-    expect(requestTranscriptBackfill(terminal)).toBe(true);
+    expect(await requestTranscriptBackfill(terminal)).toBe(true);
     expect(host.daemon.requests()).toHaveLength(1);
 
     // Only the answer to that request, from that host, is stored.
@@ -230,14 +230,14 @@ describe("transcript backfill", () => {
     expect(
       await handleTranscriptBackfill(host.id, { ...answer, entries: [entry(4)], done: true }),
     ).toBe(0);
-    expect(requestTranscriptBackfill(terminal)).toBe(false);
+    expect(await requestTranscriptBackfill(terminal)).toBe(false);
     expect(await countTranscript(terminal.id)).toBe(3);
   });
 
   it("waits a while before asking again when the host had nothing", async () => {
     const { host, terminal } = await finishedSession();
     const now = Date.now();
-    expect(requestTranscriptBackfill(terminal, now)).toBe(true);
+    expect(await requestTranscriptBackfill(terminal, now)).toBe(true);
     const [req] = host.daemon.requests();
     await handleTranscriptBackfill(host.id, {
       requestId: req!.requestId,
@@ -246,18 +246,18 @@ describe("transcript backfill", () => {
       done: true,
       error: "No transcript for this session on this machine",
     });
-    expect(requestTranscriptBackfill(terminal, Date.now() + 60_000)).toBe(false);
-    expect(requestTranscriptBackfill(terminal, Date.now() + 11 * 60_000)).toBe(true);
+    expect(await requestTranscriptBackfill(terminal, Date.now() + 60_000)).toBe(false);
+    expect(await requestTranscriptBackfill(terminal, Date.now() + 11 * 60_000)).toBe(true);
     expect(host.daemon.requests()).toHaveLength(2);
   });
 
   it("asks again when a request goes unanswered", async () => {
     const { host, terminal } = await finishedSession();
     const now = Date.now();
-    expect(requestTranscriptBackfill(terminal, now)).toBe(true);
-    expect(requestTranscriptBackfill(terminal, now + 5_000)).toBe(true);
+    expect(await requestTranscriptBackfill(terminal, now)).toBe(true);
+    expect(await requestTranscriptBackfill(terminal, now + 5_000)).toBe(true);
     expect(host.daemon.requests()).toHaveLength(1);
-    expect(requestTranscriptBackfill(terminal, now + 25_000)).toBe(true);
+    expect(await requestTranscriptBackfill(terminal, now + 25_000)).toBe(true);
     const [first, second] = host.daemon.requests();
     expect(second!.requestId).not.toBe(first!.requestId);
     // The superseded request's answer no longer counts.
@@ -273,17 +273,17 @@ describe("transcript backfill", () => {
 
   it("only asks about finished Claude Code / Codex sessions with a session id, on hosts that can answer", async () => {
     const running = await runningAgentTerminal({ transcriptBackfill: true });
-    expect(requestTranscriptBackfill(running.terminal)).toBe(false);
+    expect(await requestTranscriptBackfill(running.terminal)).toBe(false);
 
     const noSession = await finishedSession({ session: false });
-    expect(requestTranscriptBackfill(noSession.terminal)).toBe(false);
+    expect(await requestTranscriptBackfill(noSession.terminal)).toBe(false);
 
     const oldDaemon = await finishedSession({ transcriptBackfill: false });
-    expect(requestTranscriptBackfill(oldDaemon.terminal)).toBe(false);
+    expect(await requestTranscriptBackfill(oldDaemon.terminal)).toBe(false);
 
     const offline = await finishedSession();
     relay.unregisterDaemon(offline.host.id, offline.host.daemon);
-    expect(requestTranscriptBackfill(offline.terminal)).toBe(false);
+    expect(await requestTranscriptBackfill(offline.terminal)).toBe(false);
 
     for (const h of [running, noSession, oldDaemon, offline]) {
       expect(h.host.daemon.requests()).toHaveLength(0);
@@ -291,7 +291,7 @@ describe("transcript backfill", () => {
 
     // A Codex session is read from its rollout, by thread id.
     const codex = await finishedSession({ agent: "codex" });
-    expect(requestTranscriptBackfill(codex.terminal)).toBe(true);
+    expect(await requestTranscriptBackfill(codex.terminal)).toBe(true);
     expect(codex.host.daemon.requests()).toMatchObject([
       { agent: "codex", agentSessionId: SESSION, terminalId: codex.terminal.id },
     ]);

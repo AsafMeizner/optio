@@ -1,23 +1,34 @@
 # Production deployment on EKS
 
-Optio currently runs **one combined API/web pod**. The API also runs the queue
-workers, Local daemon relay, session chat broadcaster and cancellation registry.
-The chart requires `api.replicas: 1`, disables API autoscaling and uses `Recreate`
-for upgrades. This includes a brief control-plane outage; it is not an HA API.
-Queue locks alone do not make the process-local relays safe across replicas.
-Agent pods scale independently within each workspace, owner and access profile.
+The API and the web UI run as one pod (two containers), and any number of those
+pods may share one Postgres and one Redis: set `api.replicas`, or enable
+`api.autoscaling` and let the HPA own the count. Every pod serves the UI, the REST
+API and the WebSockets and runs the queue workers. Upgrades use `Recreate`
+(migrations run at boot, so no old pod serves against a newer schema): each deploy
+is a control-plane gap of seconds, after which browsers, apps and Local daemons
+reconnect. Agent pods scale independently within each workspace, owner and access
+profile.
 
-The pieces of coordination that several API pods will share are already in the
-database ([docs/plans/scale-out.md](plans/scale-out.md)): a run's concurrency
-claim is a Postgres advisory lock, every periodic sweep runs under a lease in
-`leases` and is safe to overlap anyway (ticket claims, a compare-and-swap on a
-schedule's next tick, one active review per PR), inbound webhook deliveries and
-WebSocket upgrade tokens are rows, and repeat jobs are BullMQ job schedulers
-with stable ids, so pods booting in any order leave one schedule per tick. What
-stays **per pod** is the WebSocket connection cap (50 sockets per client
-address, counted by the pod that holds them, so with N pods an address may hold
-up to N times that) and the installation-token cache (each pod mints its own
-hour-long GitHub App token).
+What the pods share lives in the database and Redis
+([docs/plans/scale-out.md](plans/scale-out.md)): a run's concurrency claim is a
+Postgres advisory lock, every periodic sweep runs under a lease in `leases` and is
+safe to overlap anyway (ticket claims, a compare-and-swap on a schedule's next
+tick, one active review per PR), inbound webhook deliveries and WebSocket upgrade
+tokens are rows, and repeat jobs are BullMQ job schedulers with stable ids, so pods
+booting in any order leave one schedule per tick. An agent run is attached to one
+pod at a time and outlives it: when that pod goes away another one re-attaches from
+the run's consumed offset ([docs/reconciliation.md](reconciliation.md#attachment-runs-that-outlive-an-api-process)).
+Session chat reaches viewers on every pod over the session bus. An **Optio Local** daemon is one WebSocket on one
+pod, which holds the host's lease (`local-host:<id>`); viewers, REST calls and
+workers on the other pods reach it over Redis pub/sub, and when that pod goes away
+the daemon reconnects to another and its viewers follow
+([docs/optio-local.md](optio-local.md#several-api-instances)).
+
+What stays **per pod**: the WebSocket connection cap (50 sockets per client
+address, counted by the pod that holds them, so with N pods an address may hold up
+to N times that), and caches each pod rebuilds on its own: the GitHub App
+installation token (each pod mints its own hour-long token), the health, version
+and setup checks, and the metrics gauges. None of them is correctness state.
 
 ## Managed services and existing Secrets
 

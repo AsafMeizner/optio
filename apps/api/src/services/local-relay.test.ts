@@ -46,18 +46,18 @@ class FakeSocket implements RelaySocket {
 describe("local-relay", () => {
   beforeEach(() => resetRelayForTests());
 
-  it("tracks daemon liveness and delivers messages", () => {
+  it("tracks daemon liveness and delivers messages", async () => {
     const daemon = new FakeSocket();
-    expect(isHostOnline("h1")).toBe(false);
-    expect(sendToHost("h1", { type: "pong" })).toBe(false);
+    expect(await isHostOnline("h1")).toBe(false);
+    expect(await sendToHost("h1", { type: "pong" })).toBe(false);
 
     registerDaemon("h1", null, daemon);
-    expect(isHostOnline("h1")).toBe(true);
-    expect(sendToHost("h1", { type: "pong" })).toBe(true);
+    expect(await isHostOnline("h1")).toBe(true);
+    expect(await sendToHost("h1", { type: "pong" })).toBe(true);
     expect(daemon.jsonSent()).toEqual([{ type: "pong" }]);
   });
 
-  it("replaces an older daemon connection for the same host", () => {
+  it("replaces an older daemon connection for the same host", async () => {
     const old = new FakeSocket();
     const fresh = new FakeSocket();
     registerDaemon("h1", null, old);
@@ -66,7 +66,7 @@ describe("local-relay", () => {
 
     // The stale connection's close must not evict the replacement.
     expect(unregisterDaemon("h1", old)).toBe(false);
-    expect(isHostOnline("h1")).toBe(true);
+    expect(await isHostOnline("h1")).toBe(true);
   });
 
   it("routes scrollback to the requesting viewer only, then live output to all", () => {
@@ -144,7 +144,7 @@ describe("local-relay", () => {
     expect(viewer.sent).toHaveLength(1);
   });
 
-  it("closes viewers with 4503 when the daemon disconnects", () => {
+  it("closes viewers with 4503 when the daemon disconnects", async () => {
     const daemon = new FakeSocket();
     registerDaemon("h1", null, daemon);
     const viewer = new FakeSocket();
@@ -154,7 +154,7 @@ describe("local-relay", () => {
 
     expect(unregisterDaemon("h1", daemon)).toBe(true);
     expect(viewer.closedWith?.code).toBe(4503);
-    expect(isHostOnline("h1")).toBe(false);
+    expect(await isHostOnline("h1")).toBe(false);
   });
 
   it("notifyBrowsers reaches enrolled and pending viewers", () => {

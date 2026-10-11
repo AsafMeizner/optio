@@ -38,13 +38,21 @@ assert.ok(
     .filter((d) => ["RoleBinding", "ClusterRoleBinding"].includes(d.kind))
     .some((d) => d.subjects?.some((s: any) => s.name === "optio-agent")),
 );
-for (const arg of [
-  "api.replicas=2",
-  "api.autoscaling.enabled=true",
-  "existingSecrets.DATABASE_URL.key=",
-]) {
+for (const arg of ["existingSecrets.DATABASE_URL.key="]) {
   assert.throws(() => render(["--set", arg]));
 }
+
+// Any number of API/web pods share the database and Redis
+// (docs/plans/scale-out.md); rollouts stay Recreate. With the HPA on, it owns
+// the replica count and the Deployment leaves it out.
+const apiDeployment = (rendered: any[]) =>
+  rendered.find((d) => d.kind === "Deployment" && d.metadata.name === "optio-api");
+const three = apiDeployment(render(["--set", "api.replicas=3"]));
+assert.equal(three.spec.replicas, 3);
+assert.equal(three.spec.strategy.type, "Recreate");
+const autoscaled = render(["--set", "api.autoscaling.enabled=true"]);
+assert.equal(apiDeployment(autoscaled).spec.replicas, undefined);
+assert.ok(autoscaled.some((d) => d.kind === "HorizontalPodAutoscaler"));
 
 // PUBLIC_API_URL is the browser-reachable API origin. The web gets it from
 // web.publicApiUrl, or derives http://localhost:<nodePort> on a NodePort
@@ -83,5 +91,5 @@ for (const dead of ["OPTIO_AGENT_PVC_STORAGE_CLASS", "OPTIO_AGENT_PVC_SIZE"]) {
 assert.equal(envOf(api, "OPTIO_HOME_PVC_STORAGE_CLASS"), "");
 
 console.log(
-  "Production chart: Secret references, combined single replica, isolated service account, public API origin and invalid configurations verified.",
+  "Production chart: Secret references, combined API/web replicas, isolated service account, public API origin and invalid configurations verified.",
 );

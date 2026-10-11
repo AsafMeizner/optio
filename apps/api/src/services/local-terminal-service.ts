@@ -9,7 +9,7 @@
  */
 import { MODEL_PROVIDER_OPTION_KEY } from "@optio/shared";
 import { providerLaunch, resolveProviderForWork } from "./model-provider-service.js";
-import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import {
   LOCAL_DEFAULT_COLS,
   LOCAL_DEFAULT_ROWS,
@@ -356,14 +356,14 @@ export async function createTerminal(input: CreateTerminalInput): Promise<LocalT
  * Returns the current row when someone else already claimed it.
  */
 async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null> {
-  if (!relay.isHostOnline(row.hostId)) {
+  if (!(await relay.isHostOnline(row.hostId))) {
     return updateTerminal(row.id, { state: "pending", pendingReason: "host_offline" });
   }
   const spawnSpec = row.spec as unknown as LocalTerminalSpec;
   if (
     spawnSpec.kind === "agent" &&
     spawnSpec.provider &&
-    !relay.hostCanUseModelProviders(row.hostId)
+    !(await relay.hostCanUseModelProviders(row.hostId))
   ) {
     // A daemon from before model providers would ignore the provider and run
     // the agent on its own sign-in instead: refuse rather than surprise.
@@ -378,7 +378,8 @@ async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null>
     pendingReason: null,
   });
   if (!claimed) return getTerminal(row.id);
-  const sent = relay.sendToHost(row.hostId, {
+  // To the daemon wherever it is connected (acknowledged by its owner).
+  const delivery = await relay.deliverToHost(row.hostId, {
     type: "spawn",
     terminalId: row.id,
     dir: row.dir,
@@ -386,8 +387,12 @@ async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null>
     rows: LOCAL_DEFAULT_ROWS,
     spec: row.spec as unknown as LocalTerminalSpec,
   });
-  if (sent) return claimed;
-  // The daemon dropped between the liveness check and the send: un-claim.
+  // Unacknowledged is not "not sent": the daemon may be starting it. The
+  // row stays `launching` and the spawn is never sent again; `started`
+  // settles it, or the stuck-launching sweep fails it after its threshold.
+  if (delivery !== "offline") return claimed;
+  // Certainly not delivered (the daemon dropped between the liveness check
+  // and the send): un-claim, so the next hello starts it.
   return transitionTerminal(row.id, ["launching"], {
     state: "pending",
     pendingReason: "host_offline",
@@ -429,7 +434,7 @@ export async function killTerminal(row: LocalTerminalRow, signal?: string): Prom
     attentionState: "idle",
     attentionReason: KILLED_REASON,
   });
-  const sent = relay.sendToHost(row.hostId, {
+  const sent = await relay.sendToHost(row.hostId, {
     type: "kill",
     terminalId: row.id,
     signal,
@@ -519,11 +524,14 @@ export async function handleStarted(hostId: string, terminalId: string): Promise
   const row = await getTerminal(terminalId);
   if (!row || row.hostId !== hostId) return;
   const spec = row.spec as unknown as LocalTerminalSpec;
+  // `pending` too: the daemon's word that it runs settles a row whose spawn
+  // was judged undelivered (it got there after all).
   await transitionTerminal(
     terminalId,
-    ["launching"],
+    ["launching", "pending"],
     {
       state: "running",
+      pendingReason: null,
       startedAt: new Date(),
       attentionState: spec.kind === "shell" ? "idle" : "working",
       attentionReason: null,
@@ -993,9 +1001,14 @@ const backfills = new Map<string, Backfill>();
  * none stored). True while a request is in flight — the caller should read
  * again shortly; false when there is nothing to wait for (not an agent
  * session with a session id, the host is offline or its daemon predates
- * backfill, or it recently had nothing).
+ * backfill, or it recently had nothing). The bookkeeping is this
+ * instance's: with several, each asks at most once per window, and the
+ * answer comes back to the one that asked (the frames are idempotent).
  */
-export function requestTranscriptBackfill(row: LocalTerminalRow, now = Date.now()): boolean {
+export async function requestTranscriptBackfill(
+  row: LocalTerminalRow,
+  now = Date.now(),
+): Promise<boolean> {
   const spec = row.spec as unknown as LocalTerminalSpec;
   if (row.state !== "exited" && row.state !== "error") return false;
   if (spec.kind !== "agent" || !row.agentSessionId) return false;
@@ -1007,9 +1020,13 @@ export function requestTranscriptBackfill(row: LocalTerminalRow, now = Date.now(
   const prev = backfills.get(row.id);
   if (prev?.finishedAt === null && now - prev.requestedAt < BACKFILL_TIMEOUT_MS) return true;
   if (prev?.finishedAt != null && now - prev.finishedAt < BACKFILL_RETRY_MS) return false;
-  if (!relay.hostCanBackfillTranscripts(row.hostId)) return false;
+  if (!(await relay.hostCanBackfillTranscripts(row.hostId))) return false;
   const requestId = randomUUID();
-  const sent = relay.sendToHost(row.hostId, {
+  // In flight before the frame goes out: the daemon may answer before the
+  // owner's acknowledgement does, and a concurrent read must not ask again.
+  const entry: Backfill = { requestId, hostId: row.hostId, requestedAt: now, finishedAt: null };
+  backfills.set(row.id, entry);
+  const sent = await relay.sendToHost(row.hostId, {
     type: "transcript-request",
     requestId,
     terminalId: row.id,
@@ -1017,9 +1034,8 @@ export function requestTranscriptBackfill(row: LocalTerminalRow, now = Date.now(
     agentSessionId: row.agentSessionId,
     ...(spec.prompt ? { prompt: spec.prompt } : {}),
   });
-  if (!sent) return false;
-  backfills.set(row.id, { requestId, hostId: row.hostId, requestedAt: now, finishedAt: null });
-  return true;
+  if (!sent && backfills.get(row.id) === entry) backfills.delete(row.id);
+  return sent;
 }
 
 /**
@@ -1347,12 +1363,49 @@ export async function flushParkedTerminals(hostId: string): Promise<void> {
 
 export async function handleHostDisconnect(hostId: string): Promise<void> {
   // Terminal rows stay as-is: a network blip doesn't kill PTYs, and the next
-  // hello reconciles reality. Browsers were closed by the relay (4503).
+  // hello reconciles reality. Browsers were closed by the relay (4503). The
+  // offline mark is skipped when the daemon already reconnected elsewhere.
   const host = await getHost(hostId);
   if (host) {
     const { markHostOffline } = await import("./local-host-service.js");
     await markHostOffline(hostId);
   }
+}
+
+/** A parked terminal younger than this is left to the hello that is flushing it. */
+const PARKED_FLUSH_MIN_AGE_MS = 10_000;
+
+/**
+ * Sweeper: start terminals parked as host-offline whose host is online — a
+ * spawn on one instance can park a terminal just as the daemon's hello on
+ * another flushes the host's parked ones. `trySpawn` claims each row under
+ * CAS, so a hello flushing at the same time can't double-start one.
+ */
+export async function flushParkedForOnlineHosts(): Promise<number> {
+  const cutoff = new Date(Date.now() - PARKED_FLUSH_MIN_AGE_MS);
+  const parked = await db
+    .select()
+    .from(localTerminals)
+    .where(
+      and(
+        eq(localTerminals.state, "pending"),
+        eq(localTerminals.pendingReason, "host_offline"),
+        lt(localTerminals.updatedAt, cutoff),
+      ),
+    );
+  let started = 0;
+  const online = new Map<string, boolean>();
+  for (const row of parked) {
+    let up = online.get(row.hostId);
+    if (up === undefined) {
+      up = await relay.isHostOnline(row.hostId);
+      online.set(row.hostId, up);
+    }
+    if (!up) continue;
+    const spawned = await trySpawn(row);
+    if (spawned && spawned.state !== "pending") started++;
+  }
+  return started;
 }
 
 /** Sweeper: fail `launching` rows whose daemon never acked the spawn. */
@@ -1365,7 +1418,7 @@ export async function sweepStuckLaunching(): Promise<void> {
   for (const row of stuck) {
     // An API outage can lose the spawn acknowledgement while the PTY lives.
     // Wait for the daemon's authoritative hello; do not offer a duplicate retry.
-    if (!relay.isHostOnline(row.hostId)) continue;
+    if (!(await relay.isHostOnline(row.hostId))) continue;
     logger.warn({ terminalId: row.id, hostId: row.hostId }, "local: spawn timed out");
     // CAS: a `started` frame racing the sweep wins the row instead of being
     // clobbered back to error.
@@ -1396,20 +1449,43 @@ export async function noteInteraction(terminalId: string): Promise<void> {
   const now = Date.now();
   const last = interactionWrittenAt.get(terminalId);
   if (last !== undefined && now - last < INTERACTION_WRITE_INTERVAL_MS) return;
-  interactionWrittenAt.set(terminalId, now);
   if (interactionWrittenAt.size > 5000) {
     for (const [id, at] of interactionWrittenAt) {
       if (now - at > INTERACTION_WRITE_INTERVAL_MS) interactionWrittenAt.delete(id);
     }
   }
   try {
-    const [row] = await db
+    // Written only when the stored stamp is a minute old (whichever instance
+    // wrote it); either way this instance's throttle starts from the stamp
+    // as stored, not from now.
+    const [written] = await db
       .update(localTerminals)
       .set({ lastInteractedAt: new Date(now) })
-      .where(eq(localTerminals.id, terminalId))
+      .where(
+        and(
+          eq(localTerminals.id, terminalId),
+          or(
+            isNull(localTerminals.lastInteractedAt),
+            lt(localTerminals.lastInteractedAt, new Date(now - INTERACTION_WRITE_INTERVAL_MS)),
+          ),
+        ),
+      )
       .returning();
-    if (row) {
-      await publishLocalChanged({ terminalId: row.id, hostId: row.hostId, userId: row.userId });
+    if (written) {
+      interactionWrittenAt.set(terminalId, written.lastInteractedAt?.getTime() ?? now);
+      await publishLocalChanged({
+        terminalId: written.id,
+        hostId: written.hostId,
+        userId: written.userId,
+      });
+      return;
+    }
+    const [stored] = await db
+      .select({ lastInteractedAt: localTerminals.lastInteractedAt })
+      .from(localTerminals)
+      .where(eq(localTerminals.id, terminalId));
+    if (stored?.lastInteractedAt) {
+      interactionWrittenAt.set(terminalId, stored.lastInteractedAt.getTime());
     }
   } catch (err) {
     logger.warn({ err, terminalId }, "local: failed to record interaction");

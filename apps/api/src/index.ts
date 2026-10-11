@@ -234,6 +234,10 @@ async function main() {
   });
 
   const app = await buildServer();
+  // Local hosts are owned by lease from the first daemon hello on, so other
+  // instances can route to them (docs/plans/scale-out.md §4).
+  const { enableLocalCluster } = await import("./services/local-relay.js");
+  enableLocalCluster();
   const { recoverSessionTurns } = await import("./services/session-turn-service.js");
   await recoverSessionTurns();
   // Runs in flight are left alone: their agents keep going in their pods
@@ -246,6 +250,12 @@ async function main() {
   // dev tasks (e.g. @optio/web never starting).
   await app.listen({ port: PORT, host: HOST });
   logger.info(`API server listening on ${HOST}:${PORT}`);
+
+  // Optio Local across instances (local-relay.ts / local-bus.ts): the bus
+  // in the background like the session bus; until it is up, Local works on
+  // the daemons and viewers connected to this instance.
+  const { localBus } = await import("./services/local-bus.js");
+  localBus.startInBackground();
 
   // Session chat frames and control from every other instance (session-bus.ts).
   // In the background, retried with backoff: REST serves while Redis is down,
@@ -374,6 +384,7 @@ async function main() {
     await configSyncWorker?.close();
     await app.close();
     await stopSessionBus();
+    await localBus.stop();
     await closeSharedRedisClients();
     // Flush pending OTel spans/metrics with 5s timeout
     await shutdownTelemetry();

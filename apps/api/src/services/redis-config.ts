@@ -308,6 +308,102 @@ export function isClusterClient(client: RedisClient): client is Cluster {
   return (client as Cluster).isCluster === true;
 }
 
+// ── Ordered pub/sub ─────────────────────────────────────────────────────────
+//
+// A bus whose subscribers rely on publish order (the session bus, the Local
+// bus: a terminal's snapshot, then its output) can't use classic PUBLISH in
+// cluster mode: ioredis sends each PUBLISH to some master and the cluster bus
+// fans it out, so two messages on one channel can arrive in either order.
+// Sharded pub/sub (Redis 7: SPUBLISH / SSUBSCRIBE) keeps a channel on the
+// shard that owns its hash slot, and one connection's messages to one
+// channel arrive in the order they were sent. Standalone keeps PUBLISH /
+// SUBSCRIBE (one server: already ordered). Publisher and subscriber must
+// agree, so both sides go through these helpers.
+
+/** Resolves when a sharded subscriber client can take SSUBSCRIBE. */
+const shardedReady = new WeakMap<Cluster, Promise<void>>();
+const SHARDED_READY_TIMEOUT_MS = 15_000;
+
+/**
+ * A dedicated connection for an ordered bus's subscriptions: a plain client
+ * in standalone mode, a cluster client with one sharded subscriber per
+ * master in cluster mode. Callers disconnect it when done.
+ */
+export function createOrderedSubscriber(connectionName = "optio-ordered-subscriber"): RedisClient {
+  if (mode !== "cluster") return createRedisClient({ connectionName });
+  const client = logErrors(
+    new Cluster([...redisClusterNodes], {
+      ...clusterOptions(connectionName),
+      shardedSubscribers: true,
+    }),
+    connectionName,
+  );
+  shardedReady.set(
+    client,
+    new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Redis sharded subscribers not ready in time")),
+        SHARDED_READY_TIMEOUT_MS,
+      );
+      timer.unref?.();
+      client.once("subscribersReady", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    }),
+  );
+  return client;
+}
+
+/** Subscribes an ordered subscriber to `channels` (one SSUBSCRIBE each in cluster mode). */
+export async function subscribeOrdered(client: RedisClient, channels: string[]): Promise<void> {
+  if (channels.length === 0) return;
+  if (!isClusterClient(client)) {
+    await client.subscribe(...channels);
+    return;
+  }
+  await shardedReady.get(client);
+  // One SSUBSCRIBE may only name one slot's channels; ours rarely share one.
+  for (const channel of channels) await client.ssubscribe(channel);
+}
+
+/** Drops an ordered subscriber's `channels`. */
+export async function unsubscribeOrdered(client: RedisClient, channels: string[]): Promise<void> {
+  if (channels.length === 0) return;
+  if (!isClusterClient(client)) {
+    await client.unsubscribe(...channels);
+    return;
+  }
+  for (const channel of channels) await client.sunsubscribe(channel);
+}
+
+/** What an ordered subscriber does with each message (raw bytes). */
+export function onOrderedMessage(
+  client: RedisClient,
+  handler: (channel: string, message: Buffer) => void,
+): void {
+  const listener = (channel: Buffer | string, message: Buffer) =>
+    handler(typeof channel === "string" ? channel : channel.toString("utf-8"), message);
+  if (isClusterClient(client)) client.on("smessageBuffer", listener);
+  else client.on("messageBuffer", listener);
+}
+
+/**
+ * Publishes for an ordered subscriber. Resolves with how many subscribers
+ * received it (in cluster mode, on the channel's shard, where all of its
+ * subscribers are).
+ */
+export function publishOrdered(
+  client: RedisClient,
+  channel: string,
+  message: string | Buffer,
+): Promise<number> {
+  if (isClusterClient(client)) {
+    return (client.spublish(channel, message) as Promise<unknown>).then(Number);
+  }
+  return client.publish(channel, message);
+}
+
 let bullmqCluster: Cluster | null = null;
 
 /**

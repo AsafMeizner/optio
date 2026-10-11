@@ -10,8 +10,9 @@
  * guarded by the holder. Nothing here waits: a caller that loses a lease
  * does something else, or tries again later.
  */
-import { sql } from "drizzle-orm";
+import { and, gt, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
+import { leases } from "../db/schema.js";
 import { INSTANCE_ID } from "./instance.js";
 
 const MAX_KEY = 200;
@@ -67,6 +68,17 @@ export async function leaseHolder(key: string): Promise<string | null> {
   const rows = await db.execute<{ holder: string }>(sql`
     SELECT "holder" FROM "leases" WHERE "key" = ${assertKey(key)} AND "expires_at" > now()`);
   return rows[0]?.holder ?? null;
+}
+
+/** Who holds each of `keys` right now (one query); keys nobody holds are absent. */
+export async function leaseHolders(keys: string[]): Promise<Map<string, string>> {
+  if (keys.length === 0) return new Map();
+  for (const key of keys) assertKey(key);
+  const rows = await db
+    .select({ key: leases.key, holder: leases.holder })
+    .from(leases)
+    .where(and(inArray(leases.key, keys), gt(leases.expiresAt, sql`now()`)));
+  return new Map(rows.map((r) => [r.key, r.holder]));
 }
 
 /**

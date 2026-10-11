@@ -13,6 +13,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
 import { startApiServer, waitFor, type ApiServerHandle } from "../src/test-utils/e2e/api-server.js";
+import { FakeDaemon, FakeViewer, type Json } from "../src/test-utils/e2e/local-fakes.js";
 
 let server: ApiServerHandle;
 let wsBase: string;
@@ -37,121 +38,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<{ status: numbe
     ...init,
   });
   return { status: res.status, body: (await res.json()) as T };
-}
-
-type Json = Record<string, unknown>;
-
-/** Minimal scripted daemon speaking the /ws/local/daemon protocol. */
-class FakeDaemon {
-  ws!: WebSocket;
-  inbox: Json[] = [];
-  private waiters: Array<{ match: (m: Json) => boolean; resolve: (m: Json) => void }> = [];
-
-  async connect(
-    hostId: string,
-    dirs: Json[],
-    terminals: Json[] = [],
-    capabilities: Json = {},
-  ): Promise<void> {
-    this.ws = new WebSocket(`${wsBase}/ws/local/daemon`);
-    await new Promise<void>((resolve, reject) => {
-      this.ws.onopen = () => resolve();
-      this.ws.onerror = () => reject(new Error("daemon ws failed"));
-    });
-    this.ws.onmessage = (ev) => {
-      const msg = JSON.parse(String(ev.data)) as Json;
-      const idx = this.waiters.findIndex((w) => w.match(msg));
-      if (idx >= 0) {
-        const [w] = this.waiters.splice(idx, 1);
-        w.resolve(msg);
-      } else {
-        this.inbox.push(msg);
-      }
-    };
-    this.send({
-      type: "hello",
-      hostId,
-      daemonVersion: "0.0.0-e2e",
-      dirs,
-      terminals,
-      ...capabilities,
-    });
-  }
-
-  send(msg: Json): void {
-    this.ws.send(JSON.stringify(msg));
-  }
-
-  /** Await a message matching `match`, checking the inbox first. */
-  async next(match: (m: Json) => boolean, timeoutMs = 15_000): Promise<Json> {
-    const idx = this.inbox.findIndex(match);
-    if (idx >= 0) return this.inbox.splice(idx, 1)[0];
-    return new Promise<Json>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`fake daemon: timed out waiting for message`)),
-        timeoutMs,
-      );
-      this.waiters.push({
-        match,
-        resolve: (m) => {
-          clearTimeout(timer);
-          resolve(m);
-        },
-      });
-    });
-  }
-
-  close(): void {
-    try {
-      this.ws.close();
-    } catch {
-      // ignore
-    }
-  }
-}
-
-/** Fake browser viewer for /ws/local/terminals/:id/stream. */
-class FakeViewer {
-  ws!: WebSocket;
-  binary: Buffer[] = [];
-  control: Json[] = [];
-  /** Every frame in arrival order — "control:<type>" or "binary". */
-  order: string[] = [];
-
-  async connect(terminalId: string): Promise<void> {
-    this.ws = new WebSocket(`${wsBase}/ws/local/terminals/${terminalId}/stream`);
-    this.ws.binaryType = "arraybuffer";
-    await new Promise<void>((resolve, reject) => {
-      this.ws.onopen = () => resolve();
-      this.ws.onerror = () => reject(new Error("viewer ws failed"));
-    });
-    this.ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        const msg = JSON.parse(ev.data) as Json;
-        this.control.push(msg);
-        this.order.push(`control:${String(msg.type)}`);
-      } else {
-        this.binary.push(Buffer.from(ev.data as ArrayBuffer));
-        this.order.push("binary");
-      }
-    };
-  }
-
-  text(): string {
-    return Buffer.concat(this.binary).toString("utf-8");
-  }
-
-  send(msg: Json): void {
-    this.ws.send(JSON.stringify(msg));
-  }
-
-  close(): void {
-    try {
-      this.ws.close();
-    } catch {
-      // ignore
-    }
-  }
 }
 
 const DIRS = [{ path: "/tmp/e2e-repo", repoUrl: "https://github.com/acme/e2e" }];
@@ -193,7 +79,7 @@ describe("optio local e2e", () => {
 
   it("runs the full spawn → stream → input → attention → exit loop", async () => {
     const hostId = await registerHost("e2e-full-loop");
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
 
@@ -224,7 +110,7 @@ describe("optio local e2e", () => {
     await waitFor(async () => ((await getTerminal(terminalId)).state === "running" ? true : null));
 
     // Browser attaches: daemon gets attach, replies with scrollback, then live output.
-    const viewer = new FakeViewer();
+    const viewer = new FakeViewer(wsBase);
     cleanups.push(() => viewer.close());
     await viewer.connect(terminalId);
 
@@ -273,7 +159,7 @@ describe("optio local e2e", () => {
 
   it("replays the recorded final screen, at its grid, to a viewer opening an exited terminal", async () => {
     const hostId = await registerHost("e2e-snapshot");
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
 
@@ -304,7 +190,7 @@ describe("optio local e2e", () => {
 
     // A viewer arriving after the fact gets: status, the recorded grid, the
     // screen bytes, then exit — in that order, so it lays out before painting.
-    const viewer = new FakeViewer();
+    const viewer = new FakeViewer(wsBase);
     cleanups.push(() => viewer.close());
     await viewer.connect(terminalId);
     await waitFor(async () => (viewer.control.some((m) => m.type === "exit") ? true : null));
@@ -318,7 +204,7 @@ describe("optio local e2e", () => {
   /** A running terminal on a fresh host, plus a viewer whose attach reached the daemon. */
   async function runningTerminalWithPendingViewer(hostname: string) {
     const hostId = await registerHost(hostname);
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
     const { body } = await api<TerminalBody>("/api/local/terminals", {
@@ -334,7 +220,7 @@ describe("optio local e2e", () => {
     daemon.send({ type: "started", terminalId });
     await waitFor(async () => ((await getTerminal(terminalId)).state === "running" ? true : null));
 
-    const viewer = new FakeViewer();
+    const viewer = new FakeViewer(wsBase);
     cleanups.push(() => viewer.close());
     await viewer.connect(terminalId);
     const attach = await daemon.next((m) => m.type === "attach" && m.terminalId === terminalId);
@@ -439,7 +325,7 @@ describe("optio local e2e", () => {
 
   it("accepts a bodiless kill (curl / CLI callers send no JSON body)", async () => {
     const hostId = await registerHost("e2e-bare-kill");
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     await daemon.connect(hostId, DIRS);
     try {
       const created = await api<TerminalBody>("/api/local/terminals", {
@@ -473,7 +359,7 @@ describe("optio local e2e", () => {
     expect(status).toBe(201);
     expect(body.terminal.state).toBe("pending");
 
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
 
@@ -496,7 +382,7 @@ describe("optio local e2e", () => {
 
   it("spawns a blueprint via webhook ingress with quoted params", async () => {
     const hostId = await registerHost("e2e-webhook");
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
 
@@ -543,7 +429,7 @@ describe("optio local e2e", () => {
 
   it("spawns a headless agent from a GitHub review request and resumes it as a chat", async () => {
     const hostId = await registerHost("e2e-github");
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
 
@@ -631,7 +517,7 @@ describe("optio local e2e", () => {
 
   it("spawns an interactive agent from a Slack channel message", async () => {
     const hostId = await registerHost("e2e-slack");
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
 
@@ -690,7 +576,7 @@ describe("optio local e2e", () => {
 
   it("closes viewers when the daemon disconnects and reconciles on reconnect", async () => {
     const hostId = await registerHost("e2e-reconnect");
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     await daemon.connect(hostId, DIRS);
 
     const { body } = await api<TerminalBody>("/api/local/terminals", {
@@ -702,7 +588,7 @@ describe("optio local e2e", () => {
     daemon.send({ type: "started", terminalId });
     await waitFor(async () => ((await getTerminal(terminalId)).state === "running" ? true : null));
 
-    const viewer = new FakeViewer();
+    const viewer = new FakeViewer(wsBase);
     cleanups.push(() => viewer.close());
     await viewer.connect(terminalId);
     await daemon.next((m) => m.type === "attach");
@@ -719,7 +605,7 @@ describe("optio local e2e", () => {
     });
 
     // Daemon restarted with no terminals: the row is reconciled to exited.
-    const daemon2 = new FakeDaemon();
+    const daemon2 = new FakeDaemon(wsBase);
     cleanups.push(() => daemon2.close());
     await daemon2.connect(hostId, DIRS, []);
     await waitFor(async () => ((await getTerminal(terminalId)).state === "exited" ? true : null));
@@ -727,7 +613,7 @@ describe("optio local e2e", () => {
 
   it("sizes the PTY for the screen in use, and tells each viewer whose grid it is", async () => {
     const hostId = await registerHost("e2e-grid");
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
     await waitFor(async () => {
@@ -777,7 +663,7 @@ describe("optio local e2e", () => {
     });
 
     // The laptop opens the session: the PTY is fitted to it.
-    const laptop = new FakeViewer();
+    const laptop = new FakeViewer(wsBase);
     cleanups.push(() => laptop.close());
     await laptop.connect(terminalId);
     await answerAttach();
@@ -786,7 +672,7 @@ describe("optio local e2e", () => {
     await told(laptop, { cols: 160, rows: 45, yours: true });
 
     // The phone opens it while the laptop is in use: it watches the laptop's grid.
-    const phone = new FakeViewer();
+    const phone = new FakeViewer(wsBase);
     cleanups.push(() => phone.close());
     await phone.connect(terminalId);
     await answerAttach();
@@ -855,7 +741,7 @@ describe("optio local e2e: machine identity, resume, and backfill", () => {
   it("keeps a machine through a hostname change, resumes once, and merges a machine registered twice", async () => {
     // First paired before daemons sent their id; a session ran and ended there.
     const old = await register({ hostname: "e2e-M1-Macbook.local" });
-    const oldDaemon = new FakeDaemon();
+    const oldDaemon = new FakeDaemon(wsBase);
     cleanups.push(() => oldDaemon.close());
     await oldDaemon.connect(old.id, DIRS);
     const finished = await finishedAgentSession(oldDaemon, old.id);
@@ -890,7 +776,7 @@ describe("optio local e2e: machine identity, resume, and backfill", () => {
     expect(second.body).toMatchObject({ reused: true, terminal: { id: first.body.terminal.id } });
 
     // A connected machine can't be merged away.
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(current.id, DIRS);
     await waitFor(async () => {
@@ -927,7 +813,7 @@ describe("optio local e2e: machine identity, resume, and backfill", () => {
 
   it("reads a finished session's conversation off its machine when it was never streamed", async () => {
     const host = await register({ hostname: "e2e-backfill" });
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(host.id, DIRS, [], { transcriptBackfill: true });
     const terminalId = await finishedAgentSession(daemon, host.id);
@@ -980,7 +866,7 @@ describe("optio local e2e: machine identity, resume, and backfill", () => {
 
     // A daemon that didn't offer (an older CLI, or --no-remote-dirs) is never asked.
     const older = await register({ hostname: "e2e-dirs-older" });
-    const olderDaemon = new FakeDaemon();
+    const olderDaemon = new FakeDaemon(wsBase);
     cleanups.push(() => olderDaemon.close());
     await olderDaemon.connect(older.id, DIRS);
     await waitFor(async () => ((await hostDirs(older.id)).state === "online" ? true : null));
@@ -993,7 +879,7 @@ describe("optio local e2e: machine identity, resume, and backfill", () => {
     expect((await hostDirs(older.id)).manageDirs).toBe(false);
 
     const host = await register({ hostname: "e2e-dirs" });
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(host.id, DIRS, [], { manageDirs: true });
     await waitFor(async () => ((await hostDirs(host.id)).manageDirs ? true : null));
@@ -1083,7 +969,7 @@ describe("optio local e2e: machine identity, resume, and backfill", () => {
       catalog: { models: Array<{ id: string; latest?: boolean; efforts?: string[] }> };
     };
     const host = await register({ hostname: "e2e-codex-models" });
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase);
     cleanups.push(() => daemon.close());
     await daemon.connect(host.id, DIRS);
 

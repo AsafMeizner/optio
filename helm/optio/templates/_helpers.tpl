@@ -43,9 +43,6 @@ Validate required values for production deployments.
 Called from secrets.yaml to fail early on misconfiguration.
 */}}
 {{- define "optio.validateRequired" -}}
-{{- if or (ne (int .Values.api.replicas) 1) .Values.api.autoscaling.enabled -}}
-  {{- fail "Optio requires api.replicas=1 and api.autoscaling.enabled=false: the API/web pod owns process-local session relays." -}}
-{{- end -}}
 {{- $redisMode := .Values.externalRedis.mode | default "standalone" -}}
 {{- if and (ne $redisMode "standalone") (ne $redisMode "cluster") -}}
   {{- fail (printf "externalRedis.mode must be \"standalone\" or \"cluster\" (got %q)" $redisMode) -}}

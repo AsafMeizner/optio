@@ -13,7 +13,7 @@ const clients = vi.hoisted(() => ({
 
 vi.mock("./event-bus.js", () => ({
   getRedisClient: () => ({ publish: vi.fn().mockResolvedValue(1) }),
-  createSubscriber: () => {
+  createOrderedBusSubscriber: () => {
     const client = Object.assign(new EventEmitter(), {
       subscribe: vi.fn(async () => {
         if (clients.failures > 0) {

@@ -14,7 +14,7 @@ import {
   resetDirRequestsForTests,
 } from "./local-dirs-service.js";
 import {
-  hostCanManageDirs,
+  hostCapabilities,
   registerDaemon,
   resetRelayForTests,
   type RelaySocket,
@@ -36,6 +36,11 @@ class FakeSocket implements RelaySocket {
 }
 
 const host = { id: "h1", name: "laptop", userId: "u1" } as LocalHostRow;
+
+/** Lets the request's capability check and send run (microtasks only: fake timers stay put). */
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+};
 const DIRS: LocalHostDir[] = [{ path: "/Users/me/app", repoUrl: "git@github.com:acme/app.git" }];
 
 describe("local-dirs-service", () => {
@@ -57,9 +62,10 @@ describe("local-dirs-service", () => {
   it("asks the daemon, then mirrors its new list onto the host", async () => {
     const socket = new FakeSocket();
     registerDaemon("h1", "u1", socket, { manageDirs: true });
-    expect(hostCanManageDirs("h1")).toBe(true);
+    expect((await hostCapabilities("h1"))?.manageDirs).toBe(true);
 
     const pending = changeHostDir(host, "add", "~/app");
+    await flush();
     const req = socket.last();
     expect(req).toMatchObject({ type: "dirs", op: "add", path: "~/app" });
     expect(
@@ -81,6 +87,7 @@ describe("local-dirs-service", () => {
     const socket = new FakeSocket();
     registerDaemon("h1", "u1", socket, { manageDirs: true });
     const pending = changeHostDir(host, "remove", "/Users/me/other");
+    await flush();
     deliverDirsResult("h1", {
       type: "dirs-result",
       requestId: socket.last().requestId,
@@ -98,6 +105,7 @@ describe("local-dirs-service", () => {
     const socket = new FakeSocket();
     registerDaemon("h1", "u1", socket, { manageDirs: true });
     const pending = changeHostDir(host, "add", "/Users/me/app");
+    await flush();
     const settled = expect(pending).rejects.toMatchObject({ status: 504 });
     const requestId = socket.last().requestId;
     expect(deliverDirsResult("h2", { type: "dirs-result", requestId, dirs: [] })).toBe(false);
@@ -114,7 +122,7 @@ describe("local-dirs-service", () => {
     });
 
     registerDaemon("h1", "u1", new FakeSocket()); // an older daemon: no manageDirs
-    expect(hostCanManageDirs("h1")).toBe(false);
+    expect((await hostCapabilities("h1"))?.manageDirs).toBe(false);
     const err = await changeHostDir(host, "add", "/Users/me/app").catch((e) => e);
     expect(err).toBeInstanceOf(HostDirError);
     expect(err.status).toBe(409);

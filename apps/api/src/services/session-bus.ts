@@ -6,7 +6,9 @@
  * and its viewers may be connected to any instance. Frames are published on
  * one Redis channel, `optio:session-bus`, that every instance subscribes to
  * once at boot (`startSessionBus`); each instance delivers what arrives to
- * its own sockets. Control messages (interrupt a turn, a session ended, a
+ * its own sockets. Frames arrive in the order they were published: in
+ * cluster mode the channel is sharded pub/sub (`publishOrdered` in
+ * redis-config.ts), since a classic PUBLISH can land on any master. Control messages (interrupt a turn, a session ended, a
  * share revoked) ride the same channel, so the instance running the turn or
  * holding the sockets acts wherever it is.
  *
@@ -17,8 +19,14 @@
  * must survive a lost message is in Postgres (session-turn-service.ts).
  */
 import { INSTANCE_ID } from "./instance.js";
-import { createSubscriber, getRedisClient } from "./event-bus.js";
-import type { RedisClient } from "./redis-config.js";
+import { createOrderedBusSubscriber, getRedisClient } from "./event-bus.js";
+import {
+  onOrderedMessage,
+  publishOrdered,
+  subscribeOrdered,
+  unsubscribeOrdered,
+  type RedisClient,
+} from "./redis-config.js";
 import { logger } from "../logger.js";
 
 export const SESSION_BUS_CHANNEL = "optio:session-bus";
@@ -78,7 +86,7 @@ let publishFailures = 0;
 /** Publishes to every instance (including this one, which ignores it). */
 export async function publishSessionBus(message: SessionBusMessage): Promise<void> {
   try {
-    await getRedisClient().publish(SESSION_BUS_CHANNEL, JSON.stringify(message));
+    await publishOrdered(getRedisClient(), SESSION_BUS_CHANNEL, JSON.stringify(message));
     publishFailures = 0;
   } catch (err) {
     // The local effect already happened; other instances miss only the live
@@ -114,10 +122,10 @@ function onBusMessage(channel: string, raw: string): void {
 
 /** One attempt: a fresh subscriber, SUBSCRIBE, and only then "started". */
 async function subscribeOnce(): Promise<void> {
-  const sub = createSubscriber();
-  sub.on("message", onBusMessage);
+  const sub = createOrderedBusSubscriber();
+  onOrderedMessage(sub, (channel, raw) => onBusMessage(channel, raw.toString("utf-8")));
   try {
-    await sub.subscribe(SESSION_BUS_CHANNEL);
+    await subscribeOrdered(sub, [SESSION_BUS_CHANNEL]);
   } catch (err) {
     // Nothing half-started is left behind: the client goes, the state resets.
     sub.disconnect();
@@ -181,7 +189,7 @@ export async function stopSessionBus(): Promise<void> {
   subscribed = false;
   if (!sub) return;
   try {
-    await sub.unsubscribe(SESSION_BUS_CHANNEL);
+    await unsubscribeOrdered(sub, [SESSION_BUS_CHANNEL]);
   } catch {
     // Already gone.
   }

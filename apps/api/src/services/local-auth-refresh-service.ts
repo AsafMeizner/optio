@@ -12,11 +12,17 @@
  *
  * Only a host owned by a workspace admin (or any host in auth-disabled dev)
  * may supply a token: it is the same power the Secrets page gates on admin.
+ *
+ * The token never crosses Redis. With several API instances the whole
+ * refresh — ask the daemon, validate, store — runs on the instance its
+ * daemon is connected to (an owner task, `relay.runOnOwner`), and only the
+ * outcome travels back to the instance that asked.
  */
 import { randomUUID } from "node:crypto";
 import type { LocalDaemonMessage } from "@optio/shared";
 import { logger } from "../logger.js";
 import * as relay from "./local-relay.js";
+import { HostRequests } from "./local-host-requests.js";
 import { getHost, type LocalHostRow } from "./local-host-service.js";
 import { isAuthDisabled } from "./oauth/index.js";
 import { getUserRole } from "./workspace-service.js";
@@ -24,6 +30,10 @@ import { invalidateCredentialsCache, invalidateUsageCache } from "./auth-service
 import { storeSecret } from "./secret-service.js";
 import { publishEvent } from "./event-bus.js";
 import { validateClaudeToken, recordTokenValidation } from "../workers/token-validation-worker.js";
+import { like } from "drizzle-orm";
+import { db } from "../db/client.js";
+import { leases } from "../db/schema.js";
+import { acquireLease } from "./lease-service.js";
 
 /**
  * A daemon whose own login has expired runs `claude` once to renew it before
@@ -35,42 +45,39 @@ const AUTO_RETRY_WINDOW_MS = 10 * 60_000;
 
 type CredentialsResult = Extract<LocalDaemonMessage, { type: "credentials-result" }>;
 
-interface Pending {
-  hostId: string;
-  resolve: (r: CredentialsResult) => void;
-  timer: NodeJS.Timeout;
-}
+const credentials = new HostRequests<CredentialsResult>({
+  timeoutMs: REQUEST_TIMEOUT_MS,
+  timeoutError: () => new Error("The machine did not answer in time"),
+  offlineError: () => new Error("The machine is offline"),
+});
 
-const pending = new Map<string, Pending>();
-const lastAutoAttempt = new Map<string, number>();
+/** The owner task that refreshes the token from a daemon connected to this instance. */
+const REFRESH_TASK = "refresh-claude-token";
+
+/**
+ * One automatic attempt per host per window, across every API instance: a
+ * lease nobody renews (each claim names a fresh holder, so it is taken only
+ * once the last one lapsed).
+ */
+const AUTO_ATTEMPT_LEASE = (hostId: string) => `claude-auto-refresh:${hostId}`;
+function claimAutoAttempt(hostId: string): Promise<boolean> {
+  return acquireLease(AUTO_ATTEMPT_LEASE(hostId), AUTO_RETRY_WINDOW_MS, randomUUID());
+}
 
 export type RefreshOutcome = { ok: true; hostId: string } | { ok: false; error: string };
 
-/** Ask a host's daemon for its Claude access token. Rejects when offline or silent. */
+/**
+ * Ask a host's daemon for its Claude access token. Only ever sent to a
+ * daemon connected to this instance (the owner task's side). Rejects when
+ * offline or silent.
+ */
 export function requestCredentials(hostId: string): Promise<CredentialsResult> {
-  return new Promise((resolve, reject) => {
-    const requestId = randomUUID();
-    const timer = setTimeout(() => {
-      pending.delete(requestId);
-      reject(new Error("The machine did not answer in time"));
-    }, REQUEST_TIMEOUT_MS);
-    pending.set(requestId, { hostId, resolve, timer });
-    if (!relay.sendToHost(hostId, { type: "credentials", requestId })) {
-      clearTimeout(timer);
-      pending.delete(requestId);
-      reject(new Error("The machine is offline"));
-    }
-  });
+  return credentials.ask(hostId, (requestId) => ({ type: "credentials", requestId }));
 }
 
 /** A daemon answered. Ignored unless the request is pending for that same host. */
 export function deliverCredentialsResult(hostId: string, msg: CredentialsResult): boolean {
-  const p = pending.get(msg.requestId);
-  if (!p || p.hostId !== hostId) return false;
-  clearTimeout(p.timer);
-  pending.delete(msg.requestId);
-  p.resolve(msg);
-  return true;
+  return credentials.deliver(hostId, msg);
 }
 
 /** Whether this host's owner is allowed to seed the cluster's Claude token. */
@@ -81,17 +88,37 @@ export async function hostMayRefreshToken(host: LocalHostRow): Promise<boolean> 
 }
 
 /**
- * Pull the token from `host`, validate it, store it. `trigger` is for the
- * log line. Never throws: every failure is an outcome the UI can show.
+ * Pull the token from `host`, validate it, store it — on the instance its
+ * daemon is connected to. `trigger` is for the log line. Never throws:
+ * every failure is an outcome the UI can show.
  */
 export async function refreshClaudeTokenFromHost(
   host: LocalHostRow,
   trigger: "manual" | "auto",
 ): Promise<RefreshOutcome> {
-  if (!relay.hostHasClaudeCredentials(host.id)) {
+  let ran: Awaited<ReturnType<typeof relay.runOnOwner>>;
+  try {
+    ran = await relay.runOnOwner(host.id, REFRESH_TASK, { trigger }, REQUEST_TIMEOUT_MS + 30_000);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (ran === "offline") return { ok: false, error: "That machine is offline" };
+  if (ran === "timeout") return { ok: false, error: "The machine did not answer in time" };
+  const outcome = ran.result as RefreshOutcome | null;
+  return outcome && typeof outcome === "object" && "ok" in outcome
+    ? outcome
+    : { ok: false, error: "The machine's API instance sent no outcome" };
+}
+
+/** The refresh itself, on the instance the host's daemon is connected to. */
+async function refreshHere(hostId: string, trigger: "manual" | "auto"): Promise<RefreshOutcome> {
+  const host = await getHost(hostId);
+  if (!host) return { ok: false, error: "That machine was removed" };
+  const caps = await relay.hostCapabilities(host.id);
+  if (!caps?.claudeCredentials) {
     return {
       ok: false,
-      error: relay.isHostOnline(host.id)
+      error: caps
         ? "That machine has no Claude Code login to share — run `claude` on it and sign in"
         : "That machine is offline",
     };
@@ -132,16 +159,17 @@ export async function refreshClaudeTokenFromHost(
   return { ok: true, hostId: host.id };
 }
 
+relay.onOwnerTask(REFRESH_TASK, (hostId, args) =>
+  refreshHere(hostId, args.trigger === "auto" ? "auto" : "manual"),
+);
+
 /**
  * Try every online, credential-bearing host whose owner may seed the token
  * (each at most once per window). True when one of them worked.
  */
 export async function autoRefreshClaudeToken(reason: string): Promise<boolean> {
-  const now = Date.now();
-  for (const { hostId } of relay.hostsWithClaudeCredentials()) {
-    const last = lastAutoAttempt.get(hostId) ?? 0;
-    if (now - last < AUTO_RETRY_WINDOW_MS) continue;
-    lastAutoAttempt.set(hostId, now);
+  for (const { hostId } of await relay.hostsWithClaudeCredentials()) {
+    if (!(await claimAutoAttempt(hostId))) continue;
     const host = await getHost(hostId);
     if (!host || !(await hostMayRefreshToken(host))) continue;
     const outcome = await refreshClaudeTokenFromHost(host, "auto");
@@ -160,14 +188,11 @@ export async function maybeRefreshOnHello(host: LocalHostRow): Promise<void> {
   const cached = await getCachedTokenValidation();
   if (!cached || (cached.valid && cached.tokenExists)) return;
   if (!(await hostMayRefreshToken(host))) return;
-  const now = Date.now();
-  if (now - (lastAutoAttempt.get(host.id) ?? 0) < AUTO_RETRY_WINDOW_MS) return;
-  lastAutoAttempt.set(host.id, now);
+  if (!(await claimAutoAttempt(host.id))) return;
   await refreshClaudeTokenFromHost(host, "auto");
 }
 
-export function resetAuthRefreshForTests(): void {
-  for (const p of pending.values()) clearTimeout(p.timer);
-  pending.clear();
-  lastAutoAttempt.clear();
+export async function resetAuthRefreshForTests(): Promise<void> {
+  credentials.reset();
+  await db.delete(leases).where(like(leases.key, "claude-auto-refresh:%"));
 }
