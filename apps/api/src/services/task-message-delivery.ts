@@ -5,6 +5,7 @@
  * pod which any API instance can append to, so delivery no longer needs the
  * instance that is streaming the run.
  */
+import { RunStdinClosedError } from "@optio/container-runtime";
 import type { tasks } from "../db/schema.js";
 import * as podPool from "./agent-pod-pool.js";
 import { getRuntime } from "./container-service.js";
@@ -31,10 +32,15 @@ export function streamJsonUserLine(content: string, mode: "soft" | "interrupt"):
   });
 }
 
+/** The delivery error of a message that came after the agent's turn ended. */
+export const TURN_OVER_ERROR = "The agent already finished its turn; the message was not delivered";
+
 /**
  * Appends the message to the running task's stdin and marks it delivered.
  * A task whose agent is not running under the protocol (never started, or
- * a run on a machine) gets a delivery error the UI shows.
+ * a run on a machine), or whose agent already finished its turn (its stdin
+ * is closed: nothing would ever read the line), gets a delivery error the
+ * UI shows.
  */
 export async function deliverTaskMessage(
   task: Pick<typeof tasks.$inferSelect, "id" | "execState" | "lastPodId" | "runTarget">,
@@ -61,9 +67,14 @@ export async function deliverTaskMessage(
     });
     return true;
   } catch (err) {
-    log.warn({ err }, "Failed to deliver task message");
+    const turnOver = err instanceof RunStdinClosedError;
+    if (turnOver) log.info("Message came after the agent's turn ended; not delivered");
+    else log.warn({ err }, "Failed to deliver task message");
     await messageService
-      .markDeliveryError(message.messageId, err instanceof Error ? err.message : "delivery failed")
+      .markDeliveryError(
+        message.messageId,
+        turnOver ? TURN_OVER_ERROR : err instanceof Error ? err.message : "delivery failed",
+      )
       .catch(() => {});
     return false;
   }
