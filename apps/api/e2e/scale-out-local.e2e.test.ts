@@ -14,7 +14,9 @@
  *     terminal stays alive and viewable, nothing is marked exited;
  * (e) a local Job run started through B with the daemon on A runs to
  *     completion, whichever server's worker dispatches it;
- * (f) every server agrees on whether the host is online.
+ * (f) every server agrees on whether the host is online;
+ * (g) two hellos for one host on A and B at the same moment: exactly one
+ *     connection survives, never zero, 20 times over.
  *
  * The daemon and viewers are test clients (local-fakes.ts), never a real
  * daemon or terminal. Auth is disabled (one implicit user).
@@ -29,8 +31,13 @@ let cluster: ApiCluster;
 beforeAll(async () => {
   cluster = await startApiCluster({
     size: 3,
-    // A viewer attached through a server that went away reconnects within a second.
-    env: { OPTIO_LOCAL_VIEWER_HEARTBEAT_MS: "1000" },
+    env: {
+      // A viewer attached through a server that went away reconnects within a second.
+      OPTIO_LOCAL_VIEWER_HEARTBEAT_MS: "1000",
+      // Renew often, so a connection that lost its lease finds out within the test.
+      OPTIO_LOCAL_HOST_LEASE_RENEW_MS: "500",
+      OPTIO_LOCAL_HOST_LEASE_TTL_MS: "3000",
+    },
   });
 }, 240_000);
 
@@ -392,6 +399,31 @@ describe("Optio Local across API instances", () => {
     expect(hosts.find((h) => h.id === hostId)?.state).toBe("offline");
     // Nothing exited: the PTY lives on the machine; the next hello reconciles it.
     expect((await getTerminal(0, terminalId)).state).toBe("running");
+  });
+
+  it("(g) two hellos for one host on A and B at once: exactly one survives, never zero (×20)", async () => {
+    for (let i = 0; i < 20; i++) {
+      const hostId = await registerHost(0, `scale-g-${i}`);
+      const onA = new FakeDaemon(wsBase(0));
+      const onB = new FakeDaemon(wsBase(1));
+      cleanups.push(
+        () => onA.close(),
+        () => onB.close(),
+      );
+      await Promise.all([onA.connect(hostId, DIRS, [], CAPS), onB.connect(hostId, DIRS, [], CAPS)]);
+      // The one that seized first hears the other's host-taken and gives way.
+      await waitFor(async () => (onA.closeInfo || onB.closeInfo ? true : null), {
+        timeoutMs: 10_000,
+        label: `iteration ${i}: one connection gives way`,
+      });
+      // Three renews later a connection that had lost its lease would be gone too.
+      await new Promise((r) => setTimeout(r, 1_600));
+      const open = [onA, onB].filter((d) => d.closeInfo === null);
+      expect(open, `iteration ${i}`).toHaveLength(1);
+      expect([onA, onB].find((d) => d.closeInfo)!.closeInfo!.code).toBe(4000);
+      expect(await everyLive((j) => onlineOn(j, hostId))).toEqual([true, true, true]);
+      open[0].close();
+    }
   });
 
   // Last: it kills server 0.
