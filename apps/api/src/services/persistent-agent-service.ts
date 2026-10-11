@@ -552,6 +552,17 @@ export async function createPersistentAgentTurn(input: CreateTurnInput) {
   return turn;
 }
 
+/** The pod a turn runs in: the worker creates the turn before it has one. */
+export async function setPersistentAgentTurnPod(
+  turnId: string,
+  pod: { id: string; podName: string },
+): Promise<void> {
+  await db
+    .update(persistentAgentTurns)
+    .set({ podId: pod.id, podName: pod.podName })
+    .where(eq(persistentAgentTurns.id, turnId));
+}
+
 export interface HaltTurnInput {
   turnId: string;
   haltReason: PersistentAgentTurnHaltReason;

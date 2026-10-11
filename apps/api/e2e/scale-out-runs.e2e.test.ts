@@ -34,6 +34,8 @@
  *      fails and its agent is stopped
  *  20  an agent pod its creator abandoned mid-creation (the server died
  *      between the row and the pod) is taken over: the next turn runs
+ *  21  the server making an agent's pod is killed: the turn it held is
+ *      halted once its lease lapses, and the agent's next turn runs
  *
  * The lease is shortened (6 s, renewed every 2 s) and the attach sweep runs
  * every second, so a SIGKILLed server's runs move on in seconds.
@@ -1179,6 +1181,60 @@ describe("resets, review runs, edits and settling", () => {
       const tickRows = await sql<Array<{ content: string }>>`
         SELECT content FROM task_logs WHERE pr_review_run_id = ${runId} AND content LIKE 'tick %'`;
       expect(tickRows).toHaveLength(10);
+    });
+  }, 180_000);
+});
+
+// ── A server killed while it makes an agent's pod ───────────────────────────
+
+describe("slow pods", () => {
+  let cluster: ApiCluster;
+
+  beforeAll(async () => {
+    cluster = await startApiCluster({
+      size: 1,
+      // Every pod takes seconds to make: room to kill the server making one.
+      env: { ...CLUSTER_ENV, OPTIO_FAKE_CREATE_DELAY_MS: "4000" },
+      fakeRuntimeDir: FAKE_RUNTIME_DIR,
+    });
+    await seed(cluster.any());
+  }, 240_000);
+
+  afterAll(async () => {
+    await cluster?.stop();
+  });
+
+  it("(21) the server making an agent's pod is killed: another halts its turn and the next one runs", async () => {
+    await withLogs(cluster, async () => {
+      const agentId = await createAgent(cluster.client(0), "slow-pod-21-agent", ticks(5));
+      // The worker holds the turn while the pod is made.
+      const held = await waitFor(
+        async () => {
+          const [turn, [pod]] = await Promise.all([
+            openTurn(agentId),
+            sql<Array<{ state: string }>>`
+              SELECT state FROM agent_pods
+              WHERE pool = 'persistent-agent' AND pool_key = ${agentId}`,
+          ]);
+          return turn?.attached_by && !turn.exec_state && pod?.state === "provisioning"
+            ? turn
+            : null;
+        },
+        { timeoutMs: 30_000, intervalMs: 50, label: "turn held while its pod is made" },
+      );
+      await cluster.kill(0, "SIGKILL");
+      await cluster.add();
+
+      // The lease (6 s), the abandoned pod row's stale age (15 s) and a new
+      // pod (4 s) — not the five minutes an agent with no turn waits out.
+      const t0 = Date.now();
+      const { agent, turn } = await waitAgentTurnDone(agentId, "agent");
+      expect(Date.now() - t0).toBeLessThan(60_000);
+      const ts = await turns(agentId);
+      expect(ts.map((t) => t.halt_reason)).toEqual(["error", "natural"]);
+      expect(ts[0].id).toBe(held.id);
+      expect(agent.total_cost_usd).toBe("0.0123");
+      await expectContiguousLogs({ turnId: turn.id }, 5);
     });
   }, 180_000);
 });

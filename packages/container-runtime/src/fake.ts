@@ -142,6 +142,9 @@ const LOST_AFTER_MS = Number(process.env.OPTIO_FAKE_LOST_AFTER_MS ?? 3_000);
  */
 const PROMPT_TIMEOUT_MS = Number(process.env.OPTIO_FAKE_PROMPT_TIMEOUT_MS ?? 10_000);
 
+/** How long `create` takes, so a test can kill a server while it makes a pod. */
+const CREATE_DELAY_MS = Number(process.env.OPTIO_FAKE_CREATE_DELAY_MS ?? 0);
+
 interface FakeContainer {
   spec: ContainerSpec;
   createdAt: Date;
@@ -194,6 +197,7 @@ export class FakeContainerRuntime implements ContainerRuntime {
   }
 
   async create(spec: ContainerSpec): Promise<ContainerHandle> {
+    if (CREATE_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CREATE_DELAY_MS));
     const id = `fake-${randomBytes(6).toString("hex")}`;
     const name = spec.name ?? id;
     const container = { spec, createdAt: new Date() };

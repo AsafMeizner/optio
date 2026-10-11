@@ -4,8 +4,9 @@
 //   1. Pull pending messages from inbox.
 //   2. Render prompt: system prompt + agents.md + (initial prompt on turn 1) +
 //      formatted message envelopes.
-//   3. Acquire pod via persistent-agent-pool-service (honors lifecycle mode).
-//   4. Create turn record, transition agent IDLE/QUEUED → PROVISIONING → RUNNING.
+//   3. Create turn record (held from here on), transition agent
+//      IDLE/QUEUED → PROVISIONING → RUNNING.
+//   4. Acquire pod via persistent-agent-pool-service (honors lifecycle mode).
 //   5. Stream agent output, append logs, capture cost + halt reason.
 //   6. Halt the turn record, mark pod idle (lifecycle mode decides whether
 //      pod stays warm), transition agent → IDLE.
@@ -219,12 +220,11 @@ export function startPersistentAgentWorker() {
           })),
         });
 
-        // 3. Acquire pod (honors lifecycle mode).
-        pod = await paPool.acquirePodForAgent(agentId, {
-          workspaceId: claimedAgent.workspaceId ?? null,
-        });
-
-        // 4. Create turn record.
+        // 3. Create turn record, held by this job from here on. Getting a
+        // pod can take minutes: an instance that dies meanwhile leaves a
+        // held turn that never started, which the reconciler halts once its
+        // lease lapses — the agent wakes again, its messages still pending —
+        // where an agent with no turn yet would wait out NO_OPEN_TURN_GRACE_MS.
         turn = await paService.createPersistentAgentTurn({
           agentId,
           wakeSource,
@@ -236,11 +236,15 @@ export function startPersistentAgentWorker() {
             agentRuntime: claimedAgent.agentRuntime,
           },
           promptUsed: renderedPrompt,
-          podId: pod.id,
-          podName: pod.podName,
         });
 
         hold = await beginHold(turnRef(turn.id));
+
+        // 4. Acquire pod (honors lifecycle mode).
+        pod = await paPool.acquirePodForAgent(agentId, {
+          workspaceId: claimedAgent.workspaceId ?? null,
+        });
+        await paService.setPersistentAgentTurnPod(turn.id, pod);
 
         // 5. Build env + invoke agent.
         // Personal agents run with their owner's secrets; organization agents
