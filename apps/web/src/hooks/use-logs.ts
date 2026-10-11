@@ -4,8 +4,11 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "@/lib/api-client";
 import { createLogClient, type WsClient } from "@/lib/ws-client";
 import { getWsTokenProvider } from "@/lib/ws-auth";
+import { resyncOnReconnect, SeenLogs } from "@/lib/log-resync";
 
 export interface LogEntry {
+  /** The stored row's id (REST rows and live frames carry it). */
+  id?: string;
   content: string;
   stream: string;
   timestamp: string;
@@ -14,6 +17,18 @@ export interface LogEntry {
 }
 
 const HISTORICAL_LIMIT = 10000;
+
+/** A REST row or a live frame as the view keeps it. */
+export function toLogEntry(l: any): LogEntry {
+  return {
+    id: l.id ?? undefined,
+    content: l.content,
+    stream: l.stream,
+    timestamp: l.timestamp,
+    logType: l.logType ?? undefined,
+    metadata: l.metadata ?? undefined,
+  };
+}
 
 export function useLogs(taskId: string) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -31,6 +46,7 @@ export function useLogs(taskId: string) {
     // closing the race where live events bypass dedup.
     const pendingLive: LogEntry[] = [];
     let merged = false;
+    const seen = new SeenLogs();
 
     const client = createLogClient(taskId, getWsTokenProvider());
     clientRef.current = client;
@@ -40,13 +56,9 @@ export function useLogs(taskId: string) {
       // REST history is canonical, so ignore those replay frames.
       if (event.catchUp) return;
 
-      const entry: LogEntry = {
-        content: event.content,
-        stream: event.stream,
-        timestamp: event.timestamp,
-        logType: event.logType,
-        metadata: event.metadata,
-      };
+      const entry = toLogEntry(event);
+      if (seen.has(entry)) return;
+      seen.add([entry]);
       if (!merged) {
         pendingLive.push(entry);
       } else {
@@ -69,16 +81,11 @@ export function useLogs(taskId: string) {
     client.connect();
     setConnected(true);
 
-    api
+    const history = api
       .getTaskLogs(taskId, { limit: HISTORICAL_LIMIT })
       .then((res) => {
-        const historical = res.logs.map((l: any) => ({
-          content: l.content,
-          stream: l.stream,
-          timestamp: l.timestamp,
-          logType: l.logType ?? undefined,
-          metadata: l.metadata ?? undefined,
-        }));
+        const historical = res.logs.map(toLogEntry);
+        seen.add(historical);
         historicalCountRef.current = historical.length;
         if (historical.length >= HISTORICAL_LIMIT) setCapped(true);
 
@@ -94,6 +101,18 @@ export function useLogs(taskId: string) {
         setLogs(pendingLive);
         merged = true;
       });
+
+    // The socket dropped and came back (its API pod went away, say): rows
+    // stored meanwhile never arrive live.
+    resyncOnReconnect(client, {
+      ready: history,
+      seen,
+      fetchFrom: (offset) =>
+        api
+          .getTaskLogs(taskId, { limit: HISTORICAL_LIMIT, offset })
+          .then((res) => res.logs.map(toLogEntry)),
+      setLogs,
+    });
 
     return () => {
       client.disconnect();
