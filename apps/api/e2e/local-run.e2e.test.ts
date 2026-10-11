@@ -7,6 +7,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startApiServer, waitFor, type ApiServerHandle } from "../src/test-utils/e2e/api-server.js";
+import { FakeDaemon, type Json } from "../src/test-utils/e2e/local-fakes.js";
 
 let server: ApiServerHandle;
 let wsBase: string;
@@ -26,64 +27,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<{ status: numbe
     ...init,
   });
   return { status: res.status, body: (await res.json()) as T };
-}
-
-type Json = Record<string, unknown>;
-
-/** Minimal scripted daemon speaking the /ws/local/daemon protocol. */
-class FakeDaemon {
-  ws!: WebSocket;
-  inbox: Json[] = [];
-  private waiters: Array<{ match: (m: Json) => boolean; resolve: (m: Json) => void }> = [];
-
-  async connect(hostId: string, dirs: Json[], terminals: Json[] = []): Promise<void> {
-    this.ws = new WebSocket(`${wsBase}/ws/local/daemon`);
-    await new Promise<void>((resolve, reject) => {
-      this.ws.onopen = () => resolve();
-      this.ws.onerror = () => reject(new Error("daemon ws failed"));
-    });
-    this.ws.onmessage = (ev) => {
-      const msg = JSON.parse(String(ev.data)) as Json;
-      const idx = this.waiters.findIndex((w) => w.match(msg));
-      if (idx >= 0) {
-        const [w] = this.waiters.splice(idx, 1);
-        w.resolve(msg);
-      } else {
-        this.inbox.push(msg);
-      }
-    };
-    this.send({ type: "hello", hostId, daemonVersion: "0.0.0-e2e", dirs, terminals });
-  }
-
-  send(msg: Json): void {
-    this.ws.send(JSON.stringify(msg));
-  }
-
-  async next(match: (m: Json) => boolean, timeoutMs = 30_000): Promise<Json> {
-    const idx = this.inbox.findIndex(match);
-    if (idx >= 0) return this.inbox.splice(idx, 1)[0];
-    return new Promise<Json>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error("fake daemon: timed out waiting for message")),
-        timeoutMs,
-      );
-      this.waiters.push({
-        match,
-        resolve: (m) => {
-          clearTimeout(timer);
-          resolve(m);
-        },
-      });
-    });
-  }
-
-  close(): void {
-    try {
-      this.ws.close();
-    } catch {
-      // ignore
-    }
-  }
 }
 
 const REPO_URL = "https://github.com/acme/e2e";
@@ -136,7 +79,7 @@ async function registerHost(hostname: string): Promise<string> {
 
 async function onlineHost(hostname: string, cleanups: Array<() => void>) {
   const hostId = await registerHost(hostname);
-  const daemon = new FakeDaemon();
+  const daemon = new FakeDaemon(wsBase, 30_000);
   cleanups.push(() => daemon.close());
   await daemon.connect(hostId, DIRS);
   await waitFor(async () => {
@@ -288,7 +231,7 @@ describe("local runs e2e", () => {
     const terminal = await getTerminal(parked.localTerminalId!);
     expect(terminal.state).toBe("pending");
 
-    const daemon = new FakeDaemon();
+    const daemon = new FakeDaemon(wsBase, 30_000);
     cleanups.push(() => daemon.close());
     await daemon.connect(hostId, DIRS);
     const spawn = await daemon.next((m) => m.type === "spawn");
