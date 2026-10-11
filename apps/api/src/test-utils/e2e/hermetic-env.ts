@@ -12,19 +12,26 @@
  *    and an auth-disabled test server's /api/auth/claude-token would hand it
  *    to anyone who asks;
  *  - shell credentials and Optio settings (GITHUB_TOKEN, ANTHROPIC_API_KEY,
- *    AWS_*, OPTIO_*, ...).
+ *    AWS_*, OPTIO_*, ...);
+ *  - the network to the git platforms: tests seed dummy GITHUB_TOKENs for
+ *    repos on github.com, and PR detection, the PR watcher and the
+ *    reconciler's PR reads would send them to the real api.github.com.
  *
  * createHermeticEnv() serves a small read-only Kubernetes API from this
  * process (writes answer 403), puts failing `kubectl` / `helm` stubs and a
- * `security` stub (errSecItemNotFound) first on PATH, and points HOME and
- * CLAUDE_CONFIG_DIR at empty directories. hermeticBaseEnv() drops the
- * credentials and settings from an inherited environment.
+ * `security` stub (errSecItemNotFound) first on PATH, points HOME and
+ * CLAUDE_CONFIG_DIR at empty directories, and preloads a `fetch` guard
+ * (NODE_OPTIONS --import) that answers every request to a git platform
+ * host (github.com, gitlab.com and their subdomains) itself with the 401 a
+ * dummy token gets, so nothing leaves the machine. hermeticBaseEnv() drops
+ * the credentials and settings from an inherited environment.
  */
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** Inherited variables a test API server must not see. */
 const STRIPPED_ENV: RegExp[] = [
@@ -38,6 +45,33 @@ const STRIPPED_ENV: RegExp[] = [
   /^KUBECONFIG$/,
 ];
 
+/**
+ * The `fetch` guard a test server preloads: a git platform host gets the
+ * answer a dummy token gets (401 Bad credentials) without a request leaving
+ * the machine; anything else goes through.
+ */
+export const GIT_HOST_GUARD = `const GIT_HOSTS = /(^|\\.)(github\\.com|githubusercontent\\.com|gitlab\\.com)$/i;
+const realFetch = globalThis.fetch;
+globalThis.fetch = async function hermeticFetch(input, init) {
+  let host = "";
+  try {
+    const url = typeof input === "string" || input instanceof URL ? new URL(input) : new URL(input.url);
+    host = url.hostname;
+  } catch {
+    // not a URL fetch understands either: let it fail as it would
+  }
+  if (GIT_HOSTS.test(host)) {
+    const method = (init && init.method) || (typeof input === "object" && input.method) || "GET";
+    process.stderr.write("[hermetic] answered " + method + " https://" + host + " locally (no network)\\n");
+    return new Response(
+      JSON.stringify({ message: "Bad credentials (hermetic test server: no network to " + host + ")" }),
+      { status: 401, headers: { "content-type": "application/json" } },
+    );
+  }
+  return realFetch(input, init);
+};
+`;
+
 /** `env` minus anything that could point a test server at real accounts or clusters. */
 export function hermeticBaseEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const out: Record<string, string> = {};
@@ -49,7 +83,7 @@ export function hermeticBaseEnv(env: NodeJS.ProcessEnv = process.env): Record<st
 }
 
 export interface HermeticEnv {
-  /** Overrides for the server process: PATH, KUBECONFIG, HOME, CLAUDE_CONFIG_DIR. */
+  /** Overrides for the server process: PATH, KUBECONFIG, HOME, CLAUDE_CONFIG_DIR, NODE_OPTIONS. */
   env: Record<string, string>;
   /** The stub directory; keep it first on PATH (see withStubsFirst). */
   binDir: string;
@@ -274,6 +308,11 @@ export async function createHermeticEnv(): Promise<HermeticEnv> {
   const kube = await startFakeKube();
   const kubeconfig = join(dir, "kubeconfig.yaml");
   writeFileSync(kubeconfig, kubeconfigFor(kube.url));
+  const guard = join(dir, "git-host-guard.mjs");
+  writeFileSync(guard, GIT_HOST_GUARD);
+  const nodeOptions = [process.env.NODE_OPTIONS, `--import=${pathToFileURL(guard).href}`]
+    .filter(Boolean)
+    .join(" ");
 
   return {
     env: {
@@ -281,6 +320,7 @@ export async function createHermeticEnv(): Promise<HermeticEnv> {
       KUBECONFIG: kubeconfig,
       HOME: home,
       CLAUDE_CONFIG_DIR: claudeConfig,
+      NODE_OPTIONS: nodeOptions,
     },
     binDir: bin,
     kubeUrl: kube.url,

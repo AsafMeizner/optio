@@ -35,9 +35,20 @@
  *
  * The lease is shortened (6 s, renewed every 2 s) and the attach sweep runs
  * every second, so a SIGKILLed server's runs move on in seconds.
+ *
+ * Every cluster in this file works on one database, so all of them share one
+ * fake-runtime directory too: a pod row an earlier cluster left `ready`
+ * still has its container, as a deployment's pods outlive its API servers
+ * (with a directory per cluster, the next cluster's health check finds those
+ * pods gone, cleans them up as crashed and marks the repo's running tasks
+ * with the pod's error). The servers are hermetic (startApiServer): `kubectl`
+ * is a failing stub, the Kubernetes API a read-only fake, and git platform
+ * hosts are answered in-process, so nothing reaches a real cluster or
+ * GitHub with the dummy credentials seeded here.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import postgres from "postgres";
 import { Queue } from "bullmq";
@@ -65,8 +76,12 @@ const REPO_DOOMED = "https://github.com/e2e-org/scale-doomed";
 
 const sql = postgres(process.env.DATABASE_URL!, { max: 4, onnotice: () => {} });
 
+/** The fake runtime's pods and runs, for every cluster in this file (see above). */
+const FAKE_RUNTIME_DIR = mkdtempSync(join(tmpdir(), "optio-e2e-scale-out-"));
+
 afterAll(async () => {
   await sql.end({ timeout: 5 });
+  rmSync(FAKE_RUNTIME_DIR, { recursive: true, force: true });
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -77,14 +92,14 @@ let seeded = false;
 async function seed(api: Client) {
   if (seeded) return;
   for (const name of ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]) {
-    const { status } = await api("/api/secrets", {
+    const { status, body } = await api("/api/secrets", {
       method: "POST",
       body: JSON.stringify({ name, value: `e2e-dummy-${name}`, scope: "global" }),
     });
-    expect(status).toBe(201);
+    expect(status, JSON.stringify(body)).toBe(201);
   }
   for (const repoUrl of [REPO_A, REPO_B, REPO_DOOMED]) {
-    const { status } = await api("/api/repos", {
+    const { status, body } = await api("/api/repos", {
       method: "POST",
       body: JSON.stringify({
         repoUrl,
@@ -92,7 +107,7 @@ async function seed(api: Client) {
         defaultBranch: "main",
       }),
     });
-    expect(status).toBe(201);
+    expect(status, JSON.stringify(body)).toBe(201);
   }
   seeded = true;
 }
@@ -110,7 +125,7 @@ async function createTask(api: Client, repoUrl: string, directives: string): Pro
       agentType: "claude-code",
     }),
   });
-  expect(status).toBe(201);
+  expect(status, JSON.stringify(body)).toBe(201);
   return body.task.id;
 }
 
@@ -123,12 +138,12 @@ async function createJobRun(api: Client, name: string, directives: string): Prom
       agentRuntime: "claude-code",
     }),
   });
-  expect(job.status).toBe(201);
+  expect(job.status, JSON.stringify(job.body)).toBe(201);
   const run = await api<{ run: { id: string } }>(`/api/jobs/${job.body.workflow.id}/runs`, {
     method: "POST",
     body: JSON.stringify({}),
   });
-  expect(run.status).toBe(201);
+  expect(run.status, JSON.stringify(run.body)).toBe(201);
   return run.body.run.id;
 }
 
@@ -142,7 +157,7 @@ async function createAgent(api: Client, slug: string, directives: string): Promi
       initialPrompt: `Scale-out agent ${directives}`,
     }),
   });
-  expect(status).toBe(201);
+  expect(status, JSON.stringify(body)).toBe(201);
   return body.agent.id;
 }
 
@@ -311,7 +326,7 @@ async function withLogs<T>(cluster: ApiCluster, fn: () => Promise<T>): Promise<T
     return await fn();
   } catch (err) {
     const tails = cluster.servers
-      .map((s) => `--- ${s.name} ---\n${s.handle.logs().split("\n").slice(-25).join("\n")}`)
+      .map((s) => `--- ${s.name} ---\n${s.handle.logs().split("\n").slice(-80).join("\n")}`)
       .join("\n");
     throw new Error(`${String(err)}\n${tails}`);
   }
@@ -337,7 +352,11 @@ describe("one server", () => {
   let cluster: ApiCluster;
 
   beforeAll(async () => {
-    cluster = await startApiCluster({ size: 1, env: CLUSTER_ENV });
+    cluster = await startApiCluster({
+      size: 1,
+      env: CLUSTER_ENV,
+      fakeRuntimeDir: FAKE_RUNTIME_DIR,
+    });
     await seed(cluster.any());
   }, 240_000);
 
@@ -435,7 +454,11 @@ describe("three servers", () => {
   }
 
   beforeAll(async () => {
-    cluster = await startApiCluster({ size: 3, env: CLUSTER_ENV });
+    cluster = await startApiCluster({
+      size: 3,
+      env: CLUSTER_ENV,
+      fakeRuntimeDir: FAKE_RUNTIME_DIR,
+    });
     await seed(cluster.any());
   }, 300_000);
 
@@ -742,6 +765,7 @@ describe("resets, review runs, edits and settling", () => {
   beforeAll(async () => {
     cluster = await startApiCluster({
       size: 2,
+      fakeRuntimeDir: FAKE_RUNTIME_DIR,
       env: {
         ...CLUSTER_ENV,
         OPTIO_SETTLE_PAUSE_MS: String(SETTLE_PAUSE_MS),
@@ -901,7 +925,7 @@ describe("resets, review runs, edits and settling", () => {
           agentRuntime: "claude-code",
         }),
       });
-      expect(job.status).toBe(201);
+      expect(job.status, JSON.stringify(job.body)).toBe(201);
       const jobId = job.body.workflow.id;
       const started = await cluster.any()<{ run: { id: string } }>(`/api/jobs/${jobId}/runs`, {
         method: "POST",
@@ -997,7 +1021,7 @@ describe("resets, review runs, edits and settling", () => {
           maxRetries: 0,
         }),
       });
-      expect(job.status).toBe(201);
+      expect(job.status, JSON.stringify(job.body)).toBe(201);
       const started = await cluster.any()<{ run: { id: string } }>(
         `/api/jobs/${job.body.workflow.id}/runs`,
         { method: "POST", body: "{}" },
