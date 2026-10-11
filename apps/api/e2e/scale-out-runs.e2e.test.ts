@@ -330,7 +330,24 @@ async function waitAgentTurnDone(agentId: string, label: string) {
         : null;
     },
     { timeoutMs: 120_000, intervalMs: 250, label: `${label} idle after a natural turn` },
-  );
+  ).catch(async (err) => {
+    // Say where the agent is stuck.
+    const [a] = await sql`
+      SELECT state::text AS state, consecutive_failures, last_failure_reason, updated_at
+      FROM persistent_agents WHERE id = ${agentId}`;
+    const t = await sql`
+      SELECT turn_number, halt_reason, error_message, exec_state, attached_by,
+             attach_lease_until, pod_id, created_at, finished_at
+      FROM persistent_agent_turns WHERE agent_id = ${agentId} ORDER BY turn_number`;
+    const pods = await sql`
+      SELECT id, state, pod_id, pod_name, created_at, updated_at, error_message
+      FROM agent_pods WHERE pool = 'persistent-agent' AND pool_key = ${agentId}`;
+    const msgs = await sql`
+      SELECT id, turn_id, received_at FROM persistent_agent_messages WHERE agent_id = ${agentId}`;
+    throw new Error(
+      `${String(err)}\nagent: ${JSON.stringify(a)}\nturns: ${JSON.stringify(t)}\npods: ${JSON.stringify(pods)}\nmessages: ${JSON.stringify(msgs)}`,
+    );
+  });
   const natural = ts.filter((t) => t.halt_reason === "natural");
   expect(natural, JSON.stringify(ts)).toHaveLength(1);
   for (const t of ts.filter((x) => x.halt_reason !== "natural")) {
