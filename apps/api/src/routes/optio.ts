@@ -9,7 +9,7 @@ import { ErrorResponseSchema } from "../schemas/common.js";
 import { requireRole } from "../plugins/auth.js";
 import { pgIso } from "../utils/pg-timestamp.js";
 
-const NAMESPACE = "optio";
+const NAMESPACE = process.env.OPTIO_NAMESPACE ?? "optio";
 const POD_ROLE_LABEL = "optio.pod-role=optio";
 
 // Cache status to avoid hitting the K8s API on every poll.
