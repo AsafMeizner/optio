@@ -8,7 +8,8 @@ of API pods share one Postgres and one Redis; the pod a run is attached to can
 be killed, and another pod picks the run up where it was, with every log line
 accounted for once.
 
-**Status (2026-10-10):** phase A (foundation) built; B, C1, C2, D, E to come.
+**Status (2026-10-10):** phases A, C1, C2 merged; B in review; D (the Local relay
+and the chart's replica validation lifted) built; E to come.
 Phases land as separate PRs; each leaves the system working on one replica.
 
 ## Vocabulary
@@ -242,7 +243,14 @@ inbound (input, resize, view reports, attach, spawn, kill, dirs, limits,
 credentials, backfill, capability queries) is published on
 `optio:local:host:{id}:in` and replies on `optio:local:reply:{requestId}`;
 the owner consumes them and keeps the grid arbiter. `isHostOnline` reads the
-lease. Until this phase lands, the chart keeps `api.replicas` at 1.
+lease. **Built:** `local-bus.ts` (one subscriber per instance; replies go to
+`optio:local:reply:<instanceId>`, correlated by request id, rather than one channel
+per request), `local-relay.ts` (the lease is held per daemon connection,
+`<instance>#<connection>`, and every inbound message names the holder its sender
+read, so an old owner mid-handover never acts on it; remote viewers are proxies in
+the owner's maps), capabilities on `local_hosts.capabilities`, and the liveness sweep
+as a job scheduler under `poller:local-sweep`. See docs/optio-local.md "Several API
+instances". The chart no longer pins `api.replicas`.
 
 ### 5. Helm and ops
 

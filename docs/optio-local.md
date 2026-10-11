@@ -328,10 +328,11 @@ Webhook/Schedule/Ticket triggers ───────────┘        /ws
                                                                                     allowlisted dirs
 ```
 
-- The relay (`apps/api/src/services/local-relay.ts`) holds daemon sockets in-process
-  (single API replica assumption, same as pod exec sessions) and routes frames by
-  `terminalId`. Browsers never connect to the daemon; the daemon never accepts inbound
-  connections (its hook server binds 127.0.0.1 only).
+- The relay (`apps/api/src/services/local-relay.ts`) holds a daemon's socket on the API
+  instance it connected to and routes frames by `terminalId`; with several API instances,
+  viewers and REST calls on the others reach it over Redis (see
+  [Several API instances](#several-api-instances)). Browsers never connect to the daemon;
+  the daemon never accepts inbound connections (its hook server binds 127.0.0.1 only).
 - Scrollback lives in the daemon (512 KB ring per terminal), alongside a **screen model**
   (`@xterm/headless`, 2000 lines of scrollback) fed the same bytes. Previews and links are
   read off the screen model, never off the flattened byte stream: TUIs paint cells, and
@@ -436,6 +437,59 @@ id>.jsonl`, `cli/src/local/codex-transcript.ts`). Codex creates it with the firs
   arrive while it is still authenticating and setting up, then handles them in order
   (`ws/ws-connection.ts`; a client that sends more than 256 frames or 4 MB before then
   is closed with 1008), so the daemon's `hello` can go out on `open`.
+
+## Several API instances
+
+Any number of API pods may share one Postgres and one Redis
+([docs/plans/scale-out.md](plans/scale-out.md) §4). A daemon is one WebSocket on one of
+them; a viewer, a REST call or a worker that wants it may be on another.
+
+- **Ownership.** The instance a daemon's hello lands on becomes the host's **owner**: it
+  seizes the lease `local-host:<hostId>` in `leases` (30 s TTL, renewed every 10 s), held
+  per daemon connection (`<instance>#<connection>`). "The newest daemon wins": a new
+  connection takes the lease by force and publishes `host-taken`; the previous owner,
+  after checking the lease really moved, closes its socket with 4000 (or finds out when
+  its next renew fails). A connection that closes releases its own lease, and the host is
+  marked offline only while no connection holds one, so a daemon that already
+  reconnected elsewhere is never marked offline by the old pod's late close.
+- **Online and capabilities.** `isHostOnline` is "this instance has the socket, or the
+  lease is live". What the daemon advertised in its hello (`claudeCredentials`,
+  `manageDirs`, `modelProviders`, `refreshLimits`, `transcriptBackfill`, `answersQueries`)
+  is stored on the host row (`local_hosts.capabilities`) before the lease is taken, and
+  read only while the lease is live, so every instance answers the same.
+- **The bus** (`services/local-bus.ts`): one Redis subscriber per instance, started after
+  `listen` and retried with backoff; binary envelopes (a JSON header, then raw bytes).
+  `optio:local:host:<hostId>:in` carries everything for the daemon (viewer attach, input,
+  resize, view reports, pongs, spawn, kill, dirs, limits, credentials, transcript
+  requests) and only the owner subscribes, while it owns the host; every message names the
+  lease holder its sender read, so an old owner mid-handover never acts twice.
+  `optio:local:term:<terminalId>:out` carries what a terminal's viewers get (output, the
+  attach snapshot, size and status frames); an instance subscribes only while it has a
+  viewer of it. `optio:local:reply:<instanceId>` carries answers: a frame sent to a daemon
+  elsewhere is acknowledged by its owner (a spawn or kill that gets no acknowledgement
+  within 5 s counts as "host offline", as it would locally), and a daemon's answer to a
+  request (`dirs-result`, `limits-refresh-result`, `credentials-result`,
+  `transcript-backfill`) is relayed back to the instance that asked.
+- **Viewers.** On the owner, a viewer on another instance is a socket-shaped proxy whose
+  frames go out on the terminal's channel, so the attach handshake, the snapshot-then-live
+  ordering and the grid arbiter (`local-grid.ts`, which stays with the owner, fed by view
+  reports over the bus) work the same for both. The viewer's own instance relays only the
+  frames of the owner it attached through. Every 10 s each instance reports its remote
+  viewers to their owners (who drop the ones no longer reported and ask unknown ones to
+  reconnect) and checks the owner still holds the lease; a viewer whose daemon moved is
+  closed with 4503 and reattaches to the new connection, as the clients do after any host
+  blip. Output reaches Redis only when some viewer is on another instance.
+- **Sweeps.** The liveness sweep is a BullMQ job scheduler (`local-sweep.sweep`, every
+  `OPTIO_LOCAL_SWEEP_INTERVAL`) under the `poller:local-sweep` lease: hosts whose daemon
+  stopped pinging, or whose lease lapsed (the owning pod died), go offline; terminals
+  parked as host-offline whose host is back are started; launches an online daemon never
+  acknowledged fail.
+- **Per instance** (caches, never correctness): the transcript-backfill bookkeeping (each
+  instance asks a host at most once per window), the one-write-a-minute throttle on
+  `last_interacted_at` (backed by a conditional update), and the Claude token's automatic
+  refresh window, which is a lease (`claude-auto-refresh:<hostId>`) across instances.
+- Without Redis the relay still works on each instance alone: its own daemons and their
+  viewers.
 
 ## REST API (all under `/api/local`, member role for mutations, owner-scoped)
 
@@ -851,6 +905,5 @@ before.
   (for installs without a public URL) — needs the `notifications` OAuth scope, which the
   login flow doesn't request yet.
 - Web push for `needs_you` transitions (in-app only for now).
-- Multi-replica API relay (daemon sockets are in-process, matching exec-based sessions).
 - Terminal survival across daemon restarts (PTYs are daemon children; `claude --continue`
   in the same dir is the recovery path).
