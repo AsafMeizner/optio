@@ -116,7 +116,14 @@ export async function acquirePodForAgent(
       // Pod row exists but the K8s pod isn't healthy — clean up the row.
       await podPool.deletePod(existing.id);
     } else if (existing && existing.state === "provisioning") {
-      return toHandle(await podPool.waitForPodReady(existing.id, POD_PROVISION_TIMEOUT_MS));
+      // Another job is creating the pod — unless its creator went away
+      // mid-creation: then the row is abandoned, and this job makes the pod.
+      const ready = podPool.provisioningAbandoned(existing)
+        ? null
+        : await podPool.waitForProvisioning(existing, POD_PROVISION_TIMEOUT_MS);
+      if (ready) return toHandle(ready);
+      logger.warn({ agentId, podId: existing.id }, "Removing an agent pod stuck provisioning");
+      await podPool.deletePod(existing.id);
     } else if (existing) {
       // error or terminating — wipe and recreate.
       await podPool.deletePod(existing.id);

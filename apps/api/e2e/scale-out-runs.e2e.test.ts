@@ -32,6 +32,8 @@
  *      agent left running) and completes, logs contiguous, cost once
  *  19  the log write fails every time: after 3 failed attaches the run
  *      fails and its agent is stopped
+ *  20  an agent pod its creator abandoned mid-creation (the server died
+ *      between the row and the pod) is taken over: the next turn runs
  *
  * The lease is shortened (6 s, renewed every 2 s) and the attach sweep runs
  * every second, so a SIGKILLed server's runs move on in seconds.
@@ -68,6 +70,9 @@ const CLUSTER_ENV: Record<string, string> = {
   OPTIO_PR_WATCH_INTERVAL: "600000",
   // An agent whose result nobody streamed yet waits this long for its EOF.
   OPTIO_FAKE_EOF_TIMEOUT_MS: "120000",
+  // Fake pods start at once: a pod row still provisioning after 15 s was
+  // abandoned by a server that died creating it (case 3 can kill one then).
+  OPTIO_STALE_PROVISIONING_MS: "15000",
 };
 
 const REPO_A = "https://github.com/e2e-org/scale-a";
@@ -1090,6 +1095,38 @@ describe("resets, review runs, edits and settling", () => {
       // contiguous prefix of the ticks, each once.
       await expectContiguousLogs({ taskId: runId }, 600, { complete: false });
       expect((await tickNumbers({ taskId: runId })).length).toBeLessThanOrEqual(5);
+    });
+  }, 180_000);
+
+  it("(20) an agent pod abandoned mid-creation is taken over and the agent's next turn runs", async () => {
+    await withLogs(cluster, async () => {
+      await replenish();
+      const agentId = await createAgent(cluster.any(), "abandoned-20-agent", ticks(5));
+      await waitAgentIdleAfter(agentId, 1, "agent");
+      const [before] = await sql<Array<{ id: string }>>`
+        SELECT id FROM agent_pods WHERE pool = 'persistent-agent' AND pool_key = ${agentId}`;
+      // As a server that died between the pod's row and the pod leaves it:
+      // provisioning, never to be marked ready.
+      await sql`
+        UPDATE agent_pods SET state = 'provisioning', pod_name = NULL, pod_id = NULL,
+               created_at = now(), updated_at = now()
+        WHERE id = ${before.id}`;
+      const posted = await cluster.any()(`/api/persistent-agents/${agentId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ body: "carry on" }),
+      });
+      expect(posted.status).toBe(202);
+
+      // Taken over within the stale age (15 s here), not stuck behind it.
+      const t0 = Date.now();
+      const { turns: ts } = await waitAgentIdleAfter(agentId, 2, "agent");
+      expect(Date.now() - t0).toBeLessThan(60_000);
+      expect(ts.map((t) => t.halt_reason)).toEqual(["natural", "natural"]);
+      const pods = await sql<Array<{ id: string; state: string }>>`
+        SELECT id, state FROM agent_pods WHERE pool = 'persistent-agent' AND pool_key = ${agentId}`;
+      expect(pods).toHaveLength(1);
+      expect(pods[0].id).not.toBe(before.id);
+      expect(pods[0].state).toBe("ready");
     });
   }, 180_000);
 
