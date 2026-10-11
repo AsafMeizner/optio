@@ -2,6 +2,14 @@ type EventHandler = (event: any) => void;
 
 export type TokenProvider = () => Promise<string | null>;
 
+/**
+ * Pseudo-event a client emits each time its socket opens again after a drop
+ * (`{ type: WS_RECONNECTED }`). Whatever was published while it was down
+ * never reaches it — an API pod going away closes its sockets, and the run's
+ * logs go on from another pod — so a view that keeps history resyncs on it.
+ */
+export const WS_RECONNECTED = "ws:reconnected";
+
 export class WsClient {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<EventHandler>> = new Map();
@@ -15,6 +23,8 @@ export class WsClient {
    * client, leaking an auto-reconnecting connection per page visit.
    */
   private closed = false;
+  /** Whether a socket of this client has opened before (the next open is a reconnect). */
+  private everOpened = false;
 
   constructor(url: string, tokenProvider?: TokenProvider) {
     this.url = url;
@@ -47,6 +57,14 @@ export class WsClient {
 
   private openSocket(url: string, protocols?: string[]): void {
     this.ws = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
+
+    this.ws.onopen = () => {
+      if (this.everOpened) {
+        const event = { type: WS_RECONNECTED };
+        this.handlers.get(WS_RECONNECTED)?.forEach((handler) => handler(event));
+      }
+      this.everOpened = true;
+    };
 
     this.ws.onmessage = (msg) => {
       try {

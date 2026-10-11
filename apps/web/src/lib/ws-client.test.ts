@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { WsClient, getWsBaseUrl, createWorkflowRunLogClient } from "./ws-client";
+import { WsClient, WS_RECONNECTED, getWsBaseUrl, createWorkflowRunLogClient } from "./ws-client";
 
 class MockWebSocket {
   static OPEN = 1;
@@ -12,6 +12,7 @@ class MockWebSocket {
   onmessage: ((msg: { data: string }) => void) | null = null;
   onclose: ((ev: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
+  onopen: (() => void) | null = null;
 
   close = vi.fn(() => {
     this.readyState = MockWebSocket.CLOSED;
@@ -35,6 +36,22 @@ describe("WsClient", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("tells its listeners when the socket opens again after a drop, not on the first open", () => {
+    const client = new WsClient("ws://localhost:4000/ws/logs/t1");
+    const reconnected = vi.fn();
+    client.on(WS_RECONNECTED, reconnected);
+    client.connect();
+    MockWebSocket.instances[0].onopen?.();
+    expect(reconnected).not.toHaveBeenCalled();
+
+    MockWebSocket.instances[0].readyState = MockWebSocket.CLOSED;
+    MockWebSocket.instances[0].onclose?.({ code: 1006 });
+    vi.advanceTimersByTime(3000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    MockWebSocket.instances[1].onopen?.();
+    expect(reconnected).toHaveBeenCalledTimes(1);
   });
 
   it("creates a WebSocket connection on connect()", () => {

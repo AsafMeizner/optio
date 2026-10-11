@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "@/lib/api-client";
 import { createPrReviewLogClient, type WsClient } from "@/lib/ws-client";
 import { getWsTokenProvider } from "@/lib/ws-auth";
-import type { LogEntry } from "./use-logs";
+import { toLogEntry, type LogEntry } from "./use-logs";
+import { resyncOnReconnect, SeenLogs } from "@/lib/log-resync";
 
 const HISTORICAL_LIMIT = 10000;
 
@@ -29,6 +30,7 @@ export function usePrReviewLogs(prReviewId: string) {
 
     const pendingLive: LogEntry[] = [];
     let merged = false;
+    const seen = new SeenLogs();
 
     const client = createPrReviewLogClient(prReviewId, getWsTokenProvider());
     clientRef.current = client;
@@ -38,13 +40,9 @@ export function usePrReviewLogs(prReviewId: string) {
       // REST history is canonical, so ignore those replay frames.
       if (event.catchUp) return;
 
-      const entry: LogEntry = {
-        content: event.content,
-        stream: event.stream,
-        timestamp: event.timestamp,
-        logType: event.logType,
-        metadata: event.metadata,
-      };
+      const entry = toLogEntry(event);
+      if (seen.has(entry)) return;
+      seen.add([entry]);
       if (!merged) {
         pendingLive.push(entry);
       } else {
@@ -66,16 +64,11 @@ export function usePrReviewLogs(prReviewId: string) {
     client.connect();
     setConnected(true);
 
-    api
+    const history = api
       .listPrReviewLogs(prReviewId)
       .then((res) => {
-        const historical: LogEntry[] = res.logs.map((l: any) => ({
-          content: l.content,
-          stream: l.stream,
-          timestamp: l.timestamp,
-          logType: l.logType ?? undefined,
-          metadata: l.metadata ?? undefined,
-        }));
+        const historical: LogEntry[] = res.logs.map(toLogEntry);
+        seen.add(historical);
         if (historical.length >= HISTORICAL_LIMIT) setCapped(true);
 
         const historicalKeys = new Set(historical.map((l) => l.timestamp + l.content));
@@ -88,6 +81,16 @@ export function usePrReviewLogs(prReviewId: string) {
         setLogs(pendingLive);
         merged = true;
       });
+
+    // The socket dropped and came back (its API pod went away, say): rows
+    // stored meanwhile never arrive live. The review's log route has no
+    // paging, so the resync reads it whole.
+    resyncOnReconnect(client, {
+      ready: history,
+      seen,
+      fetchFrom: () => api.listPrReviewLogs(prReviewId).then((res) => res.logs.map(toLogEntry)),
+      setLogs,
+    });
 
     return () => {
       client.disconnect();

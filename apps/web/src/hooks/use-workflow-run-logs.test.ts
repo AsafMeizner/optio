@@ -12,10 +12,13 @@ vi.mock("@/lib/api-client", () => ({
 const mockConnect = vi.fn();
 const mockDisconnect = vi.fn();
 let wsHandler: ((event: any) => void) | null = null;
+let reconnectHandler: (() => void) | null = null;
 vi.mock("@/lib/ws-client", () => ({
+  WS_RECONNECTED: "ws:reconnected",
   createWorkflowRunLogClient: () => ({
-    on: (_event: string, handler: (event: any) => void) => {
-      wsHandler = handler;
+    on: (event: string, handler: (event: any) => void) => {
+      if (event === "ws:reconnected") reconnectHandler = () => handler({ type: event });
+      else wsHandler = handler;
     },
     connect: mockConnect,
     disconnect: mockDisconnect,
@@ -32,6 +35,7 @@ describe("useWorkflowRunLogs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     wsHandler = null;
+    reconnectHandler = null;
     mockGetWorkflowRunLogs.mockResolvedValue({
       logs: [
         {
@@ -208,5 +212,27 @@ describe("useWorkflowRunLogs", () => {
     unmount();
 
     expect(mockDisconnect).toHaveBeenCalled();
+  });
+
+  it("adds the rows stored while the socket was down when it reconnects", async () => {
+    const { result } = renderHook(() => useWorkflowRunLogs("run-1", true));
+    await waitFor(() => expect(result.current.logs).toHaveLength(2));
+
+    mockGetWorkflowRunLogs.mockResolvedValueOnce({
+      logs: [
+        {
+          id: "r3",
+          content: "Missed while away",
+          stream: "stdout",
+          timestamp: "2025-06-01T00:00:02Z",
+        },
+      ],
+    });
+    await act(async () => {
+      reconnectHandler?.();
+    });
+
+    await waitFor(() => expect(result.current.logs).toHaveLength(3));
+    expect(result.current.logs[2].content).toBe("Missed while away");
   });
 });

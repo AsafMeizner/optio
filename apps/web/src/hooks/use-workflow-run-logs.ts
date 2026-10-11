@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "@/lib/api-client";
 import { createWorkflowRunLogClient, type WsClient } from "@/lib/ws-client";
 import { getWsTokenProvider } from "@/lib/ws-auth";
-import type { LogEntry } from "@/hooks/use-logs";
+import { toLogEntry, type LogEntry } from "@/hooks/use-logs";
+import { resyncOnReconnect, SeenLogs } from "@/lib/log-resync";
 
 const HISTORICAL_LIMIT = 10000;
 
@@ -24,6 +25,7 @@ export function useWorkflowRunLogs(runId: string, isActive: boolean) {
     // Buffer live events until historical logs are merged into state.
     const pendingLive: LogEntry[] = [];
     let merged = false;
+    const seen = new SeenLogs();
 
     const client = createWorkflowRunLogClient(runId, getWsTokenProvider());
     clientRef.current = client;
@@ -33,13 +35,9 @@ export function useWorkflowRunLogs(runId: string, isActive: boolean) {
       // REST history is canonical, so ignore those replay frames.
       if (event.catchUp) return;
 
-      const entry: LogEntry = {
-        content: event.content,
-        stream: event.stream,
-        timestamp: event.timestamp,
-        logType: event.logType,
-        metadata: event.metadata,
-      };
+      const entry = toLogEntry(event);
+      if (seen.has(entry)) return;
+      seen.add([entry]);
       if (!merged) {
         pendingLive.push(entry);
       } else {
@@ -64,16 +62,11 @@ export function useWorkflowRunLogs(runId: string, isActive: boolean) {
       setConnected(true);
     }
 
-    api
+    const history = api
       .getWorkflowRunLogs(runId, { limit: HISTORICAL_LIMIT })
       .then((res) => {
-        const historical = res.logs.map((l: any) => ({
-          content: l.content,
-          stream: l.stream,
-          timestamp: l.timestamp,
-          logType: l.logType ?? undefined,
-          metadata: l.metadata ?? undefined,
-        }));
+        const historical = res.logs.map(toLogEntry);
+        seen.add(historical);
         if (historical.length >= HISTORICAL_LIMIT) setCapped(true);
 
         // Deduplicate: drop any live events already in the historical set
@@ -87,6 +80,18 @@ export function useWorkflowRunLogs(runId: string, isActive: boolean) {
         setLogs(pendingLive);
         merged = true;
       });
+
+    // The socket dropped and came back (its API pod went away, say): rows
+    // stored meanwhile never arrive live.
+    resyncOnReconnect(client, {
+      ready: history,
+      seen,
+      fetchFrom: (offset) =>
+        api
+          .getWorkflowRunLogs(runId, { limit: HISTORICAL_LIMIT, offset })
+          .then((res) => res.logs.map(toLogEntry)),
+      setLogs,
+    });
 
     return () => {
       client.disconnect();
