@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import { api } from "@/lib/api-client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -18,8 +18,8 @@ const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
 
 export function UserMenu({
   onNavigate,
-  hideSettings = false,
-}: { onNavigate?: () => void; hideSettings?: boolean } = {}) {
+  children,
+}: { onNavigate?: () => void; children?: ReactNode } = {}) {
   const pathname = usePathname();
   const { user, authDisabled, isAdmin, isDeploymentAdmin } = useCurrentUser();
   const [open, setOpen] = useState(false);
@@ -56,6 +56,7 @@ export function UserMenu({
       className="relative"
       onKeyDown={(event) => {
         if (event.key === "Escape" && open) {
+          event.preventDefault();
           event.stopPropagation();
           setOpen(false);
           menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -85,7 +86,7 @@ export function UserMenu({
       </button>
 
       {open && (
-        <div className="absolute z-50 bottom-full left-0 right-0 mb-2 rounded-lg border border-border bg-bg-card shadow-lg overflow-hidden">
+        <div className="absolute z-[60] bottom-full left-0 right-0 mb-2 max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain rounded-lg border border-border bg-bg-card shadow-lg">
           {authDisabled && (
             <div className="px-3 py-2 text-[10px] text-amber-400 bg-amber-500/5 border-b border-border">
               Authentication is disabled
@@ -104,7 +105,7 @@ export function UserMenu({
           {/* Theme selector */}
           <div className="px-3 py-2 border-b border-border">
             <p className="text-[10px] text-text-muted mb-1.5">Theme</p>
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1">
               {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
                 <button
                   key={value}
@@ -130,33 +131,33 @@ export function UserMenu({
               <p className="px-3 pt-1 pb-0.5 text-[10px] font-semibold tracking-widest uppercase text-text-muted/60">
                 Admin
               </p>
-              {ADMIN_ITEMS.filter((item) => !hideSettings || item.href !== "/settings").map(
-                ({ href, label, icon: Icon }) => {
-                  const active = isNavActive(pathname, href);
-                  return (
-                    <Link
-                      key={href}
-                      href={href}
-                      aria-current={active ? "page" : undefined}
-                      onClick={() => {
-                        setOpen(false);
-                        onNavigate?.();
-                      }}
-                      className={cn(
-                        "flex items-center gap-2 w-full px-3 py-1.5 text-xs transition-colors",
-                        active
-                          ? "text-text bg-primary/10"
-                          : "text-text-muted hover:text-text hover:bg-bg-hover",
-                      )}
-                    >
-                      <Icon className={cn("w-3.5 h-3.5", active && "text-primary")} />
-                      {label}
-                    </Link>
-                  );
-                },
-              )}
+              {ADMIN_ITEMS.map(({ href, label, icon: Icon }) => {
+                const active = isNavActive(pathname, href);
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => {
+                      setOpen(false);
+                      onNavigate?.();
+                    }}
+                    className={cn(
+                      "flex items-center gap-2 w-full px-3 py-1.5 text-xs transition-colors",
+                      active
+                        ? "text-text bg-primary/10"
+                        : "text-text-muted hover:text-text hover:bg-bg-hover",
+                    )}
+                  >
+                    <Icon className={cn("w-3.5 h-3.5", active && "text-primary")} />
+                    {label}
+                  </Link>
+                );
+              })}
             </div>
           )}
+
+          {children}
 
           {user && !authDisabled && (
             <button

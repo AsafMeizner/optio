@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "./sidebar";
@@ -31,6 +31,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   // work list and the terminal view itself.
   const inLocal = pathname.startsWith("/local/") || pathname === "/work";
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   // Wide screens only — collapsing hands the rail's width to the terminal.
   // The phone drawer ignores it. Persisted; hydrated after mount so SSR and
   // the first client render agree.
@@ -82,23 +83,24 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
           <div className="flex flex-1 min-h-0">
             {/* Mobile overlay */}
             {sidebarOpen && (
-              <div
-                className="fixed inset-0 z-20 bg-black/50 md:hidden"
-                onClick={() => setSidebarOpen(false)}
-              />
+              <div className="fixed inset-0 z-20 bg-black/50 md:hidden" onClick={closeSidebar} />
             )}
             {inSession ? (
-              <ResizableSessionRail open={sidebarOpen}>
+              <ResizableSessionRail
+                open={sidebarOpen}
+                onClose={closeSidebar}
+                sessionKind={inPodSession ? "pod" : "local"}
+              >
                 <Suspense fallback={null}>
                   {inPodSession ? (
-                    <PodSessionRail onNavigate={() => setSidebarOpen(false)} />
+                    <PodSessionRail onNavigate={closeSidebar} />
                   ) : (
-                    <TerminalRail onNavigate={() => setSidebarOpen(false)} />
+                    <TerminalRail onNavigate={closeSidebar} />
                   )}
                 </Suspense>
               </ResizableSessionRail>
             ) : (
-              <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+              <Sidebar open={sidebarOpen} onClose={closeSidebar} />
             )}
             <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
               {/* Mobile header */}

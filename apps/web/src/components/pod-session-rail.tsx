@@ -3,14 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, PanelLeftClose, Plus, Terminal, X } from "lucide-react";
+import { Terminal, X } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { SearchField } from "@/components/ui/search-field";
-import { useRailStore } from "./local/rail-store";
 import { parsePodTerminals, podTerminalsHref } from "./pod-terminal-panes";
 import { SessionRailScroll } from "./local/session-rail-scroll";
-import { IfCanMutate } from "./role-gate";
+import { SessionRailHeader } from "./local/session-rail-header";
 
 export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
   const id = usePathname().split("/")[2];
@@ -53,55 +51,19 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
   };
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border/50 px-3 pb-3 pt-3">
-        <div className="flex items-center justify-between gap-2">
-          <Link
-            href="/work"
-            onClick={onNavigate}
-            className="flex items-center gap-1.5 text-[13px] font-medium text-text-muted hover:text-text"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Work
-          </Link>
-          <div className="flex items-center gap-1">
-            <IfCanMutate>
-              <Link
-                href="/work/new"
-                onClick={onNavigate}
-                title="New session"
-                className="flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary hover:bg-primary/20"
-              >
-                <Plus className="h-3 w-3" />
-                New
-              </Link>
-            </IfCanMutate>
-            <button
-              type="button"
-              aria-label="Hide sessions"
-              title="Hide sessions (⌃⇧B)"
-              onClick={() => useRailStore.getState().setCollapsed(true)}
-              className="hidden rounded-md p-1 text-text-muted hover:bg-bg-hover/60 md:inline-flex"
-            >
-              <PanelLeftClose className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-        <SearchField
-          value={search}
-          onChange={setSearch}
-          label="Search sessions"
-          placeholder="Search sessions…"
-          size="sm"
-          className="mt-3"
-        />
-      </div>
+      <SessionRailHeader
+        count={sessions.length}
+        search={search}
+        onSearch={setSearch}
+        onNavigate={onNavigate}
+      />
       <SessionRailScroll className="px-1.5 py-2">
         {(["active", "ended"] as const).map((state) => {
           const rows = shown.filter((s) => s.state === state);
           return (
             rows.length > 0 && (
               <div key={state} className="mb-3">
-                <div className="px-2 py-2 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
+                <div className="px-2 py-2 text-[11px] font-medium text-text-muted">
                   {state === "active" ? "Live" : "Finished"}{" "}
                   <span className="ml-1 font-normal opacity-60">{rows.length}</span>
                 </div>
@@ -120,9 +82,9 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
                       }}
                       aria-current={s.id === id ? "page" : undefined}
                       className={cn(
-                        "block rounded-md px-2 py-2 transition-colors",
+                        "block rounded-xl border border-transparent px-2.5 py-2.5 transition-colors",
                         s.id === id
-                          ? "nav-active text-text-heading"
+                          ? "sidebar-link-active text-text-heading"
                           : "text-text-muted hover:bg-bg-hover/60 hover:text-text",
                       )}
                     >
@@ -144,6 +106,7 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
                     {s.id === id && panes.length > 0 && (
                       <div
                         aria-label="Grouped terminals"
+                        title="Pane groups belong to this view"
                         className="ml-4 mr-1 mt-0.5 mb-1 border-l border-primary/20 pl-2"
                       >
                         {panes.map((pane) => (
@@ -191,9 +154,6 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
           </p>
         )}
       </SessionRailScroll>
-      <div className="shrink-0 border-t border-border/50 px-3 py-2 text-[10px] text-text-muted/60">
-        Pane groups belong to this view.
-      </div>
     </div>
   );
 }

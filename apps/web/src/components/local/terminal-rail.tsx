@@ -1,39 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api-client";
-import {
-  ArrowLeft,
-  BellRing,
-  Columns2,
-  Keyboard,
-  ChevronDown,
-  X,
-  PanelLeftClose,
-  Pin,
-  Plus,
-  Laptop,
-  Zap,
-} from "lucide-react";
+import { BellRing, Columns2, X, Pin, Laptop, Zap } from "lucide-react";
 import { attentionLabel, dirTail, SpawnSourceBadge } from "./terminal-card";
 import { SESSION_DOT, sessionTone } from "./attention";
-import { useRailStore } from "./rail-store";
 import { useLocalFeed } from "./local-feed";
 import { useBellStore } from "./bell-store";
 import { collectWorkLinks, WorkLinkBadges, workLinksSearchText } from "./work-links";
 import { addToSplit, parseSplit, splitHref, MAX_PANES } from "./split-state";
 import { nextNeedsYou, orderSessions } from "./session-order";
-import { SearchField } from "@/components/ui/search-field";
 import { LocalSessionIcon } from "./session-icon";
 import { SessionRailScroll } from "./session-rail-scroll";
-import { IfCanMutate } from "@/components/role-gate";
+import { SessionRailHeader } from "./session-rail-header";
 
 /**
- * Session rail: replaces the app sidebar while you're inside a terminal
- * (/local/:id) so jumping between many sessions is one click or one
+ * Session list inside the shared sidebar while you're in a terminal
+ * (/local/:id), so jumping between many sessions is one click or one
  * keystroke. Ordered by when you last typed into a session (else when it
  * was made), live above Finished, so rows stay put while agents flip
  * between working and needs-you; searchable by title, dir, host, or the
@@ -222,56 +207,13 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
   const armed = useBellStore((s) => s.armed);
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-bg-card/30">
-      <div className="shrink-0 px-3 pt-3 pb-3 border-b border-border/60">
-        <div className="flex items-center justify-between gap-2">
-          <Link
-            href="/work"
-            onClick={onNavigate}
-            className="flex items-center gap-1.5 text-xs font-medium text-text-muted hover:text-text transition-colors"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            Work
-          </Link>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => useRailStore.getState().setCollapsed(true)}
-              title="Hide sessions (⌃⇧B)"
-              aria-label="Hide sessions"
-              className="hidden md:inline-flex p-1 rounded-md text-text-muted hover:text-text hover:bg-bg-hover/60 transition-colors"
-            >
-              <PanelLeftClose className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-        <div className="mt-4 mb-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold tracking-tight text-text-heading">Sessions</h2>
-            <span className="rounded-md bg-bg-hover px-1.5 py-0.5 text-[11px] tabular-nums text-text-muted">
-              {terminals.length}
-            </span>
-          </div>
-          <IfCanMutate>
-            <Link
-              href="/work/new"
-              onClick={onNavigate}
-              title="New session"
-              aria-label="New session"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-primary/15 bg-primary/10 text-primary transition-colors hover:bg-primary/20"
-            >
-              <Plus className="h-4 w-4" />
-            </Link>
-          </IfCanMutate>
-        </div>
-        <SearchField
-          value={search}
-          onChange={setSearch}
-          label="Search sessions"
-          placeholder="Search sessions…"
-          size="sm"
-          inputClassName="rounded-lg bg-bg/60"
-        />
+    <div className="flex h-full min-h-0 flex-col">
+      <SessionRailHeader
+        count={terminals.length}
+        search={search}
+        onSearch={setSearch}
+        onNavigate={onNavigate}
+      >
         {needsYouCount > 0 && (
           <button
             type="button"
@@ -285,7 +227,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
             <span className="ml-auto font-mono opacity-70">⌃⇧↵</span>
           </button>
         )}
-      </div>
+      </SessionRailHeader>
 
       <SessionRailScroll viewportRef={listRef} className="py-1.5">
         {groups.length === 0 && (
@@ -297,7 +239,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
           <div key={g.key} className="mb-2">
             <div
               className={cn(
-                "px-3 pt-3 pb-2 text-[10px] font-semibold tracking-widest uppercase flex items-center gap-2",
+                "px-3 pt-3 pb-2 text-[11px] font-medium flex items-center gap-2",
                 g.tone,
               )}
             >
@@ -333,7 +275,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                       className={cn(
                         "relative w-full text-left px-2.5 py-2.5 rounded-xl border transition-colors group cursor-pointer",
                         active
-                          ? "text-text-heading border-primary/25 bg-primary/10 shadow-sm"
+                          ? "text-text-heading border-transparent sidebar-link-active"
                           : inSplit
                             ? "border-primary/10 bg-primary/5 text-text"
                             : "border-transparent text-text-muted hover:bg-bg-hover/60 hover:text-text",
@@ -500,32 +442,6 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         ))}
       </SessionRailScroll>
-
-      <details className="shrink-0 border-t border-border/60 px-3 py-2.5 text-[10px] text-text-muted/70 group/shortcuts">
-        <summary className="flex cursor-pointer list-none items-center gap-2 rounded text-[11px] hover:text-text [&::-webkit-details-marker]:hidden">
-          <Keyboard className="h-3.5 w-3.5" />
-          Keyboard shortcuts
-          <ChevronDown className="ml-auto h-3 w-3 transition-transform group-open/shortcuts:rotate-180" />
-        </summary>
-        <div className="mt-2 space-y-1.5">
-          <div className="flex justify-between gap-2">
-            <span>Switch session</span>
-            <kbd className="font-mono">⌃⇧↑↓</kbd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <span>Next needs you</span>
-            <kbd className="font-mono">⌃⇧↵</kbd>
-          </div>
-          <div className="flex justify-between gap-2">
-            <span>Open side by side</span>
-            <kbd className="font-mono">⇧click</kbd>
-          </div>
-          <div className="hidden md:flex justify-between gap-2">
-            <span>Hide sessions</span>
-            <kbd className="font-mono">⌃⇧B</kbd>
-          </div>
-        </div>
-      </details>
     </div>
   );
 }

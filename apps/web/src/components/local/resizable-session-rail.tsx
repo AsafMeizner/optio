@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { SidebarHeader, SidebarFooter } from "@/components/layout/sidebar-chrome";
+import { useSidebarDrawer } from "@/components/layout/use-sidebar-drawer";
 import {
   clampRailWidth,
   RAIL_DEFAULT_WIDTH,
@@ -11,12 +13,23 @@ import {
 } from "./rail-store";
 
 /** Desktop resizing leaves the mobile drawer and the collapse shortcut intact. */
-export function ResizableSessionRail({ open, children }: { open: boolean; children: ReactNode }) {
+export function ResizableSessionRail({
+  open,
+  onClose,
+  sessionKind,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  sessionKind: "local" | "pod";
+  children: ReactNode;
+}) {
   const { collapsed, width, setWidth } = useRailStore();
   const [maxWidth, setMaxWidth] = useState(RAIL_MAX_WIDTH);
   const [dragging, setDragging] = useState(false);
   const drag = useRef<{ x: number; width: number } | null>(null);
   const rail = useRef<HTMLElement>(null);
+  const onKeyDown = useSidebarDrawer(rail, open, onClose);
   const visibleWidth = clampRailWidth(width, maxWidth);
 
   useEffect(() => {
@@ -55,16 +68,22 @@ export function ResizableSessionRail({ open, children }: { open: boolean; childr
   return (
     <aside
       ref={rail}
+      onKeyDown={onKeyDown}
       aria-label="Session sidebar"
       style={{ "--session-rail-width": `${visibleWidth}px` } as CSSProperties}
       className={cn(
-        "w-60 md:w-[var(--session-rail-width)] shrink-0 border-r border-border/50 glass-sidebar flex flex-col",
+        "w-60 md:w-[var(--session-rail-width)] shrink-0 border-r border-border/60 bg-bg-subtle flex flex-col",
         "fixed inset-y-0 left-0 z-30 transition-transform duration-200 md:relative md:translate-x-0",
-        open ? "translate-x-0" : "-translate-x-full",
+        open ? "visible translate-x-0" : "invisible -translate-x-full md:visible",
         collapsed && "md:hidden",
       )}
     >
-      {children}
+      <SidebarHeader
+        onNavigate={onClose}
+        onCollapse={() => useRailStore.getState().setCollapsed(true)}
+      />
+      <div className="min-h-0 flex-1">{children}</div>
+      <SidebarFooter onNavigate={onClose} sessionKind={sessionKind} />
       <div
         role="separator"
         aria-label="Resize session sidebar"

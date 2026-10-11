@@ -13,7 +13,7 @@ interface WorkspaceSummary {
   role: string;
 }
 
-export function WorkspaceSwitcher() {
+export function WorkspaceSwitcher({ returnToWork = false }: { returnToWork?: boolean } = {}) {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -58,8 +58,10 @@ export function WorkspaceSwitcher() {
       localStorage.setItem("optio_workspace_id", ws.id);
       setCurrentId(ws.id);
       setOpen(false);
-      // Reload page to refresh all data for the new workspace
-      window.location.reload();
+      // A session belongs to its workspace. Leave its detail view when
+      // switching, and refresh all workspace-scoped state in either case.
+      if (returnToWork) window.location.assign("/work");
+      else window.location.reload();
     } catch {
       // best-effort
     }
@@ -96,6 +98,7 @@ export function WorkspaceSwitcher() {
       className="relative"
       onKeyDown={(event) => {
         if (event.key === "Escape" && open) {
+          event.preventDefault();
           event.stopPropagation();
           setOpen(false);
           setCreating(false);
@@ -107,11 +110,10 @@ export function WorkspaceSwitcher() {
         aria-label={`Switch workspace: ${current?.name ?? "Workspace"}`}
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2.5 w-full px-3 py-2.5 rounded-xl border border-border/70 bg-bg-card/60 text-left hover:bg-bg-card hover:border-border-strong transition-colors"
+        className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg border border-border/70 text-left hover:bg-bg-card hover:border-border-strong transition-colors"
       >
         <Building2 className="w-4 h-4 text-text-muted shrink-0" />
         <span className="flex-1 min-w-0">
-          <span className="block text-[10px] text-text-muted">Workspace</span>
           <span className="block text-xs font-medium text-text-heading truncate">
             {current?.name ?? "Workspace"}
           </span>
@@ -122,7 +124,7 @@ export function WorkspaceSwitcher() {
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-bg-card shadow-lg overflow-hidden z-50">
+        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-bg-card shadow-lg overflow-hidden z-[60]">
           <div className="px-3 py-1.5 text-[10px] text-text-muted font-medium uppercase tracking-wider">
             Workspaces
           </div>
