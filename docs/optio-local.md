@@ -447,36 +447,53 @@ them; a viewer, a REST call or a worker that wants it may be on another.
 - **Ownership.** The instance a daemon's hello lands on becomes the host's **owner**: it
   seizes the lease `local-host:<hostId>` in `leases` (30 s TTL, renewed every 10 s), held
   per daemon connection (`<instance>#<connection>`). "The newest daemon wins": a new
-  connection takes the lease by force and publishes `host-taken`; the previous owner,
-  after checking the lease really moved, closes its socket with 4000 (or finds out when
-  its next renew fails). A connection that closes releases its own lease, and the host is
-  marked offline only while no connection holds one, so a daemon that already
-  reconnected elsewhere is never marked offline by the old pod's late close.
-- **Online and capabilities.** `isHostOnline` is "this instance has the socket, or the
-  lease is live". What the daemon advertised in its hello (`claudeCredentials`,
-  `manageDirs`, `modelProviders`, `refreshLimits`, `transcriptBackfill`, `answersQueries`)
-  is stored on the host row (`local_hosts.capabilities`) before the lease is taken, and
-  read only while the lease is live, so every instance answers the same.
+  connection takes the lease by force and publishes `host-taken`. `host-taken` is only a
+  nudge to look: a connection gives the host up (closing its socket with 4000) only when
+  its claim has completed and the lease, read after the message, names another
+  connection; it also finds out when its next renew fails. So two daemons connecting at
+  once leave exactly one, never none. A connection releases only its own lease (by its
+  holder id), even one that closed while its claim was in flight (the offline mark waits
+  for that release), and the host is marked offline only while no connection holds one, so
+  a daemon that already reconnected elsewhere is never marked offline by the old pod's
+  late close.
+- **Online and capabilities.** Online is the lease: `isHostOnline` is "this instance has
+  the socket, or the lease is live", and `getHost` / `listHosts` / `pickOnlineHost` read
+  `state` from the lease in the same query, so every instance says the same; the
+  `local_hosts.state` column is the last-known state the online / offline alerts and the
+  sweep go by. What the daemon advertised in its hello (`claudeCredentials`, `manageDirs`,
+  `modelProviders`, `refreshLimits`, `transcriptBackfill`, `answersQueries`) is stored on
+  the host row (`local_hosts.capabilities`) before the lease is taken and read off the
+  rows already loaded (`capabilitiesOf`; the host list makes no query per host).
 - **The bus** (`services/local-bus.ts`): one Redis subscriber per instance, started after
-  `listen` and retried with backoff; binary envelopes (a JSON header, then raw bytes).
+  `listen` and retried with backoff; binary envelopes (a JSON header, then raw bytes);
+  messages on a channel arrive in publish order (sharded pub/sub in cluster mode,
+  [docs/redis.md](redis.md)).
   `optio:local:host:<hostId>:in` carries everything for the daemon (viewer attach, input,
-  resize, view reports, pongs, spawn, kill, dirs, limits, credentials, transcript
-  requests) and only the owner subscribes, while it owns the host; every message names the
-  lease holder its sender read, so an old owner mid-handover never acts twice.
+  resize, view reports, pongs, spawn, kill, dirs, limits, transcript requests) and only
+  the owner subscribes, while it owns the host; every message names the lease holder its
+  sender read, so an old owner mid-handover never acts twice, and messages for a
+  connection that arrive before its claim completes are handled right after it.
   `optio:local:term:<terminalId>:out` carries what a terminal's viewers get (output, the
   attach snapshot, size and status frames); an instance subscribes only while it has a
   viewer of it. `optio:local:reply:<instanceId>` carries answers: a frame sent to a daemon
-  elsewhere is acknowledged by its owner (a spawn or kill that gets no acknowledgement
-  within 5 s counts as "host offline", as it would locally), and a daemon's answer to a
-  request (`dirs-result`, `limits-refresh-result`, `credentials-result`,
-  `transcript-backfill`) is relayed back to the instance that asked.
+  elsewhere is acknowledged by its owner. Nobody listening means the host is offline (a
+  spawn parks, a kill settles the row, as locally); an owner that heard it but didn't
+  acknowledge within 5 s means **unknown**, never "not sent": a spawn stays `launching`
+  and is never sent again (`started` settles it, from `launching` or `pending`, or the
+  stuck-launching sweep fails it). A daemon's answer to a request (`dirs-result`,
+  `limits-refresh-result`, `transcript-backfill`) is relayed back to the instance that
+  asked and delivered there in order per host. **A Claude token never crosses Redis**: a
+  refresh asked on another instance runs entirely on the owner (an owner task: ask the
+  daemon, validate, store) and only the outcome travels back; the owner never sends a
+  `credentials` request on another instance's behalf, nor relays its answer.
 - **Viewers.** On the owner, a viewer on another instance is a socket-shaped proxy whose
   frames go out on the terminal's channel, so the attach handshake, the snapshot-then-live
   ordering and the grid arbiter (`local-grid.ts`, which stays with the owner, fed by view
   reports over the bus) work the same for both. The viewer's own instance relays only the
-  frames of the owner it attached through. Every 10 s each instance reports its remote
-  viewers to their owners (who drop the ones no longer reported and ask unknown ones to
-  reconnect) and checks the owner still holds the lease; a viewer whose daemon moved is
+  frames of the owner it attached through. Every 10 s (one tick at a time, one lease query
+  for every host) each instance reports its remote viewers whose attach has gone out to
+  their owners (who drop the ones no longer reported and ask unknown ones to reconnect)
+  and checks the owner still holds the lease; a viewer whose daemon moved is
   closed with 4503 and reattaches to the new connection, as the clients do after any host
   blip. Output reaches Redis only when some viewer is on another instance.
 - **Sweeps.** The liveness sweep is a BullMQ job scheduler (`local-sweep.sweep`, every
@@ -485,9 +502,10 @@ them; a viewer, a REST call or a worker that wants it may be on another.
   parked as host-offline whose host is back are started; launches an online daemon never
   acknowledged fail.
 - **Per instance** (caches, never correctness): the transcript-backfill bookkeeping (each
-  instance asks a host at most once per window), the one-write-a-minute throttle on
-  `last_interacted_at` (backed by a conditional update), and the Claude token's automatic
-  refresh window, which is a lease (`claude-auto-refresh:<hostId>`) across instances.
+  instance asks a host at most once per window) and the one-write-a-minute throttle on
+  `last_interacted_at` (a conditional update across instances, the throttle starting from
+  the stamp as stored). The Claude token's automatic refresh window is a lease
+  (`claude-auto-refresh:<hostId>`) across instances.
 - Without Redis the relay still works on each instance alone: its own daemons and their
   viewers.
 
