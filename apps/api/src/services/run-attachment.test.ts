@@ -697,3 +697,27 @@ describe("run directories", () => {
     );
   });
 });
+
+describe("endRunJob after shutdown let the run go", () => {
+  it("gives the lease up again: a start recorded since took a fresh one", async () => {
+    vi.useFakeTimers();
+    try {
+      mockUpdateReturning.mockResolvedValue([{ id: "x" }]);
+      const h = startHold({ kind: "work-run", id: "late" }, "me/late", {
+        agent: { podId: "pod-1", pid: 5 },
+      });
+      // Shutdown: every lease given up, the hold released.
+      await detachAll();
+      expect(h.released).toBe(true);
+      mockUpdateSet.mockClear();
+      await endRunJob(h, "detached");
+      const releases = mockUpdateSet.mock.calls
+        .map((c) => c[0] as { attachLeaseUntil?: Date })
+        .filter((v) => v.attachLeaseUntil);
+      expect(releases).toHaveLength(1);
+      expect(mockKillRun).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -572,6 +572,14 @@ export async function endRunJob(
     log.warn({ err }, "Failed to check the run's agent as its job ended");
   } finally {
     await hold.end({ release: end !== "finished" });
+    // Shutdown let the run go while the job was still starting it: what the
+    // job wrote since (its start, which takes a fresh lease) is given up too,
+    // so another instance attaches in seconds.
+    if (hold.released && !hold.lost) {
+      await releaseAttachment(hold).catch((err) =>
+        log.warn({ err }, "Failed to release run attachment"),
+      );
+    }
   }
 }
 
