@@ -219,11 +219,14 @@ for (const kind of ["local", "pod"] as const) {
       await expect(sidebar.getByRole("button", { name: "Close menu" })).toBeFocused();
       const workspace = sidebar.getByRole("button", { name: "Switch workspace: Acme" });
       await workspace.click();
+      // Escape before the menu has opened is meant for the drawer, and closes it.
+      await expect(workspace).toHaveAttribute("aria-expanded", "true");
       await page.keyboard.press("Escape");
       await expect(workspace).toHaveAttribute("aria-expanded", "false");
       await expect(workspace).toBeFocused();
       await expect(sidebar).toBeVisible();
       await account.click();
+      await expect(account).toHaveAttribute("aria-expanded", "true");
       await page.keyboard.press("Escape");
       await expect(account).toHaveAttribute("aria-expanded", "false");
       await expect(sidebar).toBeVisible();
