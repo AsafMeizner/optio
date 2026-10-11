@@ -53,4 +53,54 @@ describe("RunOutputDigest", () => {
     expect(inferExitCode("cursor", '{"type":"result","is_error":true}')).toBe(1);
     expect(inferExitCode("unknown-agent", '{"type":"result","is_error":true}')).toBe(1);
   });
+
+  describe("the exit code, per kind (tasks and review runs infer it; Job runs and turns do not)", () => {
+    const verdict = (agent: string, lines: string[], exit: number, infer = true) => {
+      const digest = new RunOutputDigest(agent);
+      for (const line of lines) digest.push(line);
+      return digest.finish(exit, { inferExitCode: infer });
+    };
+    const ok = JSON.stringify({ type: "result", is_error: false, result: "done" });
+    const bad = JSON.stringify({ type: "result", is_error: true, result: "API Error: boom" });
+
+    it("a Claude result event seen is authoritative over the process's exit code", () => {
+      // The agent reported success, then its process exited non-zero (a
+      // signal after its turn, a wrapper's status): the result decides.
+      for (const exit of [1, 2, 143]) {
+        const v = verdict("claude-code", [ok], exit);
+        expect(v.exitCode).toBe(0);
+        expect(v.result.success).toBe(true);
+      }
+      const failed = verdict("claude-code", [bad], 0);
+      expect(failed.exitCode).toBe(1);
+      expect(failed.result.success).toBe(false);
+      // The first result event decides, as the whole-output inference did.
+      expect(verdict("claude-code", [ok, bad], 1).exitCode).toBe(0);
+      expect(verdict("cursor", [ok], 1).exitCode).toBe(0);
+    });
+
+    it("with no result event, a fatal raw line fails the run, else the process's exit code decides", () => {
+      expect(verdict("claude-code", ["fatal: crashed"], 0).exitCode).toBe(1);
+      expect(verdict("claude-code", ["starting up"], 1).exitCode).toBe(1);
+      expect(verdict("claude-code", ["starting up"], 1).result.success).toBe(false);
+      expect(verdict("claude-code", ["starting up"], 0).exitCode).toBe(0);
+      // A JSON line with "fatal:" inside is tool output, not a crash.
+      expect(
+        verdict("claude-code", ['{"type":"tool_result","content":"fatal: x"}'], 0).exitCode,
+      ).toBe(0);
+    });
+
+    it("other agents: a failure signal fails the run on a zero exit; otherwise the exit code decides", () => {
+      expect(verdict("codex", ['{"type":"error","message":"quota"}'], 0).exitCode).toBe(1);
+      expect(verdict("codex", ['{"type":"message"}'], 0).exitCode).toBe(0);
+      expect(verdict("codex", ['{"type":"message"}'], 3).exitCode).toBe(3);
+    });
+
+    it("without inference (Job runs, agent turns) the process's exit code is the code", () => {
+      expect(verdict("claude-code", [ok], 1, false).exitCode).toBe(1);
+      expect(verdict("claude-code", [ok], 1, false).result.success).toBe(false);
+      expect(verdict("claude-code", [bad], 0, false).result.success).toBe(false);
+      expect(verdict("claude-code", [ok], 0, false).result.success).toBe(true);
+    });
+  });
 });

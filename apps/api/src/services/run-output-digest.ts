@@ -36,11 +36,15 @@ export class RunOutputDigest {
 
   /**
    * The verdict once the agent exited with `exitCode`. With `inferExitCode`
-   * the output's own failure signals win over a zero exit (agents that
-   * catch their errors and exit 0); the real status settles the rest.
+   * (tasks and review runs, as their workers always read it) the output
+   * decides first: a Claude-style `result` event seen is authoritative
+   * (`is_error` decides, whatever the process exit), then an agent's
+   * failure signals (failure even on a zero exit); only an output that says
+   * neither leaves it to the process's exit code. Without it (Job runs,
+   * agent turns) the process's exit code is the code, as it always was.
    */
   finish(exitCode: number, opts: { inferExitCode?: boolean } = {}): RunOutputVerdict {
-    const code = opts.inferExitCode ? this.inference.value() || exitCode : exitCode;
+    const code = opts.inferExitCode ? this.inference.resolve(exitCode) : exitCode;
     return { result: this.parser.finish(code), exitCode: code, auth: this.auth };
   }
 }
@@ -96,11 +100,23 @@ export class ExitCodeInference {
     if (!this.flagged && ERROR_SIGNALS[this.kind](line)) this.flagged = true;
   }
 
+  /** The code the output alone implies (no result event and no failure signal: 0). */
   value(): number {
     if (this.kind === "claude-code" || this.kind === "cursor") {
       return this.firstResult ?? (this.flagged ? 1 : 0);
     }
     return this.flagged ? 1 : 0;
+  }
+
+  /**
+   * The run's exit code, the output read with the process's own: a result
+   * event seen decides (its `is_error`); else a failure signal is 1; else
+   * the process's exit code.
+   */
+  resolve(processExitCode: number): number {
+    if (this.firstResult !== null) return this.firstResult;
+    if (this.flagged) return 1;
+    return processExitCode;
   }
 }
 
