@@ -110,8 +110,10 @@ What ties the system to one process, from the inventory that preceded this plan:
   a CAS on it, so one instance's old-attempt job and new-attempt job never
   pass for each other. A claim takes only an expired lease of a run still
   active. One rule stops an agent its job left behind (`endRunJob`: an
-  error halfway, a cancel or requeue under it), pid-scoped so a newer
-  attempt in the same directory is never hit; every requeue path stops the
+  error while setting the run up, a cancel or requeue under it),
+  pid-scoped so a newer attempt in the same directory is never hit; an
+  error once the agent streams detaches instead (the reconciler
+  re-attaches; the third failed attach job in a row fails the run); every requeue path stops the
   last attempt's agent after its commit (`resetRunAttempt`). A settle or
   stream that lost its run says `taken` or `reset`. A fresh start escalates
   a stale supervisor TERM → KILL and moves the old attempt's files aside

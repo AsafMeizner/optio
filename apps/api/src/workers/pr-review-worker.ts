@@ -41,6 +41,7 @@ import {
   closeAttachment,
   endOfLoss,
   endRunJob,
+  onStreamError,
   readRunStderr,
   recordRunStarted,
   removeRunDirectory,
@@ -526,6 +527,17 @@ export function startPrReviewWorker() {
           claim: { consumedBytes: 0, execState: "started", pid: started.pid },
         });
       } catch (err) {
+        // Once its agent streams, an error is this instance's trouble, not
+        // the run's: the run is left for an attach (run-attachment.ts).
+        const afterStart = await onStreamError(hold, log);
+        if (afterStart) {
+          ended = afterStart;
+          log.error(
+            { err },
+            "PR review worker error while streaming; the run is left for an attach",
+          );
+          return;
+        }
         log.error({ err }, "PR review run failed");
         const msg = describeError(err);
         // Only while the run is still active: a cancel stands.
@@ -848,12 +860,13 @@ async function failLostReviewRun(
   run: typeof prReviewRuns.$inferSelect,
   detail: string,
   stderrTail = "",
+  trigger = "run_lost",
 ): Promise<void> {
   const msg = withStderr(`${detail}. Inspect before relaunching.`, stderrTail);
   await transitionRunFromActive(run.id, PrReviewRunState.FAILED, { errorMessage: msg });
   if (run.kind !== "chat" && !(await reviewIsCancelled(run.prReviewId))) {
     await prReviewService
-      .transitionPrReview(run.prReviewId, PrReviewState.FAILED, "run_lost", {
+      .transitionPrReview(run.prReviewId, PrReviewState.FAILED, trigger, {
         message: msg,
         runId: run.id,
       })
@@ -891,6 +904,7 @@ async function attachReviewRun(job: { id?: string; data: unknown }): Promise<voi
       log,
       podId: run.podId ?? null,
       onPodGone: (detail) => failLostReviewRun(run, detail),
+      onAttachFailed: (message) => failLostReviewRun(run, message, "", "attach_failed"),
       async finish(pod, hold, claim) {
         // The instance that started the agent went away before recording `running`.
         await transitionRunIf(runId, PrReviewRunState.PROVISIONING, PrReviewRunState.RUNNING);

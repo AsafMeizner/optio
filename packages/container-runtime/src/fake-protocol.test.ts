@@ -196,6 +196,23 @@ describe("FakeContainerRuntime run protocol", () => {
     expect(text).not.toContain("tick 1");
   });
 
+  it("[[mock:mark:N:TEXT]] puts a text event of the test's choosing right after tick N", async () => {
+    const runId = await start("marked [[mock:ticks:4:10]] [[mock:mark:2:HERE-IT-IS]]");
+    await a.deliverStdin(handle, {
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      line: STDIN_EOF_SENTINEL,
+    });
+    const attachment = await a.attachRun(handle, {
+      runId,
+      runDir: `${RUN_DIR}/${runId}`,
+      fromByte: 0,
+    });
+    const { events } = await drain(attachment);
+    const texts = events.flatMap((e) => e.message?.content?.map((c) => c.text) ?? []);
+    expect(texts.slice(0, 5)).toEqual(["tick 1", "tick 2", "HERE-IT-IS", "tick 3", "tick 4"]);
+  });
+
   it("[[mock:slow-start:MS]] holds the start that long before the agent launches", async () => {
     const t0 = Date.now();
     const runId = await start("slow [[mock:slow-start:600]]");

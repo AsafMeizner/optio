@@ -37,6 +37,7 @@ import {
   closeAttachment,
   endOfLoss,
   endRunJob,
+  onStreamError,
   readRunStderr,
   recordRunStarted,
   removeRunDirectory,
@@ -354,6 +355,17 @@ export function startPersistentAgentWorker() {
           claim: { consumedBytes: 0, execState: "started", pid: started.pid },
         });
       } catch (err) {
+        // Once its agent streams, an error is this instance's trouble, not
+        // the turn's: the turn is left for an attach (run-attachment.ts).
+        const afterStart = await onStreamError(hold, log);
+        if (afterStart) {
+          ended = afterStart;
+          log.error(
+            { err },
+            "Persistent agent worker error while streaming; the turn is left for an attach",
+          );
+          return;
+        }
         log.error({ err }, "Persistent agent worker error");
         if (turn) {
           await paService
@@ -631,6 +643,34 @@ async function finishTurn(input: FinishTurnInput): Promise<RunEnd> {
   return "finished";
 }
 
+/** Halts a turn as an error and fails its agent (when it is still on the turn). */
+async function failTurn(
+  agentId: string,
+  turnId: string,
+  message: string,
+  trigger: string,
+): Promise<void> {
+  await paService.haltPersistentAgentTurn({ turnId, haltReason: "error", errorMessage: message });
+  const after = await paService.getPersistentAgentUnscoped(agentId);
+  if (
+    after &&
+    (after.state === PersistentAgentState.RUNNING ||
+      after.state === PersistentAgentState.PROVISIONING)
+  ) {
+    await paService.transitionPersistentAgentState(
+      agentId,
+      PersistentAgentState.FAILED,
+      after.updatedAt,
+      {
+        consecutiveFailures: after.consecutiveFailures + 1,
+        lastFailureAt: new Date(),
+        lastFailureReason: message,
+      },
+      trigger,
+    );
+  }
+}
+
 /**
  * An `attach-persistent-agent-turn` job (the reconciler's `reattach`
  * action): take the turn if nobody holds it and finish it from where its
@@ -669,6 +709,7 @@ async function attachTurn(job: { id?: string; data: unknown }): Promise<void> {
       ref: turnRef(turnId),
       log,
       podId: turn.podId ?? null,
+      onAttachFailed: (message) => failTurn(agentId, turnId, message, "turn_attach_failed"),
       async onPodGone(detail) {
         const message = `Execution outcome unknown: ${detail}. Inspect before resuming.`;
         await paService.haltPersistentAgentTurn({

@@ -29,6 +29,7 @@ import {
   closeAttachment,
   endOfLoss,
   endRunJob,
+  onStreamError,
   readRunStderr,
   recordRunStarted,
   removeRunDirectory,
@@ -385,6 +386,17 @@ export function startWorkflowWorker() {
           claim: { consumedBytes: 0, execState: "started", pid: started.pid },
         });
       } catch (err) {
+        // Once its agent streams, an error is this instance's trouble, not
+        // the run's: the run is left for an attach (run-attachment.ts).
+        const afterStart = await onStreamError(hold, log);
+        if (afterStart) {
+          ended = afterStart;
+          log.error(
+            { err },
+            "Workflow worker error while streaming; the run is left for an attach",
+          );
+          return;
+        }
         log.error({ err }, "Workflow worker error");
         try {
           const currentRun = await workflowService.getWorkflowRun(workflowRunId);
@@ -742,6 +754,15 @@ async function attachWorkflowRun(job: { id?: string; data: unknown }): Promise<v
       log,
       podId: run.podId ?? null,
       onPodGone: (detail) => failLostRun(workflowRunId, attemptStartedAt, detail, log),
+      async onAttachFailed(message) {
+        await transitionWorkflowRunCas(
+          workflowRunId,
+          WorkflowRunState.RUNNING,
+          WorkflowRunState.FAILED,
+          { errorMessage: message, recoveryRequired: true, finishedAt: new Date() },
+          { startedAt: attemptStartedAt },
+        );
+      },
       finish: (pod, hold, claim) =>
         finishWorkflowRun({
           workflowRunId,

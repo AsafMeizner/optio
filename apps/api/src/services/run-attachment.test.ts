@@ -60,6 +60,7 @@ import {
   detachAll,
   endRunJob,
   heldRunCount,
+  onStreamError,
   holdsRun,
   isRemovableRunDir,
   removeRunDirectory,
@@ -442,6 +443,7 @@ describe("runAttachJob", () => {
       log: mockLog as never,
       podId: "pod-1",
       onPodGone: vi.fn(),
+      onAttachFailed: vi.fn(),
       finish,
     });
     expect(ended).toBe("skipped");
@@ -449,6 +451,64 @@ describe("runAttachJob", () => {
     // Not even a claim was tried.
     expect(mockUpdateSet.mock.calls.length).toBe(writes);
     await h.end();
+  });
+
+  function attachSpec(finish: () => Promise<never>) {
+    return {
+      ref: { kind: "work-run" as const, id: "flaky" },
+      log: mockLog as never,
+      podId: "pod-1",
+      onPodGone: vi.fn(),
+      onAttachFailed: vi.fn(async () => {}),
+      afterFinish: vi.fn(async () => {}),
+      finish: vi.fn(finish),
+    };
+  }
+
+  it("a finish that throws while streaming leaves the run for the next attach: no kill, lease given up, slot kept", async () => {
+    mockGetPod.mockResolvedValue({ id: "pod-1", podId: "p1", podName: "pod-1", state: "ready" });
+    mockUpdateReturning
+      .mockResolvedValueOnce([{ consumedBytes: 10, execState: "started", pid: 7 }]) // the claim
+      .mockResolvedValueOnce([{ failures: 1 }]); // the attempt's first failed attach
+    mockUpdateSet.mockClear();
+    const spec = attachSpec(async () => {
+      throw new Error("db blip");
+    });
+    await expect(runAttachJob(spec)).rejects.toThrow("db blip");
+    expect(spec.onAttachFailed).not.toHaveBeenCalled();
+    expect(mockKillRun).not.toHaveBeenCalled();
+    expect(spec.afterFinish).not.toHaveBeenCalled();
+    const releases = mockUpdateSet.mock.calls
+      .map((c) => c[0] as { attachLeaseUntil?: Date })
+      .filter((v) => v.attachLeaseUntil && v.attachLeaseUntil.getTime() <= Date.now());
+    expect(releases).toHaveLength(1);
+    expect(heldRunCount()).toBe(0);
+    mockGetPod.mockReset();
+  });
+
+  it("the attempt's third failed attach in a row fails the run and stops its agent", async () => {
+    mockGetPod.mockResolvedValue({ id: "pod-1", podId: "p1", podName: "pod-1", state: "ready" });
+    mockUpdateReturning
+      .mockResolvedValueOnce([{ consumedBytes: 10, execState: "started", pid: 7 }])
+      .mockResolvedValueOnce([{ failures: 3 }]);
+    // Still running, nobody else streaming it (its lease just given up): left behind.
+    mockSelectRows.mockResolvedValueOnce([
+      { execState: "started", execPid: 7, attachedBy: "gone/1", attachLeaseUntil: null },
+    ]);
+    mockKillRun.mockResolvedValueOnce(true);
+    const spec = attachSpec(async () => {
+      throw new Error("parser exploded");
+    });
+    await expect(runAttachJob(spec)).rejects.toThrow("parser exploded");
+    expect(spec.onAttachFailed).toHaveBeenCalledWith(
+      "Attaching to the run failed 3 times in a row; last error: parser exploded",
+    );
+    expect(mockKillRun).toHaveBeenCalledWith(
+      { id: "p1", name: "pod-1" },
+      expect.objectContaining({ runId: "flaky", signal: "TERM", pid: 7 }),
+    );
+    expect(spec.afterFinish).toHaveBeenCalled();
+    mockGetPod.mockReset();
   });
 });
 
@@ -719,5 +779,27 @@ describe("endRunJob after shutdown let the run go", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("onStreamError: an error past the start is the instance's, not the run's", () => {
+  const agent = { podId: "pod-1", pid: 7 };
+
+  it("is no business of a job still setting the run up", async () => {
+    const h = startHold(ref, "me/1", { agent });
+    expect(await onStreamError(h)).toBeNull();
+    expect(await onStreamError(null)).toBeNull();
+    await h.end();
+  });
+
+  it("a job that failed while streaming detaches: its lease goes, its agent stays", async () => {
+    mockUpdateReturning.mockResolvedValue([{ id: "x" }]);
+    const h = startHold(ref, "me/1", { agent, phase: "streaming", origin: "start" });
+    mockKillRun.mockClear();
+    // Shutdown already ran in this file: every such error detaches.
+    expect(await onStreamError(h)).toBe("detached");
+    await endRunJob(h, null);
+    expect(mockKillRun).not.toHaveBeenCalled();
+    expect(heldRunCount()).toBe(0);
   });
 });

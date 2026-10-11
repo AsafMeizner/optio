@@ -46,6 +46,7 @@ import {
   closeAttachment,
   endOfLoss,
   endRunJob,
+  onStreamError,
   readRunStderr,
   recordRunStarted,
   removeRunDirectory,
@@ -763,6 +764,14 @@ export function startTaskWorker() {
           log.info({ err: String(err) }, "Lost state race, skipping");
           return;
         }
+        // Once its agent streams, an error is this instance's trouble, not
+        // the run's: the run is left for an attach (run-attachment.ts).
+        const afterStart = await onStreamError(hold, log);
+        if (afterStart) {
+          ended = afterStart;
+          log.error({ err }, "Task worker error while streaming; the run is left for an attach");
+          return;
+        }
         log.error({ err }, "Task worker error");
         try {
           // Only try to fail the task if it's still in a state we own.
@@ -1397,6 +1406,15 @@ async function attachTask(job: { id?: string; data: unknown }): Promise<void> {
           hold,
           claim,
         });
+      },
+      async onAttachFailed(message) {
+        const current = await taskService.getTask(taskId);
+        if (current?.state === TaskState.PROVISIONING) {
+          await taskService.transitionTask(taskId, TaskState.RUNNING, "run_reattached");
+        }
+        await repoPool.updateWorktreeState(taskId, "dirty").catch(() => {});
+        await taskService.updateTaskResult(taskId, undefined, message);
+        await taskService.transitionTask(taskId, TaskState.FAILED, "attach_failed", message);
       },
       afterFinish: async (podId) => {
         if (podId) await repoPool.releaseRepoPodTask(podId);

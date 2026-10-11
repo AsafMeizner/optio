@@ -131,6 +131,13 @@ export function planAgentRun({ script, prompt, specEnv = {}, prNumber = 1, sessi
   // mid-run can prove it stored each exactly once.
   const [tickCount, tickMs] = (directiveArg(haystack, "ticks") ?? "0").split(":").map(Number);
   const ticks = { count: tickCount || 0, everyMs: Number.isFinite(tickMs) ? tickMs : 100 };
+  // [[mock:mark:N:TEXT]] → an assistant text event `TEXT` right after tick N:
+  // a line of the test's choosing in the middle of the run.
+  const markArg = directiveArg(haystack, "mark");
+  const markAt = markArg ? Number(markArg.split(":")[0]) : NaN;
+  const mark = Number.isInteger(markAt)
+    ? { at: markAt, text: markArg.slice(markArg.indexOf(":") + 1) }
+    : null;
   const lines = [];
   const event = (e) => lines.push({ event: e });
   const raw = (l) => lines.push({ raw: l });
@@ -242,6 +249,7 @@ export function planAgentRun({ script, prompt, specEnv = {}, prNumber = 1, sessi
     hang,
     sleepMs,
     ticks,
+    mark,
     lines,
     exitCode: isError ? 1 : 0,
     echoStdin: directive(haystack, "echo-stdin"),

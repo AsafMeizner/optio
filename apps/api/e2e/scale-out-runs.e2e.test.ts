@@ -28,6 +28,10 @@
  *  16  SIGTERM while a run settles: it finishes there, once (one draft,
  *      one completion), never handed to another server half-settled
  *  17  a failed run's message carries the tail of the agent's stderr
+ *  18  the log write fails once mid-stream: the run is re-attached (its
+ *      agent left running) and completes, logs contiguous, cost once
+ *  19  the log write fails every time: after 3 failed attaches the run
+ *      fails and its agent is stopped
  *
  * The lease is shortened (6 s, renewed every 2 s) and the attach sweep runs
  * every second, so a SIGKILLed server's runs move on in seconds.
@@ -738,7 +742,14 @@ describe("resets, review runs, edits and settling", () => {
   beforeAll(async () => {
     cluster = await startApiCluster({
       size: 2,
-      env: { ...CLUSTER_ENV, OPTIO_SETTLE_PAUSE_MS: String(SETTLE_PAUSE_MS) },
+      env: {
+        ...CLUSTER_ENV,
+        OPTIO_SETTLE_PAUSE_MS: String(SETTLE_PAUSE_MS),
+        // A run's output line FAULT-ONCE fails the log write of the job that
+        // started it; FAULT-ALWAYS fails every job's (cases 18, 19).
+        OPTIO_TEST_STREAM_FAULT_FIRST: "FAULT-ONCE",
+        OPTIO_TEST_STREAM_FAULT: "FAULT-ALWAYS",
+      },
     });
     await seed(cluster.any());
     reviewQueue = new Queue("pr-review-runs", getBullMQOptions());
@@ -938,6 +949,81 @@ describe("resets, review runs, edits and settling", () => {
       expect(task.error_message).toContain("claude: the model refused the key");
     });
   }, 120_000);
+
+  it("(18) a log write that fails once mid-stream: the run is re-attached and completes, its agent untouched", async () => {
+    await withLogs(cluster, async () => {
+      await replenish();
+      const N = 40;
+      const taskId = await createTask(
+        cluster.any(),
+        REPO_A,
+        `[[mock:pr]] ${ticks(N)} [[mock:mark:10:FAULT-ONCE]]`,
+      );
+      await waitStreaming(() => workRun(taskId), "task");
+      const [{ exec_pid: pid }] = await sql<Array<{ exec_pid: number }>>`
+        SELECT exec_pid FROM tasks WHERE id = ${taskId}`;
+
+      const task = await waitWorkRunState(
+        taskId,
+        ["pr_opened", "failed", "needs_attention"],
+        "task",
+      );
+      expect(task.state).toBe("pr_opened");
+      expect(task.cost_usd).toBe("0.0123");
+      await expectContiguousLogs({ taskId }, N);
+      // The job that started the run always fails on this line, so another
+      // job — an attach — stored it, once.
+      const marks = (await logRows({ taskId })).filter((r) => r.content === "FAULT-ONCE");
+      expect(marks).toHaveLength(1);
+      // The same agent ran to its end (exit 0): the failure only moved the
+      // run to another job, it never stopped or restarted the agent.
+      const [{ exec_pid: after }] = await sql<Array<{ exec_pid: number }>>`
+        SELECT exec_pid FROM tasks WHERE id = ${taskId}`;
+      expect(after).toBe(pid);
+      expect(exitCodeOf(cluster, taskId)).toBe(0);
+      await noRecoveryFailures([taskId]);
+    });
+  }, 180_000);
+
+  it("(19) a log write that fails every time: after 3 failed attaches the run fails and its agent is stopped", async () => {
+    await withLogs(cluster, async () => {
+      await replenish();
+      const job = await cluster.any()<{ workflow: { id: string } }>("/api/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "fault-19 job",
+          promptTemplate: `Scale-out Job ${ticks(600)} [[mock:mark:5:FAULT-ALWAYS]]`,
+          agentRuntime: "claude-code",
+          maxRetries: 0,
+        }),
+      });
+      expect(job.status).toBe(201);
+      const started = await cluster.any()<{ run: { id: string } }>(
+        `/api/jobs/${job.body.workflow.id}/runs`,
+        { method: "POST", body: "{}" },
+      );
+      expect(started.status).toBe(201);
+      const runId = started.body.run.id;
+
+      const run = await waitWorkRunState(runId, ["completed", "failed"], "job run", 120_000);
+      expect(run.state).toBe("failed");
+      expect(run.error_message).toContain("Attaching to the run failed 3 times in a row");
+      expect(run.error_message).toContain("FAULT-ALWAYS");
+      const [meta] = await sql<Array<{ failures: number }>>`
+        SELECT (metadata->>'attachFailures')::int AS failures FROM tasks WHERE id = ${runId}`;
+      expect(meta.failures).toBe(3);
+      // The agent, still ticking (600 of them), was stopped.
+      await waitFor(async () => (exitCodeOf(cluster, runId) === 143 ? true : null), {
+        timeoutMs: 30_000,
+        label: "the run's agent stopped",
+      });
+      // Nothing past the failing line was ever stored (its batch — tick 5
+      // too, when they came in one chunk — rolled back each time): a
+      // contiguous prefix of the ticks, each once.
+      await expectContiguousLogs({ taskId: runId }, 600, { complete: false });
+      expect((await tickNumbers({ taskId: runId })).length).toBeLessThanOrEqual(5);
+    });
+  }, 180_000);
 
   it("(16) SIGTERM while a review run settles: it finishes on that server, once", async () => {
     await withLogs(cluster, async () => {

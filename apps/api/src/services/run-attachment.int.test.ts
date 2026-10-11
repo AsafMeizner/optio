@@ -305,16 +305,45 @@ describe("run attachment, two instances on one database", () => {
     const a = await bootInstance();
     const b = await bootInstance();
 
-    // The job errored halfway: its agent still runs, still its hold's.
+    // The job errored while still setting the run up, its agent started:
+    // the agent is stopped.
     const run = await startedRun();
-    const hold = await claimAndHold(a, run.id);
-    await a.att.endRunJob(hold, null);
+    const claim = await a.att.claimAttachment(ref(run.id));
+    const setup = a.att.startHold(ref(run.id), claim!.token, {
+      origin: "start",
+      agent: { podId: POD, pid: 4242 },
+    });
+    await a.att.endRunJob(setup, null);
     expect(killRun).toHaveBeenCalledWith(
       { id: `k8s-${POD}`, name: `pod-${POD}` },
       expect.objectContaining({ runId: run.id, signal: "TERM", pid: 4242 }),
     );
     // Its lease was given up.
     expect((await row(run.id)).attachLeaseUntil!.getTime()).toBeLessThanOrEqual(Date.now());
+
+    // The job errored while streaming: the agent is left running for the
+    // next attach, the lease given up so it comes at once.
+    killRun.mockClear();
+    const streaming = await startedRun();
+    const held = await claimAndHold(a, streaming.id);
+    expect(await a.att.onStreamError(held)).toBe("detached");
+    await a.att.endRunJob(held, "detached");
+    expect(killRun).not.toHaveBeenCalled();
+    expect((await row(streaming.id)).attachLeaseUntil!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect((await row(streaming.id)).metadata).toMatchObject({ attachFailures: 1 });
+
+    // …until it is the attempt's third failed attach in a row: failed, stopped.
+    for (const expected of ["detached", "failed"] as const) {
+      const next = await claimAndHold(a, streaming.id);
+      const end = await a.att.onStreamError(next);
+      expect(end).toBe(expected);
+      await a.att.endRunJob(next, end);
+    }
+    expect(killRun).toHaveBeenCalledTimes(1);
+    expect(killRun).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ runId: streaming.id, pid: 4242 }),
+    );
 
     // Another instance took the run over (a live lease on the same agent):
     // the old job leaves it alone.
@@ -412,5 +441,35 @@ describe("run attachment, two instances on one database", () => {
         expect.objectContaining({ runId: run.id, pid: 6262 }),
       ),
     );
+  });
+
+  it("counts the attach jobs that failed an attempt in its own jsonb, per hold, cleared by progress and a new start", async () => {
+    const a = await bootInstance();
+    const b = await bootInstance();
+    const run = await startedRun({ metadata: { run: { isReviewTask: false }, keep: 1 } });
+    const claim = await a.att.claimAttachment(ref(run.id));
+    const hold = { ref: ref(run.id), token: claim!.token };
+
+    expect(await a.att.countAttachFailure(hold)).toBe(1);
+    expect(await a.att.countAttachFailure(hold)).toBe(2);
+    // Another hold's count is no count: it does not have the run.
+    expect(await b.att.countAttachFailure({ ref: ref(run.id), token: `${b.id}/beef` })).toBeNull();
+    // The run's own bookkeeping in the column is untouched.
+    expect((await row(run.id)).metadata).toEqual({
+      run: { isReviewTask: false },
+      keep: 1,
+      attachFailures: 2,
+    });
+
+    // An attach job that made progress: the failures were not in a row.
+    await a.att.clearAttachFailures(hold);
+    expect((await row(run.id)).metadata).toEqual({ run: { isReviewTask: false }, keep: 1 });
+    expect(await a.att.countAttachFailure(hold)).toBe(1);
+
+    // A new attempt starts with none.
+    const fresh = a.att.startHold(ref(run.id), claim!.token);
+    expect(await a.att.recordRunStarted(fresh, { podId: POD, pid: 5151 })).toBe(true);
+    expect((await row(run.id)).metadata).toEqual({ run: { isReviewTask: false }, keep: 1 });
+    await fresh.end();
   });
 });

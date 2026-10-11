@@ -28,7 +28,11 @@
  *             exited, with the run's spend in the same statement, once
  *   end       the job lets go (`endRunJob`): an agent it started or claimed
  *             that may still run, with nobody else to finish it, is stopped
- *             before anything is given back
+ *             before anything is given back — unless the job failed while
+ *             streaming or settling (`onStreamError`): that is this
+ *             instance's trouble, not the run's, so the lease goes and the
+ *             reconciler re-attaches, up to MAX_ATTACH_FAILURES failed
+ *             attach jobs in a row before the run is failed
  *   detach    on shutdown: every stream severed and its lease given up now,
  *             so another instance picks the runs up in seconds; runs past
  *             their stream finish settling here first
@@ -86,6 +90,15 @@ export const ATTACH_RENEW_MS = parseIntEnv(
 export const DETACH_SETTLE_WAIT_MS = parseIntEnv("OPTIO_DETACH_SETTLE_WAIT_MS", 20_000);
 /** Test knob (the scale-out e2e tier): a pause right after a run's exit is recorded. */
 const SETTLE_PAUSE_MS = parseIntEnv("OPTIO_SETTLE_PAUSE_MS", 0);
+/**
+ * Test knobs (the scale-out e2e tier): a new output line equal to this
+ * makes the log write fail, in every job (`OPTIO_TEST_STREAM_FAULT`) or only
+ * in the job that started the run (`OPTIO_TEST_STREAM_FAULT_FIRST`).
+ */
+const STREAM_FAULT = process.env.OPTIO_TEST_STREAM_FAULT || null;
+const STREAM_FAULT_FIRST = process.env.OPTIO_TEST_STREAM_FAULT_FIRST || null;
+/** How many attach jobs in a row may fail one attempt before the run is failed. */
+export const MAX_ATTACH_FAILURES = 3;
 
 /** A run row with the attachment columns (see RunRowKind). */
 export type AttachRef = RunRowRef;
@@ -112,6 +125,24 @@ export interface HoldRef {
   readonly token: string;
   /** The agent this hold is about, once started or claimed. */
   readonly agent?: RunAgent | null;
+}
+
+/**
+ * Where a run row keeps its attachment's bookkeeping beyond the columns —
+ * the count of attach jobs that failed the current attempt in a row, under
+ * `attachFailures` — in a jsonb column it already has (no migration): a
+ * task's or Job run's `metadata`, a review run's `metadata`, a turn's
+ * `wake_payload`.
+ */
+function bookkeeping(kind: RunRowKind) {
+  switch (kind) {
+    case "work-run":
+      return { key: "metadata", column: workRuns.metadata } as const;
+    case "review-run":
+      return { key: "metadata", column: prReviewRuns.metadata } as const;
+    case "turn":
+      return { key: "wakePayload", column: persistentAgentTurns.wakePayload } as const;
+  }
 }
 
 /** The run is still active: its state says an agent may be running for it. */
@@ -147,6 +178,7 @@ export async function holdAttachment(ref: AttachRef, token: string): Promise<voi
 export async function recordRunStarted(hold: AttachmentHold, agent: RunAgent): Promise<boolean> {
   hold.agent = agent;
   const t = runRowTable(hold.ref.kind);
+  const book = bookkeeping(hold.ref.kind);
   const rows = await db
     .update(t)
     .set({
@@ -154,7 +186,9 @@ export async function recordRunStarted(hold: AttachmentHold, agent: RunAgent): P
       execPid: agent.pid,
       consumedBytes: 0,
       attachLeaseUntil: leaseUntil(),
-    })
+      // A new attempt: no attach job has failed it yet.
+      [book.key]: sql`COALESCE(${book.column}, '{}'::jsonb) - 'attachFailures'`,
+    } as Record<string, unknown>)
     .where(and(eq(t.id, hold.ref.id), eq(t.attachedBy, hold.token)))
     .returning({ id: t.id });
   return rows.length > 0;
@@ -253,6 +287,42 @@ export async function classifyLoss(hold: HoldRef): Promise<HoldLoss> {
 }
 
 /**
+ * One more attach job failed the hold's attempt: the count goes up by one
+ * (a CAS on the hold) and is returned. Null when the hold no longer has the
+ * run.
+ */
+export async function countAttachFailure(hold: HoldRef): Promise<number | null> {
+  const t = runRowTable(hold.ref.kind);
+  const book = bookkeeping(hold.ref.kind);
+  const [row] = await db
+    .update(t)
+    .set({
+      [book.key]: sql`jsonb_set(COALESCE(${book.column}, '{}'::jsonb), '{attachFailures}', to_jsonb(COALESCE((${book.column}->>'attachFailures')::int, 0) + 1))`,
+    } as Record<string, unknown>)
+    .where(and(eq(t.id, hold.ref.id), eq(t.attachedBy, hold.token)))
+    .returning({ failures: sql<number>`(${book.column}->>'attachFailures')::int` });
+  return row ? Number(row.failures) : null;
+}
+
+/** An attach job made progress on the attempt: the failures before it were not in a row. */
+export async function clearAttachFailures(hold: HoldRef): Promise<void> {
+  const t = runRowTable(hold.ref.kind);
+  const book = bookkeeping(hold.ref.kind);
+  await db
+    .update(t)
+    .set({
+      [book.key]: sql`COALESCE(${book.column}, '{}'::jsonb) - 'attachFailures'`,
+    } as Record<string, unknown>)
+    .where(
+      and(
+        eq(t.id, hold.ref.id),
+        eq(t.attachedBy, hold.token),
+        sql`${book.column} ? 'attachFailures'`,
+      ),
+    );
+}
+
+/**
  * How settling a run went: `settled` (this call recorded the exit, and the
  * spend with it), `already` (an earlier holder recorded both and went away
  * before finishing: do the rest, but add nothing), `taken` (another hold
@@ -310,6 +380,8 @@ export type HoldPhase = "setup" | "streaming" | "settling";
 
 /** A hold a job has on a run: renewed every ATTACH_RENEW_MS until it ends. */
 export interface AttachmentHold extends HoldRef {
+  /** The job that holds it: the one that started the run, or an attach job. */
+  readonly origin: "start" | "attach";
   /** The agent the job started or claimed: what `endRunJob` stops if it is left behind. */
   agent: RunAgent | null;
   phase: HoldPhase;
@@ -339,11 +411,14 @@ class Hold implements AttachmentHold {
   private timer: NodeJS.Timeout | null;
   private resolveDone: () => void = () => {};
 
+  readonly origin: "start" | "attach";
+
   constructor(
     readonly ref: AttachRef,
     readonly token: string,
-    opts: { phase: HoldPhase; agent: RunAgent | null },
+    opts: { phase: HoldPhase; agent: RunAgent | null; origin: "start" | "attach" },
   ) {
+    this.origin = opts.origin;
     this.phase = opts.phase;
     this.agent = opts.agent;
     this.done = new Promise((resolve) => {
@@ -414,7 +489,7 @@ class Hold implements AttachmentHold {
 export async function beginHold(ref: AttachRef): Promise<AttachmentHold> {
   const token = newHoldToken();
   await holdAttachment(ref, token);
-  return startHold(ref, token);
+  return startHold(ref, token, { origin: "start" });
 }
 
 /**
@@ -427,9 +502,13 @@ export async function beginHold(ref: AttachRef): Promise<AttachmentHold> {
 export function startHold(
   ref: AttachRef,
   token: string,
-  opts: { phase?: HoldPhase; agent?: RunAgent | null } = {},
+  opts: { phase?: HoldPhase; agent?: RunAgent | null; origin?: "start" | "attach" } = {},
 ): AttachmentHold {
-  return new Hold(ref, token, { phase: opts.phase ?? "setup", agent: opts.agent ?? null });
+  return new Hold(ref, token, {
+    phase: opts.phase ?? "setup",
+    agent: opts.agent ?? null,
+    origin: opts.origin ?? "attach",
+  });
 }
 
 /** Whether a job of this process holds the run now (its hold not lost). */
@@ -497,7 +576,9 @@ export type RunEnd =
   /** It left the run for whoever attaches next (shutdown, a dropped stream), or another hold has it. */
   | "detached"
   /** The attempt was queued again or replaced under it: it is over for this job. */
-  | "reset";
+  | "reset"
+  /** This job failed the run itself (attach jobs failed it too often): its agent is stopped. */
+  | "failed";
 
 /** The attachment columns `endRunJob` reads. */
 interface AttachmentRow {
@@ -533,13 +614,16 @@ export function agentLeftBehind(
 
 /**
  * How a job that started or claimed a run lets go of it — the one rule for
- * every run kind and every way the job ends (finished, detached, reset, a
- * return halfway, a throw). Called before the job gives anything else back
- * (its pod slot): unless the job finished the run, or left it for another
- * instance (`detached`, shutdown), the agent it started or claimed is
- * stopped when it is left behind (`agentLeftBehind`) — TERM, scoped to its
- * supervisor's pid. Then the hold ends, its lease given up unless the run
- * finished here.
+ * every run kind and every way the job ends (finished, detached, reset,
+ * failed, a return halfway, a throw). Called before the job gives anything
+ * else back (its pod slot): unless the job finished the run, or left it for
+ * another instance or job (`detached`: shutdown, another hold, or an error
+ * while streaming or settling — see `onStreamError`), the agent it started
+ * or claimed is stopped when it is left behind (`agentLeftBehind`) — TERM,
+ * scoped to its supervisor's pid. A job that ended without saying how
+ * (`null`) is judged by where it was: still setting the run up, the rule
+ * applies; past that, it detaches. Then the hold ends, its lease given up
+ * unless the run finished here.
  */
 export async function endRunJob(
   hold: AttachmentHold | null,
@@ -547,9 +631,10 @@ export async function endRunJob(
   log: typeof logger = logger,
 ): Promise<void> {
   if (!hold) return;
+  const how = end ?? (hold.phase === "setup" ? null : "detached");
   try {
     const agent = hold.agent;
-    if (agent && end !== "finished" && end !== "detached" && !hold.released) {
+    if (agent && how !== "finished" && how !== "detached" && !hold.released) {
       const t = runRowTable(hold.ref.kind);
       const [row] = await db
         .select({
@@ -563,7 +648,7 @@ export async function endRunJob(
       if (agentLeftBehind(hold, row)) {
         const stopped = await signalRun(agent.podId, hold.ref.id, "TERM", { pid: agent.pid });
         log.info(
-          { supervisorPid: agent.pid, stopped, end: end ?? "error" },
+          { supervisorPid: agent.pid, stopped, end: how ?? "error" },
           "The run's agent was left behind by its job; stopped it",
         );
       }
@@ -571,7 +656,7 @@ export async function endRunJob(
   } catch (err) {
     log.warn({ err }, "Failed to check the run's agent as its job ended");
   } finally {
-    await hold.end({ release: end !== "finished" });
+    await hold.end({ release: how !== "finished" });
     // Shutdown let the run go while the job was still starting it: what the
     // job wrote since (its start, which takes a fresh lease) is given up too,
     // so another instance attaches in seconds.
@@ -581,6 +666,55 @@ export async function endRunJob(
       );
     }
   }
+}
+
+/**
+ * A job's error once its run's agent is streaming (or settling): this
+ * instance's trouble — a database error writing the logs, a publish, a
+ * parser — not the run's. The run is left for the reconciler to attach
+ * again: how the job ends, for `endRunJob` and the pod slot —
+ *
+ *   detached  the lease is given up and the agent left running;
+ *   reset     the hold lost its attempt meanwhile (queued again, replaced);
+ *   failed    this attach job is the MAX_ATTACH_FAILURES-th in a row to fail
+ *             the attempt (one that made progress resets the count; the job
+ *             that started the run does not count): the caller fails the
+ *             run with the error, and `endRunJob` stops its agent.
+ *
+ * Null while the job was still setting the run up: then the error is the
+ * run's, and the job's own failure path applies as before.
+ */
+export async function onStreamError(
+  hold: AttachmentHold | null,
+  log: typeof logger = logger,
+): Promise<Exclude<RunEnd, "finished"> | null> {
+  if (!hold || hold.phase === "setup") return null;
+  if (isDetaching() || hold.released) return "detached";
+  try {
+    if (hold.origin === "attach") {
+      const failures = await countAttachFailure(hold);
+      if (failures === null) return endOfLoss(await classifyLoss(hold));
+      if (failures >= MAX_ATTACH_FAILURES) {
+        log.warn({ failures }, "Attach jobs keep failing this run; failing it");
+        return "failed";
+      }
+      log.warn({ failures }, "Attach job failed; the run is left for the next attach");
+      return "detached";
+    }
+    if (!(await renewAttachment(hold))) return endOfLoss(await classifyLoss(hold));
+    log.warn("The job streaming the run failed; the run is left for an attach");
+    return "detached";
+  } catch (err) {
+    // The database is what failed, likely: leave the run all the same.
+    log.warn({ err }, "Could not record the attach failure; leaving the run for an attach");
+    return "detached";
+  }
+}
+
+/** The error a run is failed with once attach jobs failed it too often. */
+export function attachFailedMessage(err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  return `Attaching to the run failed ${MAX_ATTACH_FAILURES} times in a row; last error: ${detail}`;
 }
 
 // ── Streaming: the one attach loop ──────────────────────────────────────────
@@ -702,6 +836,7 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
   let sessionId: string | undefined;
   let sawTerminal = false;
   let taken = false;
+  let progressed = false;
 
   // Shutting down: the run is for another instance to stream.
   if (isDetaching()) {
@@ -760,6 +895,10 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
       if (!replay) last = line.end;
     }
     if (last <= consumed) return;
+    const fault =
+      rows.find((r) => r.content === STREAM_FAULT) ??
+      (hold.origin === "start" ? rows.find((r) => r.content === STREAM_FAULT_FIRST) : undefined);
+    if (fault) throw new Error(`test fault: the log write failed at "${fault.content}"`);
     let stored: LogRow[];
     try {
       stored = await appendRunLogsBatch(ref, rows, { from: consumed, to: last }, hold.token);
@@ -773,6 +912,12 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
       throw err;
     }
     consumed = last;
+    // An attach job that made progress: the attempt's failed attaches before
+    // it were not in a row.
+    if (!progressed && hold.origin === "attach") {
+      progressed = true;
+      await clearAttachFailures(hold);
+    }
     for (const row of stored) await input.publish(row);
   };
 
@@ -842,6 +987,11 @@ export interface AttachJobSpec {
   onPodGone(detail: string, hold: AttachmentHold): Promise<void>;
   /** Streams the run to its end and settles it: the kind's finishing code. */
   finish(pod: AttachedPod, hold: AttachmentHold, claim: AttachmentClaim): Promise<RunEnd>;
+  /**
+   * Attach jobs failed the run MAX_ATTACH_FAILURES times in a row: fail it
+   * with `message` the way the kind fails a run (its agent is stopped after).
+   */
+  onAttachFailed(message: string): Promise<void>;
   /** After a run finished (or was reset) here: give back what it held (its pod slot). */
   afterFinish?(podId: string | null): Promise<void>;
 }
@@ -869,6 +1019,7 @@ export async function runAttachJob(spec: AttachJobSpec): Promise<RunEnd | "skipp
   }
   const hold = startHold(ref, claim.token, {
     phase: "streaming",
+    origin: "attach",
     agent: spec.podId && claim.pid ? { podId: spec.podId, pid: claim.pid } : null,
   });
   let ended: RunEnd | null = null;
@@ -887,15 +1038,26 @@ export async function runAttachJob(spec: AttachJobSpec): Promise<RunEnd | "skipp
     log.info({ consumedBytes: claim.consumedBytes, pod: pod.podName }, "Attaching to the run");
     ended = await spec.finish({ id: pod.id, handle: podPool.podHandle(pod) }, hold, claim);
     return ended;
+  } catch (err) {
+    // Trouble here is this instance's: leave the run for the next attach —
+    // or, the attempt's MAX_ATTACH_FAILURES-th failed attach in a row, fail it.
+    ended = (await onStreamError(hold, log)) ?? "detached";
+    if (ended === "failed") {
+      await spec
+        .onAttachFailed(attachFailedMessage(err))
+        .catch((failErr) => log.warn({ err: failErr }, "Failed to fail the run"));
+    }
+    throw err;
   } finally {
     await endRunJob(hold, ended, log);
-    if (ended === "finished" || ended === "reset")
+    if (ended === "finished" || ended === "reset" || ended === "failed") {
       await spec.afterFinish?.(spec.podId).catch(() => {});
+    }
   }
 }
 
 /** Maps a settle that did not settle to the job's end (`taken` → detached). */
-export function endOfLoss(loss: HoldLoss): RunEnd {
+export function endOfLoss(loss: HoldLoss): "detached" | "reset" {
   return loss === "taken" ? "detached" : "reset";
 }
 

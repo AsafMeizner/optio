@@ -49,6 +49,9 @@
  *                          after the prompt becomes an assistant text event
  *                          `stdin: <text>` — proves a mid-run message
  *                          reached the agent
+ *   [[mock:mark:N:TEXT]] → (run protocol only) an assistant text event TEXT
+ *                          right after tick N: a line of the test's choosing
+ *                          in the middle of a run
  *   [[mock:slow-start:MS]] → (run protocol only) the start takes MS longer
  *                          before the agent launches, as a slow setup in the
  *                          start exec would: a window to cancel a run that

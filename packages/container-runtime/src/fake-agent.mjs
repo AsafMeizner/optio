@@ -193,6 +193,13 @@ async function playAgent() {
       session_id: sessionId,
       message: { model: "fake-model", content: [{ type: "text", text: `tick ${i}` }] },
     });
+    if (plan.mark && plan.mark.at === i) {
+      emit({
+        type: "assistant",
+        session_id: sessionId,
+        message: { model: "fake-model", content: [{ type: "text", text: plan.mark.text }] },
+      });
+    }
     await sleep(plan.ticks.everyMs);
   }
 
