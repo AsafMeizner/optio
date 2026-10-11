@@ -226,6 +226,18 @@ describe("FakeContainerRuntime run protocol", () => {
     );
   });
 
+  it("[[mock:stderr:TEXT]] puts TEXT in the run's stderr, which a stderr-tail exec reads", async () => {
+    const runId = await start("noisy [[mock:stderr:claude: something broke]]");
+    const session = await a.exec(handle, [
+      "bash",
+      "-c",
+      `if [ -s '${RUN_DIR}/${runId}/stderr.log' ]; then tail -c 8192 '${RUN_DIR}/${runId}/stderr.log'; fi`,
+    ]);
+    let out = "";
+    for await (const chunk of session.stdout as AsyncIterable<Buffer>) out += chunk.toString();
+    expect(out).toBe("claude: something broke\n");
+  });
+
   it("a pid-scoped kill signals only that attempt", async () => {
     const runId = await start("hang [[mock:hang]]");
     const runDir = `${RUN_DIR}/${runId}`;

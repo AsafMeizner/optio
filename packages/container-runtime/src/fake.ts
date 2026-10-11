@@ -53,6 +53,10 @@
  *                          before the agent launches, as a slow setup in the
  *                          start exec would: a window to cancel a run that
  *                          is still being set up
+ *   [[mock:stderr:TEXT]] → (run protocol only) the agent's stderr.log holds
+ *                          TEXT; a utility exec reading the tail of a run's
+ *                          stderr.log (as the API does for a failed run)
+ *                          gets it
  *
  * The run protocol (startRun / attachRun / deliverStdin / killRun,
  * run-protocol.ts) is played by a process of its own: `startRun` writes the
@@ -230,6 +234,20 @@ export class FakeContainerRuntime implements ContainerRuntime {
         for (const closeSession of this.sessionClosers.get(handle.id) ?? []) closeSession();
         this.killRunsOf(handle.id, "TERM");
       }
+      // The tail of a run's stderr (read for a failed run's message).
+      const tail = script.match(
+        /tail -c (\d+) '\/home\/agent\/optio\/runs\/([^'/]+)\/stderr\.log'/,
+      );
+      if (tail) {
+        let text = "";
+        try {
+          const all = readFileSync(join(this.runDir(tail[2]), RUN_FILES.stderr));
+          text = all.subarray(Math.max(0, all.length - Number(tail[1]))).toString("utf8");
+        } catch {
+          // no such run, or no stderr
+        }
+        return this.utilitySession(text);
+      }
       return this.utilitySession();
     }
     return this.agentSession(handle.id, script);
@@ -366,14 +384,11 @@ export class FakeContainerRuntime implements ContainerRuntime {
     const dir = this.runDir(input.runId);
     mkdirSync(dir, { recursive: true });
     // A slow setup in the start exec, before the agent launches.
-    const slowStart = Number(
+    const haystack =
       tape.kind === "agent"
-        ? (directiveArg(
-            collectDirectiveHaystack(script, String(tape.initialPrompt ?? "")),
-            "slow-start",
-          ) ?? 0)
-        : 0,
-    );
+        ? collectDirectiveHaystack(script, String(tape.initialPrompt ?? ""))
+        : "";
+    const slowStart = Number(directiveArg(haystack, "slow-start") ?? 0);
     if (slowStart > 0) await new Promise((r) => setTimeout(r, slowStart));
     // Like the real start script: a previous attempt's agent still alive in
     // this directory is stopped first — TERM, then KILL — and one that will
@@ -407,7 +422,8 @@ export class FakeContainerRuntime implements ContainerRuntime {
     writeFileSync(join(dir, "container"), handle.id);
     writeFileSync(join(dir, "tape.json"), JSON.stringify(tape, null, 2));
     writeFileSync(join(dir, RUN_FILES.output), "");
-    writeFileSync(join(dir, RUN_FILES.stderr), "");
+    const stderrText = directiveArg(haystack, "stderr");
+    writeFileSync(join(dir, RUN_FILES.stderr), stderrText ? `${stderrText}\n` : "");
     writeFileSync(join(dir, RUN_FILES.stdin), input.initialStdin);
 
     // Detached, in a session of its own, and unreferenced: it outlives us.
@@ -573,11 +589,12 @@ export class FakeContainerRuntime implements ContainerRuntime {
   }
 
   /** Empty session for non-agent shell execs: ends immediately, exit-ok. */
-  private utilitySession(): ExecSession {
+  private utilitySession(output = ""): ExecSession {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     const stdin = new Writable({ write: (_c, _e, cb) => cb() });
-    stdout.end();
+    if (output) stdout.end(output);
+    else stdout.end();
     stderr.end();
     return {
       stdin,
