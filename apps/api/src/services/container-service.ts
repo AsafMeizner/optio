@@ -7,7 +7,8 @@ let runtime: ContainerRuntime | null = null;
 export function getRuntime(): ContainerRuntime {
   if (!runtime) {
     const type = (process.env.OPTIO_RUNTIME ?? "docker") as "docker" | "kubernetes" | "fake";
-    runtime = createRuntime({ type });
+    // The namespace the deployment runs in (the chart sets it); "optio" when unset.
+    runtime = createRuntime({ type, kubernetes: { namespace: process.env.OPTIO_NAMESPACE } });
   }
   return runtime;
 }

@@ -42,6 +42,29 @@ describe("container-service", () => {
       const runtime2 = getRuntime();
       expect(runtime2).toBe(runtime);
     });
+
+    // A release whose chart `namespace` isn't "optio" (a second release beside
+    // the first) must run its agent pods in its own namespace.
+    it("gives the Kubernetes runtime the namespace OPTIO_NAMESPACE names", async () => {
+      vi.resetModules();
+      const saved = { runtime: process.env.OPTIO_RUNTIME, ns: process.env.OPTIO_NAMESPACE };
+      process.env.OPTIO_RUNTIME = "kubernetes";
+      process.env.OPTIO_NAMESPACE = "optio-scale";
+      try {
+        const { createRuntime } = await import("@optio/container-runtime");
+        const fresh = await import("./container-service.js");
+        fresh.getRuntime();
+        expect(createRuntime).toHaveBeenCalledWith({
+          type: "kubernetes",
+          kubernetes: { namespace: "optio-scale" },
+        });
+      } finally {
+        if (saved.runtime === undefined) delete process.env.OPTIO_RUNTIME;
+        else process.env.OPTIO_RUNTIME = saved.runtime;
+        if (saved.ns === undefined) delete process.env.OPTIO_NAMESPACE;
+        else process.env.OPTIO_NAMESPACE = saved.ns;
+      }
+    });
   });
 
   describe("launchAgentContainer", () => {

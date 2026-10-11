@@ -54,7 +54,7 @@ function getK8sApi() {
   return getK8sConfig().makeApiClient(CoreV1Api);
 }
 
-const NAMESPACE = "optio";
+const NAMESPACE = process.env.OPTIO_NAMESPACE ?? "optio";
 
 function getAppsApi() {
   return getK8sConfig().makeApiClient(AppsV1Api);

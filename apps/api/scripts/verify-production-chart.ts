@@ -90,6 +90,22 @@ for (const dead of ["OPTIO_AGENT_PVC_STORAGE_CLASS", "OPTIO_AGENT_PVC_SIZE"]) {
 }
 assert.equal(envOf(api, "OPTIO_HOME_PVC_STORAGE_CLASS"), "");
 
+// The API runs its agent pods, and reads the cluster, in the namespace it is
+// deployed to: a second release beside the first (`namespace=optio-scale`)
+// never reaches into the first one's namespace.
+const elsewhere = render(["--set", "namespace=optio-scale"]);
+const elsewhereApi = containers(elsewhere).api;
+assert.equal(
+  apiDeployment(elsewhere).metadata.namespace,
+  "optio-scale",
+  "the API is deployed to the chart's namespace",
+);
+assert.equal(
+  elsewhereApi.env.find((e: any) => e.name === "OPTIO_NAMESPACE")?.valueFrom?.fieldRef?.fieldPath,
+  "metadata.namespace",
+  "the API is told the namespace it runs in",
+);
+
 console.log(
   "Production chart: Secret references, combined API/web replicas, isolated service account, public API origin and invalid configurations verified.",
 );
