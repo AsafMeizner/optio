@@ -314,6 +314,34 @@ async function waitAgentIdleAfter(agentId: string, finishedTurns: number, label:
   );
 }
 
+/**
+ * Waits until the agent is idle after a turn that ran to its end, and
+ * returns it. Before it, the only turns allowed are ones whose starting
+ * server died before their agent started: the reconciler halts such a turn
+ * (it never ran: no cost, no logs) and the agent's next turn does the work —
+ * recovery, as a task set up by a dead server is queued again.
+ */
+async function waitAgentTurnDone(agentId: string, label: string) {
+  const { agent, turns: ts } = await waitFor(
+    async () => {
+      const [a, t] = await Promise.all([agentRow(agentId), turns(agentId)]);
+      return a.state === "idle" && t.some((x) => x.halt_reason === "natural")
+        ? { agent: a, turns: t }
+        : null;
+    },
+    { timeoutMs: 120_000, intervalMs: 250, label: `${label} idle after a natural turn` },
+  );
+  const natural = ts.filter((t) => t.halt_reason === "natural");
+  expect(natural, JSON.stringify(ts)).toHaveLength(1);
+  for (const t of ts.filter((x) => x.halt_reason !== "natural")) {
+    expect(t.halt_reason, JSON.stringify(ts)).toBe("error");
+    expect(t.error_message, JSON.stringify(ts)).toMatch(/went away before its agent started/);
+    expect(t.cost_usd).toBeNull();
+    expect(await logRows({ turnId: t.id })).toHaveLength(0);
+  }
+  return { agent, turn: natural[0] };
+}
+
 /** The fake agent's exit file for a run (its exit code), or null while it runs. */
 function exitCodeOf(cluster: ApiCluster, runId: string): number | null {
   const path = join(cluster.fakeRuntimeDir, "runs", runId, "exit");
@@ -397,7 +425,7 @@ describe("one server", () => {
       await expectContiguousLogs({ taskId: runId }, N);
 
       const { agent, turns: ts } = await waitAgentIdleAfter(agentId, 1, "agent");
-      expect(ts[0].halt_reason).toBe("natural");
+      expect(ts[0].halt_reason, JSON.stringify(ts)).toBe("natural");
       expect(ts[0].cost_usd).toBe("0.0123");
       expect(agent.total_cost_usd).toBe("0.0123");
       await expectContiguousLogs({ turnId: turn.id }, N);
@@ -567,10 +595,9 @@ describe("three servers", () => {
           await expectContiguousLogs({ taskId: id }, N);
         }
         for (const id of agentIds) {
-          const { agent, turns: ts } = await waitAgentIdleAfter(id, 1, "agent");
-          expect(ts[0].halt_reason).toBe("natural");
+          const { agent, turn } = await waitAgentTurnDone(id, "agent");
           expect(agent.total_cost_usd).toBe("0.0123");
-          await expectContiguousLogs({ turnId: ts[0].id }, N);
+          await expectContiguousLogs({ turnId: turn.id }, N);
         }
       } finally {
         polling = false;
