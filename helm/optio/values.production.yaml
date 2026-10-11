@@ -19,6 +19,9 @@ existingSecrets:
 # --- API Server ---
 # Images default to GHCR in values.yaml — no image overrides needed here.
 api:
+  # Raise for availability: any number of API/web pods share the database
+  # and Redis. Caches and the per-address WebSocket cap are per pod
+  # (docs/production-eks.md).
   replicas: 1
   resources:
     requests:
@@ -27,7 +30,7 @@ api:
     limits:
       cpu: "2"
       memory: 2Gi
-  # API and web share one pod; Local relay state is in memory.
+  # API and web share one pod. Rollouts are Recreate (migrations at boot).
   strategy:
     type: Recreate
   pdb:
