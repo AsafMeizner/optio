@@ -31,6 +31,7 @@ export const REPEAT_SCHEDULERS = {
   "skill-sync": ["skill-sync.sync-due"],
   "config-sync": ["config-sync.sync"],
   housekeeping: ["housekeeping.sweep"],
+  "attach-sweep": ["attach-sweep.sweep"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type RepeatQueueName = keyof typeof REPEAT_SCHEDULERS;

@@ -33,9 +33,9 @@ vi.mock("../services/task-message-service.js", () => ({
   markDelivered: (...args: unknown[]) => mockMarkDelivered(...args),
 }));
 
-const mockPublishTaskMessage = vi.fn();
-vi.mock("../services/task-message-bus.js", () => ({
-  publishTaskMessage: (...args: unknown[]) => mockPublishTaskMessage(...args),
+const mockDeliverTaskMessage = vi.fn();
+vi.mock("../services/task-message-delivery.js", () => ({
+  deliverTaskMessage: (...args: unknown[]) => mockDeliverTaskMessage(...args),
 }));
 
 const mockPublishEvent = vi.fn();
@@ -113,7 +113,7 @@ describe("POST /api/tasks/:id/message", () => {
     expect(body.message.content).toBe("use Postgres");
     expect(body.message.mode).toBe("soft");
     expect(body.message.deliveredAt).toBeNull();
-    expect(mockPublishTaskMessage).toHaveBeenCalled();
+    expect(mockDeliverTaskMessage).toHaveBeenCalled();
     expect(mockPublishEvent).toHaveBeenCalled();
     expect(mockRecordTaskEvent).toHaveBeenCalled();
   });
@@ -274,7 +274,7 @@ describe("POST /api/tasks/:id/message", () => {
         expect.any(Object),
       );
       // Running-stream publish path should NOT fire for stopped tasks.
-      expect(mockPublishTaskMessage).not.toHaveBeenCalled();
+      expect(mockDeliverTaskMessage).not.toHaveBeenCalled();
       // deliveredAt is stamped immediately for the resume path.
       expect(res.json().message.deliveredAt).not.toBeNull();
     },

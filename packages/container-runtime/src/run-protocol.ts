@@ -27,8 +27,11 @@
  *   attach   `tail -c +<from+1> --pid=<pid> -f output.ndjson`, then
  *            `__OPTIO_RUN_EXIT__:<code>` (or `__OPTIO_RUN_LOST__`) on stderr
  *   deliver  `head -c <n> >> stdin.ndjson` from the exec's stdin, then
- *            `__OPTIO_STDIN_DELIVERED__` on stdout
- *   kill     signal the supervisor's process group
+ *            `__OPTIO_STDIN_DELIVERED__` on stdout — or, once the file holds
+ *            the EOF sentinel (the agent's stdin is closed), nothing
+ *            appended and `__OPTIO_STDIN_CLOSED__`
+ *   kill     signal the supervisor's process group (only a given pid's, when
+ *            the caller names the attempt it means)
  *
  * Stdin bytes travel over the exec's stdin, never in the script or its
  * environment (an argv is at most 128 KiB). The pod's pid 1 must reap: the
@@ -53,6 +56,8 @@ export const RUN_STARTED_MARKER = "__OPTIO_RUN_STARTED__";
 export const RUN_EXIT_MARKER = "__OPTIO_RUN_EXIT__";
 export const RUN_LOST_MARKER = "__OPTIO_RUN_LOST__";
 export const STDIN_DELIVERED_MARKER = "__OPTIO_STDIN_DELIVERED__";
+/** What the deliver script prints instead when the run's stdin is already closed. */
+export const STDIN_CLOSED_MARKER = "__OPTIO_STDIN_CLOSED__";
 /** The stdin line that closes the agent's stdin (how a Claude turn is ended). */
 export const STDIN_EOF_SENTINEL = "__OPTIO_STDIN_EOF__";
 
@@ -78,6 +83,20 @@ export const RUN_STDIN_BYTES_ENV = "OPTIO_RUN_STDIN_BYTES";
 const STDIN_FD = 3;
 /** How long the start script waits for the supervisor's pid file (50 ms polls). */
 const START_WAIT_POLLS = 200;
+/** How long a fresh start waits for a stale supervisor after TERM, and again after KILL (50 ms polls). */
+const STALE_STOP_POLLS = 100;
+/** The files of a run directory that belong to one attempt (moved aside by the next). */
+const ATTEMPT_FILES = [
+  RUN_FILES.agent,
+  RUN_FILES.supervisor,
+  RUN_FILES.stdin,
+  RUN_FILES.stdinPipe,
+  RUN_FILES.output,
+  RUN_FILES.stderr,
+  RUN_FILES.pid,
+  `${RUN_FILES.pid}.tmp`,
+  RUN_FILES.exit,
+] as const;
 
 export const RUN_SIGNALS: readonly RunSignal[] = ["TERM", "KILL", "INT", "HUP"];
 
@@ -104,16 +123,23 @@ const PROC_STARTTIME = (pid: string) =>
  * `optio_run_pid <runDir>` prints the supervisor's pid when the process is
  * alive AND is the one that wrote the file (its start time matches); a dead,
  * absent, or reused pid prints nothing and fails. One helper for attach,
- * kill, and the pooled start guard.
+ * kill, and the pooled start guard. `optio_alive <pid>` says whether a
+ * process is still there and not a zombie (a zombie answers `kill -0`).
  */
 export const RUN_ALIVE_HELPER: readonly string[] = [
   `optio_run_pid() {`,
   `  [ -s "$1/${RUN_FILES.pid}" ] || return 1`,
   `  read -r _optio_pid _optio_start < "$1/${RUN_FILES.pid}" || return 1`,
   `  [ -n "$_optio_pid" ] && [ -n "$_optio_start" ] || return 1`,
+  // Never 0 or 1: `kill -- -1` would signal every process in the pod.
+  `  [ "$_optio_pid" -gt 1 ] 2>/dev/null || return 1`,
   `  kill -0 "$_optio_pid" 2>/dev/null || return 1`,
   `  [ "$(${PROC_STARTTIME("$_optio_pid")})" = "$_optio_start" ] || return 1`,
   `  printf '%s' "$_optio_pid"`,
+  `}`,
+  `optio_alive() {`,
+  `  kill -0 "$1" 2>/dev/null || return 1`,
+  `  [ "$(sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1)" != "Z" ]`,
   `}`,
 ];
 
@@ -156,8 +182,33 @@ export function startRunPrelude(stdinBytes: number): string[] {
 }
 
 /**
- * Script lines that end a start script: write the agent command and the
- * supervisor into `runDir`, prime stdin from the exec's stdin
+ * Script lines that stop a previous attempt's supervisor still alive in the
+ * run directory `D` (its starter went away before recording it): TERM to
+ * its process group, up to 5 s for it to go, then KILL and up to 5 s more.
+ * One that survives even that fails the start with nothing touched — one
+ * run directory, one agent. Needs RUN_ALIVE_HELPER.
+ */
+function stopStaleSupervisor(D: string): string[] {
+  const wait = `for i in $(seq 1 ${STALE_STOP_POLLS}); do optio_alive "$_optio_prev" || break; sleep 0.05; done`;
+  return [
+    `if _optio_prev=$(optio_run_pid ${D}); then`,
+    `  kill -TERM -- -"$_optio_prev" 2>/dev/null || kill -TERM "$_optio_prev" 2>/dev/null || true`,
+    `  ${wait}`,
+    `  if optio_alive "$_optio_prev"; then`,
+    `    kill -KILL -- -"$_optio_prev" 2>/dev/null || kill -KILL "$_optio_prev" 2>/dev/null || true`,
+    `    ${wait}`,
+    `  fi`,
+    `  if optio_alive "$_optio_prev"; then echo "[optio] ERROR: a previous attempt's supervisor (pid $_optio_prev) is still running in the run directory and would not stop" >&2; exit 1; fi`,
+    `fi`,
+  ];
+}
+
+/**
+ * Script lines that end a start script: stop a previous attempt's
+ * supervisor still running in `runDir`, move that attempt's files aside
+ * (never truncated in place: a straggler still writing through an open
+ * descriptor writes to the old file, not to this attempt's), write the
+ * agent command and the supervisor, prime stdin from the exec's stdin
  * (`startRunPrelude`), launch the supervisor in its own session (so the exec
  * that started it can go away and so `killRun` can signal the whole tree),
  * wait for its pid file, and print the started marker. `agentLines` run in
@@ -180,14 +231,25 @@ export function superviseAgent(
     `export ${RUN_DIR_ENV}=${d}`,
     ...(opts.markEnvReady ? [`export ${RUN_MARK_ENV_READY_ENV}=1`] : []),
     `mkdir -p ${D}`,
+    ...RUN_ALIVE_HELPER,
+    ...stopStaleSupervisor(D),
+    // The previous attempt's files go to a sibling directory, removed in the
+    // background (holding none of the start exec's descriptors: its stdin on
+    // fd 3, the callers' locks on 7 and 9).
+    `_optio_old=""`,
+    `for _optio_f in ${ATTEMPT_FILES.join(" ")}; do`,
+    `  if [ -e ${D}/"$_optio_f" ]; then`,
+    `    if [ -z "$_optio_old" ]; then _optio_old=${D}.prev-$(date +%s)-$$; mkdir -p "$_optio_old"; fi`,
+    `    mv -f ${D}/"$_optio_f" "$_optio_old"/`,
+    `  fi`,
+    `done`,
+    `if [ -n "$_optio_old" ]; then ( rm -rf "$_optio_old" ) < /dev/null > /dev/null 2>&1 3<&- 7>&- 9>&- & fi`,
     `cat > ${D}/${RUN_FILES.agent} <<'__OPTIO_AGENT_SH__'`,
     agentScript,
     `__OPTIO_AGENT_SH__`,
     `cat > ${D}/${RUN_FILES.supervisor} <<'__OPTIO_SUPERVISOR_SH__'`,
     SUPERVISOR_SCRIPT.trimEnd(),
     `__OPTIO_SUPERVISOR_SH__`,
-    // A fresh attempt: no exit or pid from a previous one, empty output.
-    `rm -f ${D}/${RUN_FILES.exit} ${D}/${RUN_FILES.pid} ${D}/${RUN_FILES.stdinPipe}`,
     `: > ${D}/${RUN_FILES.output}`,
     `: > ${D}/${RUN_FILES.stderr}`,
     `if [ -n "\${${RUN_STDIN_BYTES_ENV}:-}" ]; then head -c "\$${RUN_STDIN_BYTES_ENV}" <&${STDIN_FD} > ${D}/${RUN_FILES.stdin}; exec ${STDIN_FD}<&-; else : > ${D}/${RUN_FILES.stdin}; fi`,
@@ -227,7 +289,10 @@ export function attachRunScript(runDir: string, fromByte: number): string {
 /**
  * The deliver script: `byteLength` bytes of the exec's stdin appended to the
  * run's stdin file, then the delivered marker on stdout. The bytes never
- * touch the script or its environment.
+ * touch the script or its environment. Once the file holds the EOF sentinel
+ * the agent's stdin is closed (the feeder stopped there): nothing is
+ * appended and the closed marker is printed instead. The check and the
+ * append hold the run's stdin lock, so a line and the sentinel never race.
  */
 export function deliverStdinScript(runDir: string, byteLength: number): string {
   const d = shellQuote(assertRunDir(runDir));
@@ -235,18 +300,31 @@ export function deliverStdinScript(runDir: string, byteLength: number): string {
   return [
     `d=${d}`,
     `[ -d "$d" ] || { echo "no run directory at $d" >&2; exit 1; }`,
+    `exec 8>>"$d/${RUN_FILES.stdin}.lock"`,
+    `if command -v flock >/dev/null 2>&1; then flock -x 8; fi`,
+    `if grep -qxF '${STDIN_EOF_SENTINEL}' "$d/${RUN_FILES.stdin}" 2>/dev/null; then echo "${STDIN_CLOSED_MARKER}"; exit 0; fi`,
     `head -c ${byteLength} >> "$d/${RUN_FILES.stdin}" && echo "${STDIN_DELIVERED_MARKER}"`,
   ].join("\n");
 }
 
-/** The kill script: the signal to the supervisor's process group, when it is the live supervisor. */
-export function killRunScript(runDir: string, signal: RunSignal): string {
+/**
+ * The kill script: the signal to the supervisor's process group, when it is
+ * the live supervisor — and, with `pid`, only when it is that pid's (the
+ * attempt the caller means: a newer attempt in the same directory is never
+ * hit).
+ */
+export function killRunScript(runDir: string, signal: RunSignal, pid?: number): string {
   const d = shellQuote(assertRunDir(runDir));
   if (!RUN_SIGNALS.includes(signal)) throw new Error(`Unsupported signal: ${signal}`);
+  if (pid !== undefined && (!Number.isInteger(pid) || pid < 2)) {
+    throw new Error(`Invalid pid: ${pid}`);
+  }
   return [
     `d=${d}`,
     ...RUN_ALIVE_HELPER,
-    `if pid=$(optio_run_pid "$d"); then`,
+    pid === undefined
+      ? `if pid=$(optio_run_pid "$d"); then`
+      : `if pid=$(optio_run_pid "$d") && [ "$pid" = "${pid}" ]; then`,
     `  kill -${signal} -- -"$pid" 2>/dev/null || kill -${signal} "$pid" 2>/dev/null || true`,
     `  echo killed`,
     `else`,
@@ -301,6 +379,17 @@ export class RunStartError extends Error {
   ) {
     super(message);
     this.name = "RunStartError";
+  }
+}
+
+/**
+ * Thrown when a stdin line was refused because the run's stdin is already
+ * closed (the EOF sentinel was delivered: the agent finished its turn).
+ */
+export class RunStdinClosedError extends Error {
+  constructor(runDir: string) {
+    super(`the run's stdin is closed (${runDir})`);
+    this.name = "RunStdinClosedError";
   }
 }
 
@@ -426,6 +515,7 @@ export const execRunProtocol = {
     const collected = Promise.all([collect(session.stdout), collect(session.stderr)]);
     feedStdin(session, bytes);
     const [stdout, stderr] = await collected;
+    if (stdout.includes(STDIN_CLOSED_MARKER)) throw new RunStdinClosedError(input.runDir);
     if (!stdout.includes(STDIN_DELIVERED_MARKER)) {
       const output = [stdout, stderr].filter(Boolean).join("\n");
       throw new RunDeliverError(
@@ -438,11 +528,11 @@ export const execRunProtocol = {
   async killRun(
     rt: Pick<ContainerRuntime, "exec">,
     handle: ContainerHandle,
-    input: { runDir: string; signal: RunSignal },
+    input: { runDir: string; signal: RunSignal; pid?: number },
   ): Promise<boolean> {
     const session = await rt.exec(
       handle,
-      ["bash", "-c", killRunScript(input.runDir, input.signal)],
+      ["bash", "-c", killRunScript(input.runDir, input.signal, input.pid)],
       { tty: false },
     );
     const stdout = await collect(session.stdout);

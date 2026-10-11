@@ -1,6 +1,7 @@
 import type { AgentTaskInput, AgentContainerConfig, AgentResult } from "@optio/shared";
 import { TASK_BRANCH_PREFIX } from "@optio/shared";
-import type { AgentAdapter } from "./types.js";
+import type { AgentAdapter, AgentResultParser } from "./types.js";
+import { firstMatch, parseAllLines } from "./types.js";
 
 /**
  * OpenClaw CLI (openclaw agent --output-format stream-json) outputs NDJSON events.
@@ -84,36 +85,54 @@ export class OpenClawAdapter implements AgentAdapter {
   }
 
   parseResult(exitCode: number, logs: string): AgentResult {
-    const prMatch = logs.match(
+    return parseAllLines(this.createResultParser(), exitCode, logs);
+  }
+
+  createResultParser(): AgentResultParser {
+    // Extract the PR URL from anywhere in the output (its first mention)
+    const pr = firstMatch(
       /https:\/\/(?![\w.-]+\/api\/)[^\s"]+\/(?:pull\/\d+|-\/merge_requests\/\d+)/,
     );
-    const { costUsd, errorMessage, hasError, summary, inputTokens, outputTokens, model } =
-      this.parseLogs(logs);
-
-    const success = exitCode === 0 && !hasError;
-
+    const parsed = this.logParser();
     return {
-      success,
-      prUrl: prMatch?.[0],
-      costUsd,
-      inputTokens,
-      outputTokens,
-      model,
-      summary:
-        summary ??
-        (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
-      error: !success ? (errorMessage ?? `Exit code: ${exitCode}`) : undefined,
+      push(line) {
+        pr.push(line);
+        parsed.push(line);
+      },
+      finish(exitCode) {
+        const prMatch = pr.value;
+        const { costUsd, errorMessage, hasError, summary, inputTokens, outputTokens, model } =
+          parsed.done();
+
+        const success = exitCode === 0 && !hasError;
+
+        return {
+          success,
+          prUrl: prMatch?.[0],
+          costUsd,
+          inputTokens,
+          outputTokens,
+          model,
+          summary:
+            summary ??
+            (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
+          error: !success ? (errorMessage ?? `Exit code: ${exitCode}`) : undefined,
+        };
+      },
     };
   }
 
-  private parseLogs(logs: string): {
-    costUsd?: number;
-    errorMessage?: string;
-    hasError: boolean;
-    summary?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    model?: string;
+  private logParser(): {
+    push(line: string): void;
+    done(): {
+      costUsd?: number;
+      errorMessage?: string;
+      hasError: boolean;
+      summary?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      model?: string;
+    };
   } {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -123,8 +142,8 @@ export class OpenClawAdapter implements AgentAdapter {
     let hasError = false;
     let lastAssistantMessage: string | undefined;
 
-    for (const line of logs.split("\n")) {
-      if (!line.trim()) continue;
+    const push = (line: string): void => {
+      if (!line.trim()) return;
 
       let event: any;
       try {
@@ -136,7 +155,7 @@ export class OpenClawAdapter implements AgentAdapter {
           // Log raw error for diagnostics (helps catch API key issues, auth failures, etc.)
           console.warn(`[openclaw] Raw error: ${errorMessage}`);
         }
-        continue;
+        return;
       }
 
       // Extract model name
@@ -148,14 +167,14 @@ export class OpenClawAdapter implements AgentAdapter {
       if (event.error && typeof event.error === "object" && event.error.message) {
         errorMessage = event.error.message;
         hasError = true;
-        continue;
+        return;
       }
 
       // Error events: { type: "error", message: "..." }
       if (event.type === "error") {
         errorMessage = event.message ?? event.error ?? JSON.stringify(event);
         hasError = true;
-        continue;
+        return;
       }
 
       // Result with is_error flag
@@ -163,7 +182,7 @@ export class OpenClawAdapter implements AgentAdapter {
         errorMessage =
           typeof event.result === "string" ? event.result : JSON.stringify(event.result);
         hasError = true;
-        continue;
+        return;
       }
 
       // Track assistant messages for summary
@@ -195,21 +214,25 @@ export class OpenClawAdapter implements AgentAdapter {
       if (event.total_cost_usd != null) {
         directCost = event.total_cost_usd;
       }
-    }
-
-    // OpenClaw is provider-agnostic — cost may not be available.
-    // Use direct cost if reported, otherwise leave undefined.
-    const costUsd = directCost;
-
-    return {
-      costUsd,
-      errorMessage,
-      hasError,
-      summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,
-      inputTokens: totalInputTokens > 0 ? totalInputTokens : undefined,
-      outputTokens: totalOutputTokens > 0 ? totalOutputTokens : undefined,
-      model,
     };
+
+    const done = () => {
+      // OpenClaw is provider-agnostic — cost may not be available.
+      // Use direct cost if reported, otherwise leave undefined.
+      const costUsd = directCost;
+
+      return {
+        costUsd,
+        errorMessage,
+        hasError,
+        summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,
+        inputTokens: totalInputTokens > 0 ? totalInputTokens : undefined,
+        outputTokens: totalOutputTokens > 0 ? totalOutputTokens : undefined,
+        model,
+      };
+    };
+
+    return { push, done };
   }
 }
 

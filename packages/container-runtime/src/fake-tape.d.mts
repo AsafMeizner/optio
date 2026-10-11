@@ -30,6 +30,10 @@ export type AgentPlan =
       init: Record<string, unknown>;
       hang: boolean;
       sleepMs: number;
+      /** `[[mock:ticks:N:MS]]`: N numbered assistant text events, MS apart, after init. */
+      ticks: { count: number; everyMs: number };
+      /** `[[mock:mark:N:TEXT]]`: an assistant text event TEXT right after tick N. */
+      mark: { at: number; text: string } | null;
       lines: TapeLine[];
       exitCode: number;
       echoStdin: boolean;

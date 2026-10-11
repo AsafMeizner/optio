@@ -238,17 +238,24 @@ export interface AuthFailureDetection {
 export function detectAuthFailureInLogs(logs: string): AuthFailureDetection {
   if (!logs) return { matched: false };
   for (const line of logs.split("\n")) {
-    if (!line.trim()) continue;
-    if (isAgentInternalEvent(line)) continue;
-    const lower = line.toLowerCase();
-    for (const pattern of AUTH_FAILURE_PATTERNS) {
-      const idx = lower.indexOf(pattern);
-      if (idx === -1) continue;
-      const start = Math.max(0, idx - 40);
-      const end = Math.min(line.length, idx + pattern.length + 200);
-      const excerpt = line.slice(start, end).replace(/\s+/g, " ").trim().slice(0, 240);
-      return { matched: true, pattern, excerpt };
-    }
+    const found = detectAuthFailureInLine(line);
+    if (found.matched) return found;
+  }
+  return { matched: false };
+}
+
+/** `detectAuthFailureInLogs` for one line of output, as it streams. */
+export function detectAuthFailureInLine(line: string): AuthFailureDetection {
+  if (!line.trim()) return { matched: false };
+  if (isAgentInternalEvent(line)) return { matched: false };
+  const lower = line.toLowerCase();
+  for (const pattern of AUTH_FAILURE_PATTERNS) {
+    const idx = lower.indexOf(pattern);
+    if (idx === -1) continue;
+    const start = Math.max(0, idx - 40);
+    const end = Math.min(line.length, idx + pattern.length + 200);
+    const excerpt = line.slice(start, end).replace(/\s+/g, " ").trim().slice(0, 240);
+    return { matched: true, pattern, excerpt };
   }
   return { matched: false };
 }

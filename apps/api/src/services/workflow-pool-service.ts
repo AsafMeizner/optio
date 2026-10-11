@@ -10,13 +10,15 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { workflowRuns } from "../db/schema.js";
 import { getRuntime } from "./container-service.js";
-import type { ContainerSpec, ExecSession } from "@optio/shared";
+import type { ContainerSpec } from "@optio/shared";
 import { generateWorkflowPodName, parseIntEnv, type RepoImageConfig } from "@optio/shared";
 import { logger } from "../logger.js";
 import { resolveImage } from "./repo-pool-service.js";
 import { getWorkloadManager, isStatefulSetEnabled } from "./k8s-workload-service.js";
 import * as podPool from "./agent-pod-pool.js";
-import { buildPooledExecScript, KEEP_POD_ALIVE } from "../utils/pod-env.js";
+import { buildPooledStartScript, KEEP_POD_ALIVE } from "../utils/pod-env.js";
+import { runHome } from "../utils/harness-config.js";
+import type { RunStartResult } from "@optio/container-runtime";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 
 const IDLE_TIMEOUT_MS = parseIntEnv("OPTIO_WORKFLOW_POD_IDLE_MS", 600000); // 10 min default
@@ -173,32 +175,38 @@ async function createWorkflowPodViaJob(
 }
 
 /**
- * Execute a workflow run inside a pooled workflow pod. Each run isolates its
- * working dir to `/workspace/runs/<runId>` and injects per-run env vars
- * (including `OPTIO_PROMPT`) via the exec stream — nothing about the run is
- * baked into the pod spec. Takes a slot when the exec starts (and gives it
- * back if it doesn't); callers that got a session call `releaseRun` when the
- * run's attempt ends.
+ * Starts a Job run's agent in a pooled pod under the run protocol
+ * (run-protocol.ts): the run's env, setup files and setup commands in its
+ * own directory, then the agent launched under its supervisor, and the
+ * exec returns once it runs. The run holds a slot on the pod from here
+ * (given back by `releaseRun`, from whichever instance finishes the run).
+ * `initialStdin` is the run's first stdin (Claude's first stream-json
+ * message), primed before the agent starts.
  */
-export async function execRunInPod(
+export async function startRunInPod(
   pod: WorkflowPod,
   runId: string,
   agentCommand: string[],
   env: Record<string, string>,
-): Promise<ExecSession> {
+  opts: { initialStdin: string },
+): Promise<RunStartResult> {
   await podPool.acquireSlot(pod.id);
-  const script = buildPooledExecScript({
+  const script = buildPooledStartScript({
     env: { ...env, OPTIO_WORKFLOW_RUN_ID: runId },
+    runId,
     workDir: `/workspace/runs/${runId}`,
     agentCommand,
     label: "workflow pod",
   });
   try {
-    return await getRuntime().exec(podPool.podHandle(pod), ["bash", "-c", script], {
-      tty: false,
+    return await getRuntime().startRun(podPool.podHandle(pod), {
+      runId,
+      runDir: runHome(runId).podDir,
+      script,
+      initialStdin: opts.initialStdin,
     });
   } catch (err) {
-    await podPool.releaseSlot(pod.id);
+    await podPool.releaseSlot(pod.id).catch(() => {});
     throw err;
   }
 }

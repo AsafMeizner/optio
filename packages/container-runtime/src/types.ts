@@ -80,6 +80,11 @@ export interface RunKillInput {
   runId: string;
   runDir: string;
   signal: RunSignal;
+  /**
+   * Only this supervisor pid (the attempt the caller means): a newer
+   * attempt's agent in the same run directory is left alone.
+   */
+  pid?: number;
 }
 
 export interface ContainerRuntime {
@@ -97,7 +102,10 @@ export interface ContainerRuntime {
   startRun(handle: ContainerHandle, input: RunStartInput): Promise<RunStartResult>;
   /** Attaches to a run's output from a byte offset until the agent exits. */
   attachRun(handle: ContainerHandle, input: RunAttachInput): Promise<RunAttachment>;
-  /** Appends a line to the run's stdin. */
+  /**
+   * Appends a line to the run's stdin. Rejects with `RunStdinClosedError`
+   * once the run's stdin holds the EOF sentinel (the agent's turn is over).
+   */
   deliverStdin(handle: ContainerHandle, input: RunStdinInput): Promise<void>;
   /** Signals the run's process group; true when something was there to signal. */
   killRun(handle: ContainerHandle, input: RunKillInput): Promise<boolean>;

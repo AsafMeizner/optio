@@ -60,7 +60,7 @@ vi.mock("../services/workflow-service.js", () => ({
 
 vi.mock("../services/workflow-pool-service.js", () => ({
   getOrCreateWorkflowPod: vi.fn(),
-  execRunInPod: vi.fn(),
+  startRunInPod: vi.fn(),
   releaseRun: vi.fn(),
 }));
 

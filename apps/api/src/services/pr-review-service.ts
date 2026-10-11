@@ -84,6 +84,47 @@ export async function transitionPrReview(
     timestamp: new Date().toISOString(),
   } as never).catch(() => {});
 
+  // A cancelled review's agent must actually stop — from whichever API
+  // instance took the cancel, not only the one streaming the run
+  // (docs/plans/scale-out.md §1). The attached instance then sees it exit.
+  // Its runs not started yet (queued, or still being set up) are cancelled
+  // with it: the worker setting one up sees that and starts nothing more.
+  if (to === PrReviewState.CANCELLED) {
+    const cancelledRuns = await db
+      .update(prReviewRuns)
+      .set({
+        state: PrReviewRunState.CANCELLED,
+        errorMessage: "Parent review is cancelled",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(prReviewRuns.prReviewId, id),
+          inArray(prReviewRuns.state, [PrReviewRunState.QUEUED, PrReviewRunState.PROVISIONING]),
+        ),
+      )
+      .returning({ id: prReviewRuns.id });
+    for (const run of cancelledRuns) {
+      await publishEvent({
+        type: "pr_review_run:state_changed",
+        prReviewId: id,
+        runId: run.id,
+        fromState: null,
+        toState: PrReviewRunState.CANCELLED,
+        timestamp: new Date().toISOString(),
+      }).catch(() => {});
+    }
+    const active = await db
+      .select({ id: prReviewRuns.id, podId: prReviewRuns.podId })
+      .from(prReviewRuns)
+      .where(and(eq(prReviewRuns.prReviewId, id), eq(prReviewRuns.execState, "started")));
+    if (active.length > 0) {
+      const { signalRun } = await import("./run-attachment.js");
+      for (const run of active) await signalRun(run.podId, run.id, "TERM");
+    }
+  }
+
   // Poke the reconciler so downstream decisions fire promptly.
   await enqueueReconcile({ kind: "pr-review", id }, { reason: `transition:${to}` }).catch(() => {});
 

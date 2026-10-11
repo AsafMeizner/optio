@@ -10,14 +10,14 @@
  * This is a sibling of task-worker.ts but does NOT touch the tasks table.
  * The shared primitives it depends on are:
  *   - repoPool.getOrCreateRepoPod
- *   - repoPool.execTaskInRepoPod (accepts any stable id for worktree keying)
+ *   - repoPool.startTaskInRepoPod (accepts any stable id for worktree keying)
+ *   - the run protocol's shared attach loop (services/run-attachment.ts)
  *   - agent-adapters (buildContainerConfig, parseResult)
  *   - the shared agent-event parsers
- *   - buildAgentCommand / buildInitialClaudeStreamMessage / inferExitCode
- *     exported from task-worker.ts
+ *   - buildAgentCommand exported from task-worker.ts
  */
 import { Queue, Worker } from "bullmq";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   parseIntEnv,
   parseRepoUrl,
@@ -34,6 +34,29 @@ import { insertLog } from "../services/run-log-service.js";
 import { addUsage } from "../services/run-usage.js";
 import { getEventParser } from "../services/event-parsers.js";
 import * as repoPool from "../services/repo-pool-service.js";
+import * as podPool from "../services/agent-pod-pool.js";
+import { getRuntime } from "../services/container-service.js";
+import {
+  beginHold,
+  closeAttachment,
+  endOfLoss,
+  endRunJob,
+  onStreamError,
+  readRunStderr,
+  recordRunStarted,
+  removeRunDirectory,
+  runAttachJob,
+  settleRun,
+  streamRun,
+  withStderr,
+  type AttachRef,
+  type AttachmentClaim,
+  type AttachmentHold,
+  type AttachedPod,
+  type RunEnd,
+} from "../services/run-attachment.js";
+import { RunOutputDigest } from "../services/run-output-digest.js";
+import { runHome } from "../utils/harness-config.js";
 import { resolveSecretsForTask, retrieveSecretWithFallback } from "../services/secret-service.js";
 import { isGitHubAppConfigured } from "../services/github-app-service.js";
 import { publishEvent } from "../services/event-bus.js";
@@ -47,7 +70,7 @@ import * as optioSettingsService from "../services/optio-settings-service.js";
 import { buildAgentEnvironment } from "../services/agent-environment-service.js";
 import { applyGitAccess } from "../services/git-access-env.js";
 import { buildInitialClaudeStreamMessage } from "../services/pooled-agent-command.js";
-import { buildAgentCommand, inferExitCode } from "./task-worker.js";
+import { buildAgentCommand } from "./task-worker.js";
 
 const bullmqOpts = getBullMQOptions();
 
@@ -126,6 +149,12 @@ export function startPrReviewWorker() {
   const worker = new Worker(
     "pr-review-runs",
     instrumentWorkerProcessor("pr-review-worker", async (job) => {
+      // A re-attach (the reconciler's `reattach` action): the run is already
+      // going in its pod; take it over from where its log rows stop.
+      if (job.name === "attach-pr-review-run") {
+        await attachReviewRun(job);
+        return;
+      }
       const { runId } = job.data as { runId: string };
       const log = logger.child({ runId, jobId: job.id });
 
@@ -178,6 +207,12 @@ export function startPrReviewWorker() {
       });
 
       let repoPodId: string | null = null;
+      // This job's hold on the run, from the claim on (run-attachment.ts);
+      // the finally lets go of it through `endRunJob`. A run this job
+      // detached from keeps its pod slot for the instance that finishes it.
+      const hold = await beginHold(reviewRunRef(runId));
+      let slotHeld = false;
+      let ended: RunEnd | null = null;
       try {
         const { getRepoByUrl } = await import("../services/repo-service.js");
         const repoConfig = await getRepoByUrl(review.repoUrl, review.workspaceId ?? undefined);
@@ -425,150 +460,91 @@ export function startPrReviewWorker() {
           })
           .where(eq(prReviewRuns.id, runId));
 
-        await transitionRun(runId, PrReviewRunState.RUNNING);
-
-        // ── Build command + exec ─────────────────────────────────
+        // ── Build command + start ────────────────────────────────
         const agentCommand = buildAgentCommand(agentType, allEnv, {
           resumeSessionId: run.resumeSessionId ?? undefined,
           isReview: true,
           maxTurnsReview: repoConfig.maxTurnsReview ?? undefined,
         });
 
-        const execSession = await repoPool.execTaskInRepoPod(pod, run.id, agentCommand, allEnv);
-
-        // For claude, seed the stream-json stdin with the initial prompt.
-        if (agentType === "claude-code") {
-          try {
-            execSession.stdin.write(buildInitialClaudeStreamMessage(allEnv.OPTIO_PROMPT ?? ""));
-          } catch (err) {
-            log.warn({ err }, "Failed to write initial claude stdin");
-          }
-        }
-
-        // ── Stream stdout ───────────────────────────────────────
-        let allLogs = "";
-        let sessionId: string | undefined;
-        let lineBuf = "";
-        let pendingActivityAt: Date | null = null;
-        let lastActivityFlushAt = 0;
-        const ACTIVITY_FLUSH_INTERVAL_MS = 5_000;
-
-        let stderrData = "";
-        (async () => {
-          for await (const chunk of execSession.stderr as AsyncIterable<Buffer>) {
-            stderrData += chunk.toString();
-          }
-        })().catch(() => {});
-
-        for await (const chunk of execSession.stdout as AsyncIterable<Buffer>) {
-          const text = chunk.toString();
-          allLogs += text;
-          const parts = (lineBuf + text).split("\n");
-          lineBuf = parts.pop() ?? "";
-
-          for (const line of parts) {
-            if (!line.trim()) continue;
-            const parsed = getEventParser(agentType)(line, run.id);
-
-            if (parsed.sessionId && !sessionId) {
-              sessionId = parsed.sessionId;
-              await db
-                .update(prReviewRuns)
-                .set({ sessionId, updatedAt: new Date() })
-                .where(eq(prReviewRuns.id, run.id));
-            }
-            if (parsed.isTerminal) {
-              try {
-                execSession.stdin.end();
-              } catch {}
-            }
-            for (const entry of parsed.entries) {
-              await appendRunLog(run, entry.content, "stdout", entry.type, entry.metadata);
-              if (["text", "tool_use", "tool_result", "thinking", "system"].includes(entry.type)) {
-                pendingActivityAt = new Date();
-              }
-            }
-          }
-
-          if (pendingActivityAt && Date.now() - lastActivityFlushAt > ACTIVITY_FLUSH_INTERVAL_MS) {
-            await db
-              .update(prReviewRuns)
-              .set({ lastActivityAt: pendingActivityAt, updatedAt: new Date() })
-              .where(eq(prReviewRuns.id, run.id));
-            lastActivityFlushAt = Date.now();
-            pendingActivityAt = null;
-          }
-        }
-
-        if (pendingActivityAt) {
-          await db
-            .update(prReviewRuns)
-            .set({ lastActivityAt: pendingActivityAt, updatedAt: new Date() })
-            .where(eq(prReviewRuns.id, run.id));
-        }
-
-        // Flush any remaining partial line.
-        if (lineBuf.trim()) {
-          const parsed = getEventParser(agentType)(lineBuf, run.id);
-          for (const entry of parsed.entries) {
-            await appendRunLog(run, entry.content, "stdout", entry.type, entry.metadata);
-          }
-        }
-
-        if (stderrData) {
-          log.warn({ stderrPreview: stderrData.slice(0, 500) }, "Exec stderr");
-        }
-
-        // ── Parse result ────────────────────────────────────────
-        const inferredExitCode = inferExitCode(agentType, allLogs);
-        const result = adapter.parseResult(inferredExitCode, allLogs);
-
+        // What finishing needs that only this job knew: the agent the run
+        // was resolved to. Kept on the row for an instance that attaches later.
         await db
           .update(prReviewRuns)
           .set({
-            resultSummary: result.summary,
-            errorMessage: result.error ?? null,
-            ...addUsage(prReviewRuns, result),
+            metadata: sql`COALESCE(${prReviewRuns.metadata}, '{}'::jsonb) || ${JSON.stringify({ agentType })}::jsonb`,
           })
-          .where(eq(prReviewRuns.id, run.id));
+          .where(eq(prReviewRuns.id, runId));
 
-        if (result.success) {
-          await transitionRun(runId, PrReviewRunState.COMPLETED);
-          try {
-            if (run.kind === "chat") {
-              await prReviewService.appendChatReplyFromRun(runId);
-            } else {
-              await prReviewService.parseReviewOutput(runId);
-            }
-          } catch (err) {
-            log.warn({ err }, "Post-run parser failed");
-          }
-        } else {
-          await transitionRun(runId, PrReviewRunState.FAILED, {
-            errorMessage: result.error ?? "Agent failed",
-          });
-          // Chat runs are follow-up turns on an already-produced draft; their
-          // failure is a conversational hiccup, not grounds to invalidate the
-          // review. Only initial/rereview runs flip the parent to FAILED.
-          if (run.kind !== "chat") {
-            await prReviewService.transitionPrReview(
-              run.prReviewId,
-              PrReviewState.FAILED,
-              "run_failed",
-              { message: result.error ?? "Agent run failed", runId },
-            );
-          }
+        // A review cancelled while the run was set up starts nothing.
+        if (await cancelledWithReview(run, log)) return;
+
+        // Start the agent under the run protocol: the start exec returns
+        // once the supervisor runs; any API instance can attach to the
+        // run's output from here on, and this one does so right away. The
+        // run is `running` once its start is recorded.
+        const started = await repoPool.startTaskInRepoPod(pod, run.id, agentCommand, allEnv, {
+          // For claude, seed the stream-json stdin with the initial prompt.
+          initialStdin:
+            agentType === "claude-code"
+              ? buildInitialClaudeStreamMessage(allEnv.OPTIO_PROMPT ?? "")
+              : "",
+        });
+        slotHeld = true;
+        if (started.output.trim()) {
+          log.debug({ setup: started.output.slice(-2000) }, "Run setup output");
         }
+        // The review cancelled while the agent started (before its start is
+        // recorded, and right after): the run is cancelled, its results are
+        // never written, and `endRunJob` stops the agent nobody will stream.
+        const agent = { podId: pod.id, pid: started.pid };
+        hold.agent = agent;
+        if (await cancelledWithReview(run, log)) return;
+        if (!(await recordRunStarted(hold, agent))) {
+          // Requeued while it was set up: the agent is nobody's.
+          log.info("The run moved on while its agent started; stopping the agent");
+          return;
+        }
+        if (await cancelledWithReview(run, log)) return;
+        const runningNow = await transitionRunIf(
+          runId,
+          PrReviewRunState.PROVISIONING,
+          PrReviewRunState.RUNNING,
+        );
+        if (!runningNow) {
+          // Moved on while it was set up (cancelled): the agent is nobody's.
+          log.info("The run moved on while its agent started; stopping the agent");
+          return;
+        }
+        log.info({ pid: started.pid }, "Agent started; attaching");
 
-        await enqueueReconcile(
-          { kind: "pr-review", id: run.prReviewId },
-          { reason: "run_completed" },
-        ).catch(() => {});
+        ended = await finishReviewRun({
+          run,
+          agentType,
+          pod: { id: pod.id, handle: podPool.podHandle(pod) },
+          log,
+          hold,
+          claim: { consumedBytes: 0, execState: "started", pid: started.pid },
+        });
       } catch (err) {
+        // Once its agent streams, an error is this instance's trouble, not
+        // the run's: the run is left for an attach (run-attachment.ts).
+        const afterStart = await onStreamError(hold, log);
+        if (afterStart) {
+          ended = afterStart;
+          log.error(
+            { err },
+            "PR review worker error while streaming; the run is left for an attach",
+          );
+          return;
+        }
         log.error({ err }, "PR review run failed");
         const msg = describeError(err);
-        await transitionRun(runId, PrReviewRunState.FAILED, { errorMessage: msg }).catch(() => {});
-        if (run.kind !== "chat") {
+        // Only while the run is still active: a cancel stands.
+        await transitionRunFromActive(runId, PrReviewRunState.FAILED, { errorMessage: msg }).catch(
+          () => null,
+        );
+        if (run.kind !== "chat" && !(await reviewIsCancelled(run.prReviewId))) {
           await prReviewService
             .transitionPrReview(run.prReviewId, PrReviewState.FAILED, "worker_exception", {
               message: msg,
@@ -577,8 +553,15 @@ export function startPrReviewWorker() {
             .catch(() => {});
         }
       } finally {
-        if (repoPodId) {
+        // Let go of the run: an agent this job started and left behind (a
+        // run that failed or was cancelled under it) is stopped first, then
+        // the lease goes (run-attachment.ts).
+        await endRunJob(hold, ended, log);
+        if (repoPodId && slotHeld && ended !== "detached") {
           await repoPool.releaseRepoPodTask(repoPodId).catch(() => {});
+          await repoPool.updateWorktreeState(run.id, "removed").catch(() => {});
+        } else if (repoPodId && !slotHeld) {
+          // The agent never started: the start gave the slot back itself.
           await repoPool.updateWorktreeState(run.id, "removed").catch(() => {});
         }
       }
@@ -586,7 +569,11 @@ export function startPrReviewWorker() {
     {
       ...bullmqOpts,
       concurrency: parseIntEnv("OPTIO_PR_REVIEW_WORKER_CONCURRENCY", 4),
-      lockDuration: parseIntEnv("OPTIO_PR_REVIEW_LOCK_MS", 30 * 60 * 1000),
+      // See task-worker: the job lasts as long as this instance streams the
+      // run; recovery is the attach sweep's, not BullMQ's stall re-delivery.
+      lockDuration: parseIntEnv("OPTIO_PR_REVIEW_LOCK_MS", 60_000),
+      stalledInterval: 30_000,
+      maxStalledCount: 3,
     },
   );
 
@@ -600,5 +587,336 @@ export function startPrReviewWorker() {
 // Re-export stall threshold so callers can compute heartbeat consistently.
 export const PR_REVIEW_STALL_THRESHOLD_MS = DEFAULT_STALL_THRESHOLD_MS;
 
-// Silence unused-import warnings for constants referenced only indirectly.
-void sql;
+// ── The run protocol: attaching to a review run's agent and finishing it ─────
+
+/** The attachment columns of a review run's row (run-attachment.ts). */
+export function reviewRunRef(runId: string): AttachRef {
+  return { kind: "review-run", id: runId };
+}
+
+const ACTIVE_RUN_STATES = [
+  PrReviewRunState.QUEUED,
+  PrReviewRunState.PROVISIONING,
+  PrReviewRunState.RUNNING,
+];
+
+/**
+ * `transitionRun` as one CAS on the run still being active (queued,
+ * provisioning, running): a run already cancelled, failed or completed
+ * keeps its state. Null when it moved on.
+ */
+async function transitionRunFromActive(
+  runId: string,
+  to: PrReviewRunState,
+  patch: Partial<typeof prReviewRuns.$inferSelect> = {},
+): Promise<typeof prReviewRuns.$inferSelect | null> {
+  const terminal =
+    to === PrReviewRunState.COMPLETED ||
+    to === PrReviewRunState.FAILED ||
+    to === PrReviewRunState.CANCELLED;
+  const [before] = await db
+    .select({ state: prReviewRuns.state })
+    .from(prReviewRuns)
+    .where(eq(prReviewRuns.id, runId));
+  const [updated] = await db
+    .update(prReviewRuns)
+    .set({
+      ...patch,
+      state: to,
+      updatedAt: new Date(),
+      ...(terminal && !patch.completedAt ? { completedAt: new Date() } : {}),
+    })
+    .where(and(eq(prReviewRuns.id, runId), inArray(prReviewRuns.state, ACTIVE_RUN_STATES)))
+    .returning();
+  if (!updated) return null;
+  await publishEvent({
+    type: "pr_review_run:state_changed",
+    prReviewId: updated.prReviewId,
+    runId,
+    fromState: (before?.state as PrReviewRunState) ?? null,
+    toState: to,
+    timestamp: new Date().toISOString(),
+  });
+  return updated;
+}
+
+/**
+ * Whether the run's review was cancelled: then the run is marked cancelled
+ * (if it is not over already) and nothing of it is ever written to the
+ * review. Checked as the run is started — before its agent launches, before
+ * its start is recorded and right after — so a cancel that came while the
+ * run was being set up is never missed.
+ */
+async function cancelledWithReview(
+  run: typeof prReviewRuns.$inferSelect,
+  log: typeof logger,
+): Promise<boolean> {
+  if (!(await reviewIsCancelled(run.prReviewId))) return false;
+  await transitionRunFromActive(run.id, PrReviewRunState.CANCELLED, {
+    errorMessage: "Parent review is cancelled",
+  });
+  log.info("The review was cancelled while its run was set up; cancelling the run");
+  return true;
+}
+
+/** `transitionRun`, only while the run is still in `from`. Null when it moved on. */
+async function transitionRunIf(
+  runId: string,
+  from: PrReviewRunState,
+  to: PrReviewRunState,
+): Promise<typeof prReviewRuns.$inferSelect | null> {
+  const [current] = await db
+    .select({ state: prReviewRuns.state })
+    .from(prReviewRuns)
+    .where(eq(prReviewRuns.id, runId));
+  if (current?.state !== from) return null;
+  return transitionRun(runId, to);
+}
+
+interface FinishReviewRunInput {
+  run: typeof prReviewRuns.$inferSelect;
+  agentType: string;
+  pod: AttachedPod;
+  log: typeof logger;
+  hold: AttachmentHold;
+  /** Where the run's log rows reach, and whether an earlier holder already recorded its exit. */
+  claim: AttachmentClaim;
+}
+
+/**
+ * Streams a started review run to its end and records its result — the
+ * one path for the job that started the run and for a job that attaches
+ * to it later. Returns "detached" when this instance stopped streaming
+ * without the run ending (shutdown, or another instance took the run).
+ */
+async function finishReviewRun(input: FinishReviewRunInput): Promise<RunEnd> {
+  const { run, agentType, pod, log, hold } = input;
+  const runId = run.id;
+  const ref = reviewRunRef(runId);
+  const runtime = getRuntime();
+  const runDir = runHome(runId).podDir;
+  const parseEvent = getEventParser(agentType);
+
+  // Derivations: rebuilt from byte 0 on every attach, never persisted.
+  const digest = new RunOutputDigest(agentType);
+  let pendingActivityAt: Date | null = null;
+  let lastActivityFlushAt = 0;
+  const ACTIVITY_FLUSH_INTERVAL_MS = 5_000;
+
+  const { outcome } = await streamRun({
+    runtime,
+    handle: pod.handle,
+    ref,
+    runDir,
+    hold,
+    consumedBytes: input.claim.consumedBytes,
+    log,
+    parse: (line) => parseEvent(line, runId),
+    derive: (line) => digest.push(line),
+    async onSession(sessionId) {
+      await db
+        .update(prReviewRuns)
+        .set({ sessionId, updatedAt: new Date() })
+        .where(eq(prReviewRuns.id, runId));
+    },
+    onEntries(entries) {
+      for (const entry of entries) {
+        if (["text", "tool_use", "tool_result", "thinking", "system"].includes(entry.type)) {
+          pendingActivityAt = new Date();
+        }
+      }
+    },
+    publish: (row) =>
+      publishEvent({
+        type: "pr_review_run:log",
+        prReviewId: run.prReviewId,
+        runId,
+        stream: (row.stream as "stdout" | "stderr") ?? "stdout",
+        content: row.content,
+        // The stored row's timestamp, not this process's clock, so the live
+        // frame matches the same row in the catch-up / REST history.
+        timestamp: row.timestamp.toISOString(),
+        logType: row.logType ?? undefined,
+        metadata: row.metadata ?? undefined,
+      }),
+    async onChunk() {
+      if (pendingActivityAt && Date.now() - lastActivityFlushAt > ACTIVITY_FLUSH_INTERVAL_MS) {
+        await db
+          .update(prReviewRuns)
+          .set({ lastActivityAt: pendingActivityAt, updatedAt: new Date() })
+          .where(eq(prReviewRuns.id, runId));
+        lastActivityFlushAt = Date.now();
+        pendingActivityAt = null;
+      }
+    },
+  });
+
+  if (pendingActivityAt) {
+    await db
+      .update(prReviewRuns)
+      .set({ lastActivityAt: pendingActivityAt, updatedAt: new Date() })
+      .where(eq(prReviewRuns.id, runId));
+  }
+
+  if (outcome.kind === "reset") {
+    log.info("The run was queued again while its agent ran; leaving this attempt");
+    return "reset";
+  }
+  if (outcome.kind === "taken" || outcome.kind === "detached") {
+    log.info({ outcome: outcome.kind }, "Detached from the run; it continues in its pod");
+    return "detached";
+  }
+
+  if (outcome.kind === "lost") {
+    const stderrTail = await readRunStderr(runtime, pod.handle, runDir);
+    const settledLost = await settleRun(hold);
+    if (settledLost === "taken" || settledLost === "reset") return endOfLoss(settledLost);
+    await failLostReviewRun(
+      run,
+      "The agent's process and its output are gone (the pod restarted while it ran)",
+      stderrTail,
+    );
+    await closeAttachment(hold);
+    log.warn("Run lost: the pod restarted under the agent");
+    return "finished";
+  }
+
+  // ── Parse result ────────────────────────────────────────
+  // The agent exited and every line of its output is a log row; its result
+  // was read as the output streamed, with the exit code the output implies.
+  const result = digest.finish(outcome.code, { inferExitCode: true }).result;
+  // A failed run says why in its stderr, which its error carries.
+  if (!result.success) {
+    result.error = withStderr(
+      result.error ?? "Agent failed",
+      await readRunStderr(runtime, pod.handle, runDir),
+    );
+  }
+
+  // The exit with the run's result and spend — once, whichever instance
+  // gets here (`settleRun` is a CAS on the exit).
+  const settled = await settleRun(hold, {
+    resultSummary: result.summary,
+    errorMessage: result.error ?? null,
+    ...addUsage(prReviewRuns, result),
+  });
+  if (settled === "taken" || settled === "reset") return endOfLoss(settled);
+
+  if (result.success) {
+    // Only a run still active completes, and only a review not cancelled
+    // gets its results: a cancel stands whatever the agent produced.
+    const completed = await transitionRunFromActive(runId, PrReviewRunState.COMPLETED);
+    if (!completed || (await reviewIsCancelled(run.prReviewId))) {
+      log.info("The run or its review moved on while the agent ran; its results are not written");
+    } else {
+      try {
+        if (run.kind === "chat") {
+          await prReviewService.appendChatReplyFromRun(runId);
+        } else {
+          await prReviewService.parseReviewOutput(runId);
+        }
+      } catch (err) {
+        log.warn({ err }, "Post-run parser failed");
+      }
+    }
+  } else {
+    await transitionRunFromActive(runId, PrReviewRunState.FAILED, {
+      errorMessage: result.error ?? "Agent failed",
+    });
+    // Chat runs are follow-up turns on an already-produced draft; their
+    // failure is a conversational hiccup, not grounds to invalidate the
+    // review. Only initial/rereview runs flip the parent to FAILED — and
+    // never a cancelled one (the cancel is what stopped its agent).
+    if (run.kind !== "chat" && !(await reviewIsCancelled(run.prReviewId))) {
+      await prReviewService.transitionPrReview(run.prReviewId, PrReviewState.FAILED, "run_failed", {
+        message: result.error ?? "Agent run failed",
+        runId,
+      });
+    }
+  }
+
+  await enqueueReconcile(
+    { kind: "pr-review", id: run.prReviewId },
+    { reason: "run_completed" },
+  ).catch(() => {});
+
+  // The run is over and every byte of its output is a log row: its
+  // directory in the pod (output, stdin, the runtime's config) goes.
+  await removeRunDirectory(runtime, pod.handle, runDir, log);
+  await closeAttachment(hold);
+  return "finished";
+}
+
+async function reviewIsCancelled(prReviewId: string): Promise<boolean> {
+  const [review] = await db
+    .select({ state: prReviews.state })
+    .from(prReviews)
+    .where(eq(prReviews.id, prReviewId));
+  return review?.state === PrReviewState.CANCELLED;
+}
+
+/** Fails a review run whose agent is gone with its pod (the pod-death path). */
+async function failLostReviewRun(
+  run: typeof prReviewRuns.$inferSelect,
+  detail: string,
+  stderrTail = "",
+  trigger = "run_lost",
+): Promise<void> {
+  const msg = withStderr(`${detail}. Inspect before relaunching.`, stderrTail);
+  await transitionRunFromActive(run.id, PrReviewRunState.FAILED, { errorMessage: msg });
+  if (run.kind !== "chat" && !(await reviewIsCancelled(run.prReviewId))) {
+    await prReviewService
+      .transitionPrReview(run.prReviewId, PrReviewState.FAILED, trigger, {
+        message: msg,
+        runId: run.id,
+      })
+      .catch(() => {});
+  }
+  await enqueueReconcile(
+    { kind: "pr-review", id: run.prReviewId },
+    { reason: "run_completed" },
+  ).catch(() => {});
+}
+
+/**
+ * An `attach-pr-review-run` job (the reconciler's `reattach` action): take
+ * the run if nobody holds it and finish it from where its log rows stop.
+ */
+async function attachReviewRun(job: { id?: string; data: unknown }): Promise<void> {
+  const { runId } = job.data as { runId: string };
+  const log = logger.child({ runId, jobId: job.id, attach: true });
+  const [run] = await db.select().from(prReviewRuns).where(eq(prReviewRuns.id, runId));
+  if (
+    !run ||
+    (run.state !== PrReviewRunState.RUNNING && run.state !== PrReviewRunState.PROVISIONING)
+  ) {
+    log.info({ state: run?.state }, "Skipping attach — the run is not active");
+    return;
+  }
+  const agentType = (run.metadata as { agentType?: string } | null)?.agentType;
+  if (!agentType) {
+    log.warn("Skipping attach — the run does not say which agent it runs");
+    return;
+  }
+  try {
+    await runAttachJob({
+      ref: reviewRunRef(runId),
+      log,
+      podId: run.podId ?? null,
+      onPodGone: (detail) => failLostReviewRun(run, detail),
+      onAttachFailed: (message) => failLostReviewRun(run, message, "", "attach_failed"),
+      async finish(pod, hold, claim) {
+        // The instance that started the agent went away before recording `running`.
+        await transitionRunIf(runId, PrReviewRunState.PROVISIONING, PrReviewRunState.RUNNING);
+        return finishReviewRun({ run, agentType, pod, log, hold, claim });
+      },
+      afterFinish: async (podId) => {
+        if (podId) await repoPool.releaseRepoPodTask(podId).catch(() => {});
+        await repoPool.updateWorktreeState(runId, "removed").catch(() => {});
+      },
+    });
+  } catch (err) {
+    log.error({ err }, "Attach failed; the run stays for the next attach");
+    throw err;
+  }
+}

@@ -109,6 +109,15 @@ export function startReconcileWorker() {
 
 export const resyncQueue = new Queue("reconcile-resync", { ...bullmqOpts });
 
+/** One resync pass now (a boot asks for one: nothing it interrupted waits for the interval). */
+export async function kickResync(): Promise<void> {
+  await resyncQueue.add(
+    "resync-now",
+    {},
+    { jobId: `resync-now-${Date.now()}`, removeOnComplete: true, removeOnFail: true },
+  );
+}
+
 /**
  * Periodic resync: every N minutes, walk every non-terminal run (repo tasks
  * and Job runs, one table), PR review, and persistent agent, and enqueue a

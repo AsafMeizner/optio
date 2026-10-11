@@ -186,6 +186,23 @@ async function playAgent() {
 
   emit(plan.init);
 
+  for (let i = 1; i <= (plan.ticks?.count ?? 0); i++) {
+    consumeStdin(readStdinLines());
+    emit({
+      type: "assistant",
+      session_id: sessionId,
+      message: { model: "fake-model", content: [{ type: "text", text: `tick ${i}` }] },
+    });
+    if (plan.mark && plan.mark.at === i) {
+      emit({
+        type: "assistant",
+        session_id: sessionId,
+        message: { model: "fake-model", content: [{ type: "text", text: plan.mark.text }] },
+      });
+    }
+    await sleep(plan.ticks.everyMs);
+  }
+
   if (plan.hang) {
     // Never finishes: only a kill ends it.
     for (;;) {

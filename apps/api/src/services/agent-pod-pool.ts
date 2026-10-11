@@ -9,7 +9,7 @@ import { isPodNotFound } from "../utils/pod-status.js";
  * picking a pod, the row's lifecycle, slots, and count repair live here.
  */
 import { and, asc, eq, lt, sql } from "drizzle-orm";
-import type { ContainerHandle } from "@optio/shared";
+import { parseIntEnv, type ContainerHandle } from "@optio/shared";
 import { db } from "../db/client.js";
 import { agentPods } from "../db/schema.js";
 import { getRuntime } from "./container-service.js";
@@ -19,10 +19,52 @@ import { isUniqueViolation } from "../utils/db-errors.js";
 export type PodPool = "repo" | "standalone" | "persistent-agent";
 export type AgentPod = typeof agentPods.$inferSelect;
 
-/** A provisioning row older than this was abandoned (its creator died); remove it. */
-const STALE_PROVISIONING_MS = 10 * 60 * 1000;
+/**
+ * A bare pod's row still `provisioning` after this was abandoned: its
+ * creator went away mid-creation (a live one marks it ready, or failed, once
+ * the runtime's create returns — the Kubernetes runtime gives a pod 120 s to
+ * run). Whoever needs the pool then removes the row and makes a new pod.
+ * Shorter in the scale-out e2e tier, where pods start at once.
+ */
+export const STALE_PROVISIONING_MS = parseIntEnv("OPTIO_STALE_PROVISIONING_MS", 10 * 60 * 1000);
 /** How many times a scale-up retries after losing an instance-index race. */
 const CREATE_RACE_RETRIES = 3;
+
+/** Whether a pod row is a bare pod's provisioning that its creator abandoned (STALE_PROVISIONING_MS). */
+export function provisioningAbandoned(
+  pod: Pick<AgentPod, "state" | "createdAt" | "managedBy">,
+  now = Date.now(),
+): boolean {
+  return (
+    pod.state === "provisioning" &&
+    pod.managedBy !== "statefulset" &&
+    now - pod.createdAt.getTime() > STALE_PROVISIONING_MS
+  );
+}
+
+/**
+ * Waits for another job's pod to finish provisioning — at most until the
+ * row would count as abandoned (and never longer than `timeoutMs`). Null
+ * when it timed out and the row is abandoned by now: the caller removes it
+ * and makes a pod of its own.
+ */
+export async function waitForProvisioning(
+  pod: AgentPod,
+  timeoutMs = 120_000,
+): Promise<AgentPod | null> {
+  const untilAbandoned = STALE_PROVISIONING_MS - (Date.now() - pod.createdAt.getTime()) + 1_000;
+  const wait =
+    pod.managedBy === "statefulset"
+      ? timeoutMs
+      : Math.max(1_000, Math.min(timeoutMs, untilAbandoned));
+  try {
+    return await waitForPodReady(pod.id, wait);
+  } catch (err) {
+    const now = await getPod(pod.id);
+    if (now && provisioningAbandoned(now)) return null;
+    throw err;
+  }
+}
 
 export function podHandle(pod: Pick<AgentPod, "podId" | "podName">): ContainerHandle {
   return { id: pod.podId ?? pod.podName!, name: pod.podName! };
@@ -101,13 +143,15 @@ export async function pickPod(
         throw new Error("Pod is recovering; its persistent workspace is retained");
       await deletePod(pod.id);
     } else if (pod.state === "provisioning") {
-      const ageMs = Date.now() - pod.createdAt.getTime();
-      if (ageMs > STALE_PROVISIONING_MS && pod.managedBy !== "statefulset") {
-        logger.warn({ podId: pod.id, pool, ageMs }, "Removing a pod stuck provisioning");
-        await deletePod(pod.id);
-      } else {
-        return waitForPodReady(pod.id);
+      if (!provisioningAbandoned(pod)) {
+        const ready = await waitForProvisioning(pod);
+        if (ready) return ready;
       }
+      logger.warn(
+        { podId: pod.id, pool, ageMs: Date.now() - pod.createdAt.getTime() },
+        "Removing a pod stuck provisioning",
+      );
+      await deletePod(pod.id);
     } else if (pod.state === "error") {
       if (pod.managedBy === "statefulset")
         throw new Error("Pod needs recovery; its persistent workspace is retained");
@@ -130,7 +174,12 @@ export async function pickPod(
     const busy = live.find((p) => p.state === "ready");
     if (busy) return busy;
     const coming = live.find((p) => p.state === "provisioning");
-    if (coming) return waitForPodReady(coming.id);
+    if (coming) {
+      const ready = await waitForProvisioning(coming);
+      if (ready) return ready;
+      await deletePod(coming.id);
+      return pickPod(pool, poolKey, opts, attempt + 1);
+    }
     throw new Error(`All ${opts.maxPodInstances} ${pool} pod instances for ${poolKey} unavailable`);
   }
 

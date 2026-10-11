@@ -35,7 +35,7 @@ import {
   startRunPrelude,
   superviseAgent,
 } from "@optio/container-runtime";
-import { REMOVE_RUN_HOME, runHome } from "./harness-config.js";
+import { runHome } from "./harness-config.js";
 
 // The run protocol's script fragments (docs/plans/scale-out.md §1) live with
 // the runtimes that run them (packages/container-runtime/src/run-protocol.ts)
@@ -242,53 +242,6 @@ export const CHECKOUT_REPO: readonly string[] = [
 ];
 
 /**
- * The exec script that runs one agent in a pooled pod (a Job's or a
- * persistent agent's): export the run's env, wait for the pod's init to
- * finish, then, in the run's own working directory, write its setup files,
- * run its setup commands, and run the agent command, exiting with its
- * status. `label` names the pod in the progress lines; without it the script
- * only speaks up on failure.
- */
-export function buildPooledExecScript(input: {
-  env: Record<string, string>;
-  /** The run's directory; ignored with `checkout` (the run works in the checkout). */
-  workDir: string;
-  agentCommand: string[];
-  label?: string;
-  /** Work in a checkout of `$OPTIO_REPO_URL` (`CHECKOUT_REPO`). */
-  checkout?: boolean;
-}): string {
-  const dir = input.checkout ? POOLED_CHECKOUT_DIR : input.workDir;
-  const what = input.label ?? "pod";
-  const lock = createHash("sha256").update(input.workDir).digest("hex").slice(0, 32);
-  return [
-    "set -e",
-    // Env values (including the prompt) are embedded as inert single-quoted
-    // exports — see buildEnvExports.
-    ...buildEnvExports(input.env),
-    ...(input.label ? [`echo "[optio] Waiting for ${what} to be ready..."`] : []),
-    `for i in $(seq 1 120); do [ -f /workspace/.ready ] && break; sleep 1; done`,
-    `[ -f /workspace/.ready ] || { echo "[optio] ERROR: ${what} not ready after 120s"; exit 1; }`,
-    ...(input.label ? [`echo "[optio] ${what[0].toUpperCase()}${what.slice(1)} ready"`] : []),
-    `exec 7>/workspace/.run-${lock}.lock`,
-    "flock -n 7 || { echo 'Previous run is still active; inspect before retrying.' >&2; exit 75; }",
-    ...(input.checkout ? CHECKOUT_REPO : [`mkdir -p ${shellQuote(dir)}`]),
-    `cd ${shellQuote(dir)}`,
-    // The run's own home (its runtime's MCP config) goes with the run.
-    `trap '${REMOVE_RUN_HOME}' EXIT`,
-    ...WRITE_SETUP_FILES,
-    ...RUN_WORK_SETUP_COMMANDS,
-    `set +e`,
-    "(",
-    ...input.agentCommand,
-    ")",
-    `AGENT_EXIT=$?`,
-    `echo "__OPTIO_RUN_EXIT__:$AGENT_EXIT"`,
-    `exit $AGENT_EXIT`,
-  ].join("\n");
-}
-
-/**
  * The last line of every pod's init script: keep the pod alive under a pid
  * 1 that reaps. A run's supervisor is reparented to pid 1 when the exec
  * that started it ends (run-protocol.ts), and a bare `sleep` never calls
@@ -300,13 +253,14 @@ export const KEEP_POD_ALIVE =
 
 /**
  * The run protocol's start script for a pooled pod (a Job run or a
- * persistent-agent turn): the same setup as `buildPooledExecScript`, then
- * the agent launched under the supervisor in the run's own home
- * (`runHome(runId)`), so the exec returns once the agent runs and any API
- * instance can attach to it later (run-protocol.ts). The run lock stays:
- * a second start of the same run while its supervisor lives exits 75. No
- * trap removes the run home: the attached worker removes it when the run
- * is terminal and `consumed_bytes` equals the output file's size (phase B),
+ * persistent-agent turn): export the run's env, wait for the pod's init to
+ * finish, then, in the run's own working directory, write its setup files
+ * and run its setup commands; then the agent launched under the supervisor
+ * in the run's own home (`runHome(runId)`), so the exec returns once the
+ * agent runs and any API instance can attach to it later (run-protocol.ts).
+ * The run lock stays: a second start of the same run while its supervisor
+ * lives exits 75. No trap removes the run home: the attached worker removes
+ * it when the run is terminal and every byte of its output is a log row,
  * with the run-home sweep (`run-home-sweep-service.ts`) as the backstop.
  */
 export function buildPooledStartScript(input: {

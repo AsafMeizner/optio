@@ -5,7 +5,8 @@ import type {
   CodexAuthMode,
 } from "@optio/shared";
 import { TASK_BRANCH_PREFIX } from "@optio/shared";
-import type { AgentAdapter } from "./types.js";
+import type { AgentAdapter, AgentResultParser } from "./types.js";
+import { firstMatch, parseAllLines } from "./types.js";
 
 /**
  * Codex CLI (codex exec --full-auto --json) outputs NDJSON events.
@@ -108,30 +109,47 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   parseResult(exitCode: number, logs: string): AgentResult {
-    // Extract PR URL from anywhere in the logs
-    const prMatch = logs.match(/https:\/\/github\.com\/[^\s"]+\/pull\/\d+/);
+    return parseAllLines(this.createResultParser(), exitCode, logs);
+  }
 
-    // Parse NDJSON lines to extract structured data
-    const { costUsd, errorMessage, hasError, summary } = this.parseLogs(logs);
-
-    const success = exitCode === 0 && !hasError;
-
+  createResultParser(): AgentResultParser {
+    // Extract the PR URL from anywhere in the output (its first mention)
+    const pr = firstMatch(/https:\/\/github\.com\/[^\s"]+\/pull\/\d+/);
+    const parsed = this.logParser();
     return {
-      success,
-      prUrl: prMatch?.[0],
-      costUsd,
-      summary:
-        summary ??
-        (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
-      error: !success ? (errorMessage ?? `Exit code: ${exitCode}`) : undefined,
+      push(line) {
+        pr.push(line);
+        parsed.push(line);
+      },
+      finish(exitCode) {
+        const prMatch = pr.value;
+
+        // Parse NDJSON lines to extract structured data
+        const { costUsd, errorMessage, hasError, summary } = parsed.done();
+
+        const success = exitCode === 0 && !hasError;
+
+        return {
+          success,
+          prUrl: prMatch?.[0],
+          costUsd,
+          summary:
+            summary ??
+            (success ? "Agent completed successfully" : `Agent exited with code ${exitCode}`),
+          error: !success ? (errorMessage ?? `Exit code: ${exitCode}`) : undefined,
+        };
+      },
     };
   }
 
-  private parseLogs(logs: string): {
-    costUsd?: number;
-    errorMessage?: string;
-    hasError: boolean;
-    summary?: string;
+  private logParser(): {
+    push(line: string): void;
+    done(): {
+      costUsd?: number;
+      errorMessage?: string;
+      hasError: boolean;
+      summary?: string;
+    };
   } {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -142,8 +160,8 @@ export class CodexAdapter implements AgentAdapter {
     let hasError = false;
     let lastAssistantMessage: string | undefined;
 
-    for (const line of logs.split("\n")) {
-      if (!line.trim()) continue;
+    const push = (line: string): void => {
+      if (!line.trim()) return;
 
       let event: any;
       try {
@@ -156,7 +174,7 @@ export class CodexAdapter implements AgentAdapter {
           // Log raw error for diagnostics (helps catch API key issues, auth failures, etc.)
           console.warn(`[codex] Raw error: ${errorMessage}`);
         }
-        continue;
+        return;
       }
 
       // Extract model name
@@ -168,14 +186,14 @@ export class CodexAdapter implements AgentAdapter {
       if (event.error && typeof event.error === "object" && event.error.message) {
         errorMessage = event.error.message;
         hasError = true;
-        continue;
+        return;
       }
 
       // Error events: { type: "error", message: "..." }
       if (event.type === "error") {
         errorMessage = event.message ?? event.error ?? JSON.stringify(event);
         hasError = true;
-        continue;
+        return;
       }
 
       // Track assistant messages for summary
@@ -207,27 +225,31 @@ export class CodexAdapter implements AgentAdapter {
       if (event.total_cost_usd != null) {
         directCost = event.total_cost_usd;
       }
-    }
-
-    // Prefer direct cost from the agent over token-calculated cost
-    let costUsd: number | undefined = directCost;
-    if (costUsd == null && (totalInputTokens > 0 || totalOutputTokens > 0)) {
-      const pricing = model ? (CODEX_MODEL_PRICING[model] ?? DEFAULT_PRICING) : DEFAULT_PRICING;
-      // Cached tokens are a subset of input tokens and charged at a discounted rate
-      const nonCachedInputTokens = Math.max(0, totalInputTokens - totalCachedTokens);
-      const cachedRate = pricing.cachedInput ?? pricing.input * 0.25;
-      costUsd =
-        (nonCachedInputTokens / 1_000_000) * pricing.input +
-        (totalCachedTokens / 1_000_000) * cachedRate +
-        (totalOutputTokens / 1_000_000) * pricing.output;
-    }
-
-    return {
-      costUsd,
-      errorMessage,
-      hasError,
-      summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,
     };
+
+    const done = () => {
+      // Prefer direct cost from the agent over token-calculated cost
+      let costUsd: number | undefined = directCost;
+      if (costUsd == null && (totalInputTokens > 0 || totalOutputTokens > 0)) {
+        const pricing = model ? (CODEX_MODEL_PRICING[model] ?? DEFAULT_PRICING) : DEFAULT_PRICING;
+        // Cached tokens are a subset of input tokens and charged at a discounted rate
+        const nonCachedInputTokens = Math.max(0, totalInputTokens - totalCachedTokens);
+        const cachedRate = pricing.cachedInput ?? pricing.input * 0.25;
+        costUsd =
+          (nonCachedInputTokens / 1_000_000) * pricing.input +
+          (totalCachedTokens / 1_000_000) * cachedRate +
+          (totalOutputTokens / 1_000_000) * pricing.output;
+      }
+
+      return {
+        costUsd,
+        errorMessage,
+        hasError,
+        summary: lastAssistantMessage ? truncate(lastAssistantMessage, 200) : undefined,
+      };
+    };
+
+    return { push, done };
   }
 
   private buildPrompt(input: AgentTaskInput): string {

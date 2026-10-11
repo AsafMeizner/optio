@@ -125,6 +125,19 @@ export function planAgentRun({ script, prompt, specEnv = {}, prNumber = 1, sessi
   const init = { type: "system", subtype: "init", session_id: sid, model: "fake-model", tools: [] };
   const hang = directive(haystack, "hang");
   const sleepMs = Number(directiveArg(haystack, "sleep") ?? 0);
+  // [[mock:ticks:N]] or [[mock:ticks:N:MS]] → N assistant text events
+  // `tick 1`…`tick N`, MS apart (default 100), after init: a run that is
+  // busy for a while with numbered lines, so a consumer that changed hands
+  // mid-run can prove it stored each exactly once.
+  const [tickCount, tickMs] = (directiveArg(haystack, "ticks") ?? "0").split(":").map(Number);
+  const ticks = { count: tickCount || 0, everyMs: Number.isFinite(tickMs) ? tickMs : 100 };
+  // [[mock:mark:N:TEXT]] → an assistant text event `TEXT` right after tick N:
+  // a line of the test's choosing in the middle of the run.
+  const markArg = directiveArg(haystack, "mark");
+  const markAt = markArg ? Number(markArg.split(":")[0]) : NaN;
+  const mark = Number.isInteger(markAt)
+    ? { at: markAt, text: markArg.slice(markArg.indexOf(":") + 1) }
+    : null;
   const lines = [];
   const event = (e) => lines.push({ event: e });
   const raw = (l) => lines.push({ raw: l });
@@ -235,6 +248,8 @@ export function planAgentRun({ script, prompt, specEnv = {}, prNumber = 1, sessi
     init,
     hang,
     sleepMs,
+    ticks,
+    mark,
     lines,
     exitCode: isError ? 1 : 0,
     echoStdin: directive(haystack, "echo-stdin"),

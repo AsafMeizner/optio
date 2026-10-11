@@ -15,6 +15,7 @@ import {
   PersistentAgentPodLifecycle,
 } from "../types/persistent-agent.js";
 import type { RunTarget } from "../types/local.js";
+import type { RunExecution } from "./attachment.js";
 
 // ── Identity ────────────────────────────────────────────────────────────────
 
@@ -288,6 +289,14 @@ export interface WorldSnapshot {
     recentAutoResumeCount: number;
   };
   readErrors: WorldReadError[];
+  /**
+   * The run's agent in its pod and the instance streaming it
+   * (docs/plans/scale-out.md §2): the row's own for a Repo Task or Job run,
+   * the open turn's for a persistent agent, the active run's for a PR
+   * review. Absent or null when nothing runs under the run protocol (a run
+   * on a machine, an idle agent, a review between runs).
+   */
+  execution?: RunExecution | null;
 }
 
 // ── Actions ─────────────────────────────────────────────────────────────────
@@ -306,6 +315,32 @@ export type CommonDefer = {
   untilMs: number;
 } & ActionBase;
 export type CommonClearIntent = { kind: "clearControlIntent" } & ActionBase;
+
+/**
+ * The run's agent runs in its pod and no instance streams it: enqueue the
+ * kind's attach job (`attachJobId(runId, attempt)`), whose handler claims
+ * the attachment by CAS and finishes the run from its consumed offset.
+ */
+export type CommonReattach = {
+  kind: "reattach";
+  /** The execution row: the task or Job run, the turn, the review run. */
+  runId: string;
+  attempt: number;
+} & ActionBase;
+
+/**
+ * The instance setting the run up went away before its agent started: put
+ * the run back where its kind's own retry puts it (a task or review run to
+ * `queued`, a Job run through failed to `queued` without spending a retry,
+ * an agent's turn halted and the agent back to `idle` with its messages
+ * still pending).
+ */
+export type CommonRequeueRun = {
+  kind: "requeueRun";
+  /** The execution row, when there is one (a persistent agent may have none yet). */
+  runId: string | null;
+  trigger: string;
+} & ActionBase;
 
 export type RepoTransition = {
   kind: "transition";
@@ -399,6 +434,8 @@ export type PrReviewAction =
   | CommonRequeue
   | CommonDefer
   | CommonClearIntent
+  | CommonReattach
+  | CommonRequeueRun
   | PrReviewTransition
   | PrReviewPatchStatus
   | PrReviewLaunchRun
@@ -410,6 +447,8 @@ export type RepoAction =
   | CommonRequeue
   | CommonDefer
   | CommonClearIntent
+  | CommonReattach
+  | CommonRequeueRun
   | RepoTransition
   | RepoPatchStatus
   | RepoLaunchReview
@@ -422,6 +461,8 @@ export type StandaloneAction =
   | CommonRequeue
   | CommonDefer
   | CommonClearIntent
+  | CommonReattach
+  | CommonRequeueRun
   | StandaloneTransition
   | StandaloneEnqueueAgent;
 
@@ -430,6 +471,8 @@ export type PersistentAgentAction =
   | CommonRequeue
   | CommonDefer
   | CommonClearIntent
+  | CommonReattach
+  | CommonRequeueRun
   | PersistentAgentTransition
   | PersistentAgentEnqueueTurn
   | PersistentAgentPatchStatus;

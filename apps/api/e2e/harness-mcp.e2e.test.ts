@@ -109,8 +109,10 @@ describe("harness MCP config e2e", () => {
     expect(JSON.parse(fileLine(".mcp.json")).mcpServers["Support Pylon"]).toBeDefined();
     // Cursor's file lives in the working directory: no home of the run's own.
     expect(lines).toContain("env OPTIO_RUN_HOME=<unset>");
-    // The launch approves the servers, and the script removes a run home on exit.
+    // The launch approves the servers. The start script leaves the run home
+    // alone: it holds the agent's output, which outlives the exec that
+    // started it (the attached worker removes it once the run is consumed).
     expect(lines).toContain("script --approve-mcps=present");
-    expect(lines).toContain(`script ${CLEANUP}=present`);
+    expect(lines).toContain(`script ${CLEANUP}=absent`);
   });
 });

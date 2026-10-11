@@ -33,6 +33,7 @@ export * from "./utils/cost.js";
 export * from "./optio-tools.js";
 export * from "./types/pr-review.js";
 export * from "./reconcile/types.js";
+export * from "./reconcile/attachment.js";
 export * from "./reconcile/reconcile-standalone.js";
 export * from "./reconcile/reconcile-repo.js";
 export * from "./reconcile/reconcile-pr-review.js";

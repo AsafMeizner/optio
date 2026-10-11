@@ -574,6 +574,23 @@ export async function transitionWorkflowRunCas(
     wakeReconciler?: boolean;
   } = {},
 ) {
+  if (!canTransitionWorkflowRun(from, to)) {
+    logger.warn({ runId, from, to }, "Invalid workflow run state transition");
+    return null;
+  }
+  // Back to queued is a new attempt: the reset and the state write share a
+  // transaction, and the last attempt's agent stops once it commits.
+  if (to === WorkflowRunState.QUEUED) {
+    const { result: row, previous } = await db.transaction((tx) =>
+      runLogs.resetRunAttempt(tx, { kind: "work-run", id: runId }, (fresh) =>
+        writeWorkflowRunCas(tx, runId, from, to, { ...fields, ...fresh }, opts),
+      ),
+    );
+    if (!row) return null;
+    runLogs.stopPreviousAttempt(previous);
+    await announceWorkflowRunTransition(row, from, to, opts);
+    return row;
+  }
   const row = await writeWorkflowRunCas(db, runId, from, to, fields, opts);
   if (!row) return null;
   await announceWorkflowRunTransition(row, from, to, opts);
@@ -593,6 +610,7 @@ export async function claimWorkflowRunIn(
   to: WorkflowRunState,
   fields: PgUpdateSetSource<typeof workflowRuns> = {},
 ) {
+  if (to === WorkflowRunState.QUEUED) throw new Error("A claim never queues a run again");
   const row = await writeWorkflowRunCas(claim.tx, runId, from, to, fields, {});
   if (!row) return null;
   claim.afterCommit(() => announceWorkflowRunTransition(row, from, to, {}));
@@ -613,7 +631,13 @@ async function writeWorkflowRunCas(
   }
   const [row] = await exec
     .update(workflowRuns)
-    .set({ ...fields, state: to, updatedAt: new Date() })
+    .set({
+      // Back to queued, `fields` carries the new attempt's reset
+      // (runLogs.resetRunAttempt, in `transitionWorkflowRunCas`).
+      ...fields,
+      state: to,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(workflowRuns.id, runId),
@@ -696,6 +720,18 @@ async function announceWorkflowRunTransition(
     import("./local-run-service.js")
       .then(({ killLinkedTerminal }) => killLinkedTerminal(terminalId, `run_failed:${from}`))
       .catch((err) => logger.warn({ err, runId }, "Failed to kill local terminal for run"));
+  }
+
+  // A pod run failed from the server side (a cancel, the reconciler's stall
+  // or pod-death call, a disabled Job) while its agent still runs: stop it,
+  // from whichever instance this is (docs/plans/scale-out.md §1). The
+  // worker's own failure comes after the agent exited (`exec_state` is no
+  // longer `started`), so it signals nothing.
+  if (to === WorkflowRunState.FAILED && row.execState === "started" && row.podId) {
+    const podId = row.podId;
+    import("./run-attachment.js")
+      .then(({ signalRun }) => signalRun(podId, runId, "TERM"))
+      .catch((err) => logger.warn({ err, runId }, "Failed to stop the run's agent"));
   }
 
   if (opts.wakeReconciler !== false) {

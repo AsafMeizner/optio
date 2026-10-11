@@ -67,7 +67,7 @@ async function main() {
   const { startWorkflowTriggerWorker } = await import("./workers/workflow-trigger-worker.js");
   const { startPersistentAgentWorker } = await import("./workers/persistent-agent-worker.js");
   const { startTokenValidationWorker } = await import("./workers/token-validation-worker.js");
-  const { startReconcileWorker, startReconcileResyncWorker } =
+  const { startReconcileWorker, startReconcileResyncWorker, kickResync } =
     await import("./workers/reconcile-worker.js");
   const { startSkillSyncWorker } = await import("./workers/skill-sync-worker.js");
   const { startConfigSyncWorker } = await import("./workers/config-sync-worker.js");
@@ -236,8 +236,9 @@ async function main() {
   const app = await buildServer();
   const { recoverSessionTurns } = await import("./services/session-turn-service.js");
   await recoverSessionTurns();
-  const { recoverInterruptedExecutions } = await import("./services/execution-recovery-service.js");
-  await recoverInterruptedExecutions();
+  // Runs in flight are left alone: their agents keep going in their pods
+  // under the run protocol, and the attach sweep re-attaches them to
+  // whichever instance is up (docs/plans/scale-out.md §2).
 
   // Bind HTTP server first so turbo sees output quickly.
   // Heavy Redis/BullMQ work is deferred to after listen() to avoid
@@ -262,7 +263,8 @@ async function main() {
   // Repeat jobs an older build registered (see cleanLegacyRepeatJobs).
   await Promise.all(REPEAT_QUEUE_NAMES.map((q) => cleanLegacyRepeatJobs(q)));
 
-  // Recover before starting workers so a newly claimed run is never mistaken for an orphan.
+  // Re-enqueue queued work that lost its job (a Redis restart) before the
+  // workers start, so a newly claimed run is never mistaken for an orphan.
   await reconcileOrphanedTasks();
 
   // Start BullMQ workers (each upserts its repeat job scheduler)
@@ -302,6 +304,18 @@ async function main() {
 
   const reconcileWorker = startReconcileWorker();
   const reconcileResyncWorker = startReconcileResyncWorker();
+  // Runs whose attachment expired (the instance holding them went away)
+  // get a reconcile pass every 30 s, which re-attaches them here or
+  // elsewhere; a boot asks for one right away, and for a full resync, so
+  // nothing a restart interrupted waits for the periodic one
+  // (docs/plans/scale-out.md §2).
+  const { startAttachSweepWorker, sweepExpiredAttachments } =
+    await import("./workers/attach-sweep-worker.js");
+  const attachSweepWorker = startAttachSweepWorker();
+  sweepExpiredAttachments().catch((err) =>
+    logger.warn({ err }, "Boot-time attachment sweep failed"),
+  );
+  kickResync().catch((err) => logger.warn({ err }, "Boot-time resync kick failed"));
   logger.info("Reconcile workers started");
 
   const skillSyncWorker = startSkillSyncWorker();
@@ -327,6 +341,19 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     logger.info("Shutting down...");
+    // First: let go of every run this instance streams — the exec severed,
+    // the lease given up now — so another instance picks them up in
+    // seconds (run-attachment.ts). The agents keep running in their pods.
+    // Runs past their stream finish settling here first (bounded).
+    const { detachAll } = await import("./services/run-attachment.js");
+    const { detached, settled } = await detachAll().catch((err) => {
+      logger.warn({ err }, "Failed to detach from runs on shutdown");
+      return { detached: 0, settled: 0 };
+    });
+    if (detached > 0 || settled > 0) {
+      logger.info({ detached, settled }, "Detached from runs; they continue in their pods");
+    }
+    await attachSweepWorker.close();
     await worker.close();
     await ticketSyncWorker.close();
     await repoCleanupWorker.close();
