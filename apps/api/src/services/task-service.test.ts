@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { TaskState } from "@optio/shared";
 
-vi.mock("../db/client.js", () => ({
-  db: {
+vi.mock("../db/client.js", () => {
+  const db: Record<string, unknown> = {
     select: vi.fn().mockReturnThis(),
     from: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
@@ -16,8 +16,13 @@ vi.mock("../db/client.js", () => ({
     limit: vi.fn().mockReturnThis(),
     offset: vi.fn().mockReturnThis(),
     leftJoin: vi.fn().mockReturnThis(),
-  },
-}));
+    // A requeue's locked read of the last attempt (none started).
+    for: vi.fn().mockResolvedValue([]),
+  };
+  // A transaction runs on the same mocked client.
+  db.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
+  return { db };
+});
 
 vi.mock("../db/schema.js", () => ({
   tasks: {
@@ -33,6 +38,7 @@ vi.mock("../db/schema.js", () => ({
   taskLogs: { taskId: "taskId", timestamp: "timestamp", logType: "logType", content: "content" },
   users: { id: "id", displayName: "display_name", avatarUrl: "avatar_url" },
   repos: { repoUrl: "repoUrl" },
+  workRuns: { id: "id", execState: "exec_state", execPid: "exec_pid", lastPodId: "last_pod_id" },
 }));
 
 vi.mock("./event-bus.js", () => ({ publishEvent: vi.fn() }));

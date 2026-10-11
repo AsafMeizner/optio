@@ -44,12 +44,15 @@ import { getRuntime } from "../services/container-service.js";
 import {
   beginHold,
   closeAttachment,
+  endOfLoss,
+  endRunJob,
+  readRunStderr,
   recordRunStarted,
   removeRunDirectory,
   runAttachJob,
   settleRun,
-  signalRun,
   streamRun,
+  withStderr,
   type AttachRef,
   type AttachmentClaim,
   type AttachmentHold,
@@ -126,14 +129,14 @@ export function startTaskWorker() {
       };
       const log = logger.child({ taskId, jobId: job.id });
       let repoPodId: string | null = null;
-      // This instance's attachment to the run, from the claim on
-      // (run-attachment.ts); released in the finally.
+      // This job's hold on the run, from the claim on (run-attachment.ts);
+      // the finally lets go of it through `endRunJob`.
       let hold: AttachmentHold | null = null;
       // The pod slot the run holds once its agent started; given back when
-      // the run ends here. A run this instance detached from keeps it for
-      // the instance that finishes it.
+      // the run ends here. A run this job detached from keeps it for the
+      // instance that finishes it.
       let slotHeld = false;
-      let detached = false;
+      let ended: RunEnd | null = null;
       // From the start exec on, a failure is the run's (its setup in the
       // pod), not provisioning's: no provisioning retry, as when the task
       // was already `running` for it.
@@ -732,22 +735,18 @@ export function startTaskWorker() {
           log.debug({ setup: started.output.slice(-2000) }, "Run setup output");
         }
         await rememberRunContext(taskId, { isReviewTask, isPlanningRun, runStartedAt });
-        if (!(await recordRunStarted(taskRef(taskId), started.pid))) {
-          // Queued again while it was set up (a force-redo): not ours.
-          await signalRun(pod.id, taskId, "TERM");
-          log.info("The task moved on while its agent started; stopped the agent");
+        if (!(await recordRunStarted(hold, { podId: pod.id, pid: started.pid }))) {
+          // Queued again while it was set up (a force-redo): the agent is
+          // nobody's, and `endRunJob` stops it.
+          log.info("The task moved on while its agent started; stopping the agent");
           return;
         }
-        try {
-          await taskService.transitionTask(taskId, TaskState.RUNNING, "worktree_created");
-        } catch (err) {
-          // Cancelled or reset while it was set up: the agent is nobody's.
-          await signalRun(pod.id, taskId, "TERM");
-          throw err;
-        }
+        // Cancelled or reset while it was set up: the transition throws, and
+        // `endRunJob` stops the agent nobody will stream.
+        await taskService.transitionTask(taskId, TaskState.RUNNING, "worktree_created");
         log.info({ pid: started.pid }, "Agent started; attaching");
 
-        const ended = await finishTaskRun({
+        ended = await finishTaskRun({
           taskId,
           task,
           log,
@@ -756,9 +755,8 @@ export function startTaskWorker() {
           isPlanningRun,
           runStartedAt,
           hold,
-          claim: { consumedBytes: 0, execState: "started" },
+          claim: { consumedBytes: 0, execState: "started", pid: started.pid },
         });
-        if (ended === "detached") detached = true;
       } catch (err) {
         // State race errors mean another worker claimed the task — not a real failure
         if (err instanceof taskService.StateRaceError) {
@@ -844,12 +842,12 @@ export function startTaskWorker() {
         }
         throw err;
       } finally {
-        // The attachment: stop renewing, and give the lease up unless the
-        // run ended here (then nothing holds it any more).
-        if (hold) await hold.end({ release: true });
+        // Let go of the run: an agent this job started and left behind is
+        // stopped first, then the lease goes (run-attachment.ts).
+        await endRunJob(hold, ended, log);
         // Release the task slot on the repo pod — unless the run goes on
-        // without this instance (another one takes the slot back with it).
-        if (repoPodId && slotHeld && !detached) {
+        // without this job (whoever finishes it gives the slot back).
+        if (repoPodId && slotHeld && ended !== "detached") {
           await repoPool.releaseRepoPodTask(repoPodId).catch(() => {});
         }
       }
@@ -998,6 +996,10 @@ async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
   // Final flush of pending activity timestamp
   await activity.flush();
 
+  if (outcome.kind === "reset") {
+    log.info("The task was queued again while its agent ran; leaving this attempt");
+    return "reset";
+  }
   if (outcome.kind === "taken" || outcome.kind === "detached") {
     log.info({ outcome: outcome.kind }, "Detached from the run; it continues in its pod");
     return "detached";
@@ -1006,12 +1008,15 @@ async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
   if (outcome.kind === "lost") {
     // The supervisor and its files are gone without an exit: the pod
     // restarted under the run. Nothing can say what the agent did.
-    if ((await settleRun(ref)) === "taken") return "detached";
+    const stderrTail = await readRunStderr(runtime, pod.handle, runDir);
+    const settledLost = await settleRun(hold);
+    if (settledLost === "taken" || settledLost === "reset") return endOfLoss(settledLost);
     await failLostTask(
       taskId,
       "The agent's process and its output are gone (the pod restarted while it ran)",
+      stderrTail,
     );
-    await closeAttachment(ref);
+    await closeAttachment(hold);
     log.warn("Run lost: the pod restarted under the agent");
     return "finished";
   }
@@ -1041,6 +1046,15 @@ async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
     ).catch(() => {});
   }
 
+  // A run that failed or produced nothing says why in its stderr, which the
+  // failure message carries (the run directory goes once the run is over).
+  const noOutput = !sessionId && !isReviewTask;
+  const stderrTail =
+    !result.success || noOutput ? await readRunStderr(runtime, pod.handle, runDir) : "";
+  if (!result.success && stderrTail) {
+    result.error = withStderr(result.error ?? "Agent failed", stderrTail);
+  }
+
   // Record the exit with this run's cost, token usage, and model, ADDED to
   // what the task already recorded — once, whichever instance gets here
   // (`settleRun` is a CAS on the exit). Each launch — a first run, a retry
@@ -1048,13 +1062,13 @@ async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
   // force-restart (issue #541: `claude --resume` reports only its own
   // turns) — is a distinct process reporting only its own spend, so prior +
   // this run is always the true total. Postgres does the addition.
-  const settled = await settleRun(ref, {
+  const settled = await settleRun(hold, {
     ...addUsage(workRuns, result),
     resultSummary: result.summary,
     ...(result.error !== undefined ? { errorMessage: result.error } : {}),
     updatedAt: new Date(),
   });
-  if (settled === "taken") return "detached";
+  if (settled === "taken" || settled === "reset") return endOfLoss(settled);
 
   // Before processing results, verify this worker still owns the task.
   // A force-redo may have reset the task while we were streaming.
@@ -1064,7 +1078,7 @@ async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
       { currentState: taskAfterExec?.state },
       "Task state changed during execution — skipping final transition (likely force-redo)",
     );
-    await closeAttachment(ref);
+    await closeAttachment(hold);
     return "finished";
   }
 
@@ -1139,7 +1153,7 @@ async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
       taskId,
       TaskState.FAILED,
       "agent_no_output",
-      "Agent process exited without producing any output",
+      withStderr("Agent process exited without producing any output", stderrTail),
     );
     log.warn("Agent exited without output — no session ID captured");
   } else if (outcomeKind === "pr_opened" && detectedPrUrl) {
@@ -1278,8 +1292,8 @@ async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
 
   // The run is over and every byte of its output is a log row: its
   // directory in the pod (output, stdin, the runtime's config) goes.
-  await removeRunDirectory(runtime, pod.handle, runDir);
-  await closeAttachment(ref);
+  await removeRunDirectory(runtime, pod.handle, runDir, log);
+  await closeAttachment(hold);
 
   // If this is a subtask, check if parent should advance
   const completedTask = await taskService.getTask(taskId);
@@ -1330,8 +1344,11 @@ async function finishTaskRun(input: FinishTaskRunInput): Promise<RunEnd> {
 }
 
 /** Fails a task whose agent is gone with its pod (the pod-death path), workspace kept. */
-async function failLostTask(taskId: string, detail: string): Promise<void> {
-  const message = `${detail}. Workspace retained where it survived; inspect before retrying.`;
+async function failLostTask(taskId: string, detail: string, stderrTail = ""): Promise<void> {
+  const message = withStderr(
+    `${detail}. Workspace retained where it survived; inspect before retrying.`,
+    stderrTail,
+  );
   await repoPool.updateWorktreeState(taskId, "preserved").catch(() => {});
   await taskService.updateTaskResult(taskId, undefined, message);
   await taskService.transitionTask(taskId, TaskState.FAILED, "run_lost", message);

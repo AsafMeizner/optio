@@ -397,7 +397,10 @@ describe("buildPooledStartScript (the run protocol)", () => {
     expect(script).toContain(`read -r _optio_pid _optio_start < "$1/${RUN_FILES.pid}"`);
     expect(script).not.toContain("trap '");
     expect(script).not.toContain("__OPTIO_RUN_EXIT__");
-    expect(script).not.toContain("rm -rf");
+    // Nothing removes the run home (only a previous attempt's moved-aside files go).
+    expect(script).not.toMatch(/rm -rf '\/home\/agent\/optio\/runs\/[^.']*'/);
+    expect(script).not.toContain('rm -rf "$OPTIO_RUN_DIR"');
+    expect(script.match(/rm -rf/g)).toEqual(["rm -rf"]);
     // The exec script's inline agent + exit line are not here.
     expect(script).not.toContain("AGENT_EXIT=$?");
   });

@@ -35,12 +35,15 @@ import { publishPersistentAgentEvent } from "../services/event-bus.js";
 import {
   beginHold,
   closeAttachment,
+  endOfLoss,
+  endRunJob,
+  readRunStderr,
   recordRunStarted,
   removeRunDirectory,
   runAttachJob,
   settleRun,
-  signalRun,
   streamRun,
+  withStderr,
   type AttachRef,
   type AttachmentClaim,
   type AttachmentHold,
@@ -193,10 +196,10 @@ export function startPersistentAgentWorker() {
       let executionAttempted = false;
       let turn: { id: string; turnNumber: number } | null = null;
       let pod: paPool.PersistentAgentPodHandle | null = null;
-      // This instance's attachment to the turn, from its creation on
-      // (run-attachment.ts); released in the finally.
+      // This job's hold on the turn, from its creation on
+      // (run-attachment.ts); the finally lets go of it through `endRunJob`.
       let hold: AttachmentHold | null = null;
-      let detached = false;
+      let ended: RunEnd | null = null;
 
       try {
         // 2. Drain inbox.
@@ -227,6 +230,9 @@ export function startPersistentAgentWorker() {
           wakePayload: {
             messageIds: pending.map((m) => m.id),
             isFirstTurn,
+            // What this turn runs: an instance that attaches to it later
+            // reads its output by this, not by the agent's live definition.
+            agentRuntime: claimedAgent.agentRuntime,
           },
           promptUsed: renderedPrompt,
           podId: pod.id,
@@ -321,10 +327,10 @@ export function startPersistentAgentWorker() {
         if (started.output.trim()) {
           log.debug({ setup: started.output.slice(-2000) }, "Turn setup output");
         }
-        if (!(await recordRunStarted(turnRef(turn.id), started.pid))) {
-          // Requeued while it was set up: the agent is nobody's.
-          await signalRun(pod.id, turn.id, "TERM");
-          log.info("The turn moved on while its agent started; stopped the agent");
+        if (!(await recordRunStarted(hold, { podId: pod.id, pid: started.pid }))) {
+          // Requeued while it was set up: the agent is nobody's, and
+          // `endRunJob` stops it.
+          log.info("The turn moved on while its agent started; stopping the agent");
           return;
         }
         // The turn runs: its messages are its own now (a turn that never
@@ -337,16 +343,16 @@ export function startPersistentAgentWorker() {
         );
         log.info({ pid: started.pid, turnId: turn.id }, "Agent started; attaching");
 
-        const ended = await finishTurn({
+        ended = await finishTurn({
           agentId,
           turn,
           agent: claimedAgent,
+          agentRuntime: claimedAgent.agentRuntime,
           pod: { id: pod.id, handle: podPool.podHandle(pod) },
           log,
           hold,
-          claim: { consumedBytes: 0, execState: "started" },
+          claim: { consumedBytes: 0, execState: "started", pid: started.pid },
         });
-        if (ended === "detached") detached = true;
       } catch (err) {
         log.error({ err }, "Persistent agent worker error");
         if (turn) {
@@ -379,11 +385,13 @@ export function startPersistentAgentWorker() {
         }
         throw err;
       } finally {
-        if (hold) await hold.end({ release: true });
-        // A turn this instance detached from goes on in its pod: the
-        // instance that finishes it marks the pod idle and wakes the
-        // reconciler.
-        if (!detached) {
+        // Let go of the turn: an agent this job started and left behind (a
+        // turn halted by the error path above) is stopped first, then the
+        // lease goes (run-attachment.ts).
+        await endRunJob(hold, ended, log);
+        // A turn this job detached from goes on in its pod: the instance
+        // that finishes it marks the pod idle and wakes the reconciler.
+        if (ended !== "detached") {
           // Mark pod idle (lifecycle mode decides keep-warm vs reap).
           await paPool.markPodIdle(agentId).catch(() => {});
           // Wake the reconciler so it can decide whether to start another turn
@@ -456,6 +464,8 @@ interface FinishTurnInput {
   agentId: string;
   turn: { id: string; turnNumber: number };
   agent: typeof persistentAgents.$inferSelect;
+  /** What the turn runs, as its start recorded it (the agent may have been edited since). */
+  agentRuntime: string;
   pod: AttachedPod;
   log: typeof logger;
   hold: AttachmentHold;
@@ -470,13 +480,13 @@ interface FinishTurnInput {
  * streaming without the turn ending (shutdown, or another instance took it).
  */
 async function finishTurn(input: FinishTurnInput): Promise<RunEnd> {
-  const { agentId, turn, agent, pod, log, hold } = input;
+  const { agentId, turn, agent, agentRuntime, pod, log, hold } = input;
   const ref = turnRef(turn.id);
   const runtime = getRuntime();
   const runDir = runHome(turn.id).podDir;
-  const parseEvent = getEventParser(agent.agentRuntime);
+  const parseEvent = getEventParser(agentRuntime);
   // Derivations: rebuilt from byte 0 on every attach, never persisted.
-  const digest = new RunOutputDigest(agent.agentRuntime);
+  const digest = new RunOutputDigest(agentRuntime);
 
   const { outcome, sessionId: capturedSessionId } = await streamRun({
     runtime,
@@ -502,6 +512,10 @@ async function finishTurn(input: FinishTurnInput): Promise<RunEnd> {
       }),
   });
 
+  if (outcome.kind === "reset") {
+    log.info("The turn was reset while its agent ran; leaving it");
+    return "reset";
+  }
   if (outcome.kind === "taken" || outcome.kind === "detached") {
     log.info({ outcome: outcome.kind }, "Detached from the turn; it continues in its pod");
     return "detached";
@@ -511,10 +525,14 @@ async function finishTurn(input: FinishTurnInput): Promise<RunEnd> {
   let effectiveError: string | undefined;
   let result: ReturnType<RunOutputDigest["finish"]>["result"] | null = null;
   if (outcome.kind === "lost") {
-    if ((await settleRun(ref)) === "taken") return "detached";
+    const stderrTail = await readRunStderr(runtime, pod.handle, runDir);
+    const settledLost = await settleRun(hold);
+    if (settledLost === "taken" || settledLost === "reset") return endOfLoss(settledLost);
     success = false;
-    effectiveError =
-      "Execution outcome unknown: the turn's process and output are gone (the pod restarted while it ran). Inspect before resuming.";
+    effectiveError = withStderr(
+      "Execution outcome unknown: the turn's process and output are gone (the pod restarted while it ran). Inspect before resuming.",
+      stderrTail,
+    );
     log.warn("Turn lost: the pod restarted under the agent");
   } else {
     // 6. Parse result, halt turn, transition agent → IDLE (or FAILED if errored).
@@ -533,17 +551,24 @@ async function finishTurn(input: FinishTurnInput): Promise<RunEnd> {
         "persistent-agent-worker",
       ).catch(() => {});
     }
+    // A failed turn says why in its stderr, which its error carries.
+    if (!success) {
+      effectiveError = withStderr(
+        effectiveError ?? "Turn failed",
+        await readRunStderr(runtime, pod.handle, runDir),
+      );
+    }
     // The exit, and the turn's spend on the agent's running total — once,
     // whichever instance gets here (`settleRun` is a CAS on the exit).
     const cost = result.costUsd;
-    const settled = await settleRun(ref, {}, async (tx) => {
+    const settled = await settleRun(hold, {}, async (tx) => {
       if (cost == null) return;
       await tx
         .update(persistentAgents)
         .set({ totalCostUsd: plusCost(persistentAgents.totalCostUsd, String(cost)) })
         .where(eq(persistentAgents.id, agentId));
     });
-    if (settled === "taken") return "detached";
+    if (settled === "taken" || settled === "reset") return endOfLoss(settled);
   }
 
   await paService.haltPersistentAgentTurn({
@@ -601,8 +626,8 @@ async function finishTurn(input: FinishTurnInput): Promise<RunEnd> {
 
   // The turn is over and every byte of its output is a log row: its
   // directory in the pod (output, stdin, the runtime's config) goes.
-  if (outcome.kind !== "lost") await removeRunDirectory(runtime, pod.handle, runDir);
-  await closeAttachment(ref);
+  if (outcome.kind !== "lost") await removeRunDirectory(runtime, pod.handle, runDir, log);
+  await closeAttachment(hold);
   return "finished";
 }
 
@@ -630,8 +655,14 @@ async function attachTurn(job: { id?: string; data: unknown }): Promise<void> {
     log.info("Skipping attach — the turn is over");
     return;
   }
-  const messageIds = ((turn.wakePayload as { messageIds?: string[] } | null)?.messageIds ??
-    []) as string[];
+  const payload = (turn.wakePayload ?? null) as {
+    messageIds?: string[];
+    agentRuntime?: string;
+  } | null;
+  const messageIds = payload?.messageIds ?? [];
+  // What the turn runs, as its start recorded it (a turn from before the
+  // record: the agent's own runtime).
+  const agentRuntime = payload?.agentRuntime ?? agent.agentRuntime;
   let ended: RunEnd | "skipped" = "skipped";
   try {
     ended = await runAttachJob({
@@ -672,6 +703,7 @@ async function attachTurn(job: { id?: string; data: unknown }): Promise<void> {
           agentId,
           turn: { id: turn.id, turnNumber: turn.turnNumber },
           agent,
+          agentRuntime,
           pod,
           log,
           hold,

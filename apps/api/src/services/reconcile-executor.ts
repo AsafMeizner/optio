@@ -31,7 +31,7 @@ import {
 } from "@optio/shared";
 import * as taskService from "./task-service.js";
 import { enqueueReconcile } from "./reconcile-queue.js";
-import { NEW_ATTEMPT_EXECUTION } from "./run-log-service.js";
+import { resetRunAttempt, stopPreviousAttempt } from "./run-log-service.js";
 import { classifyGitHubFailure, type GitHubFailure } from "./git-platform/github.js";
 import { logger } from "../logger.js";
 
@@ -655,23 +655,33 @@ async function applyRequeueRun(
       if (!(await versionStillMatches("pr_reviews", run.ref.id, version))) {
         return { status: "stale", reason: "cas_failed_requeue_run" };
       }
-      const [requeued] = await db
-        .update(prReviewRuns)
-        .set({
-          state: PrReviewRunState.QUEUED,
-          errorMessage: message,
-          ...NEW_ATTEMPT_EXECUTION,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(prReviewRuns.id, action.runId),
-            inArray(prReviewRuns.state, [PrReviewRunState.PROVISIONING, PrReviewRunState.RUNNING]),
-            isNull(prReviewRuns.execState),
-          ),
-        )
-        .returning({ id: prReviewRuns.id });
+      const runId = action.runId;
+      const { result: requeued, previous } = await db.transaction((tx) =>
+        resetRunAttempt(tx, { kind: "review-run", id: runId }, async (fresh) => {
+          const [row] = await tx
+            .update(prReviewRuns)
+            .set({
+              state: PrReviewRunState.QUEUED,
+              errorMessage: message,
+              ...fresh,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(prReviewRuns.id, runId),
+                inArray(prReviewRuns.state, [
+                  PrReviewRunState.PROVISIONING,
+                  PrReviewRunState.RUNNING,
+                ]),
+                isNull(prReviewRuns.execState),
+              ),
+            )
+            .returning({ id: prReviewRuns.id });
+          return row ?? null;
+        }),
+      );
       if (!requeued) return { status: "stale", reason: "review_run_moved_on" };
+      stopPreviousAttempt(previous);
       const { prReviewRunQueue } = await import("../workers/pr-review-worker.js");
       await prReviewRunQueue.add(
         "process-pr-review-run",

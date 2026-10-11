@@ -379,7 +379,12 @@ export async function transitionTask(
   message?: string,
   userId?: string,
 ) {
-  const written = await writeTransition(db, id, toState, trigger, message, userId);
+  // Back to queued is a new attempt: the reset and the state write share a
+  // transaction (runLogService.resetRunAttempt).
+  const written =
+    toState === TaskState.QUEUED
+      ? await db.transaction((tx) => writeTransition(tx, id, toState, trigger, message, userId))
+      : await writeTransition(db, id, toState, trigger, message, userId);
   await announceTransition(written);
   return written.updatedTask;
 }
@@ -466,17 +471,34 @@ async function writeTransition(
     updateFields.completedAt = null;
     updateFields.startedAt = null;
     updateFields.containerId = null;
-    // A new attempt: no agent started, nothing consumed, nobody attached
-    // (docs/plans/scale-out.md §2) — the last attempt's are no claim on it.
-    Object.assign(updateFields, runLogService.NEW_ATTEMPT_EXECUTION);
   }
 
   // Atomic conditional update — only succeeds if state hasn't changed since we read it
-  const updated = await exec
-    .update(tasks)
-    .set(updateFields)
-    .where(and(eq(tasks.id, id), eq(tasks.state, currentState as any)))
-    .returning();
+  const update = (extra: Record<string, unknown> = {}) =>
+    exec
+      .update(tasks)
+      .set({ ...updateFields, ...extra })
+      .where(and(eq(tasks.id, id), eq(tasks.state, currentState as any)))
+      .returning();
+  // Back to queued is a new attempt (docs/plans/scale-out.md §2): no agent
+  // started, nothing consumed, nobody attached — and the last attempt's
+  // agent, if it was started, is stopped once this commits.
+  let previous: runLogService.PreviousAttempt | null = null;
+  let updated: Awaited<ReturnType<typeof update>>;
+  if (toState === TaskState.QUEUED) {
+    const reset = await runLogService.resetRunAttempt(
+      exec,
+      { kind: "work-run", id },
+      async (fresh) => {
+        const rows = await update(fresh);
+        return rows.length > 0 ? rows : null;
+      },
+    );
+    updated = reset.result ?? [];
+    previous = reset.previous;
+  } else {
+    updated = await update();
+  }
 
   if (updated.length === 0) {
     // Another worker changed the state between our read and write
@@ -493,7 +515,7 @@ async function writeTransition(
     userId,
   });
 
-  return { id, task, currentState, toState, trigger, updatedTask: updated[0] };
+  return { id, task, currentState, toState, trigger, updatedTask: updated[0], previous };
 }
 
 /**
@@ -503,6 +525,9 @@ async function writeTransition(
 async function announceTransition(written: WrittenTransition) {
   const { id, task, currentState, toState, trigger, updatedTask } = written;
   const updated = [updatedTask];
+
+  // Queued again: the last attempt's agent stops (a force-redo, a retry).
+  runLogService.stopPreviousAttempt(written.previous);
 
   // Emit OTel state transition metric and log
   recordStateTransition(currentState, toState, trigger);
@@ -776,41 +801,56 @@ export async function forceRedoTask(id: string) {
       .catch((err) => logger.warn({ err, taskId: id }, "Failed to kill local terminal for redo"));
   }
 
-  // Clear all execution data and reset to queued
-  await db
-    .update(tasks)
-    .set({
-      state: TaskState.QUEUED,
-      sessionId: null,
-      containerId: null,
-      localTerminalId: null,
-      prUrl: null,
-      prNumber: null,
-      prState: null,
-      prChecksStatus: null,
-      prReviewStatus: null,
-      prReviewComments: null,
-      resultSummary: null,
-      costUsd: null,
-      errorMessage: null,
-      startedAt: null,
-      completedAt: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(tasks.id, id));
-
-  // Delete all logs
-  await db.delete(taskLogs).where(eq(taskLogs.taskId, id));
-
-  // Record the force-redo event (keep event history for audit)
+  // Clear all execution data and reset to queued — a new attempt, its last
+  // one's logs gone with it, in one transaction (a log batch of the last
+  // attempt either commits before and is deleted, or finds its hold gone
+  // and rolls back). The last attempt's agent stops once this commits.
   const fromState = task.state as TaskState;
-  await db.insert(taskEvents).values({
-    taskId: id,
-    fromState,
-    toState: TaskState.QUEUED,
-    trigger: "force_redo",
-    message: `Force redo from ${fromState}`,
+  const { previous } = await db.transaction(async (tx) => {
+    const reset = await runLogService.resetRunAttempt(
+      tx,
+      { kind: "work-run", id },
+      async (fresh) => {
+        await tx
+          .update(tasks)
+          .set({
+            state: TaskState.QUEUED,
+            sessionId: null,
+            containerId: null,
+            localTerminalId: null,
+            prUrl: null,
+            prNumber: null,
+            prState: null,
+            prChecksStatus: null,
+            prReviewStatus: null,
+            prReviewComments: null,
+            resultSummary: null,
+            costUsd: null,
+            errorMessage: null,
+            startedAt: null,
+            completedAt: null,
+            ...fresh,
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, id));
+        return true;
+      },
+    );
+
+    // Delete all logs
+    await tx.delete(taskLogs).where(eq(taskLogs.taskId, id));
+
+    // Record the force-redo event (keep event history for audit)
+    await tx.insert(taskEvents).values({
+      taskId: id,
+      fromState,
+      toState: TaskState.QUEUED,
+      trigger: "force_redo",
+      message: `Force redo from ${fromState}`,
+    });
+    return reset;
   });
+  runLogService.stopPreviousAttempt(previous);
 
   await publishEvent({
     type: "task:state_changed",

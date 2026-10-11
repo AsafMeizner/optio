@@ -344,12 +344,15 @@ async function main() {
     // First: let go of every run this instance streams — the exec severed,
     // the lease given up now — so another instance picks them up in
     // seconds (run-attachment.ts). The agents keep running in their pods.
+    // Runs past their stream finish settling here first (bounded).
     const { detachAll } = await import("./services/run-attachment.js");
-    const detached = await detachAll().catch((err) => {
+    const { detached, settled } = await detachAll().catch((err) => {
       logger.warn({ err }, "Failed to detach from runs on shutdown");
-      return 0;
+      return { detached: 0, settled: 0 };
     });
-    if (detached > 0) logger.info({ detached }, "Detached from runs; they continue in their pods");
+    if (detached > 0 || settled > 0) {
+      logger.info({ detached, settled }, "Detached from runs; they continue in their pods");
+    }
     await attachSweepWorker.close();
     await worker.close();
     await ticketSyncWorker.close();

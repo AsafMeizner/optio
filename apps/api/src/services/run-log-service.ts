@@ -7,7 +7,7 @@
 import { and, eq, ilike, type SQL } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { persistentAgentTurns, prReviewRuns, taskLogs, workRuns } from "../db/schema.js";
-import { INSTANCE_ID } from "./instance.js";
+import { logger } from "../logger.js";
 
 /** Whose line it is. */
 export type LogOwner =
@@ -111,6 +111,98 @@ export const NEW_ATTEMPT_EXECUTION = {
   attachLeaseUntil: null,
 } as const;
 
+/** Where a requeue runs: a transaction (or the client, for one statement). */
+type Executor = Pick<typeof db, "select" | "update">;
+
+/** The agent of a run's previous attempt, as a requeue found it started. */
+export interface PreviousAttempt {
+  runId: string;
+  podId: string | null;
+  pid: number | null;
+}
+
+/**
+ * Sending a run back to `queued` starts a new attempt — and every path that
+ * does it (a task's transition to queued and its force-redo, a Job run's
+ * retry or requeue, a review run's requeue) goes through here. In the
+ * caller's transaction, the run's row is locked and read, then `write` does
+ * the caller's own state write with NEW_ATTEMPT_EXECUTION merged in: no
+ * agent, nothing consumed, nobody attached (docs/plans/scale-out.md §2) —
+ * the last attempt's lease or exit is no claim on the new one. When the
+ * last attempt's agent was started and the write happened, that agent is
+ * returned: the caller passes it to `stopPreviousAttempt` once the
+ * transaction has committed.
+ */
+export async function resetRunAttempt<T>(
+  tx: Executor,
+  ref: RunRowRef,
+  write: (reset: typeof NEW_ATTEMPT_EXECUTION) => Promise<T | null | undefined>,
+): Promise<{ result: T | null; previous: PreviousAttempt | null }> {
+  const previous = await readStartedAttempt(tx, ref);
+  const result = (await write(NEW_ATTEMPT_EXECUTION)) ?? null;
+  return { result, previous: result ? previous : null };
+}
+
+async function readStartedAttempt(tx: Executor, ref: RunRowRef): Promise<PreviousAttempt | null> {
+  let row: { execState: string | null; execPid: number | null; podId: string | null } | undefined;
+  switch (ref.kind) {
+    case "work-run":
+      [row] = await tx
+        .select({
+          execState: workRuns.execState,
+          execPid: workRuns.execPid,
+          podId: workRuns.lastPodId,
+        })
+        .from(workRuns)
+        .where(eq(workRuns.id, ref.id))
+        .for("update");
+      break;
+    case "review-run":
+      [row] = await tx
+        .select({
+          execState: prReviewRuns.execState,
+          execPid: prReviewRuns.execPid,
+          podId: prReviewRuns.podId,
+        })
+        .from(prReviewRuns)
+        .where(eq(prReviewRuns.id, ref.id))
+        .for("update");
+      break;
+    case "turn":
+      [row] = await tx
+        .select({
+          execState: persistentAgentTurns.execState,
+          execPid: persistentAgentTurns.execPid,
+          podId: persistentAgentTurns.podId,
+        })
+        .from(persistentAgentTurns)
+        .where(eq(persistentAgentTurns.id, ref.id))
+        .for("update");
+      break;
+  }
+  if (row?.execState !== "started") return null;
+  return { runId: ref.id, podId: row.podId, pid: row.execPid };
+}
+
+/**
+ * After a requeue committed: TERM to the previous attempt's agent, from
+ * whichever instance requeued it, scoped to that attempt's supervisor pid
+ * so the new attempt in the same run directory is never hit. Fire and
+ * forget: the attempt's own job, if one still streams it, stops it too.
+ */
+export function stopPreviousAttempt(previous: PreviousAttempt | null): void {
+  if (!previous) return;
+  import("./run-attachment.js")
+    .then(({ signalRun }) =>
+      signalRun(previous.podId, previous.runId, "TERM", {
+        pid: previous.pid ?? undefined,
+      }),
+    )
+    .catch((err) =>
+      logger.warn({ err, runId: previous.runId }, "Failed to stop the previous attempt's agent"),
+    );
+}
+
 /** This instance no longer holds the run: another one claimed it, or it was requeued. */
 export class AttachmentLostError extends Error {
   constructor(runId: string) {
@@ -123,15 +215,16 @@ export class AttachmentLostError extends Error {
  * Stores a batch of a run's log lines and advances its consumed offset from
  * `offsets.from` to `offsets.to` in one transaction: the rows exist iff the
  * offset moved, so a run that changes instances never gets a duplicate or a
- * gap. The offset write is a CAS on this instance holding the run and on
- * the old offset; when it fails the transaction rolls back and
- * AttachmentLostError is thrown. Returns the stored rows in order, for the
- * live frames.
+ * gap. The offset write is a CAS on the hold (`holder`, its mark in
+ * `attached_by`) and on the old offset; when it fails the transaction rolls
+ * back and AttachmentLostError is thrown. Returns the stored rows in order,
+ * for the live frames.
  */
 export async function appendRunLogsBatch(
   ref: RunRowRef,
   entries: LogLine[],
   offsets: { from: number; to: number },
+  holder: string,
 ): Promise<LogRow[]> {
   const owner = logOwnerOf(ref);
   const table = runRowTable(ref.kind);
@@ -157,7 +250,7 @@ export async function appendRunLogsBatch(
       .where(
         and(
           eq(table.id, ref.id),
-          eq(table.attachedBy, INSTANCE_ID),
+          eq(table.attachedBy, holder),
           eq(table.consumedBytes, offsets.from),
         ),
       )

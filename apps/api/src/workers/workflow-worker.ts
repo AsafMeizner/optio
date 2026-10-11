@@ -27,12 +27,16 @@ import { publishWorkflowRunEvent } from "../services/event-bus.js";
 import {
   beginHold,
   closeAttachment,
+  endOfLoss,
+  endRunJob,
+  readRunStderr,
   recordRunStarted,
   removeRunDirectory,
   runAttachJob,
   settleRun,
   signalRun,
   streamRun,
+  withStderr,
   type AttachRef,
   type AttachmentClaim,
   type AttachmentHold,
@@ -136,11 +140,11 @@ export function startWorkflowWorker() {
       let workflowPodId: string | null = null;
       let attemptStartedAt: Date | undefined;
       let executionAttempted = false;
-      // This instance's attachment to the run, from the claim on
-      // (run-attachment.ts); released in the finally. A run this instance
+      // This job's hold on the run, from the claim on (run-attachment.ts);
+      // the finally lets go of it through `endRunJob`. A run this job
       // detached from keeps its pod slot for the instance that finishes it.
       let hold: AttachmentHold | null = null;
-      let detached = false;
+      let ended: RunEnd | null = null;
 
       try {
         // ── Verify run is in queued state ──────────────────────────────
@@ -353,34 +357,33 @@ export function startWorkflowWorker() {
         if (started.output.trim()) {
           log.debug({ setup: started.output.slice(-2000) }, "Run setup output");
         }
-        const recorded = await recordRunStarted(workflowRunRef(workflowRunId), started.pid);
+        const agent = { podId: pod.id, pid: started.pid };
+        if (!(await recordRunStarted(hold, agent))) {
+          // Queued again meanwhile: not ours to stream at all, and
+          // `endRunJob` stops the agent nobody will.
+          log.info("The run moved on while its agent started; stopping the agent");
+          return;
+        }
         // Cancelled (or failed by the reconciler) while it was set up: the
         // agent is nobody's — stop it, and stream it to its end as usual.
-        // Queued again meanwhile: not ours to stream at all.
         const [current] = await db
           .select({ state: workflowRuns.state })
           .from(workflowRuns)
           .where(thisAttempt());
-        if (!recorded || current?.state !== WorkflowRunState.RUNNING) {
-          await signalRun(pod.id, workflowRunId, "TERM");
-        }
-        if (!recorded) {
-          log.info("The run moved on while its agent started; stopped the agent");
-          return;
+        if (current?.state !== WorkflowRunState.RUNNING) {
+          await signalRun(pod.id, workflowRunId, "TERM", { pid: started.pid });
         }
         log.info({ pid: started.pid }, "Agent started; attaching");
 
-        const ended = await finishWorkflowRun({
+        ended = await finishWorkflowRun({
           workflowRunId,
-          workflow,
-          command,
+          agentType: command ? null : workflow.agentRuntime,
           attemptStartedAt: attempt,
           pod: { id: pod.id, handle: podPool.podHandle(pod) },
           log,
           hold,
-          claim: { consumedBytes: 0, execState: "started" },
+          claim: { consumedBytes: 0, execState: "started", pid: started.pid },
         });
-        if (ended === "detached") detached = true;
       } catch (err) {
         log.error({ err }, "Workflow worker error");
         try {
@@ -449,8 +452,10 @@ export function startWorkflowWorker() {
         }
         throw err;
       } finally {
-        if (hold) await hold.end({ release: true });
-        if (workflowPodId && !detached) {
+        // Let go of the run: an agent this job started and left behind is
+        // stopped first, then the lease goes (run-attachment.ts).
+        await endRunJob(hold, ended, log);
+        if (workflowPodId && ended !== "detached") {
           await workflowPool.releaseRun(workflowRunId, workflowPodId, attemptStartedAt);
         }
       }
@@ -486,9 +491,12 @@ export function workflowRunRef(workflowRunId: string): AttachRef {
 
 interface FinishWorkflowRunInput {
   workflowRunId: string;
-  workflow: Workflow;
-  /** A command Job: plain output lines, the last one its exit status. */
-  command: boolean;
+  /**
+   * What this attempt runs, as its start recorded it on the run row (the
+   * Job is read live and may have been edited since): the agent type, or
+   * null for a command — plain output lines, the last one its exit status.
+   */
+  agentType: string | null;
   /** The attempt this instance streams: every state write is conditional on it. */
   attemptStartedAt: Date;
   pod: AttachedPod;
@@ -505,7 +513,8 @@ interface FinishWorkflowRunInput {
  * the run ending (shutdown, or another instance took the run).
  */
 async function finishWorkflowRun(input: FinishWorkflowRunInput): Promise<RunEnd> {
-  const { workflowRunId, workflow, command, attemptStartedAt, pod, log, hold } = input;
+  const { workflowRunId, agentType, attemptStartedAt, pod, log, hold } = input;
+  const command = agentType === null;
   const ref = workflowRunRef(workflowRunId);
   const runtime = getRuntime();
   const runDir = runHome(workflowRunId).podDir;
@@ -519,14 +528,14 @@ async function finishWorkflowRun(input: FinishWorkflowRunInput): Promise<RunEnd>
   // agent's output is read for its result as it streams; a command's is
   // plain lines, the last one its exit status (the receipt).
   let exitCode: number | undefined;
-  const agentParser = getEventParser(workflow.agentRuntime);
+  const agentParser = command ? null : getEventParser(agentType);
   const parse = (line: string): ParsedRunLine => {
-    if (!command) return agentParser(line, workflowRunId);
+    if (agentParser) return agentParser(line, workflowRunId);
     const parsed = parseCommandLine(line, workflowRunId);
     if (parsed.exitCode !== undefined) exitCode = parsed.exitCode;
     return { entries: parsed.entries };
   };
-  const digest = command ? null : new RunOutputDigest(workflow.agentRuntime);
+  const digest = command ? null : new RunOutputDigest(agentType);
 
   // Signs of life, written at most every ACTIVITY_FLUSH_MS.
   // Only this attempt's: a zombie earlier attempt still streaming must
@@ -586,20 +595,27 @@ async function finishWorkflowRun(input: FinishWorkflowRunInput): Promise<RunEnd>
   await activity.flush();
   const { outcome } = streamed;
 
+  if (outcome.kind === "reset") {
+    log.info("The run was queued again while its agent ran; leaving this attempt");
+    return "reset";
+  }
   if (outcome.kind === "taken" || outcome.kind === "detached") {
     log.info({ outcome: outcome.kind }, "Detached from the run; it continues in its pod");
     return "detached";
   }
 
   if (outcome.kind === "lost") {
-    if ((await settleRun(ref)) === "taken") return "detached";
+    const stderrTail = await readRunStderr(runtime, pod.handle, runDir);
+    const settledLost = await settleRun(hold);
+    if (settledLost === "taken" || settledLost === "reset") return endOfLoss(settledLost);
     await failLostRun(
       workflowRunId,
       attemptStartedAt,
       "the run's process and output are gone (the pod restarted while it ran)",
       log,
+      stderrTail,
     );
-    await closeAttachment(ref);
+    await closeAttachment(hold);
     return "finished";
   }
 
@@ -630,12 +646,22 @@ async function finishWorkflowRun(input: FinishWorkflowRunInput): Promise<RunEnd>
     ).catch(() => {});
   }
 
+  // A failed run says why in its stderr, which the failure message carries.
+  if (!effectiveSuccess) {
+    const stderrTail = await readRunStderr(runtime, pod.handle, runDir);
+    effectiveError = withStderr(
+      effectiveError ?? (command ? "Command failed" : "Agent execution failed"),
+      stderrTail,
+    );
+  }
+
   // Record the exit with this attempt's spend ADDED to the run's — once,
   // whichever instance gets here (`settleRun` is a CAS on the exit), and
   // whatever became of the run meanwhile (cancelled): it was spent. Not a
   // state change, so it leaves the reconciler's version alone. (A command
   // spends nothing.)
-  if ((await settleRun(ref, addUsage(workRuns, result))) === "taken") return "detached";
+  const settled = await settleRun(hold, addUsage(workRuns, result));
+  if (settled === "taken" || settled === "reset") return endOfLoss(settled);
 
   const finished = effectiveSuccess
     ? await transitionWorkflowRunCas(
@@ -663,8 +689,8 @@ async function finishWorkflowRun(input: FinishWorkflowRunInput): Promise<RunEnd>
 
   // The run is over and every byte of its output is a log row: its
   // directory in the pod (output, stdin, the runtime's config) goes.
-  await removeRunDirectory(runtime, pod.handle, runDir);
-  await closeAttachment(ref);
+  await removeRunDirectory(runtime, pod.handle, runDir, log);
+  await closeAttachment(hold);
   return "finished";
 }
 
@@ -674,13 +700,17 @@ async function failLostRun(
   attemptStartedAt: Date,
   detail: string,
   log: typeof logger,
+  stderrTail = "",
 ): Promise<void> {
   const failed = await transitionWorkflowRunCas(
     workflowRunId,
     WorkflowRunState.RUNNING,
     WorkflowRunState.FAILED,
     {
-      errorMessage: `Execution outcome unknown: ${detail}. Inspect before retrying.`,
+      errorMessage: withStderr(
+        `Execution outcome unknown: ${detail}. Inspect before retrying.`,
+        stderrTail,
+      ),
       recoveryRequired: true,
       finishedAt: new Date(),
     },
@@ -702,12 +732,10 @@ async function attachWorkflowRun(job: { id?: string; data: unknown }): Promise<v
     log.info({ state: run?.state }, "Skipping attach — the run is not an active pod run");
     return;
   }
-  const workflow = await workflowService.getWorkflow(run.workflowId);
-  if (!workflow) {
-    log.warn("Skipping attach — the Job is gone");
-    return;
-  }
   const attemptStartedAt = run.startedAt;
+  // What this attempt runs, as its start recorded it — never the Job's live
+  // definition, which may have been edited since (an agent made a command).
+  const agentType = run.agentType ?? null;
   try {
     await runAttachJob({
       ref: workflowRunRef(workflowRunId),
@@ -717,8 +745,7 @@ async function attachWorkflowRun(job: { id?: string; data: unknown }): Promise<v
       finish: (pod, hold, claim) =>
         finishWorkflowRun({
           workflowRunId,
-          workflow,
-          command: workflowService.isCommandJob(workflow),
+          agentType,
           attemptStartedAt,
           pod,
           log,

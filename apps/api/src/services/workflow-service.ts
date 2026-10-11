@@ -574,6 +574,23 @@ export async function transitionWorkflowRunCas(
     wakeReconciler?: boolean;
   } = {},
 ) {
+  if (!canTransitionWorkflowRun(from, to)) {
+    logger.warn({ runId, from, to }, "Invalid workflow run state transition");
+    return null;
+  }
+  // Back to queued is a new attempt: the reset and the state write share a
+  // transaction, and the last attempt's agent stops once it commits.
+  if (to === WorkflowRunState.QUEUED) {
+    const { result: row, previous } = await db.transaction((tx) =>
+      runLogs.resetRunAttempt(tx, { kind: "work-run", id: runId }, (fresh) =>
+        writeWorkflowRunCas(tx, runId, from, to, { ...fields, ...fresh }, opts),
+      ),
+    );
+    if (!row) return null;
+    runLogs.stopPreviousAttempt(previous);
+    await announceWorkflowRunTransition(row, from, to, opts);
+    return row;
+  }
   const row = await writeWorkflowRunCas(db, runId, from, to, fields, opts);
   if (!row) return null;
   await announceWorkflowRunTransition(row, from, to, opts);
@@ -593,6 +610,7 @@ export async function claimWorkflowRunIn(
   to: WorkflowRunState,
   fields: PgUpdateSetSource<typeof workflowRuns> = {},
 ) {
+  if (to === WorkflowRunState.QUEUED) throw new Error("A claim never queues a run again");
   const row = await writeWorkflowRunCas(claim.tx, runId, from, to, fields, {});
   if (!row) return null;
   claim.afterCommit(() => announceWorkflowRunTransition(row, from, to, {}));
@@ -614,10 +632,9 @@ async function writeWorkflowRunCas(
   const [row] = await exec
     .update(workflowRuns)
     .set({
+      // Back to queued, `fields` carries the new attempt's reset
+      // (runLogs.resetRunAttempt, in `transitionWorkflowRunCas`).
       ...fields,
-      // A new attempt: no agent started, nothing consumed, nobody attached
-      // (docs/plans/scale-out.md §2).
-      ...(to === WorkflowRunState.QUEUED ? runLogs.NEW_ATTEMPT_EXECUTION : {}),
       state: to,
       updatedAt: new Date(),
     })

@@ -6,15 +6,18 @@
  * A run row — a task or Job run, a PR-review run, a persistent-agent turn —
  * carries `exec_state` / `exec_pid` (the supervisor in the pod),
  * `consumed_bytes` (how much of the pod's output file is log rows) and
- * `attached_by` / `attach_lease_until` (which instance streams it, until
- * when). This module owns those columns:
+ * `attached_by` / `attach_lease_until` (which hold streams it, until when).
+ * This module owns those columns:
  *
- *   hold      the instance that claimed the run holds its attachment from
- *             the claim on, renewing every ATTACH_RENEW_MS while it sets the
- *             run up and streams it; a renewal that finds the run taken
- *             severs the stream at once
+ *   hold      the job that claimed the run holds its attachment from the
+ *             claim on, renewing every ATTACH_RENEW_MS while it sets the run
+ *             up, streams it and settles it; `attached_by` names the hold
+ *             itself (`<instance>/<nonce>`), so two jobs of one instance —
+ *             an old attempt's and a new one's — are never mistaken for each
+ *             other; a renewal that finds the run taken severs the stream
  *   start     the supervisor launched: exec_state = started, offset 0
- *   claim     a re-attach: one CAS that wins only when nobody holds the run
+ *   claim     a re-attach: one CAS that wins only when the lease expired and
+ *             the run is still active
  *   stream    the output file from byte 0, every complete line to the
  *             derivations (lines below the offset were persisted by an
  *             earlier attachment and are replayed only), the rest stored as
@@ -23,13 +26,23 @@
  *             duplicate or a gap
  *   settle    the agent exited and its output is consumed: exec_state =
  *             exited, with the run's spend in the same statement, once
- *   detach    on shutdown: every stream severed and every lease given up
- *             now, so another instance picks the runs up in seconds
+ *   end       the job lets go (`endRunJob`): an agent it started or claimed
+ *             that may still run, with nobody else to finish it, is stopped
+ *             before anything is given back
+ *   detach    on shutdown: every stream severed and its lease given up now,
+ *             so another instance picks the runs up in seconds; runs past
+ *             their stream finish settling here first
  *
  * What a run's exit means is the workers' business, as before.
  */
+import { randomBytes } from "node:crypto";
 import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { STDIN_EOF_SENTINEL, type ContainerRuntime, type RunExit } from "@optio/container-runtime";
+import {
+  RunStdinClosedError,
+  STDIN_EOF_SENTINEL,
+  type ContainerRuntime,
+  type RunExit,
+} from "@optio/container-runtime";
 import type { AgentLogEntry, ContainerHandle } from "@optio/shared";
 import {
   ATTACH_LEASE_MS as DEFAULT_ATTACH_LEASE_MS,
@@ -38,6 +51,7 @@ import {
   shellQuote,
 } from "@optio/shared";
 import { db } from "../db/client.js";
+import { persistentAgentTurns, prReviewRuns, workRuns } from "../db/schema.js";
 import { INSTANCE_ID } from "./instance.js";
 import {
   AttachmentLostError,
@@ -45,11 +59,12 @@ import {
   runRowTable,
   type LogLine,
   type LogRow,
+  type RunRowKind,
   type RunRowRef,
 } from "./run-log-service.js";
 import * as podPool from "./agent-pod-pool.js";
 import { getRuntime } from "./container-service.js";
-import { runHome } from "../utils/harness-config.js";
+import { RUN_HOMES_DIR, runHome } from "../utils/harness-config.js";
 import { logger } from "../logger.js";
 
 export { AttachmentLostError };
@@ -64,6 +79,13 @@ export const ATTACH_RENEW_MS = parseIntEnv(
   "OPTIO_ATTACH_RENEW_MS",
   Math.min(DEFAULT_ATTACH_RENEW_MS, Math.floor(ATTACH_LEASE_MS / 3)),
 );
+/**
+ * On shutdown, how long runs past their stream get to finish settling here
+ * before the process goes on closing (well under the pod's 60 s grace).
+ */
+export const DETACH_SETTLE_WAIT_MS = parseIntEnv("OPTIO_DETACH_SETTLE_WAIT_MS", 20_000);
+/** Test knob (the scale-out e2e tier): a pause right after a run's exit is recorded. */
+const SETTLE_PAUSE_MS = parseIntEnv("OPTIO_SETTLE_PAUSE_MS", 0);
 
 /** A run row with the attachment columns (see RunRowKind). */
 export type AttachRef = RunRowRef;
@@ -72,35 +94,68 @@ function leaseUntil(): Date {
   return new Date(Date.now() + ATTACH_LEASE_MS);
 }
 
+/** A hold's mark in `attached_by`: this instance, and a nonce of the hold's own. */
+export function newHoldToken(): string {
+  return `${INSTANCE_ID}/${randomBytes(4).toString("hex")}`;
+}
+
+/** The agent a job started or claimed: where it runs, and its supervisor. */
+export interface RunAgent {
+  /** The `agent_pods` row it runs in. */
+  podId: string;
+  pid: number;
+}
+
+/** What the column writes of a hold need: the run, and the hold's mark. */
+export interface HoldRef {
+  readonly ref: AttachRef;
+  readonly token: string;
+  /** The agent this hold is about, once started or claimed. */
+  readonly agent?: RunAgent | null;
+}
+
+/** The run is still active: its state says an agent may be running for it. */
+function stillActive(kind: RunRowKind) {
+  switch (kind) {
+    case "work-run":
+      return inArray(workRuns.state, ["provisioning", "running"]);
+    case "review-run":
+      return inArray(prReviewRuns.state, ["provisioning", "running"]);
+    case "turn":
+      return isNull(persistentAgentTurns.finishedAt);
+  }
+}
+
 // ── The columns ─────────────────────────────────────────────────────────────
 
-/** The claiming instance takes the attachment: the run is its from here. */
-export async function holdAttachment(ref: AttachRef): Promise<void> {
+/** The claiming job takes the attachment: the run is this hold's from here. */
+export async function holdAttachment(ref: AttachRef, token: string): Promise<void> {
   const t = runRowTable(ref.kind);
   await db
     .update(t)
-    .set({ attachedBy: INSTANCE_ID, attachLeaseUntil: leaseUntil() })
+    .set({ attachedBy: token, attachLeaseUntil: leaseUntil() })
     .where(eq(t.id, ref.id));
 }
 
 /**
- * The supervisor launched. A fresh start truncates the output file, so the
- * consumed offset starts over with it. False when the run is no longer this
- * instance's (it was queued again meanwhile, which clears the attachment):
- * then the agent just started is nobody's, and the caller stops it.
+ * The supervisor launched (`agent`, which the hold remembers whatever this
+ * returns). A fresh start writes a fresh output file, so the consumed
+ * offset starts over with it. False when the run is no longer this hold's
+ * (it was queued again meanwhile, which clears the attachment): then the
+ * agent just started is nobody's, and `endRunJob` stops it.
  */
-export async function recordRunStarted(ref: AttachRef, pid: number): Promise<boolean> {
-  const t = runRowTable(ref.kind);
+export async function recordRunStarted(hold: AttachmentHold, agent: RunAgent): Promise<boolean> {
+  hold.agent = agent;
+  const t = runRowTable(hold.ref.kind);
   const rows = await db
     .update(t)
     .set({
       execState: "started",
-      execPid: pid,
+      execPid: agent.pid,
       consumedBytes: 0,
-      attachedBy: INSTANCE_ID,
       attachLeaseUntil: leaseUntil(),
     })
-    .where(and(eq(t.id, ref.id), eq(t.attachedBy, INSTANCE_ID)))
+    .where(and(eq(t.id, hold.ref.id), eq(t.attachedBy, hold.token)))
     .returning({ id: t.id });
   return rows.length > 0;
 }
@@ -110,193 +165,317 @@ export interface AttachmentClaim {
   consumedBytes: number;
   /** `exited`: an earlier holder recorded the run's exit and went away before settling the rest. */
   execState: "started" | "exited";
+  /** The agent's supervisor, as its start recorded it. */
+  pid: number | null;
 }
 
 /**
- * A re-attach: this instance takes the run iff its agent was started and
- * nobody holds it (or the holder's lease expired). Null when the claim lost.
+ * A re-attach: the hold `token` takes the run iff its agent was started (or
+ * its exit is half recorded), the run is still active — a run already
+ * terminal is never claimed — and nobody holds it: the lease expired, or
+ * the attachment was closed, whoever held it (this instance too: a job of
+ * this instance that still holds the run renews its lease). Null when the
+ * claim lost.
  */
-export async function claimAttachment(ref: AttachRef): Promise<AttachmentClaim | null> {
+export async function claimAttachment(
+  ref: AttachRef,
+  token: string = newHoldToken(),
+): Promise<(AttachmentClaim & { token: string }) | null> {
   const t = runRowTable(ref.kind);
   const [row] = await db
     .update(t)
-    .set({ attachedBy: INSTANCE_ID, attachLeaseUntil: leaseUntil() })
+    .set({ attachedBy: token, attachLeaseUntil: leaseUntil() })
     .where(
       and(
         eq(t.id, ref.id),
         inArray(t.execState, ["started", "exited"]),
-        or(
-          isNull(t.attachedBy),
-          eq(t.attachedBy, INSTANCE_ID),
-          isNull(t.attachLeaseUntil),
-          lt(t.attachLeaseUntil, sql`now()`),
-        ),
+        stillActive(ref.kind),
+        or(isNull(t.attachLeaseUntil), lt(t.attachLeaseUntil, sql`now()`)),
       ),
     )
-    .returning({ consumedBytes: t.consumedBytes, execState: t.execState });
+    .returning({ consumedBytes: t.consumedBytes, execState: t.execState, pid: t.execPid });
   if (!row || (row.execState !== "started" && row.execState !== "exited")) return null;
-  return { consumedBytes: Number(row.consumedBytes), execState: row.execState };
+  return {
+    consumedBytes: Number(row.consumedBytes),
+    execState: row.execState,
+    pid: row.pid ?? null,
+    token,
+  };
 }
 
-/** Extends this instance's attachment. False when the run was taken from it. */
-export async function renewAttachment(ref: AttachRef): Promise<boolean> {
-  const t = runRowTable(ref.kind);
+/** Extends the hold's attachment. False when the run was taken from it (or queued again). */
+export async function renewAttachment(hold: HoldRef): Promise<boolean> {
+  const t = runRowTable(hold.ref.kind);
   const rows = await db
     .update(t)
     .set({ attachLeaseUntil: leaseUntil() })
-    .where(and(eq(t.id, ref.id), eq(t.attachedBy, INSTANCE_ID)))
+    .where(and(eq(t.id, hold.ref.id), eq(t.attachedBy, hold.token)))
     .returning({ id: t.id });
   return rows.length > 0;
 }
 
-/** Gives the attachment up now (shutdown, or this instance stops streaming the run). */
-export async function releaseAttachment(ref: AttachRef): Promise<void> {
-  const t = runRowTable(ref.kind);
+/** Gives the attachment up now (shutdown, or the hold stops streaming the run). */
+export async function releaseAttachment(hold: HoldRef): Promise<void> {
+  const t = runRowTable(hold.ref.kind);
   await db
     .update(t)
     .set({ attachLeaseUntil: new Date() })
-    .where(and(eq(t.id, ref.id), eq(t.attachedBy, INSTANCE_ID)));
+    .where(and(eq(t.id, hold.ref.id), eq(t.attachedBy, hold.token)));
 }
 
 /** The run is over and settled: nothing is attached to it any more. */
-export async function closeAttachment(ref: AttachRef): Promise<void> {
-  const t = runRowTable(ref.kind);
+export async function closeAttachment(hold: HoldRef): Promise<void> {
+  const t = runRowTable(hold.ref.kind);
   await db
     .update(t)
     .set({ attachedBy: null, attachLeaseUntil: null })
-    .where(and(eq(t.id, ref.id), eq(t.attachedBy, INSTANCE_ID)));
+    .where(and(eq(t.id, hold.ref.id), eq(t.attachedBy, hold.token)));
+}
+
+/**
+ * How a hold lost its run: `taken` — another hold has the same attempt
+ * (its agent, its pid) — or `reset` — the attempt is over without its
+ * agent's exit: the run was queued again (exec state cleared), or a new
+ * attempt started.
+ */
+export type HoldLoss = "taken" | "reset";
+
+/** Reads why `hold` no longer has its run (see HoldLoss). */
+export async function classifyLoss(hold: HoldRef): Promise<HoldLoss> {
+  const t = runRowTable(hold.ref.kind);
+  const [row] = await db
+    .select({ execState: t.execState, execPid: t.execPid })
+    .from(t)
+    .where(eq(t.id, hold.ref.id));
+  if (!row || row.execState == null) return "reset";
+  if (hold.agent && row.execPid !== hold.agent.pid) return "reset";
+  return "taken";
 }
 
 /**
  * How settling a run went: `settled` (this call recorded the exit, and the
  * spend with it), `already` (an earlier holder recorded both and went away
- * before finishing: do the rest, but add nothing), or `taken` (another
- * instance holds the run now: leave it).
+ * before finishing: do the rest, but add nothing), `taken` (another hold
+ * has the run now: leave it), or `reset` (the attempt was queued again or
+ * replaced: it is over for this job).
  */
-export type SettleResult = "settled" | "already" | "taken";
+export type SettleResult = "settled" | "already" | HoldLoss;
 
 /**
  * The agent exited (or its run is lost) and its output is consumed: record
  * `exec_state = exited` with `patch` (the run's spend, its result) in the
- * same statement, iff this instance holds the run and nobody recorded the
- * exit before — so spend is added once, whoever finishes the run.
- * `alsoInTx` runs in the same transaction when this call is the one that
- * settles (spend that lives on another row: an agent's running total).
+ * same statement, iff this hold has the run and nobody recorded the exit
+ * before — so spend is added once, whoever finishes the run. `alsoInTx`
+ * runs in the same transaction when this call is the one that settles
+ * (spend that lives on another row: an agent's running total).
  */
 export async function settleRun(
-  ref: AttachRef,
+  hold: HoldRef,
   patch: Record<string, unknown> = {},
   alsoInTx?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>,
 ): Promise<SettleResult> {
-  const t = runRowTable(ref.kind);
-  return db.transaction(async (tx) => {
+  const t = runRowTable(hold.ref.kind);
+  const outcome = await db.transaction(async (tx) => {
     const settled = await tx
       .update(t)
       .set({ ...patch, execState: "exited" })
-      .where(and(eq(t.id, ref.id), eq(t.attachedBy, INSTANCE_ID), eq(t.execState, "started")))
+      .where(and(eq(t.id, hold.ref.id), eq(t.attachedBy, hold.token), eq(t.execState, "started")))
       .returning({ id: t.id });
     if (settled.length > 0) {
       if (alsoInTx) await alsoInTx(tx);
-      return "settled";
+      return "settled" as const;
     }
     const [row] = await tx
       .select({ execState: t.execState, attachedBy: t.attachedBy })
       .from(t)
-      .where(eq(t.id, ref.id));
-    return row && row.attachedBy === INSTANCE_ID && row.execState === "exited"
-      ? "already"
-      : "taken";
+      .where(eq(t.id, hold.ref.id));
+    return row && row.attachedBy === hold.token && row.execState === "exited"
+      ? ("already" as const)
+      : null;
   });
+  if (outcome === "settled" && SETTLE_PAUSE_MS > 0) {
+    await new Promise((r) => setTimeout(r, SETTLE_PAUSE_MS));
+  }
+  return outcome ?? classifyLoss(hold);
 }
 
 // ── The hold: a renewing attachment with shutdown bookkeeping ───────────────
 
-/** A hold this instance has on a run: renewed every ATTACH_RENEW_MS until it ends. */
-export interface AttachmentHold {
-  readonly ref: AttachRef;
-  /** True once a renewal found the run taken by another instance. */
+/**
+ * Where a hold is: setting the run up (`setup`), streaming its output
+ * (`streaming`), or past the stream, settling its result (`settling`).
+ * Shutdown lets the first two go at once and waits for the third.
+ */
+export type HoldPhase = "setup" | "streaming" | "settling";
+
+/** A hold a job has on a run: renewed every ATTACH_RENEW_MS until it ends. */
+export interface AttachmentHold extends HoldRef {
+  /** The agent the job started or claimed: what `endRunJob` stops if it is left behind. */
+  agent: RunAgent | null;
+  phase: HoldPhase;
+  /** True once a renewal found the run taken (or queued again). */
   readonly lost: boolean;
+  /** True once shutdown let the run go (its lease given up for another instance). */
+  readonly released: boolean;
   /** What to sever when the hold must end at once (the live stream). */
   attachment: { close(): void } | null;
-  /** Stops renewing; with `release`, gives the lease up now. */
+  /** Settles once the hold ended. */
+  readonly done: Promise<void>;
+  /** Stops renewing; with `release`, gives the lease up now. Idempotent. */
   end(opts?: { release?: boolean }): Promise<void>;
 }
 
-const holds = new Set<AttachmentHold>();
+const holds = new Set<Hold>();
 let shuttingDown = false;
 
-/**
- * Starts holding a run this instance just claimed by its state machine:
- * the lease is taken unconditionally and renewed from here on.
- */
-export async function beginHold(ref: AttachRef): Promise<AttachmentHold> {
-  await holdAttachment(ref);
-  return startHold(ref);
-}
+class Hold implements AttachmentHold {
+  agent: RunAgent | null;
+  phase: HoldPhase;
+  attachment: { close(): void } | null = null;
+  readonly done: Promise<void>;
+  private isLost = false;
+  private isReleased = false;
+  private ended = false;
+  private timer: NodeJS.Timeout | null;
+  private resolveDone: () => void = () => {};
 
-/**
- * Holds a run this instance has the lease of (a `claimAttachment` win, or
- * `holdAttachment`): renewed every ATTACH_RENEW_MS with `WHERE attached_by
- * = me`. A renewal that matches nothing means another instance took the
- * run: the live stream is severed at once, and the stream loop returns.
- */
-export function startHold(ref: AttachRef): AttachmentHold {
-  let lost = false;
-  let timer: NodeJS.Timeout | null = null;
-  const hold: AttachmentHold = {
-    ref,
-    get lost() {
-      return lost;
-    },
-    attachment: null,
-    async end(opts) {
-      if (timer) clearInterval(timer);
-      timer = null;
-      holds.delete(hold);
-      if (opts?.release && !lost) {
-        await releaseAttachment(ref).catch((err) =>
-          logger.warn({ err, runId: ref.id }, "Failed to release run attachment"),
+  constructor(
+    readonly ref: AttachRef,
+    readonly token: string,
+    opts: { phase: HoldPhase; agent: RunAgent | null },
+  ) {
+    this.phase = opts.phase;
+    this.agent = opts.agent;
+    this.done = new Promise((resolve) => {
+      this.resolveDone = resolve;
+    });
+    this.timer = setInterval(() => this.renew(), ATTACH_RENEW_MS);
+    this.timer.unref?.();
+    holds.add(this);
+  }
+
+  get lost(): boolean {
+    return this.isLost;
+  }
+
+  get released(): boolean {
+    return this.isReleased;
+  }
+
+  private renew(): void {
+    renewAttachment(this)
+      .then((ok) => {
+        if (ok || this.isLost || this.ended) return;
+        this.isLost = true;
+        logger.warn({ runId: this.ref.id }, "Run attachment taken or reset; detaching");
+        this.sever();
+      })
+      .catch((err) => logger.warn({ err, runId: this.ref.id }, "Failed to renew run attachment"));
+  }
+
+  sever(): void {
+    try {
+      this.attachment?.close();
+    } catch {
+      // already closed
+    }
+  }
+
+  /** Shutdown: the run goes to another instance — severed, the lease given up now. */
+  async letGo(): Promise<void> {
+    this.isReleased = true;
+    this.sever();
+    await this.end({ release: true });
+  }
+
+  async end(opts?: { release?: boolean }): Promise<void> {
+    if (this.ended) return;
+    this.ended = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    holds.delete(this);
+    try {
+      if (opts?.release && !this.isLost) {
+        await releaseAttachment(this).catch((err) =>
+          logger.warn({ err, runId: this.ref.id }, "Failed to release run attachment"),
         );
       }
-    },
-  };
-  timer = setInterval(() => {
-    renewAttachment(ref)
-      .then((ok) => {
-        if (ok || lost || !timer) return;
-        lost = true;
-        logger.warn({ runId: ref.id }, "Run attachment taken by another instance; detaching");
-        sever(hold);
-      })
-      .catch((err) => logger.warn({ err, runId: ref.id }, "Failed to renew run attachment"));
-  }, ATTACH_RENEW_MS);
-  timer.unref?.();
-  holds.add(hold);
-  return hold;
-}
-
-function sever(hold: AttachmentHold): void {
-  try {
-    hold.attachment?.close();
-  } catch {
-    // already closed
+    } finally {
+      this.resolveDone();
+    }
   }
 }
 
 /**
- * Shutdown: sever every live stream and give every lease up now, so other
+ * Starts holding a run this job just claimed by its state machine (a run
+ * it is about to set up): the lease is taken unconditionally under a new
+ * hold token and renewed from here on.
+ */
+export async function beginHold(ref: AttachRef): Promise<AttachmentHold> {
+  const token = newHoldToken();
+  await holdAttachment(ref, token);
+  return startHold(ref, token);
+}
+
+/**
+ * Holds a run whose lease `token` has (a `claimAttachment` win, or
+ * `holdAttachment`): renewed every ATTACH_RENEW_MS with `WHERE attached_by
+ * = token`. A renewal that matches nothing means the run was taken or
+ * queued again: the live stream is severed at once, and the stream loop
+ * returns.
+ */
+export function startHold(
+  ref: AttachRef,
+  token: string,
+  opts: { phase?: HoldPhase; agent?: RunAgent | null } = {},
+): AttachmentHold {
+  return new Hold(ref, token, { phase: opts.phase ?? "setup", agent: opts.agent ?? null });
+}
+
+/** Whether a job of this process holds the run now (its hold not lost). */
+export function holdsRun(ref: AttachRef): boolean {
+  for (const hold of holds) {
+    if (hold.ref.kind === ref.kind && hold.ref.id === ref.id && !hold.lost) return true;
+  }
+  return false;
+}
+
+/**
+ * Shutdown: sever every live stream and give its lease up now, so other
  * instances pick the runs up in seconds rather than after a lease expiry.
  * The agents go on in their pods; the workers' jobs end with a detached
  * outcome and leave their runs as they are. Runs this instance is still
  * setting up are let go the same way (their next pass requeues or
- * re-attaches them).
+ * re-attaches them). A run past its stream keeps its lease and finishes
+ * settling here — its result recorded, its transitions and callbacks made
+ * once — waited for up to DETACH_SETTLE_WAIT_MS; one that takes longer
+ * keeps renewing until its job ends or the process does.
  */
-export async function detachAll(): Promise<number> {
+export async function detachAll(
+  opts: { settleWaitMs?: number } = {},
+): Promise<{ detached: number; settled: number }> {
   shuttingDown = true;
   const all = [...holds];
-  for (const hold of all) sever(hold);
-  await Promise.all(all.map((hold) => hold.end({ release: true })));
-  return all.length;
+  const settling = all.filter((h) => h.phase === "settling");
+  const streaming = all.filter((h) => h.phase !== "settling");
+  await Promise.all(streaming.map((hold) => hold.letGo()));
+  if (settling.length > 0) {
+    const waitMs = opts.settleWaitMs ?? DETACH_SETTLE_WAIT_MS;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(settling.map((h) => h.done)),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, waitMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    const left = settling.filter((h) => holds.has(h)).length;
+    if (left > 0) {
+      logger.warn({ left, waitMs }, "Runs still settling at shutdown; their leases stay theirs");
+    }
+  }
+  return { detached: streaming.length, settled: settling.length };
 }
 
 /** True once `detachAll` ran: a worker must not start or settle anything more. */
@@ -309,13 +488,102 @@ export function heldRunCount(): number {
   return holds.size;
 }
 
+// ── Letting go: the one rule for every job that started or claimed a run ────
+
+/** How a worker's part in a run ended. */
+export type RunEnd =
+  /** It finished the run here: settled, transitioned, cleaned up. */
+  | "finished"
+  /** It left the run for whoever attaches next (shutdown, a dropped stream), or another hold has it. */
+  | "detached"
+  /** The attempt was queued again or replaced under it: it is over for this job. */
+  | "reset";
+
+/** The attachment columns `endRunJob` reads. */
+interface AttachmentRow {
+  execState: string | null;
+  execPid: number | null;
+  attachedBy: string | null;
+  attachLeaseUntil: Date | null;
+}
+
+/**
+ * Whether the agent a hold started or claimed is left behind — still
+ * possibly running with nobody to finish it — given the run row now: true
+ * unless its exit is recorded, or another hold streams that same agent
+ * under a live lease. A run queued again or replaced leaves it behind.
+ */
+export function agentLeftBehind(
+  hold: Pick<HoldRef, "token" | "agent">,
+  row: AttachmentRow | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!hold.agent) return false;
+  if (!row) return true;
+  if (row.execPid !== hold.agent.pid) return true;
+  if (row.execState === "exited") return false;
+  if (row.execState !== "started") return true;
+  const elsewhere =
+    row.attachedBy !== null &&
+    row.attachedBy !== hold.token &&
+    row.attachLeaseUntil !== null &&
+    row.attachLeaseUntil.getTime() > now.getTime();
+  return !elsewhere;
+}
+
+/**
+ * How a job that started or claimed a run lets go of it — the one rule for
+ * every run kind and every way the job ends (finished, detached, reset, a
+ * return halfway, a throw). Called before the job gives anything else back
+ * (its pod slot): unless the job finished the run, or left it for another
+ * instance (`detached`, shutdown), the agent it started or claimed is
+ * stopped when it is left behind (`agentLeftBehind`) — TERM, scoped to its
+ * supervisor's pid. Then the hold ends, its lease given up unless the run
+ * finished here.
+ */
+export async function endRunJob(
+  hold: AttachmentHold | null,
+  end: RunEnd | null,
+  log: typeof logger = logger,
+): Promise<void> {
+  if (!hold) return;
+  try {
+    const agent = hold.agent;
+    if (agent && end !== "finished" && end !== "detached" && !hold.released) {
+      const t = runRowTable(hold.ref.kind);
+      const [row] = await db
+        .select({
+          execState: t.execState,
+          execPid: t.execPid,
+          attachedBy: t.attachedBy,
+          attachLeaseUntil: t.attachLeaseUntil,
+        })
+        .from(t)
+        .where(eq(t.id, hold.ref.id));
+      if (agentLeftBehind(hold, row)) {
+        const stopped = await signalRun(agent.podId, hold.ref.id, "TERM", { pid: agent.pid });
+        log.info(
+          { supervisorPid: agent.pid, stopped, end: end ?? "error" },
+          "The run's agent was left behind by its job; stopped it",
+        );
+      }
+    }
+  } catch (err) {
+    log.warn({ err }, "Failed to check the run's agent as its job ended");
+  } finally {
+    await hold.end({ release: end !== "finished" });
+  }
+}
+
 // ── Streaming: the one attach loop ──────────────────────────────────────────
 
 /** How a streamed attachment ended. */
 export type StreamOutcome =
   | RunExit
-  /** This instance lost the run to another one mid-stream. */
-  | { kind: "taken" };
+  /** This hold lost the run mid-stream to another hold. */
+  | { kind: "taken" }
+  /** The attempt was queued again or replaced under this hold. */
+  | { kind: "reset" };
 
 /** What a line parser makes of one line of agent output. */
 export interface ParsedRunLine {
@@ -435,9 +703,15 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
       sawTerminal,
     };
   }
+  hold.phase = "streaming";
   const attachment = await runtime.attachRun(handle, { runId: ref.id, runDir, fromByte: 0 });
   hold.attachment = attachment;
   const splitter = new LineSplitter(0);
+  const lost = async (): Promise<StreamRunResult> => ({
+    outcome: (await classifyLoss(hold)) === "taken" ? { kind: "taken" } : { kind: "reset" },
+    consumedBytes: consumed,
+    sawTerminal,
+  });
 
   const handleLines = async (lines: OutputLine[]): Promise<void> => {
     const rows: LogLine[] = [];
@@ -455,7 +729,11 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
           sawTerminal = true;
           await runtime
             .deliverStdin(handle, { runId: ref.id, runDir, line: STDIN_EOF_SENTINEL })
-            .catch((err) => log.warn({ err }, "Failed to close the agent's stdin after its turn"));
+            .catch((err) => {
+              // Already closed (a replay of a turn whose EOF went in): nothing to do.
+              if (err instanceof RunStdinClosedError) return;
+              log.warn({ err }, "Failed to close the agent's stdin after its turn");
+            });
         }
         if (!replay) {
           input.onEntries?.(parsed.entries);
@@ -474,11 +752,12 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
     if (last <= consumed) return;
     let stored: LogRow[];
     try {
-      stored = await appendRunLogsBatch(ref, rows, { from: consumed, to: last });
+      stored = await appendRunLogsBatch(ref, rows, { from: consumed, to: last }, hold.token);
     } catch (err) {
       if (err instanceof AttachmentLostError) {
         taken = true;
-        sever(hold);
+        if (hold instanceof Hold) hold.sever();
+        else hold.attachment?.close();
         return;
       }
       throw err;
@@ -498,7 +777,11 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
   } catch (err) {
     if (!taken && !hold.lost) {
       // A failure here (the database, a publish) must not leave the exec open.
-      sever(hold);
+      try {
+        attachment.close();
+      } catch {
+        // already closed
+      }
       hold.attachment = null;
       throw err;
     }
@@ -506,14 +789,24 @@ export async function streamRun(input: StreamRunInput): Promise<StreamRunResult>
 
   const exit = await attachment.exit;
   hold.attachment = null;
-  if (taken || hold.lost)
-    return { outcome: { kind: "taken" }, consumedBytes: consumed, sawTerminal };
+  if (taken || hold.lost) return lost();
+  // Shutdown let the run go while the exit came in: it is the next
+  // instance's to settle (it replays the output to the same verdict).
+  if (hold.released) {
+    return {
+      outcome: { kind: "detached", reason: "closed" },
+      consumedBytes: consumed,
+      sawTerminal,
+    };
+  }
+  // Past the stream: shutdown waits for this hold to settle the run.
+  if (exit.kind === "exited" || exit.kind === "lost") hold.phase = "settling";
 
   // The agent exited: whatever has no trailing newline is its last line.
   if (exit.kind === "exited") {
     const tail = splitter.flush();
     if (tail) await handleLines([tail]);
-    if (taken) return { outcome: { kind: "taken" }, consumedBytes: consumed, sawTerminal };
+    if (taken) return lost();
   }
   return { outcome: exit, consumedBytes: consumed, sessionId, sawTerminal };
 }
@@ -536,87 +829,167 @@ export interface AttachJobSpec {
    * the exit is recorded (`settleRun`); settles the run's state the way
    * the kind's pod-death path does.
    */
-  onPodGone(detail: string): Promise<void>;
+  onPodGone(detail: string, hold: AttachmentHold): Promise<void>;
   /** Streams the run to its end and settles it: the kind's finishing code. */
   finish(pod: AttachedPod, hold: AttachmentHold, claim: AttachmentClaim): Promise<RunEnd>;
-  /** After a finished run: give back what it held (its pod slot). */
+  /** After a run finished (or was reset) here: give back what it held (its pod slot). */
   afterFinish?(podId: string | null): Promise<void>;
 }
-
-/** How a worker's part in a run ended: settled here, or left for whoever attaches next. */
-export type RunEnd = "finished" | "detached";
 
 /**
  * An attach job (the reconciler's `reattach` action), for any run kind:
  * claim the attachment by CAS — losing it is the normal case when two
  * instances answer the same expiry — then finish the run from where its
- * log rows stop. A pod that is gone settles the run through the kind's
- * pod-death path.
+ * log rows stop. A job of this process that still holds the run makes this
+ * one a no-op at once. A pod that is gone settles the run through the
+ * kind's pod-death path. The job ends through `endRunJob`, like the one
+ * that started the run.
  */
 export async function runAttachJob(spec: AttachJobSpec): Promise<RunEnd | "skipped"> {
   const { ref, log } = spec;
   if (isDetaching()) return "skipped";
-  const claim = await claimAttachment(ref);
-  if (!claim) {
-    log.info("Skipping attach — the run is attached elsewhere, or was never started");
+  if (holdsRun(ref)) {
+    log.info("Skipping attach — a job of this instance holds the run");
     return "skipped";
   }
-  const hold = startHold(ref);
-  let ended: RunEnd = "detached";
+  const claim = await claimAttachment(ref);
+  if (!claim) {
+    log.info("Skipping attach — the run is attached elsewhere, over, or was never started");
+    return "skipped";
+  }
+  const hold = startHold(ref, claim.token, {
+    phase: "streaming",
+    agent: spec.podId && claim.pid ? { podId: spec.podId, pid: claim.pid } : null,
+  });
+  let ended: RunEnd | null = null;
   try {
     const pod = spec.podId ? await podPool.getPod(spec.podId) : null;
     if (!pod || !pod.podName || pod.state !== "ready") {
       const detail = `The pod the agent ran in is ${pod ? pod.state : "gone"}`;
-      if ((await settleRun(ref)) === "taken") return "detached";
-      await spec.onPodGone(detail);
-      await closeAttachment(ref);
-      ended = "finished";
-      return ended;
+      hold.phase = "settling";
+      const settled = await settleRun(hold);
+      if (settled === "taken") return (ended = "detached");
+      if (settled === "reset") return (ended = "reset");
+      await spec.onPodGone(detail, hold);
+      await closeAttachment(hold);
+      return (ended = "finished");
     }
     log.info({ consumedBytes: claim.consumedBytes, pod: pod.podName }, "Attaching to the run");
     ended = await spec.finish({ id: pod.id, handle: podPool.podHandle(pod) }, hold, claim);
     return ended;
   } finally {
-    await hold.end({ release: ended !== "finished" });
-    if (ended === "finished") await spec.afterFinish?.(spec.podId).catch(() => {});
+    await endRunJob(hold, ended, log);
+    if (ended === "finished" || ended === "reset")
+      await spec.afterFinish?.(spec.podId).catch(() => {});
   }
+}
+
+/** Maps a settle that did not settle to the job's end (`taken` → detached). */
+export function endOfLoss(loss: HoldLoss): RunEnd {
+  return loss === "taken" ? "detached" : "reset";
 }
 
 // ── Pod-side housekeeping ───────────────────────────────────────────────────
 
+/** How much of an agent's stderr is kept: its last 8 KB. */
+const STDERR_TAIL_BYTES = 8192;
+
+/**
+ * Whether `runDir` is a run directory this module may remove: exactly
+ * `/home/agent/optio/runs/<one segment>`, the segment a plain name (no
+ * `.` or `..`, no slash, nothing a shell would read twice).
+ */
+export function isRemovableRunDir(runDir: string): boolean {
+  const prefix = `${RUN_HOMES_DIR}/`;
+  if (!runDir.startsWith(prefix)) return false;
+  const segment = runDir.slice(prefix.length);
+  return /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(segment) && segment !== "." && segment !== "..";
+}
+
+/** Runs a short script in the pod and returns its stdout (best-effort: "" on failure). */
+async function podScript(
+  runtime: ContainerRuntime,
+  handle: ContainerHandle,
+  script: string,
+): Promise<string> {
+  const session = await runtime.exec(handle, ["bash", "-c", script], { tty: false });
+  let out = "";
+  try {
+    for await (const chunk of session.stdout as AsyncIterable<Buffer | string>) {
+      out += chunk.toString();
+    }
+  } finally {
+    session.close();
+  }
+  return out;
+}
+
+const stderrTailScript = (runDir: string) =>
+  `if [ -s ${shellQuote(`${runDir}/stderr.log`)} ]; then tail -c ${STDERR_TAIL_BYTES} ${shellQuote(`${runDir}/stderr.log`)}; fi`;
+
+/**
+ * The last 8 KB of the run's stderr, read in one short exec — for the
+ * failure message of a run that failed, was lost, or produced no output.
+ * Best-effort: "" when there is none or it cannot be read.
+ */
+export async function readRunStderr(
+  runtime: ContainerRuntime,
+  handle: ContainerHandle,
+  runDir: string,
+): Promise<string> {
+  if (!isRemovableRunDir(runDir)) return "";
+  try {
+    return (await podScript(runtime, handle, stderrTailScript(runDir))).trim();
+  } catch (err) {
+    logger.debug({ err, runDir }, "Failed to read the run's stderr");
+    return "";
+  }
+}
+
+/** A failure message with the agent's stderr tail under it, when it has one. */
+export function withStderr(message: string, stderrTail: string): string {
+  const tail = stderrTail.trim();
+  return tail
+    ? `${message}\n\nAgent stderr (last ${STDERR_TAIL_BYTES / 1024} KB):\n${tail}`
+    : message;
+}
+
 /**
  * Removes the run's directory in its pod once the run is terminal and every
- * byte of its output is a log row (the run-home sweep is the backstop).
- * Best-effort, one short exec.
+ * byte of its output is a log row (the run-home sweep is the backstop), in
+ * one short exec that first reads the tail of the agent's stderr: logged as
+ * a warning when there is any, and returned. Best-effort.
  */
 export async function removeRunDirectory(
   runtime: ContainerRuntime,
   handle: ContainerHandle,
   runDir: string,
-): Promise<void> {
-  if (!/^\/home\/agent\/optio\/runs\/[A-Za-z0-9_.-]+$/.test(runDir)) return;
+  log: typeof logger = logger,
+): Promise<string> {
+  if (!isRemovableRunDir(runDir)) return "";
   try {
-    const session = await runtime.exec(handle, ["bash", "-c", `rm -rf ${shellQuote(runDir)}`], {
-      tty: false,
-    });
-    for await (const _chunk of session.stdout as AsyncIterable<Buffer>) {
-      // drain
-    }
-    session.close();
+    const tail = (
+      await podScript(runtime, handle, `${stderrTailScript(runDir)}; rm -rf ${shellQuote(runDir)}`)
+    ).trim();
+    if (tail) log.warn({ stderrTail: tail }, "Agent stderr output");
+    return tail;
   } catch (err) {
     logger.debug({ err, runDir }, "Failed to remove run directory");
+    return "";
   }
 }
 
 /**
  * Signals a run's process group in its pod, from any instance: the pod is
  * found from the database (`podId`), the run directory from the run's id.
- * True when a live supervisor was there to signal. Best-effort.
+ * With `pid`, only that attempt's supervisor is signalled. True when a live
+ * supervisor was there to signal. Best-effort.
  */
 export async function signalRun(
   podId: string | null | undefined,
   runId: string,
   signal: "TERM" | "KILL" = "TERM",
+  opts: { pid?: number } = {},
 ): Promise<boolean> {
   if (!podId) return false;
   try {
@@ -626,6 +999,7 @@ export async function signalRun(
       runId,
       runDir: runHome(runId).podDir,
       signal,
+      ...(opts.pid !== undefined && opts.pid > 1 ? { pid: opts.pid } : {}),
     });
   } catch (err) {
     logger.warn({ err, runId }, "Failed to signal the run's process");
