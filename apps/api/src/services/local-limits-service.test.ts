@@ -26,6 +26,11 @@ class FakeSocket implements RelaySocket {
 }
 
 const host = { id: "h1", name: "laptop", userId: "u1" } as LocalHostRow;
+
+/** Lets the request's capability check and send run (microtasks only: fake timers stay put). */
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+};
 const codex = {
   primary: { usedPercent: 10, windowMinutes: 300, resetsAt: null },
   secondary: null,
@@ -43,6 +48,7 @@ describe("refreshHostLimits", () => {
     const socket = new FakeSocket();
     registerDaemon("h1", "u1", socket, { refreshLimits: true });
     const pending = refreshHostLimits(host);
+    await flush();
     const req = JSON.parse(socket.sent[0]);
     expect(req.type).toBe("limits-refresh");
     // Another host can't answer for it.
@@ -62,6 +68,7 @@ describe("refreshHostLimits", () => {
     const socket = new FakeSocket();
     registerDaemon("h1", "u1", socket, { refreshLimits: true });
     const pending = refreshHostLimits(host);
+    await flush();
     const req = JSON.parse(socket.sent[0]);
     deliverLimitsResult("h1", {
       type: "limits-refresh-result",

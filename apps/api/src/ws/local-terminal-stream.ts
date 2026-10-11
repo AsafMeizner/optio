@@ -12,7 +12,9 @@ import { canJoinSession, watchSessionAccess } from "../services/session-sharing-
  * the "pasted JSON swallowed as control" bug the legacy session terminal
  * protocol has. Which viewer's screen the PTY is sized for is decided in
  * services/local-grid.ts; pings check a viewer is still there before it keeps
- * another screen waiting.
+ * another screen waiting. The host's daemon may be connected to another API
+ * instance: the relay's viewer handle routes this socket's frames to it
+ * either way (local-relay.ts `attachViewer`).
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -61,19 +63,25 @@ export async function localTerminalStreamWs(app: FastifyInstance) {
     const mayInput = watchSessionAccess("local", terminal, user, socket);
     if (conn.closed) return;
 
+    const answersQueries = await relay.hostAnswersQueries(terminal.hostId);
+    if (conn.closed) return;
     socket.send(
       JSON.stringify({
         type: "status",
         state: terminal.state,
         attentionState: terminal.attentionState,
-        ...(relay.hostAnswersQueries(terminal.hostId) ? { answersQueries: true } : {}),
+        ...(answersQueries ? { answersQueries: true } : {}),
       }),
     );
 
+    let viewer: relay.ViewerHandle | null = null;
     if (terminal.state === "running" || terminal.state === "launching") {
-      if (relay.attachBrowser(terminal.hostId, terminal.id, socket)) {
-        socket.on("pong", () => relay.viewerPong(terminal.id, socket));
-        conn.onClose(() => relay.detachBrowser(terminal.hostId, terminal.id, socket));
+      viewer = await relay.attachViewer(terminal.hostId, terminal.id, socket);
+      if (viewer) {
+        const handle = viewer;
+        socket.on("pong", () => handle.pong());
+        // Runs at once if the socket closed while we attached.
+        conn.onClose(() => handle.detach());
       } else {
         socket.send(JSON.stringify({ type: "error", message: "Host is offline" }));
       }
@@ -99,25 +107,23 @@ export async function localTerminalStreamWs(app: FastifyInstance) {
         } catch {
           return;
         }
+        // Nothing to reach without a live attach (offline host, or a
+        // finished terminal showing its recorded screen).
+        if (!viewer) return;
         if (msg.type === "input" && typeof msg.data === "string") {
           // A viewer's emulator answering the program's query, where the
           // machine answers them itself: not someone using this screen, and
           // a second answer the daemon would drop anyway.
-          if (isTerminalQueryReply(msg.data) && relay.hostAnswersQueries(terminal.hostId)) return;
-          relay.viewerInput(terminal.id, socket);
+          if (isTerminalQueryReply(msg.data) && answersQueries) return;
           // Only typing moves the session in the lists: a focus or mouse
           // report (clicking into it) or the emulator's own answer to a
           // query is input to the program, not someone using the session.
           if (isTerminalTyping(msg.data)) void noteInteraction(terminal.id);
-          relay.sendToHost(terminal.hostId, {
-            type: "input",
-            terminalId: terminal.id,
-            dataB64: Buffer.from(msg.data, "utf-8").toString("base64"),
-          });
+          viewer.input(msg.data);
         } else if (msg.type === "resize" && isGrid(msg)) {
-          relay.viewerClaim(terminal.hostId, terminal.id, socket, clampGrid(msg));
+          viewer.claim(clampGrid(msg));
         } else if (msg.type === "view" && isGrid(msg) && typeof msg.visible === "boolean") {
-          relay.viewerView(terminal.id, socket, {
+          viewer.view({
             ...clampGrid(msg),
             visible: msg.visible,
             idleMs: Number.isFinite(msg.idleMs) && msg.idleMs > 0 ? msg.idleMs : 0,

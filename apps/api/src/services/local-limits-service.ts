@@ -17,10 +17,19 @@ type LimitsResult = Extract<LocalDaemonMessage, { type: "limits-refresh-result" 
 interface Pending {
   hostId: string;
   resolve: (r: LimitsResult) => void;
+  reject: (err: Error) => void;
   timer: NodeJS.Timeout;
 }
 
 const pending = new Map<string, Pending>();
+
+function failPending(requestId: string, err: Error): void {
+  const p = pending.get(requestId);
+  if (!p) return;
+  clearTimeout(p.timer);
+  pending.delete(requestId);
+  p.reject(err);
+}
 
 /** Why the limits couldn't be refreshed, with the HTTP status that says so. */
 export class LimitsRefreshError extends Error {
@@ -43,28 +52,33 @@ export function deliverLimitsResult(hostId: string, msg: LimitsResult): boolean 
 }
 
 export async function refreshHostLimits(host: LocalHostRow): Promise<LocalHostAgentLimits> {
-  if (!relay.isHostOnline(host.id)) {
+  const caps = await relay.hostCapabilities(host.id);
+  if (!caps) {
     throw new LimitsRefreshError(`${host.name} is offline — start \`optio local up\` on it`, 409);
   }
-  if (!relay.hostCanRefreshLimits(host.id)) {
+  if (!caps.refreshLimits) {
     throw new LimitsRefreshError(
       `Optio Local on ${host.name} can't refresh limits yet — update it and restart \`optio local up\``,
       409,
     );
   }
-  const result = await new Promise<LimitsResult>((resolve, reject) => {
-    const requestId = randomUUID();
+  const requestId = randomUUID();
+  const answer = new Promise<LimitsResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(requestId);
       reject(new LimitsRefreshError("The machine did not answer in time", 504));
     }, REQUEST_TIMEOUT_MS);
-    pending.set(requestId, { hostId: host.id, resolve, timer });
-    if (!relay.sendToHost(host.id, { type: "limits-refresh", requestId })) {
-      clearTimeout(timer);
-      pending.delete(requestId);
-      reject(new LimitsRefreshError(`${host.name} is offline`, 409));
-    }
+    pending.set(requestId, { hostId: host.id, resolve, reject, timer });
   });
+  // Pending before the frame goes out: the answer may beat the owner's
+  // acknowledgement back when the daemon is connected to another instance.
+  void relay
+    .sendToHost(host.id, { type: "limits-refresh", requestId })
+    .catch(() => false)
+    .then((sent) => {
+      if (!sent) failPending(requestId, new LimitsRefreshError(`${host.name} is offline`, 409));
+    });
+  const result = await answer;
   if (result.error) throw new LimitsRefreshError(result.error, 502);
   const limits = result.limits ?? {};
   // The daemon also sends an agent-limits frame; store these too so the

@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt } from "drizzle-orm";
+import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import {
   normalizeRepoUrl,
   LOCAL_HOST_OFFLINE_AFTER_MS,
@@ -91,7 +91,7 @@ export async function registerHost(input: RegisterHostInput): Promise<LocalHostR
       .from(localHosts)
       .where(and(ownedBy(input.userId), eq(localHosts.id, input.hostId)));
     if (claimed) {
-      if (byName && relay.isHostOnline(byName.id)) {
+      if (byName && (await relay.isHostOnline(byName.id))) {
         // Another of the caller's computers is connected under this name
         // right now: keep the two apart, and this one keeps its old name.
         hostname = claimed.hostname;
@@ -260,11 +260,21 @@ export async function setHostDirs(id: string, dirs: LocalHostDir[]): Promise<Loc
   return row;
 }
 
+/** No daemon connection holds the host's lease (local-relay.ts `hostLeaseKey`). */
+const noLiveLease = sql`NOT EXISTS (
+  SELECT 1 FROM "leases"
+  WHERE "leases"."key" = 'local-host:' || "local_hosts"."id"::text AND "leases"."expires_at" > now())`;
+
+/**
+ * The host's daemon disconnected. Not marked when the host's lease is live —
+ * the daemon already reconnected, to this instance or another, and its new
+ * connection holds it (the closing one released its own first).
+ */
 export async function markHostOffline(id: string): Promise<void> {
   const [row] = await db
     .update(localHosts)
     .set({ state: "offline", updatedAt: new Date() })
-    .where(eq(localHosts.id, id))
+    .where(and(eq(localHosts.id, id), noLiveLease))
     .returning(HOST_CHANGE_COLUMNS);
   if (row) await notifyHostChanged(row);
 }
@@ -423,6 +433,24 @@ export async function sweepStaleHosts(): Promise<string[]> {
     for (const row of stale) await notifyHostChanged(row);
   }
   return stale.map((h) => h.id);
+}
+
+/**
+ * Mark hosts offline whose lease lapsed: the instance holding their daemon
+ * went away without saying so (a killed API pod). Only meaningful with
+ * leases (several instances); the sweep worker runs it.
+ */
+export async function sweepUnownedHosts(): Promise<string[]> {
+  const gone = await db
+    .update(localHosts)
+    .set({ state: "offline", updatedAt: new Date() })
+    .where(and(eq(localHosts.state, "online"), noLiveLease))
+    .returning(HOST_CHANGE_COLUMNS);
+  if (gone.length > 0) {
+    logger.info({ hostIds: gone.map((h) => h.id) }, "local: marked unowned hosts offline");
+    for (const row of gone) await notifyHostChanged(row);
+  }
+  return gone.map((h) => h.id);
 }
 
 /** The user's most recently seen online host, for blueprints without a pinned host. */

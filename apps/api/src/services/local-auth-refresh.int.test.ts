@@ -78,17 +78,17 @@ async function makeHost(claudeCredentials: boolean, answer: FakeDaemon["answer"]
 
 const mockedValidate = vi.mocked(validateClaudeToken);
 
-beforeEach(() => {
+beforeEach(async () => {
   process.env.OPTIO_AUTH_DISABLED = "true";
   relay.resetRelayForTests();
-  resetAuthRefreshForTests();
+  await resetAuthRefreshForTests();
   mockedValidate.mockReset();
   mockedValidate.mockResolvedValue({ valid: true });
 });
-afterEach(() => {
+afterEach(async () => {
   delete process.env.OPTIO_AUTH_DISABLED;
   relay.resetRelayForTests();
-  resetAuthRefreshForTests();
+  await resetAuthRefreshForTests();
 });
 
 describe("refreshClaudeTokenFromHost", () => {

@@ -2080,6 +2080,10 @@ export const localHosts = pgTable(
         fetchedAt: string;
       };
     } | null>(),
+    // What the connected daemon advertised in its hello (local-relay.ts
+    // `HostCapabilities`), so every API instance can answer for a daemon
+    // connected to another. Meaningful only while the host's lease is live.
+    capabilities: jsonb("capabilities").$type<Record<string, boolean> | null>(),
     state: localHostStateEnum("state").notNull().default("offline"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -22,7 +22,7 @@ export async function sessionRecovery(kind: SessionKind, id: string): Promise<Se
     const terminal = await getTerminal(id);
     if (!terminal) return recovery("lost", "Session record is unavailable.");
     if (terminal.state === "running" || terminal.state === "launching") {
-      return isHostOnline(terminal.hostId)
+      return (await isHostOnline(terminal.hostId))
         ? recovery("live", "Connected to your machine.")
         : recovery(
             "reconnecting",

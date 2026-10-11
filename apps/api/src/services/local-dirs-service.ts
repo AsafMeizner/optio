@@ -22,6 +22,7 @@ type DirsResult = Extract<LocalDaemonMessage, { type: "dirs-result" }>;
 interface Pending {
   hostId: string;
   resolve: (r: DirsResult) => void;
+  reject: (err: Error) => void;
   timer: NodeJS.Timeout;
 }
 
@@ -37,21 +38,32 @@ export class HostDirError extends Error {
   }
 }
 
-/** Ask a host's daemon to change its allowlist. Rejects when offline or silent. */
+/**
+ * Ask a host's daemon — connected here or to another instance — to change
+ * its allowlist. Rejects when offline or silent.
+ */
 function requestDirChange(hostId: string, op: LocalDirOp, path: string): Promise<DirsResult> {
-  return new Promise((resolve, reject) => {
-    const requestId = randomUUID();
+  const requestId = randomUUID();
+  const answer = new Promise<DirsResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(requestId);
       reject(new HostDirError("The machine did not answer in time", 504));
     }, REQUEST_TIMEOUT_MS);
-    pending.set(requestId, { hostId, resolve, timer });
-    if (!relay.sendToHost(hostId, { type: "dirs", requestId, op, path })) {
-      clearTimeout(timer);
-      pending.delete(requestId);
-      reject(new HostDirError("The machine is offline", 409));
-    }
+    pending.set(requestId, { hostId, resolve, reject, timer });
   });
+  // Pending before the frame goes out: the answer may beat the owner's
+  // acknowledgement back.
+  void relay
+    .sendToHost(hostId, { type: "dirs", requestId, op, path })
+    .catch(() => false)
+    .then((sent) => {
+      const p = pending.get(requestId);
+      if (sent || !p) return;
+      clearTimeout(p.timer);
+      pending.delete(requestId);
+      p.reject(new HostDirError("The machine is offline", 409));
+    });
+  return answer;
 }
 
 /** A daemon answered. Ignored unless the request is pending for that same host. */
@@ -74,13 +86,14 @@ export async function changeHostDir(
   op: LocalDirOp,
   path: string,
 ): Promise<{ host: LocalHostRow; path: string }> {
-  if (!relay.isHostOnline(host.id)) {
+  const caps = await relay.hostCapabilities(host.id);
+  if (!caps) {
     throw new HostDirError(
       `${host.name} is offline — start \`optio local up\` on it, or run \`optio local ${op} <dir>\` there`,
       409,
     );
   }
-  if (!relay.hostCanManageDirs(host.id)) {
+  if (!caps.manageDirs) {
     throw new HostDirError(
       `${host.name}'s daemon can't change its directories from here (it runs with --no-remote-dirs, or its CLI predates this) — run \`optio local ${op} <dir>\` on it`,
       409,

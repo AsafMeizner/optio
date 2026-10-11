@@ -164,14 +164,18 @@ const TriggersResponse = z.object({ triggers: z.array(LocalTriggerSchema) });
  * caller's own machine (a member could otherwise run commands on a
  * teammate's laptop by guessing its host id).
  */
-/** A host row plus what its connected daemon can do right now. */
-function withLiveCapabilities<T extends { id: string }>(host: T) {
+/**
+ * A host row plus what its connected daemon can do right now (all false
+ * while it is offline), wherever the daemon is connected.
+ */
+async function withLiveCapabilities<T extends { id: string }>(host: T) {
+  const caps = await relay.hostCapabilities(host.id);
   return {
     ...host,
-    claudeCredentials: relay.hostHasClaudeCredentials(host.id),
-    manageDirs: relay.hostCanManageDirs(host.id),
-    modelProviders: relay.hostCanUseModelProviders(host.id),
-    refreshLimits: relay.hostCanRefreshLimits(host.id),
+    claudeCredentials: caps?.claudeCredentials === true,
+    manageDirs: caps?.manageDirs === true,
+    modelProviders: caps?.modelProviders === true,
+    refreshLimits: caps?.refreshLimits === true,
   };
 }
 
@@ -193,7 +197,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       const hosts = await hostService.listHosts(req.user?.id ?? null);
-      reply.send({ hosts: hosts.map(withLiveCapabilities) });
+      reply.send({ hosts: await Promise.all(hosts.map(withLiveCapabilities)) });
     },
   );
 
@@ -288,7 +292,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       if (source.id === target.id) {
         return reply.status(400).send({ error: "Pick another machine to merge into" });
       }
-      if (relay.isHostOnline(source.id)) {
+      if (await relay.isHostOnline(source.id)) {
         return reply.status(409).send({
           error: `${source.name} is connected — only an offline machine can be merged into another`,
         });
@@ -296,7 +300,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       const moved = await hostService.mergeHosts(source.id, target.id);
       await terminalService.flushParkedTerminals(target.id);
       const host = (await hostService.getHost(target.id))!;
-      reply.send({ host: withLiveCapabilities(host), moved });
+      reply.send({ host: await withLiveCapabilities(host), moved });
     },
   );
 
@@ -378,7 +382,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       }
       try {
         const changed = await changeHostDir(host, "add", req.body.path);
-        reply.send({ host: withLiveCapabilities(changed.host), path: changed.path });
+        reply.send({ host: await withLiveCapabilities(changed.host), path: changed.path });
       } catch (err) {
         if (err instanceof HostDirError)
           return reply.status(err.status).send({ error: err.message });
@@ -417,7 +421,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       }
       try {
         const changed = await changeHostDir(host, "remove", req.query.path);
-        reply.send({ host: withLiveCapabilities(changed.host), path: changed.path });
+        reply.send({ host: await withLiveCapabilities(changed.host), path: changed.path });
       } catch (err) {
         if (err instanceof HostDirError)
           return reply.status(err.status).send({ error: err.message });
@@ -636,7 +640,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       const backfilling =
         (before !== undefined ? !page.hasEarlier : after === 0) &&
         entries.length === 0 &&
-        terminalService.requestTranscriptBackfill(terminal);
+        (await terminalService.requestTranscriptBackfill(terminal));
       reply.send({
         entries,
         complete: entries.length < limit,
@@ -883,7 +887,7 @@ export async function localRoutes(rawApp: FastifyInstance) {
       const writes = splitSubmit(req.body.data);
       for (const [i, data] of writes.entries()) {
         if (i > 0) await new Promise((r) => setTimeout(r, SUBMIT_GAP_MS));
-        const sent = sendToHost(terminal.hostId, {
+        const sent = await sendToHost(terminal.hostId, {
           type: "input",
           terminalId: terminal.id,
           dataB64: Buffer.from(data, "utf-8").toString("base64"),

@@ -24,6 +24,10 @@ import { invalidateCredentialsCache, invalidateUsageCache } from "./auth-service
 import { storeSecret } from "./secret-service.js";
 import { publishEvent } from "./event-bus.js";
 import { validateClaudeToken, recordTokenValidation } from "../workers/token-validation-worker.js";
+import { like } from "drizzle-orm";
+import { db } from "../db/client.js";
+import { leases } from "../db/schema.js";
+import { acquireLease } from "./lease-service.js";
 
 /**
  * A daemon whose own login has expired runs `claude` once to renew it before
@@ -38,29 +42,48 @@ type CredentialsResult = Extract<LocalDaemonMessage, { type: "credentials-result
 interface Pending {
   hostId: string;
   resolve: (r: CredentialsResult) => void;
+  reject: (err: Error) => void;
   timer: NodeJS.Timeout;
 }
 
 const pending = new Map<string, Pending>();
-const lastAutoAttempt = new Map<string, number>();
+
+/**
+ * One automatic attempt per host per window, across every API instance: a
+ * lease nobody renews (each claim names a fresh holder, so it is taken only
+ * once the last one lapsed).
+ */
+const AUTO_ATTEMPT_LEASE = (hostId: string) => `claude-auto-refresh:${hostId}`;
+function claimAutoAttempt(hostId: string): Promise<boolean> {
+  return acquireLease(AUTO_ATTEMPT_LEASE(hostId), AUTO_RETRY_WINDOW_MS, randomUUID());
+}
 
 export type RefreshOutcome = { ok: true; hostId: string } | { ok: false; error: string };
 
-/** Ask a host's daemon for its Claude access token. Rejects when offline or silent. */
+/**
+ * Ask a host's daemon — connected here or to another instance — for its
+ * Claude access token. Rejects when offline or silent.
+ */
 export function requestCredentials(hostId: string): Promise<CredentialsResult> {
-  return new Promise((resolve, reject) => {
-    const requestId = randomUUID();
+  const requestId = randomUUID();
+  const answer = new Promise<CredentialsResult>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(requestId);
       reject(new Error("The machine did not answer in time"));
     }, REQUEST_TIMEOUT_MS);
-    pending.set(requestId, { hostId, resolve, timer });
-    if (!relay.sendToHost(hostId, { type: "credentials", requestId })) {
-      clearTimeout(timer);
-      pending.delete(requestId);
-      reject(new Error("The machine is offline"));
-    }
+    pending.set(requestId, { hostId, resolve, reject, timer });
   });
+  void relay
+    .sendToHost(hostId, { type: "credentials", requestId })
+    .catch(() => false)
+    .then((sent) => {
+      const p = pending.get(requestId);
+      if (sent || !p) return;
+      clearTimeout(p.timer);
+      pending.delete(requestId);
+      p.reject(new Error("The machine is offline"));
+    });
+  return answer;
 }
 
 /** A daemon answered. Ignored unless the request is pending for that same host. */
@@ -88,10 +111,11 @@ export async function refreshClaudeTokenFromHost(
   host: LocalHostRow,
   trigger: "manual" | "auto",
 ): Promise<RefreshOutcome> {
-  if (!relay.hostHasClaudeCredentials(host.id)) {
+  const caps = await relay.hostCapabilities(host.id);
+  if (!caps?.claudeCredentials) {
     return {
       ok: false,
-      error: relay.isHostOnline(host.id)
+      error: caps
         ? "That machine has no Claude Code login to share — run `claude` on it and sign in"
         : "That machine is offline",
     };
@@ -137,11 +161,8 @@ export async function refreshClaudeTokenFromHost(
  * (each at most once per window). True when one of them worked.
  */
 export async function autoRefreshClaudeToken(reason: string): Promise<boolean> {
-  const now = Date.now();
-  for (const { hostId } of relay.hostsWithClaudeCredentials()) {
-    const last = lastAutoAttempt.get(hostId) ?? 0;
-    if (now - last < AUTO_RETRY_WINDOW_MS) continue;
-    lastAutoAttempt.set(hostId, now);
+  for (const { hostId } of await relay.hostsWithClaudeCredentials()) {
+    if (!(await claimAutoAttempt(hostId))) continue;
     const host = await getHost(hostId);
     if (!host || !(await hostMayRefreshToken(host))) continue;
     const outcome = await refreshClaudeTokenFromHost(host, "auto");
@@ -160,14 +181,12 @@ export async function maybeRefreshOnHello(host: LocalHostRow): Promise<void> {
   const cached = await getCachedTokenValidation();
   if (!cached || (cached.valid && cached.tokenExists)) return;
   if (!(await hostMayRefreshToken(host))) return;
-  const now = Date.now();
-  if (now - (lastAutoAttempt.get(host.id) ?? 0) < AUTO_RETRY_WINDOW_MS) return;
-  lastAutoAttempt.set(host.id, now);
+  if (!(await claimAutoAttempt(host.id))) return;
   await refreshClaudeTokenFromHost(host, "auto");
 }
 
-export function resetAuthRefreshForTests(): void {
+export async function resetAuthRefreshForTests(): Promise<void> {
   for (const p of pending.values()) clearTimeout(p.timer);
   pending.clear();
-  lastAutoAttempt.clear();
+  await db.delete(leases).where(like(leases.key, "claude-auto-refresh:%"));
 }
