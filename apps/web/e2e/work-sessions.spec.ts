@@ -71,7 +71,7 @@ test("the session sidebar resizes, remembers its width and keeps the mobile draw
   const { terminal } = await created.json();
   try {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(`/local/${terminal.id}`);
+    await page.goto(`/work/${terminal.id}`);
     const rail = page.getByRole("complementary", { name: "Session sidebar" });
     const handle = page.getByRole("separator", { name: "Resize session sidebar" });
     await expect(handle).toBeVisible();
@@ -143,7 +143,7 @@ test("the session scrollbar and resize handle have independent drag targets", as
       ids.push((await created.json()).terminal.id);
     }
     await page.setViewportSize({ width: 1280, height: 620 });
-    await page.goto(`/local/${ids.at(-1)}`);
+    await page.goto(`/work/${ids.at(-1)}`);
     const rail = page.getByRole("complementary", { name: "Session sidebar" });
     const list = rail.getByRole("region", { name: "Sessions", exact: true });
     const handle = rail.getByRole("separator", { name: "Resize session sidebar" });
@@ -255,7 +255,7 @@ test("terminal history scrolls inside the session without an extra page scrollba
   });
   try {
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto(`/local/${terminal.id}`);
+    await page.goto(`/work/${terminal.id}`);
     const viewport = page.locator(".local-xterm .xterm-viewport");
     await expect(viewport).toBeVisible();
     await expect.poll(() => terminal.resizes.length).toBeGreaterThan(0);

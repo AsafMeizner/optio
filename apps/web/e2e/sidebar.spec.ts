@@ -133,7 +133,7 @@ async function createSession(request: APIRequestContext, kind: "local" | "pod") 
   expect(response.ok(), await response.text()).toBe(true);
   const { terminal } = await response.json();
   return {
-    href: `/local/${terminal.id}`,
+    href: `/work/${terminal.id}`,
     row: `[data-terminal-id="${terminal.id}"]`,
     done: () => request.delete(`${API}/api/local/terminals/${terminal.id}`),
   };

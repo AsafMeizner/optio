@@ -99,7 +99,7 @@ test("session split resizes by keyboard, switches on mobile without reconnecting
   try {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/sessions/${session.id}`);
-    const resize = page.getByRole("separator", { name: "Resize chat and terminal" });
+    const resize = page.getByRole("separator", { name: "Resize agent chat and terminal" });
     await resize.focus();
     const before = Number(await resize.getAttribute("aria-valuenow"));
     await page.keyboard.press("ArrowRight");
