@@ -220,10 +220,13 @@ describe("timers across instances", () => {
     await vi.waitFor(() => expect(fcmFake.ofType("watch").length).toBeGreaterThan(0), {
       timeout: 5000,
     });
-    await vi.waitFor(async () =>
-      expect((await getGlance<{ count: number }>(`running:${u.id}`))?.value.count).toBe(1),
-    );
-    expect((await getGlance(`attention:${t.id}`))?.value).toEqual({ state: "working" });
+    await vi.waitFor(async () => {
+      // An earlier hook can already see the running DB row while the
+      // started hook is still queued. Counts alone do not mean that hook
+      // has recorded the terminal's attention transition yet.
+      expect((await getGlance<{ count: number }>(`running:${u.id}`))?.value.count).toBe(1);
+      expect((await getGlance(`attention:${t.id}`))?.value).toEqual({ state: "working" });
+    });
 
     // Exited → quiet: no end yet, a due timer row naming both providers.
     await new Promise((r) => setTimeout(r, 1100)); // past the providers' 1 s coalescing window
