@@ -204,6 +204,7 @@ export class CodeCommitPlatform implements GitPlatform {
     ri: RepoIdentifier,
     prNumber: number,
     method: "merge" | "squash" | "rebase",
+    expectedHeadSha?: string,
   ): Promise<void> {
     const client = this.withRegion(ri);
     const id = String(prNumber);
@@ -212,6 +213,7 @@ export class CodeCommitPlatform implements GitPlatform {
         new MergePullRequestBySquashCommand({
           pullRequestId: id,
           repositoryName: ri.repo,
+          sourceCommitId: expectedHeadSha,
         }),
       );
     } else if (method === "rebase") {
@@ -220,6 +222,7 @@ export class CodeCommitPlatform implements GitPlatform {
         new MergePullRequestByFastForwardCommand({
           pullRequestId: id,
           repositoryName: ri.repo,
+          sourceCommitId: expectedHeadSha,
         }),
       );
     } else {
@@ -227,6 +230,7 @@ export class CodeCommitPlatform implements GitPlatform {
         new MergePullRequestByThreeWayCommand({
           pullRequestId: id,
           repositoryName: ri.repo,
+          sourceCommitId: expectedHeadSha,
         }),
       );
     }

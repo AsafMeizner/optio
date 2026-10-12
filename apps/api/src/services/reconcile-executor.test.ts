@@ -10,6 +10,10 @@ const mockTaskQueueAdd = vi.fn();
 const mockWorkflowQueueAdd = vi.fn();
 const mockLaunchReview = vi.fn();
 const mockMergePR = vi.fn();
+const mockReadPR = vi.fn();
+const mockReadChecks = vi.fn();
+const mockRedisSet = vi.fn();
+const mockRedisGet = vi.fn();
 const mockGetPlatform = vi.fn();
 const mockPublishWorkflowRunEvent = vi.fn();
 const mockEnqueueWebhookEvent = vi.fn();
@@ -70,6 +74,7 @@ vi.mock("./git-token-service.js", () => ({
 }));
 
 vi.mock("./event-bus.js", () => ({
+  getRedisClient: () => ({ set: mockRedisSet, get: mockRedisGet }),
   publishWorkflowRunEvent: (...args: unknown[]) => mockPublishWorkflowRunEvent(...args),
 }));
 
@@ -484,9 +489,154 @@ describe("reconcile-executor", () => {
   });
 
   describe("autoMergePr", () => {
+    beforeEach(() => {
+      mockReadPR.mockResolvedValue({ headSha: "checked-head", state: "open", merged: false });
+      mockReadChecks.mockResolvedValue([{ status: "completed", conclusion: "success" }]);
+    });
+
+    function mergeSnapshot() {
+      const snap = repoSnapshot({
+        pr: {
+          url: "https://github.com/acme/repo/pull/42",
+          number: 42,
+          state: "open",
+          merged: false,
+          mergeable: true,
+          checksStatus: "passing",
+          reviewStatus: "none",
+          latestReviewComments: null,
+          headSha: "checked-head",
+        },
+      });
+      if (snap.run.kind !== "repo") throw new Error("fixture mismatch");
+      snap.run.status.prUrl = snap.pr!.url;
+      snap.run.status.state = TaskState.PR_OPENED;
+      return snap;
+    }
+
+    it.each(["pending", "failing"])(
+      "defers when CI becomes %s after the snapshot",
+      async (state) => {
+        mockGetPlatform.mockResolvedValue({
+          platform: {
+            type: "github",
+            mergePullRequest: mockMergePR,
+            getPullRequest: mockReadPR,
+            getCIChecks: mockReadChecks,
+          },
+          ri: { owner: "acme", repo: "repo" },
+        });
+        mockReadChecks.mockResolvedValue([
+          { status: state === "pending" ? "queued" : "completed", conclusion: "failure" },
+        ]);
+        const outcome = await executeAction(
+          { kind: "autoMergePr", reason: "auto_merge_ready" },
+          mergeSnapshot(),
+        );
+        expect(outcome).toEqual({ status: "stale", reason: `pr_checks_${state}` });
+        expect(mockMergePR).not.toHaveBeenCalled();
+        expect(mockTransitionTask).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not merge when the CI recheck fails", async () => {
+      mockGetPlatform.mockResolvedValue({
+        platform: {
+          type: "github",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+        },
+        ri: { owner: "acme", repo: "repo" },
+      });
+      mockReadChecks.mockRejectedValue(new Error("CI unavailable"));
+      const outcome = await executeAction(
+        { kind: "autoMergePr", reason: "auto_merge_ready" },
+        mergeSnapshot(),
+      );
+      expect(outcome.status).toBe("error");
+      expect(mockMergePR).not.toHaveBeenCalled();
+      expect(mockTransitionTask).not.toHaveBeenCalled();
+    });
+
+    it("reconciles a new push instead of merging the unchecked head", async () => {
+      mockGetPlatform.mockResolvedValue({
+        platform: {
+          type: "github",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+        },
+        ri: { owner: "acme", repo: "repo" },
+      });
+      mockReadPR.mockResolvedValue({ headSha: "new-head", state: "open", merged: false });
+      const outcome = await executeAction(
+        { kind: "autoMergePr", reason: "auto_merge_ready" },
+        mergeSnapshot(),
+      );
+      expect(outcome).toEqual({ status: "stale", reason: "pr_head_changed" });
+      expect(mockReadChecks).not.toHaveBeenCalled();
+      expect(mockMergePR).not.toHaveBeenCalled();
+    });
+
+    it("waits on the first empty check result and schedules another pass", async () => {
+      mockGetPlatform.mockResolvedValue({
+        platform: {
+          type: "github",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+        },
+        ri: { owner: "acme", repo: "repo" },
+      });
+      mockReadChecks.mockResolvedValue([]);
+      mockRedisGet.mockImplementation(() => Promise.resolve(String(Date.now())));
+      const outcome = await executeAction(
+        { kind: "autoMergePr", reason: "auto_merge_ready" },
+        mergeSnapshot(),
+      );
+      expect(outcome).toEqual({ status: "skipped", reason: "auto_merge_waiting_for_checks" });
+      expect(mockMergePR).not.toHaveBeenCalled();
+      expect(mockEnqueueReconcile).toHaveBeenCalledWith(
+        { kind: "repo", id: "task-1" },
+        {
+          reason: "auto_merge_waiting_for_checks",
+          delayMs: expect.any(Number),
+        },
+      );
+    });
+
+    it("keeps CodeCommit auto-merge immediate without CI", async () => {
+      mockGetPlatform.mockResolvedValue({
+        platform: {
+          type: "codecommit",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+        },
+        ri: { owner: "us-east-1", repo: "repo" },
+      });
+      mockReadChecks.mockResolvedValue([]);
+      mockMergePR.mockResolvedValue(undefined);
+      mockTransitionTask.mockResolvedValue({ id: "task-1" });
+      mockDbUpdate.mockReturnValue(chainable([{ id: "task-1" }]));
+      const outcome = await executeAction(
+        { kind: "autoMergePr", reason: "auto_merge_ready" },
+        mergeSnapshot(),
+      );
+      expect(outcome.status).toBe("applied");
+      expect(mockRedisSet).not.toHaveBeenCalled();
+      expect(mockMergePR).toHaveBeenCalled();
+    });
+
     it("merges and transitions to COMPLETED on success", async () => {
       mockGetPlatform.mockResolvedValue({
-        platform: { mergePullRequest: mockMergePR },
+        platform: {
+          type: "github",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+        },
         ri: { owner: "acme", repo: "repo" },
       });
       mockMergePR.mockResolvedValue(undefined);
@@ -494,7 +644,7 @@ describe("reconcile-executor", () => {
       mockDbUpdate.mockReturnValue(chain);
       mockTransitionTask.mockResolvedValue({ id: "task-1" });
 
-      const snap = repoSnapshot();
+      const snap = mergeSnapshot();
       if (snap.run.kind !== "repo") throw new Error("fixture mismatch");
       snap.run.status.prUrl = "https://github.com/acme/repo/pull/42";
       snap.run.status.state = TaskState.PR_OPENED;
@@ -506,6 +656,7 @@ describe("reconcile-executor", () => {
         expect.objectContaining({ owner: "acme" }),
         42,
         "squash",
+        "checked-head",
       );
       expect(mockTransitionTask).toHaveBeenCalledWith(
         "task-1",
@@ -517,12 +668,17 @@ describe("reconcile-executor", () => {
 
     it("returns error when merge throws", async () => {
       mockGetPlatform.mockResolvedValue({
-        platform: { mergePullRequest: mockMergePR },
+        platform: {
+          type: "github",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+        },
         ri: { owner: "acme", repo: "repo" },
       });
       mockMergePR.mockRejectedValue(new Error("Merge conflict"));
 
-      const snap = repoSnapshot();
+      const snap = mergeSnapshot();
       if (snap.run.kind !== "repo") throw new Error("fixture mismatch");
       snap.run.status.prUrl = "https://github.com/acme/repo/pull/42";
 
@@ -534,7 +690,12 @@ describe("reconcile-executor", () => {
 
     it("persists a cooldown and does not transition on a secondary rate limit", async () => {
       mockGetPlatform.mockResolvedValue({
-        platform: { mergePullRequest: mockMergePR },
+        platform: {
+          type: "github",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+        },
         ri: { owner: "acme", repo: "repo" },
       });
       mockMergePR.mockRejectedValue(
@@ -545,7 +706,7 @@ describe("reconcile-executor", () => {
       const chain = chainable([{ id: "task-1" }]);
       mockDbUpdate.mockReturnValue(chain);
 
-      const snap = repoSnapshot();
+      const snap = mergeSnapshot();
       if (snap.run.kind !== "repo") throw new Error("fixture mismatch");
       snap.run.status.prUrl = "https://github.com/acme/repo/pull/42";
       snap.run.status.state = TaskState.PR_OPENED;
@@ -572,13 +733,18 @@ describe("reconcile-executor", () => {
 
     it("persists a long cooldown for an auth (bad credentials) failure", async () => {
       mockGetPlatform.mockResolvedValue({
-        platform: { mergePullRequest: mockMergePR },
+        platform: {
+          type: "github",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+        },
         ri: { owner: "acme", repo: "repo" },
       });
       mockMergePR.mockRejectedValue(new GitHubApiError(401, '{"message":"Bad credentials"}'));
       mockDbUpdate.mockReturnValue(chainable([{ id: "task-1" }]));
 
-      const snap = repoSnapshot();
+      const snap = mergeSnapshot();
       if (snap.run.kind !== "repo") throw new Error("fixture mismatch");
       snap.run.status.prUrl = "https://github.com/acme/repo/pull/42";
       snap.run.status.state = TaskState.PR_OPENED;

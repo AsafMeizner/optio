@@ -65,7 +65,13 @@ export async function checkDueScheduleTriggers(): Promise<number> {
     let advanced = false;
     try {
       advanced = await db.transaction(async (tx) => {
-        const won = await advanceScheduleCas(trigger.id, cronExpression, trigger.nextFireAt, tx);
+        const won = await advanceScheduleCas(
+          trigger.id,
+          cronExpression,
+          trigger.nextFireAt,
+          tx,
+          config?.timezone as string | undefined,
+        );
         if (won)
           await enqueueOccurrence(
             trigger,

@@ -95,7 +95,7 @@ test.describe("New work form creates every kind", () => {
     await nameInput(page).fill(named("task"));
     await expect(submit(page)).toHaveText(/Start work \(opens a PR\)/);
     await submit(page).click();
-    await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/, { timeout: 30_000 });
 
     const id = page.url().split("/").pop()!;
     const { task } = await api(`/api/tasks/${id}`);
@@ -261,7 +261,7 @@ test.describe("New work form creates every kind", () => {
     await nameInput(page).fill(named("local chat"));
     await expect(submit(page)).toHaveText(/Open session/);
     await submit(page).click();
-    await expect(page).toHaveURL(/\/local\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/, { timeout: 30_000 });
     const id = page.url().split("/").pop()!;
     const { terminal } = await api(`/api/local/terminals/${id}`);
     expect(terminal.title).toBe(named("local chat"));
@@ -643,7 +643,7 @@ test.describe("Editing recurring work", () => {
 
     // Prefilled from the row.
     await expect(prompt(page)).toHaveValue("Before");
-    await expect(page.locator("#session-when input")).toHaveValue("0 9 * * *");
+    await expect(page.locator('#session-when input[type="text"]')).toHaveValue("0 9 * * *");
     await expect(nameInput(page)).toHaveValue(named("editable job"));
 
     // The kind is locked: a repo would make it a scheduled Task.
@@ -751,7 +751,7 @@ test.describe("Remembered agent settings", () => {
     await prompt(page).fill("Remember me [[mock:pr]]");
     await nameInput(page).fill(named("remembered"));
     await submit(page).click();
-    await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/, { timeout: 30_000 });
     await expect.poll(() => puts.length).toBe(1);
     expect(puts[0]).toEqual({
       location: { runTarget: "cluster" },
@@ -835,7 +835,7 @@ test.describe("Where → Environment", () => {
     // The plan under Then follows the work's own setting.
     await expect(page.getByText("As soon as the PR opens.")).toBeVisible();
     await submit(page).click();
-    await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/, { timeout: 30_000 });
 
     const id = page.url().split("/").pop()!;
     const { work } = await api(`/api/work/${id}`);

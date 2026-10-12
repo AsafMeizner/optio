@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Stdio MCP server that proxies one token-authenticated REST API for an agent",
   "bin": {
-    "optio-mcp-bridge": "./dist/mcp-bridge.js"
+    "optio-mcp-bridge": "./dist/mcp-bridge.js",
+    "optio-controller-mcp": "./dist/controller-mcp.js"
   },
   "files": [
     "dist"

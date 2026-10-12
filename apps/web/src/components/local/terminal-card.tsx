@@ -1,5 +1,6 @@
 "use client";
 
+import { terminalWorkHref } from "@/lib/work-href";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { cn, formatRelativeTime } from "@/lib/utils";
@@ -324,14 +325,14 @@ export function TerminalCard({
     <div
       role="button"
       tabIndex={0}
-      onClick={() => router.push(`/local/${terminal.id}`)}
+      onClick={() => router.push(terminalWorkHref(terminal))}
       onKeyDown={(e) => {
         // Only when the card itself is focused — keydown bubbles from the
         // inner Kill/Delete buttons, which must not also navigate away.
         if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          router.push(`/local/${terminal.id}`);
+          router.push(terminalWorkHref(terminal));
         }
       }}
       className={cn(

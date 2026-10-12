@@ -17,6 +17,7 @@ export function Disclosure({
     <div>
       <button
         type="button"
+        aria-expanded={open}
         onClick={onToggle}
         className="flex items-center gap-1 text-xs text-text-muted hover:text-text transition-colors"
       >

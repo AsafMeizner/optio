@@ -150,6 +150,15 @@ describe("GitHubPlatform", () => {
   });
 
   describe("mergePullRequest", () => {
+    it("guards an automatic merge with the checked head SHA", async () => {
+      mockJsonResponse({ merged: true });
+      await platform.mergePullRequest(ri, 42, "squash", "checked-head");
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
+        merge_method: "squash",
+        sha: "checked-head",
+      });
+    });
+
     it("sends PUT with merge method", async () => {
       mockJsonResponse({ merged: true });
 

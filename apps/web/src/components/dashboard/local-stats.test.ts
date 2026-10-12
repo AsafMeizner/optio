@@ -110,10 +110,10 @@ describe("collectNeedsYou", () => {
     expect(items.map((i) => i.key)).toEqual(["task-task1", "local-term"]);
     expect(items[0]).toMatchObject({
       kind: "task",
-      href: "/tasks/task1",
+      href: "/work/task1",
       where: "acme/optio",
       reason: "merge conflict",
     });
-    expect(items[1]).toMatchObject({ kind: "local", href: "/local/term", where: "dev/term" });
+    expect(items[1]).toMatchObject({ kind: "local", href: "/work/term", where: "dev/term" });
   });
 });

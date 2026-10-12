@@ -161,7 +161,7 @@ export function PodsList({
                       podTasks.map((t: any) => (
                         <Link
                           key={t.id}
-                          href={`/tasks/${t.id}`}
+                          href={`/work/${t.id}`}
                           className="flex items-center justify-between p-1.5 rounded hover:bg-bg-hover text-xs"
                         >
                           <span className="truncate">{t.title}</span>

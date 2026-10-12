@@ -52,7 +52,11 @@ struct ReviewDetailView: View {
             await model.load(reviewId, api: api)
             if model.review?.hasDraft == false { section = .activity } else { section = .draft }
             logs.onStateChanged = { Task { await model.load(reviewId, api: api, quiet: true) } }
-            logs.start(api: api, wsPath: "/ws/pr-reviews/\(reviewId)/logs") { try await api.prReviewLogs(reviewId) }
+            // This endpoint returns all rows, without limit/offset pagination.
+            let runId = model.runs.first?.id
+            logs.start(api: api, wsPath: "/ws/pr-reviews/\(reviewId)/logs", paginated: false) { _, _ in
+                try await api.prReviewLogs(reviewId, runId: runId)
+            }
         }
         .task(id: model.pollKey) {
             guard model.pollKey else { return }
@@ -61,9 +65,9 @@ struct ReviewDetailView: View {
                 await model.load(reviewId, api: api, quiet: true)
             }
         }
-        .onChange(of: model.runs.first?.id) { _, _ in
+        .onChange(of: model.runs.first?.id) { _, runId in
             // A new run (re-review / chat) means a new log target; refresh history.
-            logs.reloadHistory { try await api.prReviewLogs(reviewId) }
+            logs.reloadHistory { _, _ in try await api.prReviewLogs(reviewId, runId: runId) }
         }
         .onDisappear { logs.stop() }
         .confirmationDialog("Cancel this review?", isPresented: $confirmCancel, titleVisibility: .visible) {

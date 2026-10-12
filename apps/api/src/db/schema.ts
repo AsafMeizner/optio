@@ -757,6 +757,11 @@ export const taskMessages = pgTable(
       .notNull()
       .references(() => workRuns.id, { onDelete: "cascade" }),
     userId: uuid("user_id").references(() => users.id),
+    // Agent-to-agent messages share the run inbox with user messages. The
+    // authenticated sender supplies these fields; never accept them from a body.
+    senderType: text("sender_type").$type<"user" | "agent">().notNull().default("user"),
+    senderName: text("sender_name"),
+    senderAddress: text("sender_address"),
     content: text("content").notNull(),
     mode: taskMessageModeEnum("mode").notNull().default("soft"),
     workspaceId: uuid("workspace_id"),

@@ -2,10 +2,8 @@
 // from inside their pods. Documented in the agent's `agents.md` operator
 // manual so the agent learns the API on its own.
 //
-// Auth: the agent's own UUID is treated as an unguessable bearer token,
-// passed in via `OPTIO_AGENT_TOKEN`. Combined with workspace scoping this
-// is acceptable for v0.4 — a follow-up should harden by generating per-turn
-// signed tokens and validating the source pod.
+// Auth: expiring, per-turn signed credentials in OPTIO_AGENT_TOKEN. Public
+// agent UUIDs are identifiers only. Completed turns lose access immediately.
 
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
@@ -16,30 +14,26 @@ import { persistentAgents } from "../db/schema.js";
 import * as paService from "../services/persistent-agent-service.js";
 import { buildSenderId } from "@optio/shared";
 import { logger } from "../logger.js";
-
-const agentTokenSchema = z.string().uuid();
+import { validateControllerToken } from "../services/controller-auth.js";
 
 const sendBodySchema = z.object({
   to: z.string().min(1).describe("Target agent slug (e.g. 'forge') in this workspace"),
-  body: z.string().min(1),
+  body: z.string().min(1).max(20000),
   broadcast: z.boolean().optional(),
   payload: z.record(z.unknown()).optional(),
 });
 
 const broadcastBodySchema = z.object({
-  body: z.string().min(1),
+  body: z.string().min(1).max(20000),
   payload: z.record(z.unknown()).optional(),
 });
 
 async function authAgentByToken(token: string | undefined) {
   if (!token) return null;
-  const parsed = agentTokenSchema.safeParse(token);
-  if (!parsed.success) return null;
-  const [agent] = await db
-    .select()
-    .from(persistentAgents)
-    .where(eq(persistentAgents.id, parsed.data));
-  return agent ?? null;
+  const principal = await validateControllerToken(token, "messages");
+  return principal?.run?.agentId
+    ? paService.getPersistentAgentUnscoped(principal.run.agentId)
+    : null;
 }
 
 type AgentRow = typeof persistentAgents.$inferSelect;

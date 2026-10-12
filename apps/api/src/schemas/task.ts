@@ -305,6 +305,9 @@ export const TaskMessageSchema = z
     deliveredAt: z.union([z.date(), z.string()]).nullable(),
     ackedAt: z.union([z.date(), z.string()]).nullable(),
     deliveryError: z.string().nullable().optional(),
+    senderType: z.enum(["user", "agent"]).optional(),
+    senderName: z.string().nullable().optional(),
+    senderAddress: z.string().nullable().optional(),
     user: z
       .object({
         id: z.string(),
@@ -315,7 +318,7 @@ export const TaskMessageSchema = z
       .optional(),
   })
   .passthrough()
-  .describe("User message sent mid-run to a running task");
+  .describe("A user or agent message in a run's inbox");
 
 /**
  * Denormalized dependency row — the shape the dependency service returns

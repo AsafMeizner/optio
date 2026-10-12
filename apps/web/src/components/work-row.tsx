@@ -1,5 +1,6 @@
 "use client";
 
+import { workHref } from "@/lib/work-href";
 import Link from "next/link";
 import {
   Bot,
@@ -66,7 +67,7 @@ export function WorkRowView({ row, whereLabel }: { row: WorkRow; whereLabel?: st
       <div className="min-w-0 flex-1 basis-48">
         <div className="flex items-center gap-2 min-w-0">
           <Link
-            href={row.href}
+            href={workHref(row.href)}
             className="min-w-0 truncate text-sm font-medium text-text-heading after:absolute after:inset-0 after:content-[''] focus-visible:after:outline-2 focus-visible:after:outline-primary focus-visible:after:-outline-offset-2"
           >
             {row.name}

@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-12
+
+### Added
+
+- **Controller MCP**: agents and external clients can discover, create and edit work, manage schedules, inspect results and logs, and exchange messages with persistent agents and active task/Job agents. Per-run read/manage access, workspace boundaries and authenticated sender attribution apply across all six supported runtimes.
+
+### Changed
+
+- Tasks and Local sessions share **`/work/:id`**, with the full task context, PR/CI status, conversation and terminal in one workspace. Task links follow the current attempt, previous attempts remain selectable, and legacy links preserve split state when redirected.
+
+### Fixed
+
+- Watch updates for one user are serialized across API instances so a delayed quiet update cannot overwrite a newer running state or recreate its end timer.
+- Local tasks are excluded from the pod stall detector, preserving running work instead of showing a false execution failure.
+- Auto-merge defers on CI API errors, rechecks CI before merging, and pins the merge to the checked commit. GitHub and GitLab PRs with no checks remain eligible after a one-minute registration grace period; CodeCommit keeps merging without that delay. No settings changes are required.
+- iOS task, Job, and review logs recover missed history after reconnecting, including long outages, without dropping concurrent live rows or duplicating persisted lines. WebSocket connections report ready after the handshake succeeds, and log recovery also covers the first connection.
+- iOS app and widget archives report `0.17.0` with the supplied build number. Both include required-reason privacy manifests and use the signing prefix for shared Keychain access. The app declares local-network access and push notifications, and both targets allow user-selected HTTP servers consistently.
+- iOS Makefile commands propagate build/test failures and provide explicit archive, export, and TestFlight upload commands. See [the release guide](apps/ios/RELEASING.md) for account setup and device acceptance checks.
+
 ## [0.16.0] - 2026-10-11
+
+This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Added
 

@@ -25,6 +25,8 @@ interface ActivityItem {
   userId?: string;
   // Message fields
   mode?: "soft" | "interrupt";
+  senderType?: "user" | "agent";
+  senderName?: string | null;
   deliveredAt?: string | null;
   ackedAt?: string | null;
 }
@@ -181,7 +183,9 @@ export function ActivityFeed({ taskId }: { taskId: string }) {
                         <Send className="w-3 h-3 text-primary" />
                       )}
                       <span className="text-xs font-medium text-text">
-                        {item.user?.displayName ?? "User"}{" "}
+                        {item.senderName ??
+                          item.user?.displayName ??
+                          (item.senderType === "agent" ? "Agent" : "User")}{" "}
                         <span className="text-text-muted/60 font-normal">
                           {isInterrupt ? "interrupted" : "messaged"} the agent
                         </span>

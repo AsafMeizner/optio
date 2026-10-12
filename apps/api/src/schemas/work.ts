@@ -108,6 +108,12 @@ const IdOverridesSchema = z
 /** What a piece of pod work changes about its agent environment — `WorkSettings`. */
 const WorkSettingsSchema = z
   .object({
+    controllerAccess: z
+      .enum(["off", "read", "manage"])
+      .optional()
+      .describe(
+        "Optio controller MCP: off (default), read work/results, or manage work/schedules and message agents",
+      ),
     connections: IdOverridesSchema.optional().describe(
       "Connections beyond the ones the repo's assignments give, or left out",
     ),

@@ -130,6 +130,7 @@ RUN chmod +x /opt/optio/entrypoint.sh /opt/optio/repo-init.sh
 
 # MCP bridge (built in the `bridge` stage above); world-readable for the agent user
 COPY --from=bridge --chmod=0755 /app/packages/mcp-bridge/dist/mcp-bridge.js /opt/optio/mcp-bridge.js
+COPY --from=bridge --chmod=0755 /app/packages/mcp-bridge/dist/controller-mcp.js /opt/optio/controller-mcp.js
 
 # Optio credential helpers for dynamic token refresh (GitHub + GitLab)
 COPY scripts/optio-git-credential /usr/local/bin/optio-git-credential

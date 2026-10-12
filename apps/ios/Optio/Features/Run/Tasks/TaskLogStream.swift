@@ -2,50 +2,43 @@ import Foundation
 import Observation
 
 /// Historical logs via REST, then live frames over `/ws/logs/:taskId`.
-/// Mirrors apps/web/src/hooks/use-logs.ts: catch-up replay frames are ignored
-/// (REST history is canonical) and live frames are buffered until history lands.
+/// Catch-up replay frames are ignored; the shared history recovers missed REST
+/// pages on reconnect and deduplicates them against concurrent live frames.
 @Observable @MainActor
 final class TaskLogStream {
     let taskId: String
-    private(set) var entries: [AgentLogEntry] = []
+    var entries: [AgentLogEntry] { history.entries }
     private(set) var connected = false
     var onStateChanged: (() -> Void)?
 
     private var ws: WebSocketClient?
     private var pumpTask: Task<Void, Never>?
-    private var pending: [AgentLogEntry] = []
-    private var merged = false
+    private let history = LogHistory()
 
     init(taskId: String) { self.taskId = taskId }
 
     func start(api: APIClient) {
         guard ws == nil else { return }
+        history.start { [taskId] offset, limit in
+            try await api.taskLogs(taskId, limit: limit, offset: offset).map {
+                LogHistory.Row(id: $0.id, entry: $0.asEntry(taskId: taskId))
+            }
+        }
         let client = WebSocketClient(api: api, path: "/ws/logs/\(taskId)")
         ws = client
         client.connect()
         pumpTask = Task { [weak self] in
             for await frame in client.frames {
-                guard let self else { return }
+                guard let self, !Task.isCancelled else { return }
                 switch frame {
-                case .opened: self.connected = true
+                case .opened:
+                    self.connected = true
+                    if history.connectionOpened() { onStateChanged?() }
                 case .closed: self.connected = false
                 case .json(let obj): self.handle(obj, api: api)
                 default: break
                 }
             }
-        }
-        Task {
-            do {
-                let rows = try await api.taskLogs(taskId)
-                let historical = rows.map { $0.asEntry(taskId: taskId) }
-                let keys = Set(historical.map { $0.timestamp + $0.content })
-                let live = pending.filter { !keys.contains($0.timestamp + $0.content) }
-                entries = historical + live
-            } catch {
-                entries = pending
-            }
-            pending = []
-            merged = true
         }
     }
 
@@ -63,9 +56,7 @@ final class TaskLogStream {
                 content: content,
                 metadata: frame.metadata
             )
-            if !merged { pending.append(entry); return }
-            if let last = entries.last, last.content == entry.content, last.type == entry.type, last.timestamp == entry.timestamp { return }
-            entries.append(entry)
+            history.append(LogHistory.Row(id: frame.id, entry: entry))
         case "task:state_changed", "task:stalled", "task:recovered", "task:message_delivered", "task:message_acked":
             onStateChanged?()
         default:
@@ -74,10 +65,11 @@ final class TaskLogStream {
     }
 
     func appendLocal(_ text: String, interrupt: Bool) {
-        entries.append(AgentLogEntry(taskId: taskId, timestamp: ISO8601DateFormatter().string(from: .now), type: .info, content: (interrupt ? "[interrupt] " : "[you] ") + text))
+        history.appendLocal(AgentLogEntry(taskId: taskId, timestamp: ISO8601DateFormatter().string(from: .now), type: .info, content: (interrupt ? "[interrupt] " : "[you] ") + text))
     }
 
     func stop() {
+        history.stop()
         pumpTask?.cancel()
         pumpTask = nil
         ws?.disconnect()

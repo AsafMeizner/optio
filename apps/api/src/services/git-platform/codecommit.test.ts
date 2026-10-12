@@ -9,6 +9,7 @@ import {
   UpdatePullRequestApprovalStateCommand,
   GetPullRequestApprovalStatesCommand,
   MergePullRequestBySquashCommand,
+  MergePullRequestByFastForwardCommand,
   MergePullRequestByThreeWayCommand,
   GetRepositoryCommand,
   GetFolderCommand,
@@ -232,6 +233,20 @@ describe("CodeCommitPlatform", () => {
   });
 
   describe("mergePullRequest", () => {
+    it.each([
+      ["squash", MergePullRequestBySquashCommand],
+      ["merge", MergePullRequestByThreeWayCommand],
+      ["rebase", MergePullRequestByFastForwardCommand],
+    ] as const)("guards %s with the checked source commit", async (method, command) => {
+      ccMock.on(command).resolves({});
+      await platform.mergePullRequest(ri, 42, method, "checked-head");
+      expect(ccMock.commandCalls(command)[0].args[0].input).toMatchObject({
+        pullRequestId: "42",
+        repositoryName: ri.repo,
+        sourceCommitId: "checked-head",
+      });
+    });
+
     it("uses squash merge for 'squash'", async () => {
       ccMock.on(MergePullRequestBySquashCommand).resolves({});
       await platform.mergePullRequest(ri, 42, "squash");

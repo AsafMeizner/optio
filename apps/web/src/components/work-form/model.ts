@@ -743,6 +743,7 @@ export function settingsChanges(s: WorkSettings): number {
     ids(s.mcpServers) +
     ids(s.skills) +
     (s.setupCommands?.trim() ? 1 : 0) +
+    (s.controllerAccess && s.controllerAccess !== "off" ? 1 : 0) +
     (s.review?.enabled ? 1 : 0) +
     (s.cautiousMode === true ? 1 : 0) +
     (typeof s.maxAutoResumes === "number" ? 1 : 0)

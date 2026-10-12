@@ -14,9 +14,9 @@ describe("split-state", () => {
   });
 
   it("builds hrefs that omit empty state and the default layout", () => {
-    expect(splitHref(A, [], "rows")).toBe(`/local/${A}`);
-    expect(splitHref(A, [B], "cols")).toBe(`/local/${A}?split=${B}`);
-    expect(splitHref(A, [B, A, C], "rows")).toBe(`/local/${A}?split=${B}%2C${C}&layout=rows`);
+    expect(splitHref(A, [], "rows")).toBe(`/work/${A}`);
+    expect(splitHref(A, [B], "cols")).toBe(`/work/${A}?split=${B}`);
+    expect(splitHref(A, [B, A, C], "rows")).toBe(`/work/${A}?split=${B}%2C${C}&layout=rows`);
   });
 
   it("addToSplit keeps the newest panes when full and ignores what is already shown", () => {

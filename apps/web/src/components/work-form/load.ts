@@ -93,7 +93,11 @@ export function whenFromTrigger(
       return {
         ...base,
         when: "schedule",
-        trigger: { type: "schedule", cronExpression: String(c.cronExpression ?? "") },
+        trigger: {
+          type: "schedule",
+          cronExpression: String(c.cronExpression ?? ""),
+          ...(typeof c.timezone === "string" ? { timezone: c.timezone } : {}),
+        },
         event: EMPTY_DRAFT.event,
       };
     case "webhook":

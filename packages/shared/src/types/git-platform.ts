@@ -106,6 +106,8 @@ export interface GitPlatform {
     ri: RepoIdentifier,
     prNumber: number,
     method: "merge" | "squash" | "rebase",
+    /** Only merge if the source branch still points to this checked commit. */
+    expectedHeadSha?: string,
   ): Promise<void>;
   submitReview(
     ri: RepoIdentifier,

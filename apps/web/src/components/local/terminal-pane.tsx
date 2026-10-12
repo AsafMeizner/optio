@@ -84,6 +84,7 @@ export function TerminalPane({
   chrome,
   onDeleted,
   onTitle,
+  embedded = false,
 }: {
   terminalId: string;
   variant: "primary" | "split";
@@ -92,6 +93,8 @@ export function TerminalPane({
   /** Primary pane: navigate away after a delete. */
   onDeleted?: () => void;
   onTitle?: (title: string) => void;
+  /** A task workspace supplies the identity and workflow actions above this session. */
+  embedded?: boolean;
 }) {
   const router = useRouter();
   const [terminal, setTerminal] = useState<any>(null);
@@ -192,7 +195,7 @@ export function TerminalPane({
   useEffect(() => {
     if (!terminal) return;
     if (terminal.taskId) {
-      setRunHref({ href: `/tasks/${terminal.taskId}`, label: "Open task" });
+      setRunHref({ href: `/work/${terminal.taskId}`, label: "Open task" });
       return;
     }
     if (terminal.workflowRunId) {
@@ -241,7 +244,7 @@ export function TerminalPane({
           res.reused ? "Opening the chat already resumed" : "Resuming session in a new terminal",
         );
       }
-      router.push(`/local/${next.id}`);
+      router.push(`/work/${next.id}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to resume");
     }
@@ -422,7 +425,7 @@ export function TerminalPane({
 
   const actions = (
     <>
-      {runHref && (
+      {runHref && !embedded && (
         <Link
           href={runHref.href}
           className={iconButton}
@@ -683,7 +686,75 @@ export function TerminalPane({
     // queries), not the window's — a three-way split on a big screen is
     // three narrow panes.
     <div className="@container h-full flex flex-col min-w-0 min-h-0">
-      {header}
+      {embedded ? (
+        <header
+          className="shrink-0 border-b border-border/70 bg-bg-card/40 px-3 py-2"
+          data-testid="local-session-header"
+        >
+          <div className="flex flex-wrap items-center gap-2" aria-label="Session controls">
+            {variant === "primary" && railCollapsed && (
+              <button
+                type="button"
+                onClick={() => useRailStore.getState().setCollapsed(false)}
+                aria-label="Show sessions"
+                className={iconButton}
+              >
+                <PanelLeftOpen className="h-4 w-4" />
+              </button>
+            )}
+            {viewToggle ?? <span className="text-xs text-text-muted">Terminal</span>}
+            <div className="flex items-center gap-1.5 text-xs text-text-muted">
+              <StatusDot terminal={terminal} />
+              {terminal.attentionState === "needs_you"
+                ? attentionLabel(terminal.attentionReason)
+                : status.label}
+            </div>
+            <div className="ml-auto flex flex-wrap items-center gap-1">
+              {terminalButton}
+              {layoutToggle}
+              {bellButton}
+              {actions}
+              {variant === "primary" ? (
+                <SessionShareButton kind="local" id={terminal.id} ownerId={terminal.userId} />
+              ) : (
+                <>
+                  <button onClick={chrome.onFocus} aria-label="Focus pane" className={iconButton}>
+                    <Maximize2 className="h-3.5 w-3.5" />
+                  </button>
+                  <button onClick={chrome.onClose} aria-label="Close pane" className={iconButton}>
+                    <X className="h-4 w-4" />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          <div
+            className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px] text-text-muted"
+            data-testid="local-session-location"
+          >
+            <Laptop className="h-3 w-3 shrink-0" />
+            {host && (
+              <Link href="/machines" className="shrink-0 hover:text-text">
+                {host.name}
+              </Link>
+            )}
+            <span className="min-w-0 flex-1 truncate font-mono" title={terminal.dir}>
+              {terminal.dir}
+            </span>
+            {usage}
+          </div>
+          {links.length > 0 && (
+            <div className="mt-2">
+              <WorkLinkBadges links={links} size="xs" max={4} />
+            </div>
+          )}
+          {isDead && terminal.errorMessage && (
+            <p className="mt-2 text-xs text-warning break-words">{terminal.errorMessage}</p>
+          )}
+        </header>
+      ) : (
+        header
+      )}
       <SessionRecoveryStatus
         kind="local"
         id={terminal.id}

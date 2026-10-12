@@ -128,7 +128,7 @@ export function IssuesBrowser() {
         },
       });
       toast.success(`Terminal started on ${host.name}`);
-      router.push(`/local/${res.terminal.id}`);
+      router.push(`/work/${res.terminal.id}`);
       return;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to start local terminal");
@@ -355,7 +355,7 @@ export function IssuesBrowser() {
                       <ButtonLink
                         variant="secondary"
                         size="sm"
-                        href={`/tasks/${issue.optioTask.taskId}`}
+                        href={`/work/${issue.optioTask.taskId}`}
                         className="sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
                       >
                         <ArrowUpRight />

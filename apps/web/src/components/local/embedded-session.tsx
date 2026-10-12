@@ -1,5 +1,6 @@
 "use client";
 
+import { terminalWorkHref } from "@/lib/work-href";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -139,7 +140,7 @@ export function EmbeddedLocalSession({
             : "Resuming the session in a new terminal",
         );
       }
-      window.open(`/local/${next.id}`, "_self");
+      window.open(`/work/${next.id}`, "_self");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to resume");
     }
@@ -256,9 +257,9 @@ export function EmbeddedLocalSession({
               </button>
             </ConfirmPopover>
           )}
-          <Link href={`/local/${terminal.id}`} className={button} title="Open in Local">
+          <Link href={terminalWorkHref(terminal)} className={button} title="Open work">
             <ExternalLink className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Open in Local</span>
+            <span className="hidden sm:inline">Open work</span>
           </Link>
         </div>
       </div>

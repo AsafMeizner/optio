@@ -41,6 +41,7 @@ export function ApiKeysManager() {
   const [created, setCreated] = useState<ApiKeyCreated | null>(null);
   const [copied, setCopied] = useState(false);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [mcpUrl, setMcpUrl] = useState("/api/mcp");
 
   const load = useCallback(async () => {
     try {
@@ -56,6 +57,7 @@ export function ApiKeysManager() {
 
   useEffect(() => {
     load();
+    setMcpUrl(`${window.location.origin}/api/mcp`);
   }, [load]);
 
   async function create() {
@@ -102,7 +104,7 @@ export function ApiKeysManager() {
   }
 
   const label = "API keys";
-  const hint = "Personal access tokens for the CLI, the apps, and scripts";
+  const hint = "Personal access tokens for MCP, the CLI, the apps, and scripts";
   if (keys === null) return <SkeletonCard label={label} hint={hint} rows={1} />;
 
   return (
@@ -132,6 +134,23 @@ export function ApiKeysManager() {
           so clients can use a placeholder such as <code className="px-1 rounded bg-bg">dev</code>.
         </div>
       )}
+
+      <div className="rounded-lg border border-border p-3 space-y-2">
+        <p className="text-xs font-medium">Connect an agent to Optio</p>
+        <p className="text-xs text-text-muted">
+          Add a remote MCP server with Streamable HTTP and this URL. It can schedule work, read
+          results, and message persistent agents using your workspace permissions.
+        </p>
+        <code className="block rounded bg-bg px-2 py-1.5 text-xs font-mono break-all select-all">
+          {mcpUrl}
+        </code>
+        <p className="text-xs text-text-muted">
+          {unavailable
+            ? "For this local deployment, omit the Authorization header."
+            : "Set Authorization: Bearer followed by an API key created here. Optionally set X-Workspace-Id to choose one of your workspaces."}{" "}
+          For agents running in Optio, enable Optio controller under Work → Environment.
+        </p>
+      </div>
 
       {created && (
         <div

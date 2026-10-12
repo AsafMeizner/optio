@@ -114,6 +114,15 @@ export function validateTriggerConfig(
   if (type === "schedule" && typeof config?.cronExpression !== "string") {
     return "Schedule triggers require config.cronExpression";
   }
+  if (type === "schedule") {
+    if (config?.timezone !== undefined && typeof config.timezone !== "string")
+      return "Schedule timezone must be an IANA timezone";
+    try {
+      computeNextFire(config!.cronExpression as string, config?.timezone as string | undefined);
+    } catch {
+      return "Invalid schedule cron expression or timezone";
+    }
+  }
   if (type === "webhook" && (typeof config?.path !== "string" || !config.path)) {
     return "Webhook triggers require config.path";
   }
@@ -366,7 +375,7 @@ export async function createTrigger(input: CreateTriggerInput, tx: Db = db): Pro
   const enabled = input.enabled ?? true;
   const nextFireAt =
     input.type === "schedule" && enabled && typeof config.cronExpression === "string"
-      ? computeNextFire(config.cronExpression)
+      ? computeNextFire(config.cronExpression, config.timezone as string | undefined)
       : null;
   const [row] = await tx
     .insert(workflowTriggers)
@@ -430,7 +439,10 @@ export async function updateTrigger(
         : (existing.config as Record<string, unknown>);
     const enabled = input.enabled ?? existing.enabled;
     const cron = config?.cronExpression;
-    updates.nextFireAt = enabled && typeof cron === "string" ? computeNextFire(cron) : null;
+    updates.nextFireAt =
+      enabled && typeof cron === "string"
+        ? computeNextFire(cron, config?.timezone as string | undefined)
+        : null;
   }
   const [row] = await tx
     .update(workflowTriggers)
@@ -487,12 +499,13 @@ export async function advanceScheduleCas(
   cronExpression: string,
   seen: Date | null,
   tx: Db = db,
+  timezone?: string,
 ): Promise<boolean> {
   if (!seen) return false;
   const now = new Date();
   const rows = await tx
     .update(workflowTriggers)
-    .set({ nextFireAt: computeNextFire(cronExpression), updatedAt: now })
+    .set({ nextFireAt: computeNextFire(cronExpression, timezone), updatedAt: now })
     .where(
       and(
         eq(workflowTriggers.id, id),

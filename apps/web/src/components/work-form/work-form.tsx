@@ -1,5 +1,6 @@
 "use client";
 
+import { workHref } from "@/lib/work-href";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -649,7 +650,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
         });
         return;
       }
-      router.push(created.href);
+      router.push(workHref(created.href));
     } catch (err) {
       toast.error(edit ? "Couldn't save it" : "Couldn't create it", {
         description: err instanceof Error ? err.message : "Unknown error",
@@ -799,7 +800,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
           type={mintedSecret.type}
           triggerId={mintedSecret.triggerId}
           secret={mintedSecret.secret}
-          onDone={() => router.push(mintedSecret.href)}
+          onDone={() => router.push(workHref(mintedSecret.href))}
         />
       )}
       <Link

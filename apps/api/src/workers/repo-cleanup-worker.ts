@@ -358,7 +358,8 @@ export async function sweepPods(): Promise<void> {
       10,
     );
 
-    // Fetch all running tasks with lastActivityAt set
+    // Local runs report activity on their terminal, not the pod task row.
+    // Their daemon and local-run-service own liveness and completion.
     const runningTasks = await db
       .select({
         id: tasks.id,
@@ -368,7 +369,10 @@ export async function sweepPods(): Promise<void> {
         activitySubstate: tasks.activitySubstate,
       })
       .from(tasks)
-      .where(sql`${tasks.state} = 'running' AND ${tasks.lastActivityAt} IS NOT NULL`);
+      .where(
+        sql`${tasks.runTarget} = 'cluster'
+            AND ${tasks.state} = 'running' AND ${tasks.lastActivityAt} IS NOT NULL`,
+      );
 
     // Cache repo configs to avoid repeated queries
     const repoConfigCache = new Map<string, typeof repos.$inferSelect | null>();
@@ -441,7 +445,8 @@ export async function sweepPods(): Promise<void> {
     .select()
     .from(tasks)
     .where(
-      sql`${tasks.state} IN ('running', 'provisioning')
+      sql`${tasks.runTarget} = 'cluster'
+              AND ${tasks.state} IN ('running', 'provisioning')
               AND ${tasks.updatedAt} < NOW() - INTERVAL '1 millisecond' * ${STALE_TASK_MS}`,
     );
 

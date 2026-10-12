@@ -41,7 +41,7 @@ beforeEach(() => {
 describe("schedule delivery", () => {
   it("advances and persists with the same transaction and a stable tick identity", async () => {
     expect(await checkDueScheduleTriggers()).toBe(1);
-    expect(mockAdvance).toHaveBeenCalledWith("t", "0 0 * * *", trigger.nextFireAt, tx);
+    expect(mockAdvance).toHaveBeenCalledWith("t", "0 0 * * *", trigger.nextFireAt, tx, undefined);
     expect(mockEnqueue).toHaveBeenCalledWith(
       trigger,
       { source: "schedule", params: { name: "value" } },
@@ -54,6 +54,19 @@ describe("schedule delivery", () => {
     mockAdvance.mockResolvedValue(false);
     expect(await checkDueScheduleTriggers()).toBe(0);
     expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+  it("preserves the timezone when advancing a scheduled occurrence", async () => {
+    mockDue.mockResolvedValue([
+      { ...trigger, config: { ...trigger.config, timezone: "America/Denver" } },
+    ]);
+    expect(await checkDueScheduleTriggers()).toBe(1);
+    expect(mockAdvance).toHaveBeenCalledWith(
+      "t",
+      "0 0 * * *",
+      trigger.nextFireAt,
+      tx,
+      "America/Denver",
+    );
   });
   it("leaves dispatch to the durable worker after saving the occurrence", async () => {
     mockDrain.mockRejectedValue(Error("restart"));

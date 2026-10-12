@@ -162,19 +162,16 @@ struct OverviewView: View {
     @ViewBuilder private var needsYouSection: some View {
         let rows = model.needsYouRows(feed: feed?.rows ?? [])
         if !rows.isEmpty {
-            ForEach(Array(rows.prefix(7).enumerated()), id: \.element.id) { index, row in
-                Section {
+            Section {
+                ForEach(rows.prefix(7)) { row in
                     NavigationLink(value: row.destination) { WorkRowView(row: row) }
                         .listRowBackground(Surface.card)
-                        .listRowSeparator(.hidden)
-                } header: {
-                    if index == 0 {
-                        SectionHeader(title: "Needs you", detail: "\(rows.count)", tone: .accent) { router.openWork(.active) }.textCase(nil)
-                    }
                 }
-            }
-            if rows.count > 7 {
-                Button("\(rows.count - 7) more waiting in Work") { router.openWork(.active) }.font(.footnote)
+                if rows.count > 7 {
+                    Button("\(rows.count - 7) more waiting in Work") { router.openWork(.active) }.font(.footnote)
+                }
+            } header: {
+                SectionHeader(title: "Needs you", detail: "\(rows.count)", tone: .accent) { router.openWork(.active) }.textCase(nil)
             }
         }
     }

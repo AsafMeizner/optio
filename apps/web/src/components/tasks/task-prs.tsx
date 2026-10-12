@@ -19,9 +19,8 @@ function repoName(repoUrl: string): string {
 }
 
 /**
- * The PRs a task opened or tracks. The list shows once a task has more than
- * one (the primary is already the header's PR chip); the "Add PR" input is
- * always one click away.
+ * Every PR a task opened or tracks, including the primary. Rows reflow in
+ * the Details pane; the "Add PR" input is always one click away.
  */
 export function TaskPrs({
   taskId,
@@ -104,55 +103,52 @@ export function TaskPrs({
     </button>
   );
 
-  if (prs.length <= 1) {
-    return <div className="mt-2 flex justify-end">{addForm}</div>;
-  }
-
   return (
-    <div className="mt-2">
-      <div className="flex items-center justify-between mb-1">
-        <h3 className="text-xs font-medium text-text-muted">Pull requests ({prs.length})</h3>
-        {addForm}
-      </div>
-      <ul className="divide-y divide-border rounded-md border border-border bg-bg">
-        {prs.map((pr) => (
-          <li key={pr.id} className="flex items-center gap-2 px-2.5 py-1.5 text-xs group">
-            <PrIcon state={pr.state} className="w-3.5 h-3.5 shrink-0" />
-            <a
-              href={pr.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-medium hover:underline inline-flex items-center gap-1"
-            >
-              #{pr.number}
-              <ExternalLink className="w-3 h-3 opacity-60" />
-            </a>
-            <span className="text-text-muted truncate">{repoName(pr.repoUrl)}</span>
-            {pr.headBranch && (
-              <span className="inline-flex items-center gap-1 text-text-muted truncate min-w-0">
-                <GitBranch className="w-3 h-3 shrink-0" />
-                <span className="truncate font-mono">{pr.headBranch}</span>
-              </span>
-            )}
-            <span className="text-text-muted">{pr.state}</span>
-            {pr.primary && (
-              <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary">primary</span>
-            )}
-            <button
-              onClick={() => void remove(pr)}
-              disabled={busy}
-              className="ml-auto text-text-muted hover:text-error opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-50"
-              title={
-                pr.primary
-                  ? "Stop tracking — the next PR becomes the one Optio follows"
-                  : "Stop tracking"
-              }
-            >
-              Stop tracking
-            </button>
-          </li>
-        ))}
-      </ul>
+    <div className="mt-3 space-y-3">
+      {prs.length === 0 && <p className="text-xs text-text-muted">No pull requests yet.</p>}
+      {prs.length > 0 && (
+        <ul className="divide-y divide-border rounded-lg border border-border bg-bg">
+          {prs.map((pr) => (
+            <li key={pr.id} className="flex flex-wrap items-center gap-2 p-3 text-xs">
+              <PrIcon state={pr.state} className="w-3.5 h-3.5 shrink-0" />
+              <a
+                href={pr.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium hover:underline inline-flex items-center gap-1"
+              >
+                #{pr.number}
+                <ExternalLink className="w-3 h-3 opacity-60" />
+              </a>
+              <span className="text-text-muted">{pr.state}</span>
+              {pr.primary && (
+                <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary">primary</span>
+              )}
+              <button
+                onClick={() => void remove(pr)}
+                disabled={busy}
+                className="ml-auto rounded p-1 text-text-muted hover:bg-bg-hover hover:text-error disabled:opacity-50"
+                aria-label={`Stop tracking PR #${pr.number}`}
+                title={
+                  pr.primary
+                    ? "Stop tracking — the next PR becomes the one Optio follows"
+                    : "Stop tracking"
+                }
+              >
+                <X className="h-3 w-3" />
+              </button>
+              <span className="w-full break-all text-text-muted">{repoName(pr.repoUrl)}</span>
+              {pr.headBranch && (
+                <span className="flex w-full min-w-0 items-start gap-1 text-text-muted">
+                  <GitBranch className="mt-0.5 w-3 h-3 shrink-0" />
+                  <span className="break-all font-mono text-[11px]">{pr.headBranch}</span>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex justify-end">{addForm}</div>
     </div>
   );
 }

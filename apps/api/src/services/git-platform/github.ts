@@ -292,11 +292,12 @@ export class GitHubPlatform implements GitPlatform {
     ri: RepoIdentifier,
     prNumber: number,
     method: "merge" | "squash" | "rebase",
+    expectedHeadSha?: string,
   ): Promise<void> {
     await this.fetchJson(this.url(ri, `/pulls/${prNumber}/merge`), {
       method: "PUT",
       headers: this.headers(true),
-      body: JSON.stringify({ merge_method: method }),
+      body: JSON.stringify({ merge_method: method, sha: expectedHeadSha }),
     });
   }
 

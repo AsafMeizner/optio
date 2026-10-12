@@ -468,6 +468,8 @@ async function applyAutoMergePr(snapshot: WorldSnapshot): Promise<ExecuteOutcome
   }
   const parsed = parsePrUrl(status.prUrl);
   if (!parsed) return { status: "skipped", reason: "unparseable_pr_url" };
+  const headSha = snapshot.pr?.headSha;
+  if (!headSha) return { status: "skipped", reason: "missing_pr_head" };
 
   const { getGitPlatformForRepo } = await import("./git-token-service.js");
   const platformResult = await getGitPlatformForRepo(spec.repoUrl, {}).catch(() => null);
@@ -476,7 +478,43 @@ async function applyAutoMergePr(snapshot: WorldSnapshot): Promise<ExecuteOutcome
   }
   const { platform, ri } = platformResult;
   try {
-    await platform.mergePullRequest(ri, parsed.prNumber, "squash");
+    // Re-read immediately before the write: the head or CI may have changed
+    // since the decision. Never turn an API error into permission to merge.
+    const pr = await platform.getPullRequest(ri, parsed.prNumber);
+    if (pr.headSha !== headSha) return { status: "stale", reason: "pr_head_changed" };
+    if (pr.merged || pr.state !== "open") {
+      return { status: "stale", reason: "pr_state_changed" };
+    }
+    const { determineCheckStatus } = await import("../workers/pr-watcher-worker.js");
+    const checksStatus = determineCheckStatus(await platform.getCIChecks(ri, headSha));
+    if (checksStatus === "pending" || checksStatus === "failing") {
+      return { status: "stale", reason: `pr_checks_${checksStatus}` };
+    }
+
+    // Checks can take a moment to register after a push. Keep supporting
+    // repos without CI, but require a second empty read at least 60s later
+    // for this exact head. Redis shares the observation across replicas and
+    // restarts; expiry just makes us wait again. CodeCommit has no native CI.
+    if (checksStatus === "none" && platform.type !== "codecommit") {
+      const { getRedisClient } = await import("./event-bus.js");
+      const redis = getRedisClient();
+      const key = `optio:auto-merge:no-checks:${taskId}:${parsed.prNumber}:${headSha}`;
+      const now = Date.now();
+      await redis.set(key, String(now), "EX", 3600, "NX");
+      const observedAt = await redis.get(key);
+      const age = observedAt === null ? 0 : now - Number(observedAt);
+      if (!Number.isFinite(age) || age < 60_000) {
+        await enqueueReconcile(snapshot.run.ref, {
+          reason: "auto_merge_waiting_for_checks",
+          delayMs: Number.isFinite(age) ? Math.max(1, 60_000 - age) : 60_000,
+        });
+        return { status: "skipped", reason: "auto_merge_waiting_for_checks" };
+      }
+    }
+
+    // The platform enforces this SHA atomically if another push races the
+    // final read. Manual merges omit it and retain their existing behavior.
+    await platform.mergePullRequest(ri, parsed.prNumber, "squash", headSha);
   } catch (err) {
     const cooldown = await handleGithubWriteBlock(snapshot, err);
     if (cooldown) return cooldown;

@@ -56,6 +56,7 @@ async function requireAgent(req: FastifyRequest, reply: FastifyReply, id: string
 const podLifecycleSchema = z.enum(["always-on", "sticky", "on-demand"]);
 
 const createSchema = z.object({
+  controllerAccess: z.enum(["off", "read", "manage"]).optional(),
   slug: z
     .string()
     .min(1)
@@ -85,6 +86,7 @@ const createSchema = z.object({
 });
 
 const updateSchema = z.object({
+  controllerAccess: z.enum(["off", "read", "manage"]).optional(),
   name: z.string().min(1).optional(),
   description: z.string().nullable().optional(),
   agentRuntime: z.string().optional(),
@@ -213,7 +215,7 @@ export async function persistentAgentRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { owner: _owner, podSecrets: _podSecrets, ...body } = req.body;
+      const { owner: _owner, podSecrets: _podSecrets, controllerAccess, ...body } = req.body;
       const workspaceId = req.user?.workspaceId ?? null;
       if (await foreignRepo(body.repoId, workspaceId)) {
         return reply.code(400).send({ error: "Pick one of your repos" });
@@ -227,6 +229,7 @@ export async function persistentAgentRoutes(rawApp: FastifyInstance) {
       try {
         const agent = await paService.createPersistentAgent({
           ...body,
+          ...(controllerAccess ? { settings: { controllerAccess } } : {}),
           ownerUserId: plan.ownerUserId,
           podSecrets: plan.podSecrets ?? null,
           podLifecycle: body.podLifecycle as PersistentAgentPodLifecycle | undefined,
@@ -283,7 +286,7 @@ export async function persistentAgentRoutes(rawApp: FastifyInstance) {
       if (await foreignRepo(body.repoId, workspaceId)) {
         return reply.code(400).send({ error: "Pick one of your repos" });
       }
-      const { owner: _owner, podSecrets: _podSecrets, ...fields } = body;
+      const { owner: _owner, podSecrets: _podSecrets, controllerAccess, ...fields } = body;
       const plan = await planWorkUpdate(existing, body, workActor(req), {
         agentType: fields.agentRuntime ?? existing.agentRuntime,
         runsOn: "pod",
@@ -294,6 +297,7 @@ export async function persistentAgentRoutes(rawApp: FastifyInstance) {
         id,
         {
           ...fields,
+          ...(controllerAccess ? { settings: { ...existing.settings, controllerAccess } } : {}),
           ...(plan.ownerUserId !== existing.ownerUserId ? { ownerUserId: plan.ownerUserId } : {}),
           ...(plan.podSecrets !== undefined ? { podSecrets: plan.podSecrets } : {}),
           podLifecycle: body.podLifecycle as PersistentAgentPodLifecycle | undefined,

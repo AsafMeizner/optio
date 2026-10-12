@@ -55,7 +55,7 @@ test("sharing explains control, supports revocation and keeps link tokens out of
     await expect(dialog).not.toBeVisible();
     await expect(page.getByRole("button", { name: "Share session", exact: true })).toBeFocused();
     await page.goto(`/shared-session#${token}`);
-    await expect(page).toHaveURL(new RegExp(`/local/${session.id}$`));
+    await expect(page).toHaveURL(new RegExp(`/work/${session.id}$`));
     expect(redeemed).toBe(token);
     expect(
       await page.evaluate(() => sessionStorage.getItem("optio_pending_session_share")),

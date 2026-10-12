@@ -1,5 +1,5 @@
 /**
- * The Work list has a way into the session screen (`/local/:id`, the
+ * The Work list has a way into the session screen (`/work/:id`, the
  * terminal with every session in its rail): the Sessions button, which opens
  * on the session that most needs you.
  */
@@ -30,7 +30,7 @@ test("the Work list opens the session screen", async ({ page, request }) => {
   try {
     await page.goto("/work");
     await page.getByRole("link", { name: /^Sessions/ }).click();
-    await expect(page).toHaveURL(/\/local\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/, { timeout: 30_000 });
     // The session screen: its rail lists the sessions. The row is found by its
     // id: its pin and side-by-side buttons carry the title in their names too.
     const search = page.getByRole("searchbox", { name: "Search sessions" });

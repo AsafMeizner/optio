@@ -123,7 +123,7 @@ export default function LocalAutomationPage() {
     try {
       const res = await api.spawnLocalBlueprint(id);
       toast.success("Automation started", {
-        action: { label: "Open", onClick: () => router.push(`/local/${res.terminal.id}`) },
+        action: { label: "Open", onClick: () => router.push(`/work/${res.terminal.id}`) },
       });
       await refresh();
     } catch (err) {
@@ -403,7 +403,7 @@ export default function LocalAutomationPage() {
                   return (
                     <Link
                       key={r.id}
-                      href={`/local/${r.id}`}
+                      href={`/work/${r.id}`}
                       className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-4 px-4 py-3 bg-bg-card/40 hover:bg-bg-hover/60 transition-colors"
                     >
                       <span className={cn("w-2 h-2 rounded-full", st.dot)} aria-label={st.label} />

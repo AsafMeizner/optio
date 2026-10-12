@@ -1091,6 +1091,9 @@ data class TaskMessageEvent(
     val content: String,
     val mode: Mode,
     val createdAt: String,
+    val senderType: SenderType? = null,
+    val senderName: String? = null,
+    val senderAddress: String? = null,
 ) : WsEvent {
     @Serializable(with = Mode.Companion::class)
     enum class Mode(override val raw: String) : RawEnum {
@@ -1100,6 +1103,16 @@ data class TaskMessageEvent(
         UNKNOWN("__unknown__");
 
         companion object : RawEnumSerializer<Mode>("dev.optio.core.model.TaskMessageEvent.Mode", entries, UNKNOWN)
+    }
+
+    @Serializable(with = SenderType.Companion::class)
+    enum class SenderType(override val raw: String) : RawEnum {
+        USER("user"),
+        AGENT("agent"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<SenderType>("dev.optio.core.model.TaskMessageEvent.SenderType", entries, UNKNOWN)
     }
 }
 
@@ -4142,8 +4155,21 @@ data class TaskMessage(
     val deliveredAt: Instant? = null,
     val ackedAt: Instant? = null,
     val deliveryError: String? = null,
+    val senderType: SenderType? = null,
+    val senderName: String? = null,
+    val senderAddress: String? = null,
     val user: User? = null,
 ) {
+    @Serializable(with = SenderType.Companion::class)
+    enum class SenderType(override val raw: String) : RawEnum {
+        USER("user"),
+        AGENT("agent"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<SenderType>("dev.optio.core.model.TaskMessage.SenderType", entries, UNKNOWN)
+    }
+
     @Serializable
     data class User(
         val id: String,

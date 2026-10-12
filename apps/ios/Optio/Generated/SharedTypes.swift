@@ -2482,6 +2482,20 @@ public struct TaskMessageEvent: Codable, Hashable, Sendable {
         }
     }
 
+    public enum SenderType: String, Codable, Hashable, Sendable, CaseIterable {
+        case user = "user"
+        case agent = "agent"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [SenderType] = [.user, .agent]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = SenderType(rawValue: raw) ?? .unknown
+        }
+    }
+
     public let type: String
     public let taskId: String
     public let messageId: String
@@ -2490,6 +2504,9 @@ public struct TaskMessageEvent: Codable, Hashable, Sendable {
     public let content: String
     public let mode: Mode
     public let createdAt: String
+    public let senderType: SenderType?
+    public let senderName: String?
+    public let senderAddress: String?
 
     private enum CodingKeys: String, CodingKey {
         case type = "type"
@@ -2500,6 +2517,9 @@ public struct TaskMessageEvent: Codable, Hashable, Sendable {
         case content = "content"
         case mode = "mode"
         case createdAt = "createdAt"
+        case senderType = "senderType"
+        case senderName = "senderName"
+        case senderAddress = "senderAddress"
     }
 
     public init(
@@ -2510,7 +2530,10 @@ public struct TaskMessageEvent: Codable, Hashable, Sendable {
         userDisplayName: String? = nil,
         content: String,
         mode: Mode,
-        createdAt: String
+        createdAt: String,
+        senderType: SenderType? = nil,
+        senderName: String? = nil,
+        senderAddress: String? = nil
     ) {
         self.type = type
         self.taskId = taskId
@@ -2520,6 +2543,9 @@ public struct TaskMessageEvent: Codable, Hashable, Sendable {
         self.content = content
         self.mode = mode
         self.createdAt = createdAt
+        self.senderType = senderType
+        self.senderName = senderName
+        self.senderAddress = senderAddress
     }
 }
 
@@ -8840,6 +8866,20 @@ public enum TaskMessageMode: String, Codable, Hashable, Sendable, CaseIterable {
 }
 
 public struct TaskMessage: Codable, Hashable, Sendable {
+    public enum SenderType: String, Codable, Hashable, Sendable, CaseIterable {
+        case user = "user"
+        case agent = "agent"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [SenderType] = [.user, .agent]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = SenderType(rawValue: raw) ?? .unknown
+        }
+    }
+
     public struct User: Codable, Hashable, Sendable {
         public let id: String
         public let displayName: String
@@ -8868,6 +8908,9 @@ public struct TaskMessage: Codable, Hashable, Sendable {
     public let deliveredAt: Date?
     public let ackedAt: Date?
     public let deliveryError: String?
+    public let senderType: SenderType?
+    public let senderName: String?
+    public let senderAddress: String?
     public let user: User?
 
     private enum CodingKeys: String, CodingKey {
@@ -8881,6 +8924,9 @@ public struct TaskMessage: Codable, Hashable, Sendable {
         case deliveredAt = "deliveredAt"
         case ackedAt = "ackedAt"
         case deliveryError = "deliveryError"
+        case senderType = "senderType"
+        case senderName = "senderName"
+        case senderAddress = "senderAddress"
         case user = "user"
     }
 
@@ -8895,6 +8941,9 @@ public struct TaskMessage: Codable, Hashable, Sendable {
         deliveredAt: Date? = nil,
         ackedAt: Date? = nil,
         deliveryError: String? = nil,
+        senderType: SenderType? = nil,
+        senderName: String? = nil,
+        senderAddress: String? = nil,
         user: User? = nil
     ) {
         self.id = id
@@ -8907,6 +8956,9 @@ public struct TaskMessage: Codable, Hashable, Sendable {
         self.deliveredAt = deliveredAt
         self.ackedAt = ackedAt
         self.deliveryError = deliveryError
+        self.senderType = senderType
+        self.senderName = senderName
+        self.senderAddress = senderAddress
         self.user = user
     }
 }

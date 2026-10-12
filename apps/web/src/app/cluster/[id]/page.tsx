@@ -160,7 +160,7 @@ export default function PodDetailPage({ params }: { params: Promise<{ id: string
               {pod.tasks.map((task: any) => (
                 <Link
                   key={task.id}
-                  href={`/tasks/${task.id}`}
+                  href={`/work/${task.id}`}
                   className="flex items-center justify-between gap-4 px-4 py-3 bg-bg-card/40 hover:bg-bg-hover/60 transition-colors"
                 >
                   <div className="flex items-center gap-3 min-w-0">

@@ -18,6 +18,7 @@ const SESSION_COOKIE_NAME = "optio_session";
 async function proxyRequest(request: NextRequest) {
   const url = new URL(request.url);
   const targetUrl = `${INTERNAL_API_URL}${url.pathname}${url.search}`;
+  const isMcp = url.pathname === "/api/mcp";
 
   const headers = new Headers();
 
@@ -27,10 +28,18 @@ async function proxyRequest(request: NextRequest) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
+  if (isMcp) {
+    // MCP is a bearer-authenticated integration, not a cookie-authenticated
+    // UI request. Preserve its Origin and Host for the controller's checks.
+    for (const name of ["authorization", "origin", "host", "mcp-protocol-version"]) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+  }
 
   // Inject session token as Bearer header (from HttpOnly cookie)
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
-  if (sessionToken) {
+  if (sessionToken && !isMcp) {
     headers.set("Authorization", `Bearer ${sessionToken}`);
   }
 
@@ -43,14 +52,40 @@ async function proxyRequest(request: NextRequest) {
     const fetchInit: RequestInit = {
       method: request.method,
       headers,
-      redirect: isAuthRedirect ? "manual" : "follow",
+      redirect: isAuthRedirect || isMcp ? "manual" : "follow",
     };
 
     // Forward request body for non-GET/HEAD methods
     if (request.method !== "GET" && request.method !== "HEAD") {
-      fetchInit.body = request.body;
-      // @ts-expect-error duplex is required for streaming request bodies in Node
-      fetchInit.duplex = "half";
+      if (isMcp) {
+        // Undici may replay a body on an authentication challenge. A raw
+        // stream has no replayable source and turns a legitimate 401 into a
+        // fetch failure. MCP RPCs are small: buffer within the API's limit.
+        const reader = request.body?.getReader();
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        while (reader) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > 256 * 1024) {
+            await reader.cancel();
+            return NextResponse.json({ error: "MCP request too large" }, { status: 413 });
+          }
+          chunks.push(value);
+        }
+        const body = new Uint8Array(size);
+        let at = 0;
+        for (const chunk of chunks) {
+          body.set(chunk, at);
+          at += chunk.byteLength;
+        }
+        fetchInit.body = body.buffer;
+      } else {
+        fetchInit.body = request.body;
+        // @ts-expect-error duplex is required for streaming request bodies in Node
+        fetchInit.duplex = "half";
+      }
     }
 
     const apiRes = await fetch(targetUrl, fetchInit);
@@ -67,6 +102,7 @@ async function proxyRequest(request: NextRequest) {
     // headers from the API that could conflict with the web origin.
     const responseHeaders = new Headers();
     const safeResponseHeaders = ["content-type", "content-length", "cache-control", "etag"];
+    if (isMcp) safeResponseHeaders.push("www-authenticate", "allow", "mcp-protocol-version");
     for (const name of safeResponseHeaders) {
       const value = apiRes.headers.get(name);
       if (value) responseHeaders.set(name, value);

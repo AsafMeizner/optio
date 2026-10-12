@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useWorkSession } from "@/components/work-detail/session-context";
+import { terminalWorkHref } from "@/lib/work-href";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api-client";
 import { BellRing, Columns2, X, Pin, Laptop, Zap } from "lucide-react";
@@ -18,7 +20,7 @@ import { SessionRailHeader } from "./session-rail-header";
 
 /**
  * Session list inside the shared sidebar while you're in a terminal
- * (/local/:id), so jumping between many sessions is one click or one
+ * (/work/:id), so jumping between many sessions is one click or one
  * keystroke. Ordered by when you last typed into a session (else when it
  * was made), live above Finished, so rows stay put while agents flip
  * between working and needs-you; searchable by title, dir, host, or the
@@ -55,7 +57,8 @@ function groupTerminals(terminals: any[]): Group[] {
 export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
-  const activeId = pathname.startsWith("/local/") ? pathname.slice("/local/".length) : null;
+  const session = useWorkSession();
+  const activeId = session.pathname === pathname ? session.terminalId : null;
   const searchParams = useSearchParams();
   const splitState = useMemo(
     () => parseSplit(searchParams, activeId ?? undefined),
@@ -144,17 +147,24 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
     (id: string, opts: { split?: boolean } = {}) => {
       if (opts.split && activeId && id !== activeId) {
         if (shown.size >= MAX_PANES) return;
-        router.push(splitHref(activeId, addToSplit(activeId, splitState, id), splitState.layout));
+        router.push(
+          splitHref(
+            activeId,
+            addToSplit(activeId, splitState, id),
+            splitState.layout,
+            `${pathname}?${searchParams}`,
+          ),
+        );
       } else if (shown.has(id)) {
         const pane = document.querySelector<HTMLElement>(`[data-session-pane="${id}"]`);
         pane?.scrollIntoView({ block: "nearest" });
         pane?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
       } else {
-        router.push(splitHref(id, [], splitState.layout));
+        router.push(terminalWorkHref(terminals.find((t) => t.id === id) ?? { id }));
       }
       onNavigate?.();
     },
-    [router, onNavigate, activeId, splitState, shown],
+    [router, onNavigate, activeId, splitState, shown, pathname, searchParams, terminals],
   );
 
   // Keyboard switching. Capture phase on window so it wins over xterm's
@@ -424,6 +434,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                                     activeId!,
                                     splitState.split.filter((id) => id !== child.id),
                                     splitState.layout,
+                                    `${pathname}?${searchParams}`,
                                   ),
                                 )
                               }

@@ -862,6 +862,13 @@
       "when": 1792030001000,
       "tag": "1792030001_usage_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1792030002000,
+      "tag": "1792030002_agent_messaging",
+      "breakpoints": true
     }
   ]
 }

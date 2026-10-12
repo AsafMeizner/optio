@@ -1,3 +1,4 @@
+import { terminalWorkHref } from "@/lib/work-href";
 import Link from "next/link";
 import { AlertTriangle, GitPullRequest, Laptop, Zap } from "lucide-react";
 import { formatRelativeTime } from "@/lib/utils";
@@ -24,7 +25,7 @@ export function collectNeedsYou(localTerminals: any[], attentionTasks: any[]): N
     items.push({
       key: `local-${t.id}`,
       kind: "local",
-      href: `/local/${t.id}`,
+      href: terminalWorkHref(t),
       title: t.title,
       reason: attentionLabel(t.attentionReason),
       where: dirTail(t.dir),
@@ -35,7 +36,7 @@ export function collectNeedsYou(localTerminals: any[], attentionTasks: any[]): N
     items.push({
       key: `task-${task.id}`,
       kind: "task",
-      href: `/tasks/${task.id}`,
+      href: `/work/${task.id}`,
       title: task.title,
       reason: task.errorMessage ?? "needs attention",
       where: task.repoUrl ? task.repoUrl.replace(/^https?:\/\/[^/]+\//, "") : null,

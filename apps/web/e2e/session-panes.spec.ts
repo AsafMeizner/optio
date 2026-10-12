@@ -46,7 +46,7 @@ test("terminal here opens a shell in the same directory, groups locally and ungr
     await expect(other.locator("[data-session-group]")).toHaveCount(0);
     await other.close();
     await group.getByRole("button", { name: `Ungroup ${terminal.title}`, exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`/local/${session.id}$`));
+    await expect(page).toHaveURL(new RegExp(`/work/${session.id}$`));
     const after = (await (await request.get(`${API}/api/local/terminals/${terminal.id}`)).json())
       .terminal;
     expect(after.state).toBe("running");

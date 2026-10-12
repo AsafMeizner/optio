@@ -45,7 +45,10 @@ function triggerFor(d: WorkDraft) {
   if (t.type === "manual") return null;
   const config: Record<string, unknown> =
     t.type === "schedule"
-      ? { cronExpression: t.cronExpression!.trim() }
+      ? {
+          cronExpression: t.cronExpression!.trim(),
+          ...(t.timezone?.trim() ? { timezone: t.timezone.trim() } : {}),
+        }
       : t.type === "webhook"
         ? { path: t.webhookPath }
         : {

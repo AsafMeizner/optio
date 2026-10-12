@@ -135,7 +135,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
 
   const resourceLink =
     item.resourceType === "task" && item.resourceId
-      ? `/tasks/${item.resourceId}`
+      ? `/work/${item.resourceId}`
       : item.resourceType === "workflow" && item.resourceId
         ? `/jobs/${item.resourceId}`
         : item.resourceType === "session" && item.resourceId

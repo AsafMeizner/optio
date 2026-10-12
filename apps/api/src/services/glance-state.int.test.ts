@@ -14,7 +14,7 @@ vi.hoisted(() => {
 
 import { sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { users } from "../db/schema.js";
+import { users, localHosts, localTerminals } from "../db/schema.js";
 import { apnsService } from "./apns-service.js";
 import { registerLiveActivityToken } from "./apns-store.js";
 import type { FakeApnsTransport } from "./apns-transport.js";
@@ -129,6 +129,67 @@ describe("glance_state rows", () => {
 });
 
 describe("timers across instances", () => {
+  it("an older quiet hook cannot overwrite a newer running hook", async () => {
+    const u = await makeUser("ordered-watch");
+    await registerLiveActivityToken(u.id, {
+      kind: "watch",
+      token: hex("2c"),
+      environment: "sandbox",
+    });
+    // Seed directly to control the two hooks' interleaving without unrelated
+    // fire-and-forget producer hooks.
+    const [host] = await db
+      .insert(localHosts)
+      .values({
+        userId: u.id,
+        name: "ordered",
+        hostname: "ordered",
+        platform: "darwin",
+      })
+      .returning();
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const quietComputed = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const hasWatch = apnsService.hasWatchToken.bind(apnsService);
+    const spy = vi.spyOn(apnsService, "hasWatchToken").mockImplementationOnce(async (...args) => {
+      entered();
+      await held;
+      return hasWatch(...args);
+    });
+    const quiet = onLocalHostChanged({ ...host, state: "online" });
+    let running: Promise<void> | undefined;
+    try {
+      await quietComputed;
+      const [terminal] = await db
+        .insert(localTerminals)
+        .values({
+          hostId: host.id,
+          userId: u.id,
+          title: "running",
+          dir: "/tmp/ordered",
+          spec: { kind: "agent", agent: "claude-code", prompt: "fix" },
+          state: "running",
+          attentionState: "working",
+        })
+        .returning();
+      running = onLocalTerminalChanged(terminal);
+      // Before the fix the newer hook finishes first; after it, the newer
+      // hook waits for the older computation to release the user's lease.
+      await Promise.race([running, new Promise((resolve) => setTimeout(resolve, 1000))]);
+    } finally {
+      release();
+      await Promise.all([quiet, running]);
+      spy.mockRestore();
+    }
+    expect((await getGlance<{ count: number }>(`running:${u.id}`))?.value.count).toBe(1);
+    expect(await getGlance(`watch-end:${u.id}`)).toBeNull();
+  });
+
   it("the Watch's quiet-period end, set by the hooks, fires on a sweep held by another instance", async () => {
     const u = await makeUser("watch");
     await registerFcmDevice(u.id, { token: fcmToken("G"), appId: "dev.optio.android" });

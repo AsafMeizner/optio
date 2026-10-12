@@ -24,6 +24,8 @@ export interface IdOverrides {
 export type WorkReviewTrigger = "on_pr" | "on_ci_pass";
 
 export interface WorkSettings {
+  /** Built-in Optio controller MCP. Unset/off gives no controller access. */
+  controllerAccess?: "off" | "read" | "manage";
   /** Connections (ids) on top of the ones the repo's assignments give, or left out. */
   connections?: IdOverrides;
   /** MCP servers (ids) on top of the workspace's and the repo's, or left out. */
@@ -104,6 +106,9 @@ function cleanIds(o: IdOverrides | undefined): IdOverrides | undefined {
 export function cleanWorkSettings(s: WorkSettings | null | undefined): WorkSettings | null {
   if (!s) return null;
   const out: WorkSettings = {};
+  if (s.controllerAccess && s.controllerAccess !== "off") {
+    out.controllerAccess = s.controllerAccess;
+  }
   const connections = cleanIds(s.connections);
   if (connections) out.connections = connections;
   const mcpServers = cleanIds(s.mcpServers);

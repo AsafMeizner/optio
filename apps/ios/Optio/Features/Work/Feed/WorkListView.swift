@@ -8,6 +8,7 @@ struct WorkListView: View {
     @Environment(APIClient.self) private var api
     @Environment(AppRouter.self) private var router
     @Environment(SessionStore.self) private var session
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var model: WorkFeedModel?
     @State private var view: WorkView = .active
     @State private var query = ""
@@ -68,7 +69,7 @@ struct WorkListView: View {
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
-                HStack(spacing: Spacing.s) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Spacing.s), count: typeSize.isAccessibilitySize ? 1 : 3), spacing: Spacing.s) {
                     focusTile("Needs you", count: counts.needsYou, status: .needsYou, tone: .accent)
                     focusTile("Running", count: counts.running, status: .running, tone: .working)
                     focusTile("Ready", count: counts.waiting, status: .waiting, tone: .success)
@@ -133,6 +134,12 @@ struct WorkListView: View {
         }
     }
 
+    private var focusLayout: AnyLayout {
+        typeSize.isAccessibilitySize
+            ? AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: Spacing.s))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+    }
+
     private func focusTile(_ label: String, count: Int, status: WorkStatus, tone: Tone) -> some View {
         Button {
             withAnimation(.snappy) {
@@ -141,15 +148,25 @@ struct WorkListView: View {
                 focus = next
             }
         } label: {
-            VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text("\(count)").font(.title2.weight(.semibold).monospacedDigit())
+            focusLayout {
+                Text("\(count)").font(.statValue)
                     .foregroundStyle(count > 0 ? tone.textStyle : AnyShapeStyle(AppTheme.secondaryText))
-                Text(label).font(.caption.weight(.medium)).foregroundStyle(AppTheme.secondaryText)
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Text(label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Spacing.m)
-            .background(focus == status ? AppTheme.accent.opacity(0.08) : Surface.card, in: Radius.cardShape)
-            .overlay { Radius.cardShape.strokeBorder(focus == status ? AppTheme.accent : Surface.border, lineWidth: 1) }
+            .padding(.horizontal, Spacing.l)
+            .padding(.vertical, Spacing.m)
+            .background(focus == status ? AppTheme.accent.opacity(0.08) : Surface.card, in: Radius.metricShape)
+            .overlay { Radius.metricShape.strokeBorder(focus == status ? AppTheme.accent : Surface.border, lineWidth: 1) }
+            .contentShape(Radius.metricShape)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(label): \(count)")

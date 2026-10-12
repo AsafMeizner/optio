@@ -1,9 +1,9 @@
 /**
  * Split view state belongs to the current URL, never to stored sessions.
  * Reloading this view keeps it; other devices open independent sessions:
- *   /local/<primary>?split=<id2>,<id3>&layout=cols|rows
- * The primary pane is the route's id (the rail's "active" session); `split`
- * lists the extra panes. At most MAX_PANES terminals are shown at once.
+ *   /work/<primary>?split=<id2>,<id3>&layout=cols|rows
+ * The primary pane is the resolved session: a standalone terminal, the task's
+ * current terminal, or its selected `?session=` attempt. `split` lists extra panes. At most MAX_PANES terminals are shown at once.
  */
 
 export type SplitLayout = "cols" | "rows";
@@ -34,13 +34,22 @@ export function parseSplit(
   return { split, layout };
 }
 
-export function splitHref(primary: string, split: string[], layout: SplitLayout): string {
+export function splitHref(
+  primary: string,
+  split: string[],
+  layout: SplitLayout,
+  baseHref = `/work/${primary}`,
+): string {
   const extra = split.filter((id) => id !== primary).slice(0, MAX_PANES - 1);
-  const qs = new URLSearchParams();
+  const [base, hash] = baseHref.split("#", 2);
+  const [path, query] = base!.split("?", 2);
+  const qs = new URLSearchParams(query);
+  qs.delete("split");
+  qs.delete("layout");
   if (extra.length > 0) qs.set("split", extra.join(","));
   if (extra.length > 0 && layout === "rows") qs.set("layout", "rows");
   const q = qs.toString();
-  return `/local/${primary}${q ? `?${q}` : ""}`;
+  return `${path}${q ? `?${q}` : ""}${hash ? `#${hash}` : ""}`;
 }
 
 /** Add `id` as an extra pane next to `primary`; drops the oldest extra when full. */

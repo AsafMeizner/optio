@@ -142,6 +142,9 @@ export interface TaskMessageEvent {
   content: string;
   mode: "soft" | "interrupt";
   createdAt: string;
+  senderType?: "user" | "agent";
+  senderName?: string | null;
+  senderAddress?: string | null;
 }
 
 export interface TaskMessageDeliveredEvent {

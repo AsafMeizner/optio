@@ -320,6 +320,7 @@ export function startWorkflowWorker() {
           ownerUserId: workflowUserId,
           settings: workflow.settings,
           runId: workflowRunId,
+          controllerRunKind: "work-run" as const,
         };
         Object.assign(
           env,

@@ -543,6 +543,7 @@ export function startTaskWorker() {
               ownerUserId: runOwnerUserId,
               settings: task.settings,
               runId: task.id,
+              ...(task.taskType === "coding" ? { controllerRunKind: "work-run" as const } : {}),
             },
             log,
             agentConfig.setupFiles,

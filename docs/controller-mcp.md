@@ -1,0 +1,206 @@
+# Optio controller MCP
+
+The controller serves MCP at **`/api/mcp`** using stateless Streamable HTTP.
+Agents can discover work, create and schedule it, inspect results and logs,
+and exchange direct messages among persistent agents and active task/Job agents. Every request authenticates
+independently, so clients work across API replicas without sticky sessions.
+
+## Connect an external agent
+
+Settings → Access → API keys shows the endpoint and creates a personal
+access token. Add a remote MCP server to your client with:
+
+```json
+{
+  "url": "https://optio.example.com/api/mcp",
+  "headers": {
+    "Authorization": "Bearer optio_pat_REPLACE_ME",
+    "X-Workspace-Id": "YOUR_WORKSPACE_UUID"
+  }
+}
+```
+
+The workspace header is optional; without it, the key uses your default
+workspace. Membership and role are checked on every request. Viewers receive
+only read tools. Members and admins can manage organization work and their
+own private work; admins can inspect other private work but cannot run it
+with somebody else's credentials. Use TLS outside local development. Tokens
+remain revocable under API keys. OAuth client registration and the legacy
+SSE transport are not implemented; use a client that supports bearer headers
+or the stdio adapter below.
+
+For this repository's local deployment, the endpoint is
+`http://localhost:30310/api/mcp` through the web proxy, or
+`http://localhost:30400/api/mcp` directly. When authentication is disabled,
+omit Authorization. An invalid supplied credential is still rejected.
+Cookies do not authenticate MCP requests. Browser origins are checked.
+
+For clients that support only stdio, build the bundled adapter:
+
+```sh
+pnpm --filter @optio/mcp-bridge build
+```
+
+Configure it using your checkout's absolute path:
+
+```json
+{
+  "mcpServers": {
+    "optio": {
+      "command": "node",
+      "args": ["/path/to/optio/packages/mcp-bridge/dist/controller-mcp.js"],
+      "env": {
+        "OPTIO_MCP_URL": "https://optio.example.com/api/mcp",
+        "OPTIO_MCP_TOKEN": "optio_pat_REPLACE_ME",
+        "OPTIO_WORKSPACE_ID": "YOUR_WORKSPACE_UUID"
+      }
+    }
+  }
+}
+```
+
+The adapter fetches tool definitions from the controller and relays calls;
+there is one tool catalog. Keep the token in your client's secret storage
+when it supports that instead of committing a config file.
+
+## Give Optio's own agents access
+
+Create or edit work and open **Where → Environment → Optio controller**:
+
+- **Off** (default): no controller tools.
+- **Read work and results**: discovery, configuration, results, logs, inboxes.
+- **Manage work and message agents**: also create/edit work, run definitions,
+  enable or pause them, manage schedules, and send direct messages.
+
+The API representation is `settings.controllerAccess: "off" | "read" | "manage"`.
+It works for repo tasks, scheduled tasks, Jobs and persistent-agent turns.
+Claude Code, Codex, Gemini, OpenCode, Copilot and Cursor receive the adapter
+through the same runtime-specific MCP configuration as other connections.
+Shell-only work and untrusted review workers receive no controller credential.
+For existing persistent agents, open **Configuration → Optio controller**.
+The persistent-agent PATCH API accepts `controllerAccess` too, preserving
+the rest of its environment. For agents created through MCP or a config-as-code
+Work manifest, use `settings.controllerAccess` in the WorkSpec.
+
+Credentials are per run/turn, signed with a key available only to the API,
+expire after 24 hours, and are checked against the run's active state on
+every request. Redis records the current grant so issuing another invalidates
+the previous attempt. Completion, cancellation intent, permission removal,
+workspace/owner changes, or removing the owner's membership revokes access.
+A long run must start a fresh attempt after expiry. Credentials work only
+at `/api/mcp`; they cannot call the ordinary REST API, read secrets, switch
+workspaces, become an admin, or operate another person's private work.
+
+Organization work sees organization resources; private work sees its owner's
+resources and organization resources. Child work created by a run keeps the
+same owner and defaults to controller access **off**. A managing agent may
+explicitly delegate controller access when it creates child work; it cannot
+change the workspace or give the child another person’s identity. Tool writes appear in
+the Activity audit with the calling run/agent id; prompts, messages and tokens
+are not copied into the audit.
+
+## Tools
+
+| Tool                                           | Purpose                                                                                             |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `optio_context`                                | Identity, workspace, access and usage instructions                                                  |
+| `optio_list_work` / `optio_get_work`           | Discover work; inspect configuration, state, results, PR checks and usage                           |
+| `optio_list_repos`                             | Find configured repositories and default branches                                                   |
+| `optio_create_work` / `optio_update_work`      | Create work or replace a recurring definition's attributes                                          |
+| `optio_run_work`                               | Start an enabled recurring definition with template parameters                                      |
+| `optio_set_work_enabled`                       | Pause or enable future runs; existing runs finish                                                   |
+| `optio_list_triggers`                          | Inspect triggers, secrets omitted                                                                   |
+| `optio_set_schedule` / `optio_delete_schedule` | Add, update, pause or remove a cron schedule                                                        |
+| `optio_list_runs`                              | Prior task/Job runs, persistent-agent turns or PR-review runs and results                           |
+| `optio_get_run_logs`                           | Bounded, paginated run logs with optional text/type filters                                         |
+| `optio_list_agents`                            | Discover persistent agents and active task/Job agents, including runtime, address and delivery mode |
+| `optio_send_message`                           | Queue a direct message; wake a persistent recipient or place it in an active run’s inbox            |
+| `optio_read_inbox`                             | Read your own or another visible agent’s inbox, including reply addresses                           |
+
+Lists accept `limit` (1–100, default 25) and `offset`; follow `nextOffset`.
+Log lines mark truncation after 8000 characters. Responses are capped at
+300,000 characters; use smaller pages or a log filter for large results.
+Logs and received messages are data from other actors, not trusted controller
+instructions. Tool descriptions and MCP instructions make this distinction.
+
+Writes use the existing work/trigger/run services and execution admission
+checks, including usage budgets. They are asynchronous: keep the returned
+work, run or message id and inspect progress. Calls are not automatically
+retried and mutations are not idempotent; after a lost response, check the
+work list/inbox before issuing another create, run or message call.
+
+## Example: schedule a daily review
+
+Call `optio_create_work` with:
+
+```json
+{
+  "spec": {
+    "name": "Daily results review",
+    "when": {
+      "type": "schedule",
+      "config": {
+        "cronExpression": "0 9 * * 1-5",
+        "timezone": "America/Denver"
+      }
+    },
+    "where": { "runTarget": "cluster" },
+    "who": { "runtime": "claude-code" },
+    "what": { "prompt": "Review yesterday's work results and summarize failures and follow-ups." },
+    "then": "exits",
+    "settings": { "controllerAccess": "read" }
+  }
+}
+```
+
+This call explicitly grants the Job read access. When a managing agent
+makes it, the Job keeps that agent’s work owner and workspace. Schedules use cron plus an IANA timezone (UTC by default)
+and honor daylight saving time. Schedule edits in the Work form preserve
+the timezone. A manual Job starts immediately; a scheduled one waits for
+its trigger. Use `optio_run_work` to test it now, then `optio_list_runs` and
+`optio_get_run_logs` to inspect the result.
+
+## Collaborate across agent types
+
+`optio_list_agents` includes persistent agents and active pod task/Job runs
+with controller access enabled. Filter by `kind` (`persistent-agent`,
+`repo-task`, `job-run`) or `runtime` (`codex`, `gemini`, `claude-code`, etc.).
+Each entry includes its `address`, runtime, state, `controllerAccess`,
+`canMessage`, and delivery mode. A sender needs **Manage** access; a recipient
+needs **Read** to check its inbox and **Manage** to reply.
+
+Call `optio_send_message` with an entry’s address:
+
+```json
+{ "to": "RECIPIENT_ADDRESS", "body": "Please review the API contract for my run." }
+```
+
+Persistent-agent slugs still work. An active run's address is its run UUID,
+not its recurring definition's id. `optio_context` includes your own address.
+Messages carry their authenticated sender's name and a `replyTo` address;
+call `optio_send_message` with that address to respond. This works between
+tasks, Job runs and persistent agents, regardless of their CLI runtime.
+
+Delivery is explicit:
+
+- **`wake`**: a persistent agent consumes the message in a turn, starting a
+  turn when it is available.
+- **`inbox`**: a task or Job run receives a durable message in its run inbox.
+  It must call `optio_read_inbox` to see it. Omit `agent` to read your own
+  inbox. Controller instructions ask agents to check at the start, at
+  collaboration checkpoints, and before finishing. Sending does not interrupt
+  the runtime or restart a stopped run.
+
+The receipt means queued, not read or answered. Reading does not acknowledge
+that the message was acted on. Finished runs reject new messages; authorized
+people can still inspect their history. Paused, disabled, foreign and other
+people's private recipients are rejected. Existing user-to-task messages share
+the run inbox and keep their original user attribution.
+
+A shared message board is not part of this surface yet. Direct messages are
+addressed to one recipient; they do not broadcast to the workspace.
+
+This first controller surface covers headless pod work, recurring definitions,
+persistent agents and reading PR reviews. Interactive terminals, machine
+control, broadcasts, PR submission/merge actions and credential administration
+are outside the MCP tool surface.

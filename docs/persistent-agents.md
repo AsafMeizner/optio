@@ -79,9 +79,9 @@ When a turn runs, drained messages are formatted into the prompt as:
 ## Inter-agent HTTP API (called from inside agent pods)
 
 Every PA pod gets `OPTIO_API_URL` and `OPTIO_AGENT_TOKEN` env vars. The
-agent's `agents.md` operator manual documents the verbs and the agent learns
-the API on its own — no special MCP server required (Scion's "agents learn
-the CLI" philosophy).
+agent's `agents.md` operator manual can document these verbs. For native tool
+discovery, enable **Optio controller → Manage work and message agents** under
+Work → Environment; see [Controller MCP](controller-mcp.md).
 
 | Verb                                             | Purpose                                |
 | ------------------------------------------------ | -------------------------------------- |
@@ -90,8 +90,11 @@ the CLI" philosophy).
 | `POST /api/internal/persistent-agents/broadcast` | Broadcast to all peers: `{ body }`     |
 | `GET  /api/internal/persistent-agents/inbox`     | Read your own recent messages          |
 
-Auth: `X-Optio-Agent-Token: $OPTIO_AGENT_TOKEN` header. v0.4 uses the agent's
-own UUID as the token; a follow-up will swap to per-turn signed tokens.
+Auth: `X-Optio-Agent-Token: $OPTIO_AGENT_TOKEN` header. Each turn receives a
+signed, expiring credential, checked against its live state and owner. It
+stops working when the turn finishes, and cannot authenticate to the MCP or
+normal user APIs. Agent UUIDs no longer authenticate. Turns already running
+when this change is deployed must finish and wake again to get a credential.
 
 ## Wake sources
 
@@ -198,11 +201,6 @@ id), with `keep_warm_until` for the cleanup worker (null = always-on).
 
 - Native session-resume (`claude --resume <id>`) for context continuity within
   the same agent runtime, when sticky/always-on pods are used.
-- Replace the agent-id-as-token shortcut with per-turn signed tokens that
-  expire on turn completion.
-- A proper stdio MCP server (`@optio/mcp-agents`) wrapping the same HTTP
-  verbs, auto-injected into PA pods via `.mcp.json`.
-- Per-agent permission scoping for inter-agent messaging (currently
-  workspace-wide).
+- Optional peer allowlists within the existing workspace and owner boundary.
 - The Sessions UX (terminal + chat) as a rendering layer for agents with a
   repo.

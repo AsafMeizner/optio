@@ -15,6 +15,17 @@ describe("isTaskStalled", () => {
     expect(isTaskStalled({ state: "running" }, now)).toBe(false);
   });
 
+  it("does not infer a Local stall from its old task-row timestamp", () => {
+    const task = {
+      state: "running",
+      runTarget: "local",
+      lastActivityAt: new Date("2026-04-07T11:00:00Z"),
+    };
+    expect(isTaskStalled(task, now)).toBe(false);
+    expect(getSilentDuration(task, now)).toBe(0);
+    expect(isTaskStalled({ ...task, runTarget: "cluster" }, now)).toBe(true);
+  });
+
   it("returns false when within threshold", () => {
     // 4 minutes silent, 5 min threshold
     const lastActivity = new Date("2026-04-07T11:56:00Z");

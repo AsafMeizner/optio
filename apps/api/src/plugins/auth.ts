@@ -72,6 +72,8 @@ function isSelfScopedMutation(path: string): boolean {
 
 /** Exact routes that are always public. */
 const PUBLIC_ROUTES = new Set([
+  // MCP authenticates PATs / scoped run credentials itself, including read-only POSTs.
+  "/api/mcp",
   "/api/health",
   "/api/config/schema.json",
   "/api/setup/status",

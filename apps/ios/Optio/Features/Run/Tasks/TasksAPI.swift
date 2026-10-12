@@ -87,9 +87,9 @@ extension APIClient {
         try await post("/api/tasks/\(id)/message", body: B(content: content, mode: mode))
     }
 
-    func taskLogs(_ id: String, limit: Int = 2000) async throws -> [TaskLogRow] {
+    func taskLogs(_ id: String, limit: Int = 2000, offset: Int = 0) async throws -> [TaskLogRow] {
         struct R: Decodable { var logs: [TaskLogRow] }
-        return try await get("/api/tasks/\(id)/logs", query: ["limit": String(limit)], as: R.self).logs
+        return try await get("/api/tasks/\(id)/logs", query: ["limit": String(limit), "offset": String(offset)], as: R.self).logs
     }
 
     func taskEvents(_ id: String) async throws -> [TaskEvent] {

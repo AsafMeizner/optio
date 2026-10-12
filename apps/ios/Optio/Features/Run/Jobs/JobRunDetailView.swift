@@ -61,7 +61,9 @@ struct JobRunDetailView: View {
         .task {
             await model.load(runId, jobId: jobId, api: api)
             logs.onStateChanged = { Task { await model.load(runId, jobId: jobId, api: api) } }
-            logs.start(api: api, wsPath: "/ws/workflow-runs/\(runId)/logs") { try await api.jobRunLogs(runId) }
+            logs.start(api: api, wsPath: "/ws/workflow-runs/\(runId)/logs") { offset, limit in
+                try await api.jobRunLogs(runId, limit: limit, offset: offset)
+            }
         }
         .task(id: model.run?.isActive) {
             guard model.run?.isActive == true else { return }

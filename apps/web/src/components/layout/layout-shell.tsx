@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { useWorkSession } from "@/components/work-detail/session-context";
 import { Sidebar } from "./sidebar";
 import { PodSessionRail } from "@/components/pod-session-rail";
 import { TerminalRail } from "@/components/local/terminal-rail";
@@ -23,13 +24,14 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   const isLogin = pathname === "/login" || pathname === "/shared-session";
   // Inside a local terminal the sidebar becomes the session rail, so jumping
   // between many terminals never leaves the terminal view.
-  const inLocalTerminal = /^\/local\/[^/]+$/.test(pathname);
+  const sessionPath = useWorkSession((s) => s.pathname);
+  const inLocalTerminal = sessionPath === pathname || /^\/local\/[^/]+$/.test(pathname);
   const inPodSession = /^\/sessions\/[^/]+$/.test(pathname) && pathname !== "/sessions/new";
   const inSession = inLocalTerminal || inPodSession;
   // The attention watcher (favicon dot, tab badge, notifications for local
   // terminals) runs wherever those terminals are listed or open: the
   // work list and the terminal view itself.
-  const inLocal = pathname.startsWith("/local/") || pathname === "/work";
+  const inLocal = inLocalTerminal || pathname === "/work";
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   // Wide screens only — collapsing hands the rail's width to the terminal.

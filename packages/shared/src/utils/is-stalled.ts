@@ -2,14 +2,15 @@ import { DEFAULT_STALL_THRESHOLD_MS } from "../constants.js";
 
 /**
  * Pure function to check if a task is stalled based on its lastActivityAt
- * timestamp and a configurable threshold.
+ * timestamp and a configurable threshold. Local runs report activity on
+ * their terminal; their task-row timestamp cannot establish a stall.
  */
 export function isTaskStalled(
-  task: { state: string; lastActivityAt?: Date | string | null },
+  task: { state: string; lastActivityAt?: Date | string | null; runTarget?: string },
   now: Date = new Date(),
   thresholdMs: number = DEFAULT_STALL_THRESHOLD_MS,
 ): boolean {
-  if (task.state !== "running") return false;
+  if (task.state !== "running" || task.runTarget === "local") return false;
   if (!task.lastActivityAt) return false;
 
   const lastActivity =
@@ -20,13 +21,13 @@ export function isTaskStalled(
 
 /**
  * Compute how long a task has been silent (in ms).
- * Returns 0 if lastActivityAt is not set or the task is not running.
+ * Returns 0 for Local runs, missing activity, or a task that is not running.
  */
 export function getSilentDuration(
-  task: { state: string; lastActivityAt?: Date | string | null },
+  task: { state: string; lastActivityAt?: Date | string | null; runTarget?: string },
   now: Date = new Date(),
 ): number {
-  if (task.state !== "running") return 0;
+  if (task.state !== "running" || task.runTarget === "local") return 0;
   if (!task.lastActivityAt) return 0;
 
   const lastActivity =

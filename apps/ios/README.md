@@ -1,22 +1,22 @@
 # Optio for iOS
 
 Native SwiftUI client for the full Optio experience, built around one noun:
-**Sessions**. The tabs mirror the web sidebar — **Overview**; **Work** (Sessions ·
+**Work**. The tabs mirror the web sidebar — **Overview**; **Work** (All ·
 Reviews · Inbox); **Library** (Prompts · Repos · Machines · Connections);
 **Insights** (Analytics · Costs · Activity · Cluster); **More** (Admin, Settings,
-Account). The Sessions screen merges every kind of work — PR tasks, jobs,
+Account). The Work screen merges every kind of work — PR tasks, jobs,
 scheduled blueprints, Local automations and terminals, pod sessions, persistent
-agents — into one list (`Features/Work/Sessions/SessionsFeed.swift`, a port of the
+agents — into one list (`Features/Work/Feed/WorkFeed.swift`, a port of the
 web's `lib/work-feed.ts`) with Active / Recurring / Agents / History / All
 views; rows open the per-kind detail screens (there are no per-kind lists, on
-web or here). Local Automations are edited under Library › Machines. "New session" opens
-the native five-attribute form (`Features/Work/Sessions/New/`, a port of the web's
+web or here). Local Automations are edited under Library › Machines. "New work" opens
+the native five-attribute form (`Features/Work/Feed/New/`, a port of the web's
 `components/work-form/`): a grouped Form — When · Where · Who · What · Then ·
 Name — with example presets up top and a pinned bar that describes what the answers
 make and holds the one button that makes it.
-Designed to be used over a Tailscale network: your phone and the machine (or
-cluster) running Optio join the same tailnet, and the app talks to the API at its
-MagicDNS address.
+Connect to your own Optio API over HTTPS, your local network, or Tailscale. With
+Tailscale, the phone and server join the same tailnet and the app uses the
+server's MagicDNS address.
 
 ## Prerequisites
 
@@ -60,9 +60,18 @@ Server URL examples:
 - Tailscale, API port-forwarded on the laptop: `http://laptop.tailnet.ts.net:30400`
 - Tailscale Serve with TLS in front of the API: `https://laptop.tailnet.ts.net`
 
-Plain-HTTP tailnet addresses are allowed by the app's ATS configuration
-(`NSAllowsArbitraryLoads` in `project.yml`). Tighten that to an exception domain
-once the API is behind TLS.
+HTTPS is the default when no scheme is entered. Plain HTTP remains supported for
+user-managed LAN and tailnet servers (`NSAllowsArbitraryLoads` in both targets
+in `project.yml`). Do not add `NSAllowsLocalNetworking` alongside it: on current
+iOS that key overrides the arbitrary-load exception and blocks named HTTP
+servers. Local-network permission is separate; the app explains why it needs
+access in `NSLocalNetworkUsageDescription`.
+
+## TestFlight releases
+
+See [RELEASING.md](RELEASING.md) for signing, archive/export/upload commands,
+privacy declarations, internal testing, and physical-device checks. The main
+Optio container release does not publish the iOS app.
 
 ## Local sessions on the phone
 
@@ -200,9 +209,9 @@ OptioTests/       XCTest unit tests
 ## Cross-tab navigation
 
 `AppRouter` (App/AppRouter.swift) lives in the environment. Call
-`router.open(.machines)` or `router.openSessions(.recurring)` from anywhere to
-switch tabs; the target hub reads and clears `pendingSection` (and the Sessions
-screen `pendingSessionView`) to select its sub-section.
+`router.open(.machines)` or `router.openWork(.recurring)` from anywhere to
+switch tabs; the target hub reads and clears `pendingSection` (and the Work
+screen `pendingWorkView`) to select its sub-section.
 
 ## CI
 

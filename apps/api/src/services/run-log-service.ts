@@ -57,7 +57,7 @@ export async function listLogs(
     .select()
     .from(taskLogs)
     .where(and(...conditions))
-    .orderBy(taskLogs.timestamp)
+    .orderBy(taskLogs.timestamp, taskLogs.id)
     .$dynamic();
   if (opts.limit) query = query.limit(opts.limit);
   if (opts.offset) query = query.offset(opts.offset);

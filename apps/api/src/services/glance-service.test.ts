@@ -7,6 +7,11 @@ vi.mock("../logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+// The integration tier exercises real cross-instance lease contention.
+vi.mock("./lease-service.js", () => ({
+  withLease: async (_key: string, fn: () => Promise<unknown>) => fn(),
+}));
+
 const { mockSelectDistinct, tiles } = vi.hoisted(() => ({
   mockSelectDistinct: vi.fn(),
   /** Rows `db.select().from(<table>).where()` resolves per table name, and the filter each got. */

@@ -36,6 +36,7 @@ import { buildSkillSetupFiles, getSkillsForTask, listSkills } from "./skill-serv
 import { getInstalledSkillsForTask, listInstalledSkills } from "./installed-skill-service.js";
 import { getRepoByUrl } from "./repo-service.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
+import { issueControllerToken } from "./controller-auth.js";
 import { canUse, type Actor } from "./ownership.js";
 import { connectionCatalog } from "./connection-catalog-service.js";
 import { codexMcpConfigToml, OPTIO_CODEX_HOME } from "../utils/codex-config.js";
@@ -75,6 +76,8 @@ export interface AgentEnvironmentInput {
    * retry lands in the same place. A random name without one.
    */
   runId?: string | null;
+  /** Only trusted task / Job / persistent-agent workers opt into controller grants. */
+  controllerRunKind?: "work-run" | "turn";
 }
 
 type McpEntry = { command: string; args: string[]; env?: Record<string, string> };
@@ -365,6 +368,34 @@ export async function buildAgentEnvironment(
     }
     const note = connectionNoteFile(conn);
     if (note) setupFiles.push(note);
+  }
+  const access = input.settings?.controllerAccess;
+  if (
+    agentType &&
+    input.connectionSecrets !== false &&
+    input.controllerRunKind &&
+    input.runId &&
+    (access === "read" || access === "manage")
+  ) {
+    const baseUrl =
+      process.env.OPTIO_API_INTERNAL_URL ??
+      process.env.OPTIO_API_URL ??
+      `http://localhost:${process.env.API_PORT ?? "4000"}`;
+    // A reserved name: a user connection must not shadow the controller.
+    mcp["optio-controller"] = {
+      command: "node",
+      args: ["/opt/optio/controller-mcp.js"],
+      env: {
+        OPTIO_MCP_URL: `${baseUrl.replace(/\/$/, "")}/api/mcp`,
+        OPTIO_MCP_TOKEN: await issueControllerToken({
+          kind: input.controllerRunKind,
+          id: input.runId,
+          workspaceId: input.workspaceId,
+          ownerUserId: input.ownerUserId,
+          access,
+        }),
+      },
+    };
   }
   if (Object.keys(mcp).length > 0) {
     // The file can carry credentials (a server's env): readable by the agent only.

@@ -1,11 +1,18 @@
 # Common iOS workflows. Requires Xcode + `brew install xcodegen`.
+# macOS ships make 3.81, which does not honor .SHELLFLAGS.
+SHELL := /bin/bash -o pipefail
 SIM ?= iPhone 17 Pro
 DD  ?= build/DerivedData
+ARCHIVE ?= build/Optio.xcarchive
+EXPORT ?= build/export
+BUILD_NUMBER ?= 2
+RELEASE_DD ?= build/Release
+PROVISIONING_FLAGS ?= -allowProvisioningUpdates
 # Resolve the device by UDID: names repeat across installed runtimes, and a booted device wins.
 SIM_ID ?= $(shell ./scripts/sim-id.sh "$(SIM)")
 XCB = xcodebuild -project Optio.xcodeproj -scheme Optio -destination 'platform=iOS Simulator,id=$(SIM_ID)' -derivedDataPath $(DD) -skipPackagePluginValidation -skipMacroValidation
 
-.PHONY: generate build test run types clean
+.PHONY: generate build test archive export upload run types clean
 
 generate:
 	xcodegen generate
@@ -15,6 +22,17 @@ build: generate
 
 test: generate
 	$(XCB) test | $(xcbeautify_or_tail)
+
+# A paid team must be signed in under Xcode > Settings > Accounts.
+archive: generate
+	xcodebuild -project Optio.xcodeproj -scheme Optio -configuration Release -destination 'generic/platform=iOS' -derivedDataPath '$(RELEASE_DD)' -archivePath '$(ARCHIVE)' CURRENT_PROJECT_VERSION='$(BUILD_NUMBER)' $(PROVISIONING_FLAGS) archive | $(xcbeautify_or_tail)
+
+export:
+	xcodebuild -exportArchive -archivePath '$(ARCHIVE)' -exportPath '$(EXPORT)' -exportOptionsPlist ExportOptions.plist $(PROVISIONING_FLAGS)
+
+# Upload is explicit: building or exporting never publishes a build.
+upload:
+	xcodebuild -exportArchive -archivePath '$(ARCHIVE)' -exportPath '$(EXPORT)' -exportOptionsPlist UploadOptions.plist $(PROVISIONING_FLAGS)
 
 run: build
 	xcrun simctl boot $(SIM_ID) 2>/dev/null || true
@@ -29,4 +47,4 @@ types:
 clean:
 	rm -rf $(DD) Optio.xcodeproj
 
-xcbeautify_or_tail := $(shell command -v xcbeautify >/dev/null && echo xcbeautify || echo "grep -E '\\.swift:[0-9]+:[0-9]+: (error|warning)|BUILD (SUCCEEDED|FAILED)|TEST (SUCCEEDED|FAILED)|Test Suite|Executed'")
+xcbeautify_or_tail := $(shell command -v xcbeautify >/dev/null && echo xcbeautify || echo cat)

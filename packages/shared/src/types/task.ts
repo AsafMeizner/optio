@@ -142,6 +142,9 @@ export interface TaskMessage {
   deliveredAt?: Date | null;
   ackedAt?: Date | null;
   deliveryError?: string | null;
+  senderType?: "user" | "agent";
+  senderName?: string | null;
+  senderAddress?: string | null;
   user?: {
     id: string;
     displayName: string;

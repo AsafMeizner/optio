@@ -90,6 +90,7 @@ struct TaskLogRow: Decodable {
 /// Frame from `/ws/logs/:taskId` (ws/log-stream.ts). The generated `TaskLogEvent`
 /// omits `logType`/`metadata`/`catchUp`, which the log renderer needs.
 struct TaskLogFrame: Decodable {
+    var id: String?
     var type: String
     var taskId: String?
     var content: String?

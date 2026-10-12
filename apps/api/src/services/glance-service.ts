@@ -19,6 +19,7 @@
  * one-second coalescer of Watch frames; its worst case is one duplicate
  * push, which the collapse id folds on the device.
  */
+import { randomUUID } from "node:crypto";
 import { and, count, eq, inArray, ne, or } from "drizzle-orm";
 import {
   appleSeconds,
@@ -50,6 +51,7 @@ import {
 import { shouldNotify, type NotificationEventType } from "./notification-service.js";
 import type { LocalHostRow } from "./local-host-service.js";
 import type { LocalTerminalRow } from "./local-terminal-service.js";
+import { withLease } from "./lease-service.js";
 import {
   claimGlance,
   deleteGlance,
@@ -80,6 +82,38 @@ const watchEndKey = (userId: string) => `watch-end:${userId}`;
 const snoozeKey = (terminalId: string) => `snooze:${terminalId}`;
 /** hostId → already alerted about going offline (cleared when back online). */
 const hostOfflineKey = (hostId: string) => `host-offline:${hostId}`;
+const pendingWatchUpdates = new Map<string, Promise<void>>();
+
+/**
+ * Compute, push and remember one user's Watch in order, including hooks on
+ * other API instances. A slow old snapshot must not overwrite newer counts
+ * or recreate a quiet timer after work starts. Each invocation needs its own
+ * holder: the lease's instance default is reentrant within one process.
+ */
+async function updateWatchForUser(userId: string, update: () => Promise<void>): Promise<void> {
+  // Preserve producer order on this instance as well: competing lease
+  // waiters are not FIFO (an older terminal event could otherwise run last).
+  const prior = pendingWatchUpdates.get(userId) ?? Promise.resolve();
+  const next = prior.catch(() => {}).then(() => applyWatchUpdate(userId, update));
+  pendingWatchUpdates.set(userId, next);
+  try {
+    await next;
+  } finally {
+    if (pendingWatchUpdates.get(userId) === next) pendingWatchUpdates.delete(userId);
+  }
+}
+
+async function applyWatchUpdate(userId: string, update: () => Promise<void>): Promise<void> {
+  const applied = await withLease(
+    `glance-watch:${userId}`,
+    async () => {
+      await update();
+      return true;
+    },
+    { holder: randomUUID(), wait: { timeoutMs: 30_000, pollMs: 25 } },
+  );
+  if (applied === null) throw new Error(`Timed out waiting to update Watch for ${userId}`);
+}
 
 async function lastCount(key: string): Promise<number> {
   return (await getGlance<{ count: number }>(key))?.value.count ?? 0;
@@ -467,18 +501,22 @@ async function syncWatch(
 
 /** A due `watch-end` row: end the Watch on its providers if still quiet. */
 async function fireWatchEnd(userId: string, providerNames: readonly string[]): Promise<void> {
-  const latest = await computeWatchState(userId);
-  if (latest.needsYouCount > 0 || latest.runningCount > 0) return;
-  const done: WatchState = { ...latest, phase: "done", summary: "Quiet." };
-  const providers = configuredPushProviders().filter((p) => providerNames.includes(p.name));
-  await eachProvider(providers, "Watch end", (p) => p.endWatch(userId, done));
+  await updateWatchForUser(userId, async () => {
+    const latest = await computeWatchState(userId);
+    if (latest.needsYouCount > 0 || latest.runningCount > 0) return;
+    const done: WatchState = { ...latest, phase: "done", summary: "Quiet." };
+    const providers = configuredPushProviders().filter((p) => providerNames.includes(p.name));
+    await eachProvider(providers, "Watch end", (p) => p.endWatch(userId, done));
+  });
 }
 
 /** A due `snooze` row: the "Later" window closed, so the item resurfaces. */
 async function fireSnoozeExpiry(userId: string): Promise<void> {
-  const state = await computeWatchState(userId);
-  await syncWatch(userId, state);
-  await remember(userId, state);
+  await updateWatchForUser(userId, async () => {
+    const state = await computeWatchState(userId);
+    await syncWatch(userId, state);
+    await remember(userId, state);
+  });
 }
 
 /**
@@ -528,6 +566,10 @@ export async function onLocalTerminalChanged(row: LocalTerminalRow): Promise<voi
   const userId = row.userId;
   if (!userId) return; // auth-disabled dev user has no devices
 
+  await updateWatchForUser(userId, () => updateTerminalWatch(row, userId));
+}
+
+async function updateTerminalWatch(row: LocalTerminalRow, userId: string): Promise<void> {
   // The previous state and the new one in one atomic step: of several
   // instances taking the same transition, exactly one sees the old state.
   const ended = row.state === "exited" || row.state === "error";
@@ -614,6 +656,13 @@ export async function onLocalHostChanged(
   const userId = host.userId;
   if (!userId) return;
 
+  await updateWatchForUser(userId, () => updateHostWatch(host, userId));
+}
+
+async function updateHostWatch(
+  host: Pick<LocalHostRow, "id" | "userId" | "state" | "name">,
+  userId: string,
+): Promise<void> {
   const state = await computeWatchState(userId);
 
   if (host.state === "online") {
@@ -699,9 +748,11 @@ export async function onTaskTransition(
   // never starts one.
   const watching = await providersWithWatch(configuredPushProviders(), userId);
   if (watching.length > 0) {
-    const state = await computeWatchState(userId);
-    await syncWatch(userId, state, null, watching);
-    await remember(userId, state);
+    await updateWatchForUser(userId, async () => {
+      const state = await computeWatchState(userId);
+      await syncWatch(userId, state, null, watching);
+      await remember(userId, state);
+    });
   }
 }
 

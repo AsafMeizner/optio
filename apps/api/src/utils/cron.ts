@@ -12,6 +12,9 @@ import { CronExpressionParser } from "cron-parser";
  *
  * Throws if the expression is not valid cron (callers surface this as a 400).
  */
-export function computeNextFire(cronExpression: string): Date {
-  return CronExpressionParser.parse(cronExpression).next().toDate();
+export function computeNextFire(cronExpression: string, timezone?: string): Date {
+  if (timezone !== undefined) new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+  return CronExpressionParser.parse(cronExpression, { tz: timezone ?? "UTC" })
+    .next()
+    .toDate();
 }

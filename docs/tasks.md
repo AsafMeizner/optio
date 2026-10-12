@@ -85,7 +85,7 @@ Sidebar (v0.6): **Overview** · **Work** · **Reviews** · **Inbox** · **Librar
 - **`/reviews`**, **`/reviews/:id`** — code-review subtasks plus external PR reviews, with CI / review / merge tracking.
 - **`/issues`** (Inbox) — GitHub / GitLab Issues across connected repos. "Assign to Optio" creates a `repo-task`.
 - **`/machines`** — where work runs: each paired Optio Local host with the work on it (live now, and set up to run there — grouped by the feed's `where.hostId`, `lib/work-places.ts`) and its directory allowlist, then the Optio pods' work grouped by repo, Jobs, and persistent agents.
-- Detail pages per kind still exist and link back to `/work`: `/tasks/:id`, `/tasks/scheduled/:id`, `/jobs/:id`, `/jobs/:id/runs/:runId`, `/agents/:id`, `/local/:id`, `/sessions/:id` (pod sessions — the one place the word keeps its narrow meaning).
+- Tasks and Local sessions share the canonical `/work/:id` detail page. A task URL follows its current attempt; `?session=<terminal-id>` opens an exact attempt, with earlier attempts available in the session picker. Legacy `/tasks/:id` and `/local/:id` bookmarks redirect, preserving the selected session, split panes, layout, and hash. Standalone Local sessions use their terminal id. Other detail pages still link back to `/work`: `/tasks/scheduled/:id`, `/jobs/:id`, `/jobs/:id/runs/:runId`, `/agents/:id`, `/sessions/:id` (pod sessions — the one place the word keeps its narrow meaning).
 - The per-kind list pages are retired: `/tasks`, `/jobs`, `/tasks/scheduled`, `/agents`, `/local`, and the v0.5 `/sessions` redirect to the matching `/work?view=…`. Recurring work (scheduled Tasks, Jobs, Local Automations) each have a page about them (`/tasks/scheduled/:id`, `/jobs/:id`, `/local/automations/:id`: stats, triggers, prior runs) and are edited at `/work/:id/edit` — the New work form reopened on the saved row, with the kind locked.
 - Legacy `/tasks?tab=standalone|issues|prs` URLs redirect to `/work?view=recurring`, `/issues`, `/reviews`.
 
@@ -113,6 +113,12 @@ A PR URL in an agent's output is not evidence: agents print PRs they looked at (
 Each tool-call PR is confirmed on the git platform before it is adopted: same repo as the task (the base repo; a fork's head may differ), open or merged, and either on the task's branches or created during this run (2 minutes of clock skew allowed). When the platform can't be asked (no token, an API error other than 404), a PR in the task's repo is adopted on the tool call's word and a warning is logged.
 
 Every PR is a `task_prs` row (`source`: `tool_call`, `branch` or `attached`). `tasks.pr_url` stays the **primary** PR — the first one adopted — and is what the PR watcher, reviews, auto-resume and auto-merge follow; other PRs are tracked alongside. `GET /api/tasks/:id` returns them as `task.prs`; `POST /api/tasks/:id/prs` attaches one by hand (member role; personal work only by its owner) and `DELETE /api/tasks/:id/prs/:prId` stops tracking one — the primary only while another can take its place. The task page lists them once a task has more than one.
+
+### Auto-merge and CI
+
+Auto-merge keeps the existing repo/task settings and accepts passing checks or no CI. Before merging, Optio re-reads the PR and its checks, defers on API errors or pending/failing checks, and supplies the checked head SHA to the platform so a concurrent push cannot merge unchecked commits.
+
+On GitHub and GitLab, an empty check list starts a 60-second grace period for that task, PR and head SHA. A later empty read after the grace period allows the merge; checks that appear in the meantime must pass. The observation is shared in Redis across API replicas and restarts, and expires after an hour. CodeCommit has no native CI and keeps its immediate no-checks behavior. This is a registration buffer, not a requirement to configure CI: checks registered after the buffer can still arrive too late on a repo without required-check protection.
 
 ## Jobs: work without a repo (`standalone`)
 

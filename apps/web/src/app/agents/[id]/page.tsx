@@ -12,6 +12,7 @@ import { createPersistentAgentEventsClient } from "@/lib/ws-client";
 import { getWsTokenProvider } from "@/lib/ws-auth";
 import { LogViewer } from "@/components/log-viewer";
 import { useAgentLiveLogs, useAgentTurnLogs } from "@/hooks/use-agent-logs";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import {
   ArrowLeft,
   DollarSign,
@@ -346,7 +347,7 @@ export default function AgentDetailPage() {
           <TurnsTab agentId={agentId} turns={turns} openTurns={openTurns} toggleTurn={toggleTurn} />
         ) : null}
 
-        {tab === "config" ? <ConfigTab agent={agent} /> : null}
+        {tab === "config" ? <ConfigTab agent={agent} refresh={refreshAgent} /> : null}
       </div>
     </>
   );
@@ -539,7 +540,10 @@ function TurnsTab({
   );
 }
 
-function ConfigTab({ agent }: { agent: Agent }) {
+function ConfigTab({ agent, refresh }: { agent: Agent; refresh: () => Promise<void> }) {
+  const { canMutate, userId, authDisabled } = useCurrentUser();
+  const canEdit = canMutate && (authDisabled || !agent.ownerUserId || agent.ownerUserId === userId);
+  const [savingAccess, setSavingAccess] = useState(false);
   const [repoUrl, setRepoUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!agent.repoId) return;
@@ -550,6 +554,40 @@ function ConfigTab({ agent }: { agent: Agent }) {
   }, [agent.repoId]);
   return (
     <div className="space-y-4">
+      <div className="rounded-lg border border-border bg-bg-card/40 p-4 space-y-2">
+        <label htmlFor="agent-controller-access" className="block text-xs font-medium">
+          Optio controller
+        </label>
+        <select
+          id="agent-controller-access"
+          className={inputClass()}
+          disabled={!canEdit || savingAccess}
+          value={agent.settings?.controllerAccess ?? "off"}
+          onChange={async (e) => {
+            setSavingAccess(true);
+            try {
+              await api.setPersistentAgentControllerAccess(
+                agent.id,
+                e.target.value as "off" | "read" | "manage",
+              );
+              await refresh();
+              toast.success("Controller access saved");
+            } catch (err) {
+              toast.error(err instanceof Error ? err.message : "Could not save controller access");
+            } finally {
+              setSavingAccess(false);
+            }
+          }}
+        >
+          <option value="off">Off</option>
+          <option value="read">Read work and results</option>
+          <option value="manage">Manage work and message agents</option>
+        </select>
+        <p className="text-xs text-text-muted">
+          MCP tools for work, schedules, results and agent messages. New access takes effect next
+          turn; removing access revokes the current credential.
+        </p>
+      </div>
       <div className="rounded-lg border border-border bg-bg-card/40 p-4">
         <ConnectedSummary
           repoUrl={agent.repoId ? repoUrl : null}

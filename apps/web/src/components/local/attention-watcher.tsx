@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { useWorkSession } from "@/components/work-detail/session-context";
+import { terminalWorkHref } from "@/lib/work-href";
 import { useLocalFeed } from "./local-feed";
 import { useBellStore } from "./bell-store";
 import { useTitleStore } from "@/hooks/use-page-title";
@@ -40,7 +42,7 @@ function setFavicon(href: string | null) {
 }
 
 /**
- * Mounted on /work and every /local/:id route. Turns the terminal feed into the things
+ * Mounted on /work, Local session routes, and Local task workspaces. Turns the terminal feed into the things
  * you can see from another tab:
  *
  *   - favicon dot: green = something needs you, purple = agents working,
@@ -53,6 +55,7 @@ function setFavicon(href: string | null) {
 export function LocalAttentionWatcher() {
   const { terminals } = useLocalFeed();
   const pathname = usePathname();
+  const session = useWorkSession();
   const router = useRouter();
   const prev = useRef<Map<string, string>>(new Map());
   const pathRef = useRef(pathname);
@@ -70,8 +73,8 @@ export function LocalAttentionWatcher() {
     const summary = summarizeAttention(terminals);
     // Inside a session the icon is THAT session's status; on the cockpit
     // it's the fleet's. The (N) badge is always the fleet's needs-you count.
-    const m = /^\/local\/([^/?]+)/.exec(pathname);
-    const focused = m ? terminals.find((t) => t.id === m[1]) : undefined;
+    const focusedId = session.pathname === pathname ? session.terminalId : null;
+    const focused = terminals.find((t) => t.id === focusedId);
     setFavicon(faviconDataUrl(focused ? terminalTone(focused) : summary.tone));
     useTitleStore.getState().setBadge(summary.needsYou);
 
@@ -81,12 +84,13 @@ export function LocalAttentionWatcher() {
       const viewing =
         document.visibilityState === "visible" &&
         document.hasFocus() &&
-        pathRef.current === `/local/${t.id}`;
-      if (!viewing) notify(t, () => router.push(`/local/${t.id}`));
+        pathRef.current === session.pathname &&
+        focusedId === t.id;
+      if (!viewing) notify(t, () => router.push(terminalWorkHref(t)));
     }
 
     prev.current = new Map(terminals.map((t) => [t.id, t.attentionState]));
-  }, [terminals, router, pathname]);
+  }, [terminals, router, pathname, session]);
 
   return null;
 }

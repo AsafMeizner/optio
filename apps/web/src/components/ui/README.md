@@ -73,3 +73,12 @@ width, showing both panes above 640px and a view switch below it. Hidden panes s
 mounted to preserve streams. Its separator supports pointer dragging, arrow keys,
 Home/End and double-click reset. `LogViewer embedded` removes the outer card when
 it lives inside this workspace; ordinary run/detail logs retain their card.
+
+Repo task details use `components/tasks/task-workspace.tsx` inside the canonical
+`/work/:id` page (`components/work-detail/`). `/tasks/:id` and `/local/:id` redirect
+there; Local bookmarks pin an attempt with `?session=`, while task links follow
+the current attempt. Keep task context and actions there; the
+embedded `TerminalPane` supplies Local conversation, terminal and split controls.
+An older Local URL keeps its original terminal even after the task is retried.
+PR checks, conflicts and review feedback are follow-up notices; actual execution
+failures keep their error and recovery details.

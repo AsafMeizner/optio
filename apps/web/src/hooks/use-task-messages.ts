@@ -15,6 +15,9 @@ export interface TaskMessageEntry {
   deliveredAt?: string | null;
   ackedAt?: string | null;
   deliveryError?: string | null;
+  senderType?: "user" | "agent";
+  senderName?: string | null;
+  senderAddress?: string | null;
   user?: { id: string; displayName: string; avatarUrl?: string };
 }
 
@@ -43,6 +46,9 @@ export function useTaskMessages(taskId: string) {
         content: event.content,
         mode: event.mode,
         createdAt: event.createdAt,
+        senderType: event.senderType,
+        senderName: event.senderName,
+        senderAddress: event.senderAddress,
         user: event.userDisplayName
           ? { id: event.userId, displayName: event.userDisplayName }
           : undefined,

@@ -32,6 +32,22 @@ final class WebSocketClient: @unchecked Sendable {
     private var continuation: AsyncStream<Frame>.Continuation?
     private let session: URLSession
 
+    private final class SocketDelegate: NSObject, URLSessionWebSocketDelegate {
+        let onOpen: @Sendable (URLSessionWebSocketTask) -> Void
+
+        init(onOpen: @escaping @Sendable (URLSessionWebSocketTask) -> Void) {
+            self.onOpen = onOpen
+        }
+
+        func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+            onOpen(webSocketTask)
+        }
+
+        func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+            // receiveLoop reports closure and applies the reconnect policy.
+        }
+    }
+
     let frames: AsyncStream<Frame>
 
     init(url: URL, tokenProvider: @escaping @Sendable () async -> String?, autoReconnect: Bool = true, session: URLSession = .shared) {
@@ -67,8 +83,14 @@ final class WebSocketClient: @unchecked Sendable {
             req.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
             let t = session.webSocketTask(with: req)
             task = t
+            // resume() only starts connecting. Wait for the real handshake so
+            // recovery requests and terminal hello frames run after it succeeds.
+            // URLSessionTask retains its task-specific delegate.
+            t.delegate = SocketDelegate { [weak self] openedTask in
+                guard let self, !closed, task === openedTask else { return }
+                continuation?.yield(.opened)
+            }
             t.resume()
-            continuation?.yield(.opened)
             await receiveLoop(t)
         }
     }

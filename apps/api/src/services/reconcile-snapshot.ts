@@ -353,7 +353,12 @@ async function loadPrStatus(run: Run, userId: string | null): Promise<PrStatus |
   if (!prData) return null;
 
   const [checkRuns, reviews] = await Promise.all([
-    platform.getCIChecks(ri, prData.headSha).catch(() => []),
+    platform.getCIChecks(ri, prData.headSha).catch((err) => {
+      // An open PR with unreadable CI must defer, not look like a repo
+      // without CI. Keep completing/closing settled PRs as before.
+      if (prData.merged || prData.state === "closed") return [];
+      throw err;
+    }),
     platform.getReviews(ri, parsed.prNumber).catch(() => []),
   ]);
   const checksStatus = determineCheckStatus(checkRuns);

@@ -153,6 +153,16 @@ describe("GitLabPlatform", () => {
   });
 
   describe("mergePullRequest", () => {
+    it("guards an automatic merge with the checked head SHA", async () => {
+      mockJsonResponse({ state: "merged" });
+      await platform.mergePullRequest(ri, 7, "squash", "checked-head");
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
+        should_remove_source_branch: true,
+        squash: true,
+        sha: "checked-head",
+      });
+    });
+
     it("sends PUT with squash option", async () => {
       mockJsonResponse({ state: "merged" });
 

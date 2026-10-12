@@ -130,6 +130,7 @@ struct JobStats: Decodable {
 /// One persisted log row (`workflow_run_logs` or `task_logs`). Shared with PR
 /// review logs, which come back through the same `{ logs: [...] }` envelope.
 struct RunLogRow: Decodable {
+    let id: String?
     let content: String
     let logType: String?
     let metadata: [String: AnyCodable]?
@@ -261,8 +262,8 @@ extension APIClient {
         try await post("/api/workflow-runs/\(runId)/cancel", as: JobRunResponse.self).run
     }
 
-    func jobRunLogs(_ runId: String, limit: Int = 10000) async throws -> [RunLogRow] {
-        try await get("/api/workflow-runs/\(runId)/logs", query: ["limit": String(limit)], as: RunLogsResponse.self).logs
+    func jobRunLogs(_ runId: String, limit: Int = 10000, offset: Int = 0) async throws -> [RunLogRow] {
+        try await get("/api/workflow-runs/\(runId)/logs", query: ["limit": String(limit), "offset": String(offset)], as: RunLogsResponse.self).logs
     }
 }
 

@@ -11,8 +11,8 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: targeted
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.17.0"
+    CURRENT_PROJECT_VERSION: "2"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: 3H2754M9U5
@@ -42,12 +42,15 @@ targets:
       properties:
         com.apple.security.application-groups: [group.dev.optio.ios]
         keychain-access-groups: ["$(AppIdentifierPrefix)dev.optio.ios.shared"]
-        # aps-environment is added automatically by Xcode once the Push
-        # Notifications capability is enabled on a paid team.
+        # Xcode promotes this to production when exporting for App Store Connect.
+        aps-environment: development
     info:
       path: Optio/Resources/Info.plist
       properties:
         CFBundleDisplayName: Optio
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        OptioSharedKeychainAccessGroup: "$(AppIdentifierPrefix)dev.optio.ios.shared"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           [
@@ -63,12 +66,12 @@ targets:
             UIInterfaceOrientationLandscapeRight,
           ]
         ITSAppUsesNonExemptEncryption: false
-        # Optio instances on a tailnet are commonly reached over plain HTTP
-        # (http://host.tailnet.ts.net:30400). Tighten this to an
-        # NSExceptionDomains entry once you front the API with Tailscale Serve TLS.
+        # Servers are user-selected and may use HTTP on a LAN or tailnet.
+        # NSAllowsLocalNetworking must not accompany this: it overrides the
+        # arbitrary-load exception and blocks HTTP to fully qualified hosts.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Optio connects to your server to show your agents and let you manage their work.
         NSFaceIDUsageDescription: Unlock the stored Optio access token.
         NSSupportsLiveActivities: true
         # Two Optio windows side by side (iPad, and iPhone Duo's inner display —
@@ -101,11 +104,13 @@ targets:
       path: OptioWidgets/Info.plist
       properties:
         CFBundleDisplayName: Optio
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        OptioSharedKeychainAccessGroup: "$(AppIdentifierPrefix)dev.optio.ios.shared"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-          NSAllowsLocalNetworking: true
     entitlements:
       path: OptioWidgets/OptioWidgets.entitlements
       properties:

@@ -2063,6 +2063,12 @@ export const api = {
   deletePersistentAgent: (id: string) =>
     request<undefined>(`/api/persistent-agents/${id}`, { method: "DELETE" }),
 
+  setPersistentAgentControllerAccess: (id: string, controllerAccess: "off" | "read" | "manage") =>
+    request(`/api/persistent-agents/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ controllerAccess }),
+    }),
+
   sendPersistentAgentMessage: (
     id: string,
     body: string,

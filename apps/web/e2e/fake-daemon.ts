@@ -76,7 +76,7 @@ export async function fakeDaemon(hostId: string, dirs: unknown[], opts: ScreenOp
   /** Live output from the terminal, as a program would print it. */
   const output = (terminalId: string, text: string) =>
     send({ type: "output", terminalId, dataB64: Buffer.from(text, "utf-8").toString("base64") });
-  return { input, resizes, output, close: () => ws.close() };
+  return { input, resizes, output, send, close: () => ws.close() };
 }
 
 const terminalState = async (request: APIRequestContext, id: string) =>

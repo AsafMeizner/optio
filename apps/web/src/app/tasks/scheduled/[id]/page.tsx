@@ -501,7 +501,7 @@ function RunsTab({ taskConfigId }: { taskConfigId: string }) {
         {runs.map((r) => (
           <Link
             key={r.id}
-            href={`/tasks/${r.id}`}
+            href={`/work/${r.id}`}
             className="flex items-center gap-4 px-4 py-3 bg-bg-card/40 hover:bg-bg-hover/60 transition-colors"
           >
             <div className="flex-1 min-w-0">

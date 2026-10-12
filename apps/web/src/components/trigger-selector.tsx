@@ -30,6 +30,7 @@ export const TICKET_SOURCE_LABELS: Record<TicketSource, string> = {
 export interface TriggerConfig {
   type: TriggerType;
   cronExpression?: string;
+  timezone?: string;
   webhookPath?: string;
   ticketSource?: TicketSource;
   ticketLabels?: string[];
@@ -172,6 +173,16 @@ export function TriggerSelector({
             ))}
           </div>
           {hint && <p className="text-xs text-text-muted/60">{hint}</p>}
+          <label className="block text-xs text-text-muted">
+            Timezone
+            <input
+              aria-label="Schedule timezone"
+              value={value.timezone ?? "UTC"}
+              onChange={(e) => onChange({ ...value, timezone: e.target.value })}
+              placeholder="America/Denver"
+              className={inputClass({ className: "mt-1 font-mono" })}
+            />
+          </label>
         </div>
       )}
 

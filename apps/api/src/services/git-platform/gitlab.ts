@@ -192,9 +192,11 @@ export class GitLabPlatform implements GitPlatform {
     ri: RepoIdentifier,
     prNumber: number,
     method: "merge" | "squash" | "rebase",
+    expectedHeadSha?: string,
   ): Promise<void> {
     const body: Record<string, unknown> = {
       should_remove_source_branch: true,
+      sha: expectedHeadSha,
     };
     if (method === "squash") body.squash = true;
     if (method === "rebase") body.merge_method = "rebase";

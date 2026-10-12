@@ -1,5 +1,6 @@
 "use client";
 
+import { workHref } from "@/lib/work-href";
 import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -196,7 +197,7 @@ function WorkList() {
             {sessionScreen && (
               <ButtonLink
                 variant="secondary"
-                href={sessionScreen.href}
+                href={workHref(sessionScreen.href)}
                 title={
                   sessionScreen.status === "needs_you"
                     ? `Open the session screen at "${sessionScreen.name}", which is waiting on you`

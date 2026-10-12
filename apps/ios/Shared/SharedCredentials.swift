@@ -14,7 +14,13 @@ import Security
 /// intents). Multi-server surfaces go through `ServerRegistry` directly.
 public enum SharedCredentials {
     public static let appGroup = "group.dev.optio.ios"
-    public static let keychainGroup = "dev.optio.ios.shared"
+    // The access group must include the signing team's AppIdentifierPrefix.
+    // Xcode expands this Info.plist value for both the app and its extension.
+    public static var keychainGroup: String? {
+        guard let group = Bundle.main.object(forInfoDictionaryKey: "OptioSharedKeychainAccessGroup") as? String,
+              !group.isEmpty, !group.contains("$(") else { return nil }
+        return group
+    }
     static let service = "dev.optio.ios"
     static let legacyTokenAccount = "accessToken"
 

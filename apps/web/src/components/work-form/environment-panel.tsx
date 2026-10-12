@@ -167,6 +167,30 @@ export function EnvironmentPanel({
             />
           )}
 
+          {!command && (
+            <div>
+              <label htmlFor="controller-access" className="block text-xs text-text-muted mb-1">
+                Optio controller
+              </label>
+              <select
+                id="controller-access"
+                className={inputClass({ className: "text-xs" })}
+                value={settings.controllerAccess ?? "off"}
+                onChange={(e) =>
+                  set({ controllerAccess: e.target.value as WorkSettings["controllerAccess"] })
+                }
+              >
+                <option value="off">Off</option>
+                <option value="read">Read work and results</option>
+                <option value="manage">Manage work and message agents</option>
+              </select>
+              <p className="text-[11px] text-text-muted/80 mt-1">
+                Give this agent MCP tools for Optio. Manage access also lets it create work, change
+                schedules, and send messages. Access follows this work's owner and workspace.
+              </p>
+            </div>
+          )}
+
           <div>
             <label className="flex items-center gap-1.5 text-xs text-text-muted mb-1">
               <Terminal className="w-3 h-3" /> Setup commands

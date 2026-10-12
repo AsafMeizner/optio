@@ -31,6 +31,7 @@ import {
 import { eq, and, sql } from "drizzle-orm";
 import { persistentAgents } from "../db/schema.js";
 import * as paService from "../services/persistent-agent-service.js";
+import { issueControllerToken } from "../services/controller-auth.js";
 import * as paPool from "../services/persistent-agent-pool-service.js";
 import * as podPool from "../services/agent-pod-pool.js";
 import { getRuntime } from "../services/container-service.js";
@@ -131,7 +132,8 @@ function buildTurnPrompt(args: {
     sections.push(
       `# Inbox (${drainedMessages.length} new message${drainedMessages.length === 1 ? "" : "s"})\n` +
         "Read carefully — these messages contain instructions, requests, or status updates from teammates and users. " +
-        "Respond using the optio-agents MCP server (see operator manual).\n\n" +
+        "Use the available optio-controller tools for work and agent collaboration, " +
+        "or follow your operator manual for other communication. Reply to users in your final response.\n\n" +
         blocks.join("\n\n"),
     );
   } else if (!isFirstTurn) {
@@ -298,9 +300,14 @@ export function startPersistentAgentWorker() {
           OPTIO_PERSISTENT_AGENT_ID: agentId,
           OPTIO_PERSISTENT_AGENT_SLUG: claimedAgent.slug,
           OPTIO_PERSISTENT_AGENT_TURN_ID: turn.id,
-          // Per-agent bearer token used by the inter-agent HTTP API.
-          // Documented in the agent's `agents.md` operator manual.
-          OPTIO_AGENT_TOKEN: agentId,
+          // Legacy HTTP messaging gets a per-turn credential, never the public agent id.
+          OPTIO_AGENT_TOKEN: await issueControllerToken({
+            kind: "turn",
+            id: turn.id,
+            workspaceId: claimedAgent.workspaceId ?? null,
+            ownerUserId: agentOwnerUserId,
+            access: "messages",
+          }),
           OPTIO_API_URL: apiUrl,
         };
 
@@ -333,6 +340,7 @@ export function startPersistentAgentWorker() {
           ownerUserId: agentOwnerUserId,
           settings: claimedAgent.settings,
           runId: turn.id,
+          controllerRunKind: "turn" as const,
         };
         Object.assign(
           env,

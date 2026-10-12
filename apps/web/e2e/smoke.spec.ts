@@ -44,7 +44,7 @@ test("work list shows the seeded tasks, job, and agent", async ({ page }) => {
 test("task detail shows mock agent logs and links back to Work", async ({ page }) => {
   await page.goto("/work?view=all");
   await page.getByText("E2E: opens a PR").first().click();
-  await expect(page).toHaveURL(/\/tasks\//);
+  await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/);
   await expect(page.getByText("Mock agent handled").first()).toBeVisible({ timeout: 20_000 });
   await page.locator("main").getByRole("link", { name: "Work" }).first().click();
   await expect(page).toHaveURL(/\/work/);

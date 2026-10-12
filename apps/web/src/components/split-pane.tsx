@@ -15,6 +15,8 @@ interface SplitPaneProps {
   leftLabel?: string;
   rightLabel?: string;
   revealRightKey?: string;
+  defaultLeftPct?: number;
+  storageKey?: string;
 }
 type CollapseState = "none" | "left" | "right";
 
@@ -24,16 +26,18 @@ export function SplitPane({
   leftLabel = "Chat",
   rightLabel = "Terminal",
   revealRightKey,
+  defaultLeftPct = DEFAULT_LEFT_PCT,
+  storageKey = STORAGE_KEY,
 }: SplitPaneProps) {
   const [leftPct, setLeftPct] = useState(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
+      const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
       if (typeof saved?.leftPct === "number" && Number.isFinite(saved.leftPct))
         return clamp(saved.leftPct);
     } catch {
       /* Storage can be unavailable in private browsing. */
     }
-    return DEFAULT_LEFT_PCT;
+    return clamp(defaultLeftPct);
   });
   const [collapsed, setCollapsed] = useState<CollapseState>("none");
   const [compact, setCompact] = useState(false);
@@ -54,11 +58,11 @@ export function SplitPane({
   }, [revealRightKey]);
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ leftPct }));
+      localStorage.setItem(storageKey, JSON.stringify({ leftPct }));
     } catch {
       /* Optional preference. */
     }
-  }, [leftPct]);
+  }, [leftPct, storageKey]);
   useEffect(() => {
     if (!isDragging) return;
     const move = (event: PointerEvent) => {
@@ -121,7 +125,7 @@ export function SplitPane({
         {!compact && collapsed === "none" && (
           <div
             role="separator"
-            aria-label="Resize chat and terminal"
+            aria-label={`Resize ${leftLabel.toLowerCase()} and ${rightLabel.toLowerCase()}`}
             aria-orientation="vertical"
             aria-valuenow={Math.round(leftPct)}
             aria-valuemin={MIN_PANE_PCT}
@@ -131,7 +135,7 @@ export function SplitPane({
               event.preventDefault();
               setIsDragging(true);
             }}
-            onDoubleClick={() => setLeftPct(DEFAULT_LEFT_PCT)}
+            onDoubleClick={() => setLeftPct(clamp(defaultLeftPct))}
             onKeyDown={(event) => {
               if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
               event.preventDefault();

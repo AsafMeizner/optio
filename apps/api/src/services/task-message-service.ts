@@ -46,6 +46,9 @@ export async function listMessages(taskId: string) {
       deliveredAt: taskMessages.deliveredAt,
       ackedAt: taskMessages.ackedAt,
       deliveryError: taskMessages.deliveryError,
+      senderType: taskMessages.senderType,
+      senderName: taskMessages.senderName,
+      senderAddress: taskMessages.senderAddress,
       userName: users.displayName,
       userAvatar: users.avatarUrl,
     })
@@ -65,6 +68,9 @@ export async function listMessages(taskId: string) {
     deliveredAt: row.deliveredAt,
     ackedAt: row.ackedAt,
     deliveryError: row.deliveryError,
+    senderType: row.senderType,
+    senderName: row.senderName,
+    senderAddress: row.senderAddress,
     user: row.userId
       ? { id: row.userId, displayName: row.userName!, avatarUrl: row.userAvatar }
       : undefined,
