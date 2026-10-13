@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { ExternalLink, Hash } from "lucide-react";
+import { ChevronDown, ChevronUp, ExternalLink, Hash } from "lucide-react";
 import { BrandIcon, BRAND_LABEL, IssueIcon, PrIcon, brandFor } from "@/components/brand-icon";
 import { dedupeWorkLinks, type WorkLink } from "@optio/shared";
 
@@ -93,28 +94,39 @@ export function WorkLinkBadges({
 }: {
   links: WorkLink[];
   size?: "xs" | "sm";
-  /** Show at most this many, then a "+N" chip. */
+  /** Initially show this many, with a toggle to expand and collapse the rest. */
   max?: number;
   className?: string;
 }) {
+  const [expanded, setExpanded] = useState(false);
   if (links.length === 0) return null;
-  const shown = max ? links.slice(0, max) : links;
-  const rest = links.length - shown.length;
+  const limit = max && max > 0 ? max : links.length;
+  const shown = expanded ? links : links.slice(0, limit);
+  const rest = links.length - limit;
+  const Chevron = expanded ? ChevronUp : ChevronDown;
   return (
     <div className={cn("flex items-center gap-1 flex-wrap min-w-0", className)}>
       {shown.map((l) => (
         <WorkLinkBadge key={l.url} link={l} size={size} />
       ))}
       {rest > 0 && (
-        <span
-          className={cn("text-text-muted/70 font-mono", size === "xs" ? "text-[11px]" : "text-xs")}
-          title={links
-            .slice(shown.length)
-            .map((l) => l.label)
-            .join(", ")}
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? "Show fewer links" : `Show ${rest} more links`}
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((value) => !value);
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+          className={cn(
+            "inline-flex items-center gap-1 shrink-0 rounded-md border border-transparent text-text-muted hover:text-text hover:bg-bg-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+            size === "xs" ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs",
+          )}
         >
-          +{rest}
-        </span>
+          {expanded ? "Show less" : `+${rest} more`}
+          <Chevron className="h-3 w-3" aria-hidden />
+        </button>
       )}
     </div>
   );

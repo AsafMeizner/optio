@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-13
+
+### Fixed
+
+- PR and ticket badges in work sessions, cards, and the session sidebar can expand to show every link with **+N more**, then collapse again with **Show less**. The controls support keyboard navigation and do not trigger the surrounding card or session link.
+
 ## [0.17.1] - 2026-10-13
 
 ### Fixed
