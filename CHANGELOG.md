@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-13
+
+### Fixed
+
+- Switching between Work sessions keeps the session sidebar and layout mounted while the next session loads, preserving search, scroll position, and sidebar width instead of flashing the normal navigation.
+- Session sidebar rows keep their initial recency order while the sidebar is open, so typing and live updates do not move work out from under the pointer. Pinning, new sessions, and the Live / Finished sections continue to update.
+- Live updates no longer repeatedly scroll the sidebar back to the selected session while browsing other work.
+
 ## [0.17.0] - 2026-10-12
 
 ### Added

@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { useLocalFeedStore } from "@/components/local/local-feed";
 import { useWorkSession } from "@/components/work-detail/session-context";
 import { Sidebar } from "./sidebar";
 import { PodSessionRail } from "@/components/pod-session-rail";
@@ -24,8 +25,18 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   const isLogin = pathname === "/login" || pathname === "/shared-session";
   // Inside a local terminal the sidebar becomes the session rail, so jumping
   // between many terminals never leaves the terminal view.
-  const sessionPath = useWorkSession((s) => s.pathname);
-  const inLocalTerminal = sessionPath === pathname || /^\/local\/[^/]+$/.test(pathname);
+  const session = useWorkSession();
+  const terminals = useLocalFeedStore((s) => s.terminals);
+  const workId = /^\/work\/([0-9a-f-]{36})$/i.exec(pathname)?.[1];
+  const knownLocal = terminals.some((t) => t.id === workId || t.taskId === workId);
+  const inLocalTerminal =
+    /^\/local\/[^/]+$/.test(pathname) ||
+    !!(workId && (session.pathname === pathname ? session.local : knownLocal || session.local));
+  // Keep the rail mounted while another work id resolves, but forget the
+  // pending-session fallback when navigating out to the rest of the app.
+  useEffect(() => {
+    if (!workId) useWorkSession.setState({ pathname: null, terminalId: null, local: false });
+  }, [workId]);
   const inPodSession = /^\/sessions\/[^/]+$/.test(pathname) && pathname !== "/sessions/new";
   const inSession = inLocalTerminal || inPodSession;
   // The attention watcher (favicon dot, tab badge, notifications for local

@@ -27,6 +27,14 @@ export function WorkDetail({ id }: { id: string }) {
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const pathname = usePathname();
+  useEffect(() => {
+    if (!resolved && !error) return;
+    const local = !error && (resolved?.kind === "terminal" || resolved?.work.runTarget === "local");
+    // Resolution ends the shell's pending navigation. Unmount must not clear
+    // the previous session while the next work page is still loading.
+    if (!local) useWorkSession.setState({ pathname, local: false, terminalId: null });
+  }, [pathname, resolved, error]);
   useEffect(() => {
     let cancelled = false;
     setError(null);
@@ -136,11 +144,8 @@ function Workspace({ id, resolved }: { id: string; resolved: Resolved }) {
   const { split, layout } = parseSplit(params, primary ?? undefined);
   const local = resolved.kind === "terminal" || task?.runTarget === "local";
   useEffect(() => {
-    if (!local || !valid) return;
-    useWorkSession.setState({ pathname, terminalId: primary });
-    return () => {
-      useWorkSession.setState({ pathname: null, terminalId: null });
-    };
+    if (!local) return;
+    useWorkSession.setState({ pathname, local: true, terminalId: valid ? primary : null });
   }, [local, valid, pathname, primary]);
 
   const baseHref = `${pathname}${params.size ? `?${params}` : ""}`;

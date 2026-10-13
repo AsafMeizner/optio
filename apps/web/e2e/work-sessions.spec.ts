@@ -298,3 +298,70 @@ test("terminal history scrolls inside the session without an extra page scrollba
     await terminal.done();
   }
 });
+
+test("switching sessions preserves the rail while work resolves and restores normal navigation on exit", async ({
+  page,
+  request,
+}) => {
+  const { hosts } = await (await request.get(`${API}/api/local/hosts`)).json();
+  const laptop = hosts.find((h: { name: string }) => h.name === "E2E laptop");
+  const ids: string[] = [];
+  let release = () => {};
+  try {
+    for (const title of ["Stable rail first", "Stable rail second"]) {
+      const response = await request.post(`${API}/api/local/terminals`, {
+        data: { hostId: laptop.id, dir: "/Users/e2e/notes", title, spec: { kind: "shell" } },
+      });
+      expect(response.ok()).toBe(true);
+      ids.push((await response.json()).terminal.id);
+    }
+    await page.goto(`/work/${ids[0]}`);
+    const rail = page.getByRole("complementary", { name: "Session sidebar" });
+    const search = page.getByRole("searchbox", { name: "Search sessions" });
+    await expect(rail).toBeVisible();
+    await search.fill("Stable rail");
+    await expect(rail.locator("[data-terminal-id]")).toHaveCount(2);
+    const originalRail = await rail.elementHandle();
+    const order = await rail
+      .locator("[data-terminal-id]")
+      .evaluateAll((els) => els.map((el) => el.getAttribute("data-terminal-id")));
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route(`**/api/work/${ids[1]}`, async (route) => {
+      await blocked;
+      await route.continue();
+    });
+    await rail.locator(`[data-terminal-id="${ids[1]}"]`).click();
+    await expect(page).toHaveURL(`/work/${ids[1]}`);
+    await expect(page.getByText("Loading work…")).toBeVisible();
+    await expect(rail).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "Sidebar", exact: true })).toHaveCount(0);
+    await expect(search).toHaveValue("Stable rail");
+    expect(await originalRail!.evaluate((el) => el.isConnected)).toBe(true);
+    release();
+    await expect(rail.locator(`[data-terminal-id="${ids[1]}"]`)).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(await originalRail!.evaluate((el) => el.isConnected)).toBe(true);
+    expect(
+      await rail
+        .locator("[data-terminal-id]")
+        .evaluateAll((els) => els.map((el) => el.getAttribute("data-terminal-id"))),
+    ).toEqual(order);
+    await page.goBack();
+    await expect(rail.locator(`[data-terminal-id="${ids[0]}"]`)).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(search).toHaveValue("Stable rail");
+    expect(await originalRail!.evaluate((el) => el.isConnected)).toBe(true);
+    await rail.getByRole("link", { name: "All work", exact: true }).click();
+    await expect(page).toHaveURL("/work");
+    await expect(page.getByRole("complementary", { name: "Sidebar", exact: true })).toBeVisible();
+  } finally {
+    release();
+    for (const id of ids) await request.delete(`${API}/api/local/terminals/${id}`);
+  }
+});

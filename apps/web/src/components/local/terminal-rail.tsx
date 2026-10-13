@@ -13,7 +13,8 @@ import { useLocalFeed } from "./local-feed";
 import { useBellStore } from "./bell-store";
 import { collectWorkLinks, WorkLinkBadges, workLinksSearchText } from "./work-links";
 import { addToSplit, parseSplit, splitHref, MAX_PANES } from "./split-state";
-import { nextNeedsYou, orderSessions } from "./session-order";
+import { nextNeedsYou, isFinishedSession } from "./session-order";
+import { useSessionOrder } from "./use-session-order";
 import { LocalSessionIcon } from "./session-icon";
 import { SessionRailScroll } from "./session-rail-scroll";
 import { SessionRailHeader } from "./session-rail-header";
@@ -21,8 +22,8 @@ import { SessionRailHeader } from "./session-rail-header";
 /**
  * Session list inside the shared sidebar while you're in a terminal
  * (/work/:id), so jumping between many sessions is one click or one
- * keystroke. Ordered by when you last typed into a session (else when it
- * was made), live above Finished, so rows stay put while agents flip
+ * keystroke. Initial recency order is preserved until the rail closes,
+ * live above Finished, so rows stay put while you type or agents flip
  * between working and needs-you; searchable by title, dir, host, or the
  * PR / ticket the session is working on.
  *
@@ -47,7 +48,8 @@ function dotFor(t: any): string {
  * under the pointer); it shows on the row and in the header count.
  */
 function groupTerminals(terminals: any[]): Group[] {
-  const { live, finished } = orderSessions(terminals);
+  const live = terminals.filter((t) => !isFinishedSession(t));
+  const finished = terminals.filter(isFinishedSession);
   return [
     { key: "live", label: "Live", tone: "text-text-muted", items: live },
     { key: "finished", label: "Finished", tone: "text-text-muted/70", items: finished },
@@ -72,13 +74,14 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
   const { terminals: feedTerminals, hosts } = useLocalFeed();
   // A pin toggles the row's place at once; the feed's next refresh agrees.
   const [pinOverride, setPinOverride] = useState<Record<string, string | null>>({});
-  const terminals = useMemo(
+  const pinnedTerminals = useMemo(
     () =>
       feedTerminals.map((t: any) =>
         t.id in pinOverride ? { ...t, pinnedAt: pinOverride[t.id] } : t,
       ),
     [feedTerminals, pinOverride],
   );
+  const terminals = useSessionOrder(pinnedTerminals);
   useEffect(() => {
     setPinOverride((prev) => {
       const next = { ...prev };
@@ -202,7 +205,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
     if (!activeId || !listRef.current) return;
     const el = listRef.current.querySelector<HTMLElement>(`[data-terminal-id="${activeId}"]`);
     el?.scrollIntoView({ block: "nearest" });
-  }, [activeId, groups]);
+  }, [activeId]);
 
   // Every session waiting on you, live or just finished, across the
   // unfiltered list — the header count is how you find them now.
