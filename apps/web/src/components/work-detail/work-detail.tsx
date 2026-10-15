@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api-client";
 import { terminalWorkHref } from "@/lib/work-href";
-import { useSessionLayout } from "@/hooks/use-session-layout";
+import { rememberSessionLayout, useSessionLayout } from "@/hooks/use-session-layout";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { LocalWorkPane } from "@/components/local/local-work-pane";
 import { TerminalPane } from "@/components/local/terminal-pane";
@@ -111,6 +111,8 @@ export function WorkDetail({ id }: { id: string }) {
 
 function Workspace({ id, resolved }: { id: string; resolved: Resolved }) {
   const router = useRouter();
+  const replaceLayout = (href: string) => router.replace(rememberSessionLayout(href));
+  const pushLayout = (href: string) => router.push(rememberSessionLayout(href));
   const pathname = usePathname();
   const params = useSearchParams();
   const { terminals, hosts } = useLocalFeed();
@@ -158,7 +160,7 @@ function Workspace({ id, resolved }: { id: string; resolved: Resolved }) {
     if (session) next.set("session", session);
     else next.delete("session");
     // A former secondary may become the selected primary.
-    router.push(
+    pushLayout(
       splitHref(
         session || task.localTerminalId || id,
         split,
@@ -222,15 +224,13 @@ function Workspace({ id, resolved }: { id: string; resolved: Resolved }) {
     chrome: {
       paneCount: paneIds.length,
       layout,
-      onLayout: (next: SplitLayout) => router.replace(href(split, next)),
+      onLayout: (next: SplitLayout) => replaceLayout(href(split, next)),
       onOpenTerminal: (next: string) =>
-        router.replace(href(addToSplit(primary ?? id, { split, layout }, next))),
-      onClose: index
-        ? () => router.replace(href(split.filter((t) => t !== terminalId)))
-        : undefined,
+        replaceLayout(href(addToSplit(primary ?? id, { split, layout }, next))),
+      onClose: index ? () => replaceLayout(href(split.filter((t) => t !== terminalId))) : undefined,
       onFocus: index
         ? () =>
-            router.push(
+            pushLayout(
               splitHref(
                 terminalId,
                 [primary!, ...split.filter((t) => t !== terminalId)],

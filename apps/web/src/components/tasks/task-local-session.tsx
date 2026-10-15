@@ -4,6 +4,7 @@ import type { ComponentProps } from "react";
 import { useRouter } from "next/navigation";
 import { TerminalPane } from "@/components/local/terminal-pane";
 import { useLocalHosts } from "@/hooks/use-local-hosts";
+import { rememberSessionLayout } from "@/hooks/use-session-layout";
 import { splitHref } from "@/components/local/split-state";
 import { LocalAttentionWatcher } from "@/components/local/attention-watcher";
 
@@ -36,7 +37,8 @@ function TaskSession({ terminalId }: { terminalId: string }) {
         paneCount: 1,
         layout: "cols",
         onLayout: () => {},
-        onOpenTerminal: (id) => router.push(splitHref(terminalId, [id], "cols")),
+        onOpenTerminal: (id) =>
+          router.push(rememberSessionLayout(splitHref(terminalId, [id], "cols"))),
       }}
     />
   );

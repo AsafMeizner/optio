@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { renderHook, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { useSessionLayout } from "./use-session-layout";
+import { rememberSessionLayout, useSessionLayout } from "./use-session-layout";
 
 const nav = vi.hoisted(() => ({ path: "/work/a", query: "", replace: vi.fn() }));
 const router = { replace: nav.replace };
@@ -75,4 +75,16 @@ it("restores pod terminals and tolerates unavailable storage", () => {
     throw new Error("blocked");
   });
   expect(() => renderHook(() => useSessionLayout("pod"))).not.toThrow();
+});
+
+it("saves a layout change even when navigation interrupts the URL update", () => {
+  nav.query = "split=b";
+  const { unmount } = renderHook(() => useSessionLayout("local"));
+  const next = "/work/a?split=b&layout=rows";
+  expect(rememberSessionLayout(next)).toBe(next);
+  // The router never commits the new query before the user leaves.
+  unmount();
+  nav.query = "";
+  renderHook(() => useSessionLayout("local"));
+  expect(nav.replace).toHaveBeenCalledWith(next, { scroll: false });
 });

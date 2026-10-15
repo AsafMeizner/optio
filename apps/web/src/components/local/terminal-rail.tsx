@@ -12,6 +12,7 @@ import { SESSION_DOT, sessionTone } from "./attention";
 import { useLocalFeed } from "./local-feed";
 import { useBellStore } from "./bell-store";
 import { collectWorkLinks, WorkLinkBadges, workLinksSearchText } from "./work-links";
+import { rememberSessionLayout } from "@/hooks/use-session-layout";
 import { addToSplit, parseSplit, splitHref, MAX_PANES } from "./split-state";
 import { nextNeedsYou, isFinishedSession } from "./session-order";
 import { useSessionOrder } from "./use-session-order";
@@ -151,11 +152,13 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
       if (opts.split && activeId && id !== activeId) {
         if (shown.size >= MAX_PANES) return;
         router.push(
-          splitHref(
-            activeId,
-            addToSplit(activeId, splitState, id),
-            splitState.layout,
-            `${pathname}?${searchParams}`,
+          rememberSessionLayout(
+            splitHref(
+              activeId,
+              addToSplit(activeId, splitState, id),
+              splitState.layout,
+              `${pathname}?${searchParams}`,
+            ),
           ),
         );
       } else if (shown.has(id)) {
@@ -433,11 +436,13 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                               title="Remove from this view; keep the session running"
                               onClick={() =>
                                 router.replace(
-                                  splitHref(
-                                    activeId!,
-                                    splitState.split.filter((id) => id !== child.id),
-                                    splitState.layout,
-                                    `${pathname}?${searchParams}`,
+                                  rememberSessionLayout(
+                                    splitHref(
+                                      activeId!,
+                                      splitState.split.filter((id) => id !== child.id),
+                                      splitState.layout,
+                                      `${pathname}?${searchParams}`,
+                                    ),
                                   ),
                                 )
                               }

@@ -1,5 +1,7 @@
 "use client";
 
+import { rememberSessionLayout } from "@/hooks/use-session-layout";
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -13,6 +15,7 @@ import { SessionRailHeader } from "./local/session-rail-header";
 export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
   const id = usePathname().split("/")[2];
   const router = useRouter();
+  const replaceLayout = (href: string) => router.replace(rememberSessionLayout(href));
   const panes = parsePodTerminals(useSearchParams());
   const [sessions, setSessions] = useState<any[]>([]);
   const [search, setSearch] = useState("");
@@ -127,7 +130,7 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
                               aria-label={`Ungroup terminal ${Number(pane) + 1}`}
                               title="Close pane; keep the shell running"
                               onClick={() =>
-                                router.replace(
+                                replaceLayout(
                                   podTerminalsHref(
                                     id,
                                     panes.filter((p) => p !== pane),

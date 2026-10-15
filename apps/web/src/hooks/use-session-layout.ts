@@ -3,6 +3,23 @@
 import { useEffect, useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
+/** Save the user's choice before Next's asynchronous navigation can be interrupted. */
+export function rememberSessionLayout(href: string): string {
+  try {
+    const url = new URL(href, window.location.origin);
+    const names = url.pathname.startsWith("/sessions/") ? ["terminals"] : ["split", "layout"];
+    const layout = new URLSearchParams();
+    for (const name of names) {
+      if (url.searchParams.has(name)) layout.set(name, url.searchParams.get(name)!);
+    }
+    const key = `optio.session-layout:${url.pathname}:${url.searchParams.get("session") ?? ""}`;
+    window.sessionStorage.setItem(key, layout.toString());
+  } catch {
+    // A blocked store must not prevent navigation.
+  }
+  return href;
+}
+
 /** Keep each session's panes when returning from another page. Tab-local so
  * separate browser tabs can still arrange the same session independently.
  * URLs with explicit panes win; subsequent URL edits (including ungrouping)

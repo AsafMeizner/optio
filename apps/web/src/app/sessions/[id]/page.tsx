@@ -8,7 +8,7 @@ import {
   podTerminalsHref,
   type PodTerminalPane,
 } from "@/components/pod-terminal-panes";
-import { useSessionLayout } from "@/hooks/use-session-layout";
+import { rememberSessionLayout, useSessionLayout } from "@/hooks/use-session-layout";
 import { useRailStore } from "@/components/local/rail-store";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -65,6 +65,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 function SessionDetail({ id }: { id: string }) {
   useSessionLayout("pod");
   const router = useRouter();
+  const replaceLayout = (href: string) => router.replace(rememberSessionLayout(href));
   const searchParams = useSearchParams();
   const terminalPanes = parsePodTerminals(searchParams);
   const railCollapsed = useRailStore((s) => s.collapsed);
@@ -212,7 +213,7 @@ function SessionDetail({ id }: { id: string }) {
                   const next = (["1", "2"] as PodTerminalPane[]).find(
                     (p) => !terminalPanes.includes(p),
                   );
-                  if (next) router.replace(podTerminalsHref(id, [...terminalPanes, next]));
+                  if (next) replaceLayout(podTerminalsHref(id, [...terminalPanes, next]));
                 }}
               />
             )}
@@ -334,7 +335,7 @@ function SessionDetail({ id }: { id: string }) {
                           aria-label={`Close terminal ${Number(pane) + 1} pane`}
                           title="Close pane; keep the shell running"
                           onClick={() =>
-                            router.replace(
+                            replaceLayout(
                               podTerminalsHref(
                                 id,
                                 terminalPanes.filter((p) => p !== pane),
