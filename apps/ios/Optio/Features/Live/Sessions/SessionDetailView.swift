@@ -203,6 +203,7 @@ struct SessionChatView: View {
                     .padding()
                 }
                 .onChange(of: chat.rows.count) { _, _ in withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .scrollDismissesKeyboard(.interactively)
             }
             if let err = chat.error {
                 HStack(spacing: Spacing.s) {

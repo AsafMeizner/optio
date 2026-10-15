@@ -72,6 +72,7 @@ struct AgentLogView: View {
                 .padding(.top)
             }
             .accessibilityIdentifier("agent-transcript")
+            .scrollDismissesKeyboard(.interactively)
             // Open at the end, and stay there as the content grows while the
             // reader is at it: a lazy stack's rows aren't laid out yet when
             // the first `scrollTo` runs, so the anchor is what lands it.
@@ -547,6 +548,19 @@ struct ChatComposer: View {
         .padding(.horizontal, Spacing.l)
         .padding(.vertical, Spacing.s)
         .background(composerBackground)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                if focused {
+                    Spacer()
+                    Button {
+                        focused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Dismiss keyboard")
+                }
+            }
+        }
         .onAppear { if autofocus { focused = true } }
         .sensoryFeedback(.impact(flexibility: .soft), trigger: sending) { _, new in new }
     }
