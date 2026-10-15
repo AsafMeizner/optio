@@ -19,6 +19,7 @@
     "db:migrate": "turbo db:migrate",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "check:push": "node scripts/check-push.mjs",
     "prepare": "husky",
     "gen:swift": "pnpm --filter @optio/shared gen:swift",
     "gen:kotlin": "pnpm --filter @optio/shared gen:kotlin"
