@@ -275,6 +275,13 @@ Mechanics (integration + e2e tiers):
 
 After changing backend code, ALWAYS rebuild + redeploy the local cluster and verify live (see the `/live-e2e` skill; per standing user preference, deploy after backend changes).
 
+### Push and release verification
+
+- Let the commit and push hooks run; do not bypass them to ship. Pre-commit checks formatting and types; pre-push runs unit tests and the full browser suite against the isolated fake-runtime stack. Browser checks run even for native-only changes, matching CI, and need Docker and Playwright Chromium. Allow time for them.
+- Run the additional suites in the testing matrix for the changed code (including native builds/tests for native changes). Passing hooks does not mean every CI job has passed.
+- After every push, find the **CI** workflow for the exact pushed SHA (`gh run list --workflow CI --commit <sha>`), then wait for its result (`gh run watch <run-id> --exit-status`). Do not report CI success or publish a release, including TestFlight, while that run is pending or failed.
+- On failure, inspect the failed job, reproduce it, and fix its cause before the next release. Preserve assertions; do not mask failures with extra retries or skips. If a failure is environmental or still unresolved, report that explicitly rather than calling the push verified.
+
 ## Conventions
 
 - **ESM everywhere**: all packages use `"type": "module"` with `.js` extensions in imports (TypeScript resolves them to `.ts`)

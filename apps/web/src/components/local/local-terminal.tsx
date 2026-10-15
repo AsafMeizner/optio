@@ -124,7 +124,7 @@ export function LocalTerminal({
     // renderer exists (first paint) and any engine after dispose(), so guard
     // it and retry on the next frame.
     const safeFit = () => {
-      if (disposed) return;
+      if (disposed || holdingReplay()) return;
       try {
         fitAddon.fit();
       } catch {
@@ -299,6 +299,7 @@ export function LocalTerminal({
     };
 
     const applyMode = () => {
+      if (holdingReplay()) return;
       if (mode.kind === "passive") {
         renderPassive(mode.grid);
         setForeignGrid(mode.grid);
@@ -397,6 +398,9 @@ export function LocalTerminal({
     // would resize the terminal before the snapshot is parsed and lay it out
     // at this screen's width instead; it waits for the parse instead.
     let replayLaidOut = false;
+    // The header and snapshot are separate WebSocket messages. Hold the grid
+    // even before the first write, while layout/resize callbacks can run.
+    let replayAwaitingBytes = false;
     let deferredGrid: { grid: Grid; yours: boolean | undefined } | null = null;
     const closeReplay = () => {
       if (replayTimer) clearTimeout(replayTimer);
@@ -405,7 +409,7 @@ export function LocalTerminal({
       if (replayWrites === 0) replaying = false;
     };
     /** A replay laid out at its own grid is still being parsed. */
-    const holdingReplay = () => replayLaidOut && replayWrites > 0;
+    const holdingReplay = () => replayLaidOut && (replayAwaitingBytes || replayWrites > 0);
     /** The replay is parsed: apply the grid that arrived meanwhile. */
     const replayParsed = () => {
       if (replayClosed) replaying = false;
@@ -447,6 +451,7 @@ export function LocalTerminal({
         replayWrites = 0;
         replayClosed = false;
         replayLaidOut = false;
+        replayAwaitingBytes = false;
         deferredGrid = null;
         if (replayTimer) clearTimeout(replayTimer);
         // A daemon that never says the size: don't hold answers back for good.
@@ -483,8 +488,9 @@ export function LocalTerminal({
             // The snapshot that follows was drawn for this grid: lay it out at
             // that size, then let the `size` frames size it for this screen.
             if (Number.isInteger(parsed.cols) && Number.isInteger(parsed.rows)) {
-              layoutReplay({ cols: parsed.cols, rows: parsed.rows });
               replayLaidOut = true;
+              replayAwaitingBytes = true;
+              layoutReplay({ cols: parsed.cols, rows: parsed.rows });
             }
           } else if (parsed.type === "size") {
             if (!replayClosed) closeReplay();
@@ -528,8 +534,9 @@ export function LocalTerminal({
             outputSeen = true;
             onOutputRef.current?.();
           }
-          if (replaying && !replayClosed) {
+          if (replayAwaitingBytes || (replaying && !replayClosed)) {
             replayWrites++;
+            replayAwaitingBytes = false;
             term.write(new Uint8Array(msg.data), () => {
               if (--replayWrites === 0) replayParsed();
             });

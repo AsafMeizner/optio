@@ -1,1 +1,8 @@
+set -e
+
 pnpm turbo test 2>&1
+
+# Unit tests do not cover terminal replay, browser layout, or navigation races.
+# Run the real browser suite even for native-only pushes: CI runs it for every
+# commit, and existing timing bugs can otherwise make an unrelated push red.
+pnpm --filter @optio/web test:e2e

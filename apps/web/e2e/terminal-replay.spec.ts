@@ -101,6 +101,26 @@ test("a screen that takes the grid parses the replay at the grid it was drawn fo
   });
   const page = await browser.newPage({ viewport: { width: 700, height: 800 } });
   try {
+    // A replay header and its bytes are separate WebSocket messages. Give a
+    // real layout change time to land between them, as it can on a slow runner.
+    await page.routeWebSocket("**/ws/local/terminals/*/stream", (viewer) => {
+      const server = viewer.connectToServer();
+      let delivery = Promise.resolve();
+      server.onMessage((message) => {
+        delivery = delivery.then(async () => {
+          viewer.send(message);
+          if (typeof message === "string" && JSON.parse(message).type === "replay") {
+            await page.setViewportSize({ width: 720, height: 800 });
+            await page.evaluate(
+              () =>
+                new Promise<void>((resolve) =>
+                  requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+                ),
+            );
+          }
+        });
+      });
+    });
     await page.goto(`/local/${terminal.id}`);
     await page.locator(".local-xterm .xterm-screen").waitFor({ timeout: 30_000 });
     await expect.poll(() => terminal.resizes.at(-1)?.cols ?? 999).toBeLessThan(120);
