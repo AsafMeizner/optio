@@ -20,6 +20,34 @@ export function rememberSessionLayout(href: string): string {
   return href;
 }
 
+/** Deleted terminals must not reappear in another session's remembered panes. */
+export function forgetSessionPane(id: string): void {
+  try {
+    const keys = Array.from({ length: window.sessionStorage.length }, (_, i) =>
+      window.sessionStorage.key(i),
+    );
+    for (const key of keys) {
+      if (!key?.startsWith("optio.session-layout:")) continue;
+      if (key.startsWith(`optio.session-layout:/work/${id}:`) || key.endsWith(`:${id}`)) {
+        window.sessionStorage.removeItem(key);
+        continue;
+      }
+      const params = new URLSearchParams(window.sessionStorage.getItem(key) ?? "");
+      const split = (params.get("split") ?? "").split(",");
+      if (!split.includes(id)) continue;
+      const remaining = split.filter((pane) => pane !== id);
+      if (remaining.length) params.set("split", remaining.join(","));
+      else {
+        params.delete("split");
+        params.delete("layout");
+      }
+      window.sessionStorage.setItem(key, params.toString());
+    }
+  } catch {
+    // Deleting a terminal still works with blocked storage.
+  }
+}
+
 /** Keep each session's panes when returning from another page. Tab-local so
  * separate browser tabs can still arrange the same session independently.
  * URLs with explicit panes win; subsequent URL edits (including ungrouping)

@@ -1,4 +1,6 @@
 "use client";
+
+import { forgetSessionPane } from "@/hooks/use-session-layout";
 import { OpenTerminalButton } from "@/components/open-terminal-button";
 import { useLocalFeedStore } from "./local-feed";
 import { MAX_PANES } from "./split-state";
@@ -290,6 +292,7 @@ export function TerminalPane({
     setBusy(true);
     try {
       await api.deleteLocalTerminal(terminalId);
+      forgetSessionPane(terminalId);
       toast.success("Terminal deleted");
       if (variant === "primary") onDeleted?.();
       else chrome.onClose?.();

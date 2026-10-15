@@ -6,13 +6,14 @@ import { useWorkSession } from "@/components/work-detail/session-context";
 import { terminalWorkHref } from "@/lib/work-href";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api-client";
-import { BellRing, Columns2, X, Pin, Laptop, Zap } from "lucide-react";
+import { BellRing, Columns2, X, Pin, Laptop, Zap, Trash2, Loader2 } from "lucide-react";
 import { attentionLabel, dirTail, SpawnSourceBadge } from "./terminal-card";
 import { SESSION_DOT, sessionTone } from "./attention";
-import { useLocalFeed } from "./local-feed";
+import { toast } from "sonner";
+import { useLocalFeed, useLocalFeedStore } from "./local-feed";
 import { useBellStore } from "./bell-store";
 import { collectWorkLinks, WorkLinkBadges, workLinksSearchText } from "./work-links";
-import { rememberSessionLayout } from "@/hooks/use-session-layout";
+import { forgetSessionPane, rememberSessionLayout } from "@/hooks/use-session-layout";
 import { addToSplit, parseSplit, splitHref, MAX_PANES } from "./split-state";
 import { nextNeedsYou, isFinishedSession } from "./session-order";
 import { useSessionOrder } from "./use-session-order";
@@ -74,6 +75,60 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
 
   const { terminals: feedTerminals, hosts } = useLocalFeed();
   // A pin toggles the row's place at once; the feed's next refresh agrees.
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const deleteSession = async (terminal: any) => {
+    if (!window.confirm(`Delete terminal "${terminal.title}"?`)) return;
+    setDeleting(terminal.id);
+    try {
+      await api.deleteLocalTerminal(terminal.id);
+      forgetSessionPane(terminal.id);
+      useLocalFeedStore.setState((state) => ({
+        terminals: state.terminals.filter((t) => t.id !== terminal.id),
+      }));
+      if (terminal.id === activeId) {
+        const next = feedTerminals.find((t) => t.id !== terminal.id);
+        router.push(next ? terminalWorkHref(next) : "/work");
+      } else if (activeId && splitState.split.includes(terminal.id)) {
+        router.replace(
+          rememberSessionLayout(
+            splitHref(
+              activeId,
+              splitState.split.filter((id) => id !== terminal.id),
+              splitState.layout,
+              `${pathname}?${searchParams}`,
+            ),
+          ),
+        );
+      }
+      toast.success("Session deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete session");
+    } finally {
+      setDeleting(null);
+    }
+  };
+  const deleteButton = (terminal: any) => {
+    const canDelete = ["pending", "exited", "error"].includes(terminal.state);
+    return (
+      <button
+        type="button"
+        aria-label={`Delete ${terminal.title}`}
+        title={canDelete ? "Delete session" : "Stop this session before deleting it"}
+        disabled={!canDelete || deleting !== null}
+        onClick={(event) => {
+          event.stopPropagation();
+          void deleteSession(terminal);
+        }}
+        className="shrink-0 rounded-md p-1 text-text-muted/60 hover:bg-error/10 hover:text-error disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        {deleting === terminal.id ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Trash2 className="h-3.5 w-3.5" />
+        )}
+      </button>
+    );
+  };
   const [pinOverride, setPinOverride] = useState<Record<string, string | null>>({});
   const pinnedTerminals = useMemo(
     () =>
@@ -309,7 +364,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                           />
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="flex min-w-0 items-center gap-1.5 pr-12">
+                          <div className="flex min-w-0 items-center gap-1.5 pr-18">
                             <span className="truncate text-[13px] font-medium">{t.title}</span>
                             <SpawnSourceBadge
                               spawnedBy={t.spawnedBy}
@@ -373,6 +428,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                         >
                           <Pin className={cn("w-3.5 h-3.5", t.pinnedAt && "fill-current")} />
                         </button>
+                        {deleteButton(t)}
                       </div>
                       <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[10px] text-text-muted/70">
                         <span
@@ -430,6 +486,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                                 )}
                               />
                             </button>
+                            {deleteButton(child)}
                             <button
                               type="button"
                               aria-label={`Ungroup ${child.title}`}

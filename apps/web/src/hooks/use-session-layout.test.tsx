@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { renderHook, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { rememberSessionLayout, useSessionLayout } from "./use-session-layout";
+import { forgetSessionPane, rememberSessionLayout, useSessionLayout } from "./use-session-layout";
 
 const nav = vi.hoisted(() => ({ path: "/work/a", query: "", replace: vi.fn() }));
 const router = { replace: nav.replace };
@@ -87,4 +87,16 @@ it("saves a layout change even when navigation interrupts the URL update", () =>
   nav.query = "";
   renderHook(() => useSessionLayout("local"));
   expect(nav.replace).toHaveBeenCalledWith(next, { scroll: false });
+});
+
+it("deleting a terminal removes it from every saved pane group", () => {
+  rememberSessionLayout("/work/a?split=b,c&layout=rows");
+  rememberSessionLayout("/work/d?split=b&layout=rows");
+  rememberSessionLayout("/work/b?split=a");
+  forgetSessionPane("b");
+  expect(window.sessionStorage.getItem("optio.session-layout:/work/a:")).toBe(
+    "split=c&layout=rows",
+  );
+  expect(window.sessionStorage.getItem("optio.session-layout:/work/d:")).toBe("");
+  expect(window.sessionStorage.getItem("optio.session-layout:/work/b:")).toBeNull();
 });
