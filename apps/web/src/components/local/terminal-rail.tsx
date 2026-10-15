@@ -107,26 +107,33 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
       setDeleting(null);
     }
   };
-  const deleteButton = (terminal: any) => {
+  const deleteButton = (terminal: any, child = false) => {
     const canDelete = ["pending", "exited", "error"].includes(terminal.state);
     return (
-      <button
-        type="button"
-        aria-label={`Delete ${terminal.title}`}
-        title={canDelete ? "Delete session" : "Stop this session before deleting it"}
-        disabled={!canDelete || deleting !== null}
-        onClick={(event) => {
-          event.stopPropagation();
-          void deleteSession(terminal);
-        }}
-        className="shrink-0 rounded-md p-1 text-text-muted/60 hover:bg-error/10 hover:text-error disabled:opacity-30 disabled:cursor-not-allowed"
-      >
-        {deleting === terminal.id ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <Trash2 className="h-3.5 w-3.5" />
+      <span
+        className={cn(
+          "inline-flex shrink-0 transition-opacity md:opacity-0 focus-within:opacity-100",
+          child ? "md:group-hover/child:opacity-100" : "md:group-hover:opacity-100",
         )}
-      </button>
+      >
+        <button
+          type="button"
+          aria-label={`Delete ${terminal.title}`}
+          title={canDelete ? "Delete session" : "Stop this session before deleting it"}
+          disabled={!canDelete || deleting !== null}
+          onClick={(event) => {
+            event.stopPropagation();
+            void deleteSession(terminal);
+          }}
+          className="shrink-0 rounded-md p-1 text-text-muted/60 hover:bg-error/10 hover:text-error disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          {deleting === terminal.id ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </span>
     );
   };
   const [pinOverride, setPinOverride] = useState<Record<string, string | null>>({});
@@ -486,7 +493,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                                 )}
                               />
                             </button>
-                            {deleteButton(child)}
+                            {deleteButton(child, true)}
                             <button
                               type="button"
                               aria-label={`Ungroup ${child.title}`}
