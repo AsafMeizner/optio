@@ -548,19 +548,6 @@ struct ChatComposer: View {
         .padding(.horizontal, Spacing.l)
         .padding(.vertical, Spacing.s)
         .background(composerBackground)
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                if focused {
-                    Spacer()
-                    Button {
-                        focused = false
-                    } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                    }
-                    .accessibilityLabel("Dismiss keyboard")
-                }
-            }
-        }
         .onAppear { if autofocus { focused = true } }
         .sensoryFeedback(.impact(flexibility: .soft), trigger: sending) { _, new in new }
     }
