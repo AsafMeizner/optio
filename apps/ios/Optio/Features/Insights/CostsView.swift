@@ -32,8 +32,8 @@ struct CostsView: View {
     private var filterKey: String { "\(model.days)|\(model.repoFilter ?? "")" }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.l) {
+        List {
+            Group {
                 if let error = model.error, model.data == nil {
                     if error.isForbidden { AdminOnlyState(what: "Cost analytics") } else {
                         ErrorRow(error: error, what: "costs") { Task { await model.load(api: api) } }
@@ -51,8 +51,13 @@ struct CostsView: View {
                     SkeletonStrip(labels: ["Total", "Average", "Forecast", "Previous"])
                 }
             }
-            .padding()
+            .listRowInsets(EdgeInsets(top: Spacing.s, leading: Spacing.l, bottom: Spacing.s, trailing: Spacing.l))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
+        .listStyle(.plain)
+        .contentMargins(.vertical, Spacing.s, for: .scrollContent)
+        .scrollContentBackground(.hidden)
         .background(Surface.page)
         .dimmedWhileLoading(model.loading && model.data != nil)
         .toolbar {

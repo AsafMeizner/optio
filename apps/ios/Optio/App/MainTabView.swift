@@ -124,6 +124,7 @@ struct HubSwitcher<T: Hashable>: View {
                 }
                 .padding(.horizontal, Spacing.l)
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .onChange(of: selection) { _, value in
                 withAnimation(.snappy) { proxy.scrollTo(value, anchor: .center) }
             }

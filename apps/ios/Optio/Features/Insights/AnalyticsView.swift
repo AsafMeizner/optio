@@ -36,8 +36,8 @@ struct AnalyticsView: View {
     @State private var model = AnalyticsModel()
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.l) {
+        List {
+            Group {
                 if let error = model.error, model.performance == nil {
                     if error.isForbidden { AdminOnlyState(what: "Analytics") } else {
                         ErrorRow(error: error, what: "analytics") { Task { await model.load(api: api) } }
@@ -53,8 +53,13 @@ struct AnalyticsView: View {
                     prFunnel
                 }
             }
-            .padding()
+            .listRowInsets(EdgeInsets(top: Spacing.s, leading: Spacing.l, bottom: Spacing.s, trailing: Spacing.l))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
+        .listStyle(.plain)
+        .contentMargins(.vertical, Spacing.s, for: .scrollContent)
+        .scrollContentBackground(.hidden)
         .background(Surface.page)
         .dimmedWhileLoading(model.loading && model.performance != nil)
         .toolbar { ToolbarItem(placement: .topBarTrailing) { PeriodPicker(days: $model.days).fixedSize() } }

@@ -199,38 +199,47 @@ struct StatStrip: View {
         .sensoryFeedback(.selection, trigger: tapCount)
     }
 
+    @ViewBuilder
     private func tile(_ item: StatItem) -> some View {
-        let isSelected = selected == item.key
-        return Button {
-            guard let onSelect else { return }
-            tapCount += 1
-            onSelect(item)
-        } label: {
-            VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text(item.value)
-                    .font(.statValue)
-                    .foregroundStyle(valueStyle(item))
-                    .contentTransition(.numericText())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Text(item.label)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.secondaryText)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+        if let onSelect {
+            Button {
+                tapCount += 1
+                onSelect(item)
+            } label: {
+                tileContent(item)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Spacing.l)
-            .background(isSelected ? AppTheme.accent.opacity(0.08) : Surface.card, in: Radius.metricShape)
-            .overlay {
-                Radius.metricShape.strokeBorder(isSelected ? AppTheme.accent.opacity(0.6) : Surface.border, lineWidth: isSelected ? 1.5 : 0.5)
-            }
-            .contentShape(Radius.metricShape)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(item.label): \(item.value)")
+            .accessibilityAddTraits(selected == item.key ? .isSelected : [])
+        } else {
+            tileContent(item)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(item.label): \(item.value)")
         }
-        .buttonStyle(.plain)
-        .disabled(onSelect == nil)
-        .accessibilityLabel("\(item.label): \(item.value)")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func tileContent(_ item: StatItem) -> some View {
+        let isSelected = selected == item.key
+        return VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text(item.value)
+                .font(.statValue)
+                .foregroundStyle(valueStyle(item))
+                .contentTransition(.numericText())
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(item.label)
+                .font(.caption)
+                .foregroundStyle(AppTheme.secondaryText)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Spacing.l)
+        .background(isSelected ? AppTheme.accent.opacity(0.08) : Surface.card, in: Radius.metricShape)
+        .overlay {
+            Radius.metricShape.strokeBorder(isSelected ? AppTheme.accent.opacity(0.6) : Surface.border, lineWidth: isSelected ? 1.5 : 0.5)
+        }
+        .contentShape(Radius.metricShape)
     }
 
     private func valueStyle(_ item: StatItem) -> AnyShapeStyle {

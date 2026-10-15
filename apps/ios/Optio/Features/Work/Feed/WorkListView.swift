@@ -23,6 +23,7 @@ struct WorkListView: View {
                 List { SkeletonRows() }.listStyle(.plain)
             }
         }
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search name, place, agent…")
         .toolbar {
             // Viewers are read-only: no "+" (Android hides it too).
             if session.canCreateWork {
@@ -116,7 +117,6 @@ struct WorkListView: View {
         .scrollContentBackground(.hidden)
         .background(Surface.page)
         .animation(.snappy, value: view)
-        .searchable(text: $query, prompt: "Search name, place, agent…")
         .refreshable { await model.refresh() }
     }
 

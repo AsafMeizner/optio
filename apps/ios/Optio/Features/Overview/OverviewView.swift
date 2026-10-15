@@ -2,7 +2,7 @@ import Charts
 import SwiftUI
 
 /// The Overview tab, a mirror of `apps/web/src/app/page.tsx` top to bottom:
-/// header (title, feed-count subtitle, refresh, new session) → needs you →
+/// header (title, feed-count subtitle, refresh, new session) →
 /// usage limits → the sessions board (five tiles, active sessions, recurring +
 /// persistent agents) → token banners → cluster summary → recent. The dashboard
 /// model polls every 10 seconds while visible, the feed every 15, usage every 60.
@@ -97,8 +97,6 @@ struct OverviewView: View {
                 }
             }
 
-            needsYouSection
-
             if !usage.providerLimits.isEmpty {
                 Section {
                     LimitsPanelView()
@@ -154,25 +152,6 @@ struct OverviewView: View {
             await model.refresh(api: api)
             await feed?.refresh()
             await usage.refresh()
-        }
-    }
-
-    /// The web's first section: everything waiting on you, whatever concept it
-    /// belongs to (`needs-you.tsx`). Renders nothing when empty.
-    @ViewBuilder private var needsYouSection: some View {
-        let rows = model.needsYouRows(feed: feed?.rows ?? [])
-        if !rows.isEmpty {
-            Section {
-                ForEach(rows.prefix(7)) { row in
-                    NavigationLink(value: row.destination) { WorkRowView(row: row) }
-                        .listRowBackground(Surface.card)
-                }
-                if rows.count > 7 {
-                    Button("\(rows.count - 7) more waiting in Work") { router.openWork(.active) }.font(.footnote)
-                }
-            } header: {
-                SectionHeader(title: "Needs you", detail: "\(rows.count)", tone: .accent) { router.openWork(.active) }.textCase(nil)
-            }
         }
     }
 
