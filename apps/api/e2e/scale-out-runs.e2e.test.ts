@@ -551,17 +551,18 @@ describe("three servers", () => {
       await replenish();
       const api = cluster.any();
       const N = 30;
+      // Keep the first wave alive while the independent persistent-agent
+      // queue admits its turns, including on a loaded CI runner.
+      const output = ticks(N, 250);
       const taskIds = [
         ...(await Promise.all(
-          [0, 1, 2, 3].map(() => createTask(api, REPO_A, `[[mock:pr]] ${ticks(N)}`)),
+          [0, 1, 2, 3].map(() => createTask(api, REPO_A, `[[mock:pr]] ${output}`)),
         )),
-        ...(await Promise.all(
-          [0, 1].map(() => createTask(api, REPO_B, `[[mock:pr]] ${ticks(N)}`)),
-        )),
+        ...(await Promise.all([0, 1].map(() => createTask(api, REPO_B, `[[mock:pr]] ${output}`)))),
       ];
-      const runIds = await Promise.all([0, 1].map((k) => createJobRun(api, `ten-${k}`, ticks(N))));
+      const runIds = await Promise.all([0, 1].map((k) => createJobRun(api, `ten-${k}`, output)));
       const agentIds = await Promise.all(
-        [0, 1].map((k) => createAgent(api, `ten-agent-${k}`, ticks(N))),
+        [0, 1].map((k) => createAgent(api, `ten-agent-${k}`, output)),
       );
 
       // The limits, polled from the database the whole time.
@@ -583,16 +584,27 @@ describe("three servers", () => {
       })();
 
       try {
-        // Kill the server streaming the most runs once the first wave streams.
+        // This case exercises durable runs surviving their server. Do not kill
+        // in the tiny claim-before-turn window: that deliberately uses the
+        // five-minute NO_OPEN_TURN_GRACE_MS, longer than this case's wait.
+        // The no-turn grace is covered in reconcile-attachment.test.ts; case
+        // 21 below covers a held turn whose server dies while making its pod.
         await waitFor(
           async () => {
-            const rows = await Promise.all(taskIds.map(workRun));
+            const [rows, agentTurns] = await Promise.all([
+              Promise.all(taskIds.map(workRun)),
+              Promise.all(agentIds.map(turns)),
+            ]);
             return rows.filter((r) => r.exec_state === "started" && Number(r.consumed_bytes) > 0)
-              .length >= 2
+              .length >= 2 && agentTurns.every((ts) => ts.length > 0)
               ? true
               : null;
           },
-          { timeoutMs: 60_000, intervalMs: 100, label: "first wave streaming" },
+          {
+            timeoutMs: 60_000,
+            intervalMs: 100,
+            label: "first wave streaming and agent turns admitted",
+          },
         );
         const counts = new Map<number, number>();
         for (const id of [...taskIds, ...runIds]) {

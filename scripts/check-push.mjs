@@ -97,6 +97,8 @@ if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
         ["bash", "scripts/check-swift-types.sh"],
         ["bash", "scripts/check-kotlin-types.sh"],
         ["pnpm", "turbo", "test"],
+        ["pnpm", "--filter", "@optio/api", "test:integration"],
+        ["pnpm", "--filter", "@optio/api", "test:e2e"],
         ["pnpm", "--filter", "@optio/web", "test:e2e"],
       ]);
   } catch (error) {
