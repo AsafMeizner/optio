@@ -36,6 +36,13 @@ describe("mergeWorkDefaults", () => {
     });
   });
 
+  it("remembers the end state and keeps it when an older client omits it", () => {
+    const saved = mergeWorkDefaults(current, { then: "until-merged" });
+    expect(saved.then).toBe("until-merged");
+    expect(mergeWorkDefaults(saved, { runtime: "gemini" }).then).toBe("until-merged");
+    expect(mergeWorkDefaults(saved, { then: "exits" }).then).toBe("exits");
+  });
+
   it("starts from nothing", () => {
     expect(
       mergeWorkDefaults(null, { location: { runTarget: "local", localHostId: "h2" } }),

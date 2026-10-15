@@ -27,6 +27,18 @@ final class WorkFormDefaultsTests: XCTestCase {
         XCTAssertEqual(d.agentOptions["codexReasoningEffort"], .string("high"))
     }
 
+    func testEndStateIsRememberedAndNormalizedForTheLocation() {
+        var draft = F.Draft.empty
+        draft.then = .untilMerged
+        let saved = F.workDefaults(from: draft)
+        XCTAssertEqual(saved?.then, .untilMerged)
+        XCTAssertEqual(F.applyDefaults(.empty, saved, providers: []).then, .untilMerged)
+        draft.withRepo = false
+        XCTAssertEqual(F.applyDefaults(draft, saved, providers: []).then, .exits)
+        XCTAssertEqual(F.applyDefaults(.empty, WorkFormDefaults(then: .waitsForMe), providers: []).then, .waitsForMe)
+        XCTAssertEqual(F.applyDefaults(.empty, WorkFormDefaults(then: .unknown), providers: []).then, .exits)
+    }
+
     func testNothingSavedLeavesTheDraft() {
         XCTAssertEqual(F.applyDefaults(.empty, nil, providers: []), .empty)
         XCTAssertEqual(F.applyDefaults(.empty, WorkFormDefaults(), providers: []), F.normalize(.empty))

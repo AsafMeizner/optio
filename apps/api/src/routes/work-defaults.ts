@@ -8,7 +8,7 @@ import { isAuthDisabled } from "../services/oauth/index.js";
 
 /**
  * The settings a person last used in the New work form — where it ran (a pod,
- * or which machine and directory), the runtime, and for each runtime its
+ * or which machine and directory), the end state, the runtime, and for each runtime its
  * agent options (model, effort, model provider, …) — so the form starts from
  * them next time, on any device. Per user. With auth disabled everyone is the
  * one "Local Dev" person, whose settings are kept on a users row of their
@@ -36,13 +36,14 @@ const workDefaultsSchema = z
       .optional()
       .describe("Per runtime: its agent options as last saved"),
     location: locationSchema.optional(),
+    then: z.enum(["exits", "until-merged", "waits-for-me", "waits-for-messages"]).optional(),
   })
   .describe("The New work form's last-used settings");
 
 export type WorkDefaultsBody = z.infer<typeof workDefaultsSchema>;
 
 /**
- * The merge rule: Where and the runtime replace what was saved; a runtime's
+ * The merge rule: Where, Then and the runtime replace what was saved; a runtime's
  * options replace its own; other runtimes' options are kept.
  */
 export function mergeWorkDefaults(
@@ -56,6 +57,8 @@ export function mergeWorkDefaults(
   if (runtime) next.runtime = runtime;
   const location = body.location ?? current?.location;
   if (location) next.location = location;
+  const then = body.then ?? current?.then;
+  if (then) next.then = then;
   return next;
 }
 
@@ -93,7 +96,7 @@ export async function workDefaultsRoutes(rawApp: FastifyInstance) {
         operationId: "getWorkDefaults",
         summary: "My last-used work settings",
         description:
-          "Where the caller's work ran last (pod or machine + directory), and the runtime and per-runtime agent options they last used in the New work form. Empty when none are saved.",
+          "Where the caller's work ran last (pod or machine + directory), the end state, and the runtime and per-runtime agent options they last used in the New work form. Empty when none are saved.",
         tags: ["Auth"],
         response: { 200: z.object({ defaults: workDefaultsSchema }) },
       },
@@ -116,7 +119,7 @@ export async function workDefaultsRoutes(rawApp: FastifyInstance) {
         operationId: "putWorkDefaults",
         summary: "Remember my work settings",
         description:
-          "Merge the given Where, runtime and per-runtime agent options into the caller's saved New work form settings: Where and the runtime replace what was saved; a runtime's options replace what was saved for that runtime; other runtimes are kept.",
+          "Merge the given Where, Then, runtime and per-runtime agent options into the caller's saved New work form settings: Where, Then and the runtime replace what was saved; a runtime's options replace what was saved for that runtime; other runtimes are kept.",
         tags: ["Auth"],
         body: workDefaultsSchema,
         response: { 200: z.object({ defaults: workDefaultsSchema }) },

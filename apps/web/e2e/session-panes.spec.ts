@@ -45,11 +45,21 @@ test("terminal here opens a shell in the same directory, groups locally and ungr
     await expect(other.locator("[data-session-pane]")).toHaveCount(1);
     await expect(other.locator("[data-session-group]")).toHaveCount(0);
     await other.close();
+    await page.getByRole("radio", { name: "Stacked", exact: true }).first().click();
+    await page.goto("/work");
+    await page.goto(`/work/${session.id}`);
+    await expect(page.locator("[data-session-pane]")).toHaveCount(2);
+    await expect(page).toHaveURL(/layout=rows/);
+    await page.reload();
+    await expect(page.locator("[data-session-pane]")).toHaveCount(2);
     await group.getByRole("button", { name: `Ungroup ${terminal.title}`, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/work/${session.id}$`));
     const after = (await (await request.get(`${API}/api/local/terminals/${terminal.id}`)).json())
       .terminal;
     expect(after.state).toBe("running");
+    await page.goto("/work");
+    await page.goto(`/work/${session.id}`);
+    await expect(page.locator("[data-session-pane]")).toHaveCount(1);
     // Existing sessions use the same nested presentation.
     await page
       .getByRole("button", { name: `Open ${terminal.title} side by side`, exact: true })
@@ -108,6 +118,9 @@ test("pod terminal panes have their own streams and only group in the current vi
     ).toBeVisible();
     await expect(other.locator('[data-session-pane="pod-1"]')).toHaveCount(0);
     await other.close();
+    await page.goto("/work");
+    await page.goto(`/sessions/${session.id}`);
+    await expect(page.locator('[data-session-pane="pod-1"]')).toBeVisible();
     await page.getByRole("button", { name: "Open terminal here", exact: true }).click();
     await expect(
       page.getByRole("button", { name: "Open terminal here", exact: true }),

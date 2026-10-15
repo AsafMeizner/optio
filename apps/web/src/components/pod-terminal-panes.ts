@@ -1,4 +1,4 @@
-/** Pane arrangement belongs to this URL/view, never to the session record. */
+/** Pane arrangement lives in the URL, remembered per session in this browser tab. */
 export type PodTerminalPane = "1" | "2";
 export function parsePodTerminals(params: { get(name: string): string | null }): PodTerminalPane[] {
   return [...new Set((params.get("terminals") ?? "").split(","))].filter(

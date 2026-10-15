@@ -76,7 +76,7 @@ function setOptions(d: WorkDraft): Record<string, string | boolean> | null {
 /**
  * What a successful create remembers as your New work form settings: where
  * it ran (a pod, or the machine and directory), and — unless it was a
- * terminal — the runtime and the options actually submitted for it.
+ * terminal — the end state, runtime and options actually submitted for it.
  */
 export function workDefaultsFrom(d: WorkDraft): WorkFormDefaults {
   const location: WorkFormDefaults["location"] = isLocal(d)
@@ -87,7 +87,12 @@ export function workDefaultsFrom(d: WorkDraft): WorkFormDefaults {
       }
     : { runTarget: "cluster" };
   if (d.runtime === TERMINAL) return { location };
-  return { location, runtime: d.runtime, agentOptions: { [d.runtime]: setOptions(d) ?? {} } };
+  return {
+    location,
+    then: d.then,
+    runtime: d.runtime,
+    agentOptions: { [d.runtime]: setOptions(d) ?? {} },
+  };
 }
 
 /** Fire-and-forget: never blocks or fails the submit. */

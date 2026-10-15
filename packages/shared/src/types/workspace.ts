@@ -61,10 +61,12 @@ export interface WorkFormLocationDefault {
 
 /**
  * The settings a person last used in the New work form, offered again next
- * time: where it ran, the runtime, and for each runtime its agent options
+ * time: where it ran, its end state, the runtime, and for each runtime its agent options
  * (model, effort, model provider, …).
  */
 export interface WorkFormDefaults {
+  /** Last end state chosen for agent work. */
+  then?: "exits" | "until-merged" | "waits-for-me" | "waits-for-messages";
   runtime?: string;
   /** Per runtime: option key → value (a string or a boolean, like work's `agentOptions`). */
   agentOptions?: Record<string, Record<string, unknown>>;

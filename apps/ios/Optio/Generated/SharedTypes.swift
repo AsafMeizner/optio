@@ -11465,25 +11465,46 @@ public struct WorkFormLocationDefault: Codable, Hashable, Sendable {
 }
 
 /// The settings a person last used in the New work form, offered again next
-/// time: where it ran, the runtime, and for each runtime its agent options
+/// time: where it ran, its end state, the runtime, and for each runtime its agent options
 /// (model, effort, model provider, …).
 public struct WorkFormDefaults: Codable, Hashable, Sendable {
+    public enum Then: String, Codable, Hashable, Sendable, CaseIterable {
+        case exits = "exits"
+        case untilMerged = "until-merged"
+        case waitsForMe = "waits-for-me"
+        case waitsForMessages = "waits-for-messages"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [Then] = [.exits, .untilMerged, .waitsForMe, .waitsForMessages]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Then(rawValue: raw) ?? .unknown
+        }
+    }
+
+    /// Last end state chosen for agent work.
+    public let then: Then?
     public let runtime: String?
     /// Per runtime: option key → value (a string or a boolean, like work's `agentOptions`).
     public let agentOptions: [String: [String: AnyCodable]]?
     public let location: WorkFormLocationDefault?
 
     private enum CodingKeys: String, CodingKey {
+        case then = "then"
         case runtime = "runtime"
         case agentOptions = "agentOptions"
         case location = "location"
     }
 
     public init(
+        then: Then? = nil,
         runtime: String? = nil,
         agentOptions: [String: [String: AnyCodable]]? = nil,
         location: WorkFormLocationDefault? = nil
     ) {
+        self.then = then
         self.runtime = runtime
         self.agentOptions = agentOptions
         self.location = location

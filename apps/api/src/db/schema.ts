@@ -48,6 +48,7 @@ export const users = pgTable("users", {
   defaultWorkspaceId: uuid("default_workspace_id"), // last-used workspace
   // The New work form's last-used settings (where it ran, runtime, per-runtime options).
   workDefaults: jsonb("work_defaults").$type<{
+    then?: "exits" | "until-merged" | "waits-for-me" | "waits-for-messages";
     runtime?: string;
     agentOptions?: Record<string, Record<string, string | boolean>>;
     location?: { runTarget: "cluster" | "local"; localHostId?: string; localDir?: string };

@@ -771,6 +771,7 @@ describe("remembering the agent settings", () => {
     expect(workDefaultsFrom(d)).toEqual({
       location: { runTarget: "cluster" },
       runtime: "codex",
+      then: "exits",
       agentOptions: { codex: { copilotModel: "gpt-5.5" } },
     });
     // A terminal remembers only where it ran.

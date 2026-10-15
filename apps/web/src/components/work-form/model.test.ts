@@ -642,6 +642,15 @@ suite("remembered agent settings", () => {
     },
   };
 
+  it("restores the end state and normalizes choices that cannot run here", () => {
+    expect(applyWorkDefaults(blank, { then: "until-merged" }, []).then).toBe("until-merged");
+    expect(
+      applyWorkDefaults({ ...blank, withRepo: false }, { then: "until-merged" }, []).then,
+    ).toBe("exits");
+    expect(applyWorkDefaults(blank, { then: "waits-for-me" }, []).then).toBe("waits-for-me");
+    expect(blank.then).toBe("exits");
+  });
+
   it("applies the saved runtime and its options to a blank form", () => {
     const d = applyWorkDefaults(blank, defaults, []);
     expect(d.runtime).toBe("codex");

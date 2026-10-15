@@ -2,7 +2,7 @@ import Foundation
 
 // Remembered agent settings in the New work form (the web's `savedOptionsFor`
 // / `applyWorkDefaults` / `workDefaultsFrom`). `GET /api/me/work-defaults`
-// returns the runtime you last created work with and, per runtime, the
+// returns the end state and runtime you last created work with and, per runtime, the
 // options you submitted; a blank form starts from them, and a successful
 // create saves them again (fire-and-forget).
 
@@ -53,6 +53,9 @@ extension WorkForm {
             next.runtime = wanted
             next.agentOptions = [:]
         }
+        if let savedThen = defaults.then, let then = Then(rawValue: savedThen.rawValue) {
+            next.then = then
+        }
         if let saved = savedOptions(defaults, runtime: next.runtime, providers: providers) {
             next = withSavedOptions(next, saved, providers: providers)
         }
@@ -65,10 +68,10 @@ extension WorkForm {
     }
 
     /// What a successful create remembers: the runtime and the options actually
-    /// submitted for it. Nil for a terminal.
+    /// submitted for it, plus the end state. Nil for a terminal.
     static func workDefaults(from d: Draft) -> WorkFormDefaults? {
         guard d.runtime != terminal else { return nil }
-        return WorkFormDefaults(runtime: d.runtime, agentOptions: [d.runtime: setOptions(d) ?? [:]])
+        return WorkFormDefaults(then: .init(rawValue: d.then.rawValue), runtime: d.runtime, agentOptions: [d.runtime: setOptions(d) ?? [:]])
     }
 }
 

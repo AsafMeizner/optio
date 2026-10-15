@@ -5304,15 +5304,29 @@ data class WorkFormLocationDefault(
 
 /**
  * The settings a person last used in the New work form, offered again next
- * time: where it ran, the runtime, and for each runtime its agent options
+ * time: where it ran, its end state, the runtime, and for each runtime its agent options
  * (model, effort, model provider, …).
  */
 @Serializable
 data class WorkFormDefaults(
+    /** Last end state chosen for agent work. */
+    val then: Then? = null,
     val runtime: String? = null,
     /** Per runtime: option key → value (a string or a boolean, like work's `agentOptions`). */
     val agentOptions: Map<String, Map<String, JsonElement>>? = null,
     val location: WorkFormLocationDefault? = null,
-)
+) {
+    @Serializable(with = Then.Companion::class)
+    enum class Then(override val raw: String) : RawEnum {
+        EXITS("exits"),
+        UNTIL_MERGED("until-merged"),
+        WAITS_FOR_ME("waits-for-me"),
+        WAITS_FOR_MESSAGES("waits-for-messages"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<Then>("dev.optio.core.model.WorkFormDefaults.Then", entries, UNKNOWN)
+    }
+}
 
 // endregion

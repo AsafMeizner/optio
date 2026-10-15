@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api-client";
 import { terminalWorkHref } from "@/lib/work-href";
+import { useSessionLayout } from "@/hooks/use-session-layout";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { LocalWorkPane } from "@/components/local/local-work-pane";
 import { TerminalPane } from "@/components/local/terminal-pane";
@@ -23,6 +24,7 @@ type Resolved = { kind: "task" | "terminal"; work: any };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function WorkDetail({ id }: { id: string }) {
+  useSessionLayout("local");
   const router = useRouter();
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [error, setError] = useState<string | null>(null);

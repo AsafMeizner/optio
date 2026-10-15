@@ -718,13 +718,16 @@ test.describe("Editing recurring work", () => {
 });
 
 test.describe("Remembered agent settings", () => {
-  // The e2e stack runs with auth disabled, where the API keeps no per-user
-  // settings, so the browser stands in for GET / PUT /api/me/work-defaults
+  // Isolate this browser's preferences from the shared Local Dev user.
+  // The browser stands in for GET / PUT /api/me/work-defaults
   // with the server's merge rule. What's under test is the form: it saves
   // what was submitted and the next blank form opens with it.
-  test("a second New work form opens with the model and effort used last", async ({ page }) => {
+  test("a second New work form opens with the model, effort and end state used last", async ({
+    page,
+  }) => {
     let saved: {
       runtime?: string;
+      then?: string;
       agentOptions?: Record<string, Record<string, unknown>>;
       location?: { runTarget: string };
     } = {};
@@ -735,6 +738,7 @@ test.describe("Remembered agent settings", () => {
         puts.push(body);
         saved = {
           runtime: body.runtime ?? saved.runtime,
+          then: body.then ?? saved.then,
           agentOptions: { ...saved.agentOptions, ...body.agentOptions },
           location: body.location ?? saved.location,
         };
@@ -748,6 +752,7 @@ test.describe("Remembered agent settings", () => {
     const whoCard = page.locator("#session-who");
     await whoCard.getByLabel("Model").selectOption("claude-sonnet-4-6");
     await whoCard.getByLabel("Effort Level").selectOption("high");
+    await then(page, "Work until merged").click();
     await prompt(page).fill("Remember me [[mock:pr]]");
     await nameInput(page).fill(named("remembered"));
     await submit(page).click();
@@ -756,6 +761,7 @@ test.describe("Remembered agent settings", () => {
     expect(puts[0]).toEqual({
       location: { runTarget: "cluster" },
       runtime: "claude-code",
+      then: "until-merged",
       agentOptions: {
         "claude-code": expect.objectContaining({
           claudeModel: "claude-sonnet-4-6",
@@ -765,6 +771,7 @@ test.describe("Remembered agent settings", () => {
     });
 
     await open(page);
+    await expect(then(page, "Work until merged")).toHaveAttribute("aria-pressed", "true");
     await expect(whoCard.getByLabel("Model")).toHaveValue("claude-sonnet-4-6");
     await expect(whoCard.getByLabel("Effort Level")).toHaveValue("high");
     await expect(page.getByTestId("work-last-settings")).toBeVisible();

@@ -1,6 +1,6 @@
 /**
- * Split view state belongs to the current URL, never to stored sessions.
- * Reloading this view keeps it; other devices open independent sessions:
+ * Split view state lives in the URL and is remembered per session in this browser tab.
+ * Returning to this view restores it; other tabs/devices stay independent:
  *   /work/<primary>?split=<id2>,<id3>&layout=cols|rows
  * The primary pane is the resolved session: a standalone terminal, the task's
  * current terminal, or its selected `?session=` attempt. `split` lists extra panes. At most MAX_PANES terminals are shown at once.

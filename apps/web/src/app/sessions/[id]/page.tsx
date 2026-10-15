@@ -8,6 +8,7 @@ import {
   podTerminalsHref,
   type PodTerminalPane,
 } from "@/components/pod-terminal-panes";
+import { useSessionLayout } from "@/hooks/use-session-layout";
 import { useRailStore } from "@/components/local/rail-store";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -62,6 +63,7 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
 }
 
 function SessionDetail({ id }: { id: string }) {
+  useSessionLayout("pod");
   const router = useRouter();
   const searchParams = useSearchParams();
   const terminalPanes = parsePodTerminals(searchParams);

@@ -1446,7 +1446,8 @@ export function applyWorkDefaults(
       ? wanted
       : placed.runtime;
   const next: WorkDraft =
-    runtime === placed.runtime ? placed : { ...placed, runtime, agentOptions: {} };
+    runtime === placed.runtime ? { ...placed } : { ...placed, runtime, agentOptions: {} };
+  next.then = defaults.then ?? next.then;
   const saved = savedOptionsFor(defaults, runtime, providers);
   return normalize(saved ? withSavedOptions(next, saved, providers) : next);
 }
