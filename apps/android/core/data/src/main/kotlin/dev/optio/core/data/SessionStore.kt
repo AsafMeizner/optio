@@ -482,14 +482,24 @@ class SessionStore(
         if (_phase.value != Phase.SIGNED_IN) return
         if (!verifyingToken.compareAndSet(false, true)) return
         try {
-            val serverId = _activeServer.value?.id ?: return
-            val generation = _generation.value
+            // Removal/switching updates the registry, active profile and shared client in
+            // stages. Snapshot them under the same lock, and keep this probe bound to
+            // that server even if the shared client is repointed while it is in flight.
+            val (serverId, generation, probe) = mutex.withLock {
+                val id = _activeServer.value?.id ?: return@withLock null
+                val boundClient = client(id) ?: return@withLock null
+                Triple(id, _generation.value, boundClient)
+            } ?: return
             try {
-                val me = api.currentUser()
-                if (_generation.value == generation) _user.value = me
+                val me = probe.currentUser()
+                mutex.withLock { if (_generation.value == generation) _user.value = me }
             } catch (e: ApiError) {
                 if (e.isUnauthorized) {
-                    inSession { mutex.withLock { if (_activeServer.value?.id == serverId) removeLocked(serverId) } }
+                    inSession {
+                        mutex.withLock {
+                            if (_generation.value == generation && _activeServer.value?.id == serverId) removeLocked(serverId)
+                        }
+                    }
                 }
                 // Network or other failure: keep the session.
             }

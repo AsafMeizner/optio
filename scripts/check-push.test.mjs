@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runChecks, verify, verifyUpdates } from "./check-push.mjs";
+import { androidChanged, runChecks, verify, verifyUpdates } from "./check-push.mjs";
 
 function repo(t) {
   const root = mkdtempSync(join(tmpdir(), "optio-push-check-"));
@@ -69,4 +69,23 @@ test("checks cannot certify source that changes while they run", (t) => {
     /Files changed during/,
   );
   assert.throws(() => verify(root), /changed/);
+});
+
+test("Android changes in any unpushed commit require the full native suite", (t) => {
+  const { root, git } = repo(t);
+  assert.equal(androidChanged(root), true); // no upstream
+  git("branch", "baseline");
+  git("branch", "--set-upstream-to=baseline");
+  mkdirSync(join(root, "apps/android"), { recursive: true });
+  writeFileSync(join(root, "apps/android/model.kt"), "model");
+  git("add", ".");
+  git("commit", "-qm", "model change");
+  git("commit", "--allow-empty", "-qm", "another commit");
+  assert.equal(androidChanged(root), true);
+  git("branch", "-f", "baseline", "HEAD");
+  assert.equal(androidChanged(root), false); // last commit changes nothing
+  writeFileSync(join(root, "source.txt"), "web only");
+  git("add", ".");
+  git("commit", "-qm", "web change");
+  assert.equal(androidChanged(root), false);
 });

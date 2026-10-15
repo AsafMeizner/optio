@@ -64,6 +64,21 @@ export function verifyUpdates(root, input) {
   }
 }
 
+/** Generated models can break consumers outside core:model; build every Android module. */
+export function androidChanged(root) {
+  let base;
+  try {
+    base = git(root, "rev-parse", "--verify", "@{upstream}");
+    if (base === git(root, "rev-parse", "HEAD")) base = git(root, "rev-parse", "HEAD^");
+  } catch {
+    // A new branch without an upstream has no safe comparison point.
+    return true;
+  }
+  return git(root, "diff", "--name-only", base, "HEAD")
+    .split("\n")
+    .some((path) => path.startsWith("apps/android/") || path === "scripts/check-android.sh");
+}
+
 export function runChecks(root, commands) {
   // A receipt validates committed work, not edits that happen to be left unstaged.
   git(root, "diff", "--quiet", "HEAD", "--");
@@ -97,6 +112,7 @@ if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
         ["bash", "scripts/check-swift-types.sh"],
         ["bash", "scripts/check-kotlin-types.sh"],
         ["pnpm", "turbo", "test"],
+        ...(androidChanged(root) ? [["bash", "scripts/check-android.sh"]] : []),
         ["pnpm", "--filter", "@optio/api", "test:integration"],
         ["pnpm", "--filter", "@optio/api", "test:e2e"],
         ["pnpm", "--filter", "@optio/web", "test:e2e"],

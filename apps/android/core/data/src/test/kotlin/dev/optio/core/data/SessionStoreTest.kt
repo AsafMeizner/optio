@@ -5,6 +5,9 @@ import dev.optio.core.data.FakeOptioApi.Companion.UNREACHABLE
 import dev.optio.core.data.SessionStore.Phase
 import dev.optio.core.network.ApiError
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,6 +19,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -365,6 +369,47 @@ class SessionStoreTest {
             assertFailsWith<ApiError> { session.api.get<Unit>("/api/workspaces") }
             eventually("server dropped") { session.phase.value == Phase.SIGNED_OUT }
             assertEquals(emptyList(), registry.all())
+        }
+
+    @Test
+    fun aLateTokenRejectionCannotRemoveAServerAfterSwitchingAwayAndBack() =
+        runBlocking<Unit> {
+            val first = fake(email = "first@example.com")
+            val second = fake()
+            val session = session()
+            session.restore()
+            val a = session.addServer(first.url, GOOD)
+            val b = session.addServer(second.url, GOOD)
+            session.switchTo(a.id)
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val probes = AtomicInteger()
+            first.routes["/api/workspaces"] = { FakeOptioApi.json("{}", 401) }
+            first.routes["/api/auth/me"] = {
+                if (probes.incrementAndGet() == 1) {
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    FakeOptioApi.json("{}", 401)
+                } else {
+                    FakeOptioApi.json("""{"user":{"id":"u1","email":"first@example.com","displayName":"First","workspaceRole":"member"},"authDisabled":false}""")
+                }
+            }
+            val existingJobs = scope.coroutineContext[Job]!!.children.toSet()
+            try {
+                assertFailsWith<ApiError> { session.api.get<Unit>("/api/workspaces") }
+                assertTrue(entered.await(5, TimeUnit.SECONDS), "identity probe started")
+                val probeJobs = scope.coroutineContext[Job]!!.children.filter { it !in existingJobs }.toList()
+                assertTrue(probeJobs.isNotEmpty())
+                session.switchTo(b.id)
+                session.switchTo(a.id)
+                release.countDown()
+                withTimeout(5_000) { probeJobs.forEach { it.join() } }
+                assertEquals(a.id, session.activeServer.value?.id)
+                assertNotNull(registry.profile(a.id))
+                assertEquals("first@example.com", session.user.value?.email)
+            } finally {
+                release.countDown()
+            }
         }
 
     @Test

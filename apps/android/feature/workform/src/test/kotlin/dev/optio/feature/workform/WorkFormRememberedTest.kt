@@ -126,10 +126,10 @@ class WorkFormRememberedTest {
             agentOptions = mapOf("copilotModel" to OptionValue.Str("gpt-5.5"), "codexEffort" to OptionValue.Str(""), "fast" to OptionValue.Bool(false)),
         )
         assertEquals(
-            WorkFormDefaults("codex", mapOf("codex" to mapOf("copilotModel" to JsonPrimitive("gpt-5.5"), "fast" to JsonPrimitive(false)))),
+            WorkFormDefaults(runtime = "codex", agentOptions = mapOf("codex" to mapOf("copilotModel" to JsonPrimitive("gpt-5.5"), "fast" to JsonPrimitive(false)))),
             rememberedAfterCreate(d),
         )
-        assertEquals(WorkFormDefaults("claude-code", mapOf("claude-code" to emptyMap())), rememberedAfterCreate(pod))
+        assertEquals(WorkFormDefaults(runtime = "claude-code", agentOptions = mapOf("claude-code" to emptyMap())), rememberedAfterCreate(pod))
         assertNull(rememberedAfterCreate(pod.copy(runtime = TERMINAL)))
     }
 }
