@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { api } from "@/lib/api-client";
+import { deleteSession } from "./delete-session";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -288,10 +289,9 @@ export function TerminalPane({
   };
 
   const handleDelete = async () => {
-    if (!confirm(`Delete terminal "${terminal?.title}"?`)) return;
     setBusy(true);
     try {
-      await api.deleteLocalTerminal(terminalId);
+      await deleteSession(terminalId);
       forgetSessionPane(terminalId);
       toast.success("Terminal deleted");
       if (variant === "primary") onDeleted?.();
@@ -353,8 +353,6 @@ export function TerminalPane({
   // would only 409.
   const canStart = terminal.state === "pending" && terminal.pendingReason !== "host_offline";
   const canKill = terminal.state === "running" || terminal.state === "launching";
-  const canDelete =
-    terminal.state === "exited" || terminal.state === "error" || terminal.state === "pending";
   const isDead = terminal.state === "exited" || terminal.state === "error";
   // A run whose agent reported its own session id can be picked up as a chat.
   const canResume =
@@ -481,17 +479,15 @@ export function TerminalPane({
           </button>
         </ConfirmPopover>
       )}
-      {canDelete && (
-        <button
-          onClick={handleDelete}
-          disabled={busy}
-          title="Delete this terminal record"
-          aria-label="Delete"
-          className={cn(iconButton, "hover:text-error")}
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
-      )}
+      <button
+        onClick={handleDelete}
+        disabled={busy}
+        title="Delete session"
+        aria-label="Delete"
+        className={cn(iconButton, "hover:text-error")}
+      >
+        <Trash2 className="w-3.5 h-3.5" />
+      </button>
     </>
   );
 

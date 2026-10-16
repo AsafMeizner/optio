@@ -6,6 +6,7 @@ import { useWorkSession } from "@/components/work-detail/session-context";
 import { terminalWorkHref } from "@/lib/work-href";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api-client";
+import { deleteSession as stopAndDeleteSession } from "./delete-session";
 import { BellRing, Columns2, X, Pin, Laptop, Zap, Trash2, Loader2 } from "lucide-react";
 import { attentionLabel, dirTail, SpawnSourceBadge } from "./terminal-card";
 import { SESSION_DOT, sessionTone } from "./attention";
@@ -77,10 +78,9 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
   // A pin toggles the row's place at once; the feed's next refresh agrees.
   const [deleting, setDeleting] = useState<string | null>(null);
   const deleteSession = async (terminal: any) => {
-    if (!window.confirm(`Delete terminal "${terminal.title}"?`)) return;
     setDeleting(terminal.id);
     try {
-      await api.deleteLocalTerminal(terminal.id);
+      await stopAndDeleteSession(terminal.id);
       forgetSessionPane(terminal.id);
       useLocalFeedStore.setState((state) => ({
         terminals: state.terminals.filter((t) => t.id !== terminal.id),
@@ -108,7 +108,6 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
     }
   };
   const deleteButton = (terminal: any, child = false) => {
-    const canDelete = ["pending", "exited", "error"].includes(terminal.state);
     return (
       <span
         className={cn(
@@ -119,8 +118,8 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
         <button
           type="button"
           aria-label={`Delete ${terminal.title}`}
-          title={canDelete ? "Delete session" : "Stop this session before deleting it"}
-          disabled={!canDelete || deleting !== null}
+          title="Delete session"
+          disabled={deleting !== null}
           onClick={(event) => {
             event.stopPropagation();
             void deleteSession(terminal);
@@ -402,6 +401,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                         </div>
                       </div>
                       <div className="absolute right-1.5 top-2.5 flex items-center gap-0.5">
+                        {deleteButton(t)}
                         {canSplit && shown.size < MAX_PANES && (
                           <button
                             type="button"
@@ -435,7 +435,6 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                         >
                           <Pin className={cn("w-3.5 h-3.5", t.pinnedAt && "fill-current")} />
                         </button>
-                        {deleteButton(t)}
                       </div>
                       <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[10px] text-text-muted/70">
                         <span
