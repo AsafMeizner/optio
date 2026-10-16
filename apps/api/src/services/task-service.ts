@@ -168,13 +168,26 @@ export async function submitTask(
       )) ?? task
     );
   }
-  const queued = await transitionTask(
-    task.id,
-    TaskState.QUEUED,
-    "task_submitted",
-    undefined,
-    userId,
-  );
+  // The creation event can wake reconciliation on another server before this
+  // request resumes. Only queue a still-pending task; never reset an attempt
+  // that the other server has already started. Lock the check and transition
+  // together so reconciliation cannot advance it between them.
+  const submission = await db.transaction(async (tx) => {
+    const [current] = await tx.select().from(tasks).where(eq(tasks.id, task.id)).for("update");
+    if (!current) throw new Error(`Task not found: ${task.id}`);
+    if (current.state !== TaskState.PENDING) return { task: current, written: null };
+    const written = await writeTransition(
+      tx,
+      task.id,
+      TaskState.QUEUED,
+      "task_submitted",
+      undefined,
+      userId,
+    );
+    return { task: written.updatedTask, written };
+  });
+  if (!submission.written) return submission.task;
+  await announceTransition(submission.written);
   // Dynamic import: the task worker imports this module.
   const { taskQueue } = await import("../workers/task-worker.js");
   await taskQueue.add(
@@ -187,7 +200,7 @@ export async function submitTask(
       backoff: { type: "exponential", delay: 5000 },
     },
   );
-  return queued ?? task;
+  return submission.task;
 }
 
 export async function getTask(id: string) {

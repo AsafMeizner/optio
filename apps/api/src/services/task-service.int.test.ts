@@ -14,7 +14,7 @@
  *    the task's pub/sub channel of the isolated Redis.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { Redis } from "ioredis";
 import { TaskState, InvalidTransitionError } from "@optio/shared";
@@ -31,6 +31,7 @@ import {
   updateTaskResult,
 } from "./task-service.js";
 import { getRedisClient } from "./event-bus.js";
+import * as eventBus from "./event-bus.js";
 
 const uniq = () => randomBytes(4).toString("hex");
 
@@ -56,6 +57,11 @@ async function waitFor(cond: () => boolean, timeoutMs = 10_000, intervalMs = 25)
   }
   if (!cond()) throw new Error("Timed out waiting for condition");
 }
+
+beforeAll(async () => {
+  // Finish loading the queue before transition side effects import worker modules.
+  await import("../workers/task-worker.js");
+});
 
 afterAll(async () => {
   // submitTask loads the task worker's queue; close it and the event-bus
@@ -283,6 +289,31 @@ describe("submitTask", () => {
     const { taskQueue } = await import("../workers/task-worker.js");
     expect(await taskQueue.getJob(task.id)).toBeTruthy();
   });
+
+  it.each([TaskState.QUEUED, TaskState.PROVISIONING])(
+    "returns the current task when reconciliation already moved it to %s",
+    async (advancedState) => {
+      const publish = eventBus.publishEvent;
+      const spy = vi.spyOn(eventBus, "publishEvent").mockImplementation(async (event) => {
+        await publish(event);
+        if (event.type !== "task:created") return;
+        // Pause the submitter at its creation announcement while another server advances it.
+        await transitionTask(event.taskId, TaskState.QUEUED, "reconciler_won");
+        if (advancedState === TaskState.PROVISIONING) {
+          await transitionTask(event.taskId, advancedState, "worker_won");
+        }
+      });
+      try {
+        const task = await submitTask({ title: "race", prompt: "p", repoUrl: repoUrl() });
+        expect(task.state).toBe(advancedState);
+        expect((await getTask(task.id))?.state).toBe(advancedState);
+        const events = await getTaskEvents(task.id);
+        expect(events.filter((event) => event.toState === TaskState.QUEUED)).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
 
   it("waits on its dependencies instead of queueing", async () => {
     const dep = await insertTask();

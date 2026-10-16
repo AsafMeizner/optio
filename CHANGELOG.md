@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Session trash buttons stop running sessions and delete them in one click, without a confirmation popup or a separate Stop step. Deletion waits for the session to exit before removing its record.
 - Sidebar session actions appear in the order **Trash · Side by side · Pin**, with Pin at the right edge.
+- Creating a task while another server queues or starts it no longer returns an error or resets the task to queued.
 
 ## [0.17.2] - 2026-10-13
 
