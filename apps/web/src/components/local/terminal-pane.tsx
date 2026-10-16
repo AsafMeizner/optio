@@ -378,7 +378,12 @@ export function TerminalPane({
   const onlineElsewhere = hosts.find((h) => h.id !== terminal.hostId && h.state === "online");
   const compact = chrome.paneCount > 1;
   const viewToggle = canShowChat(terminal, hasTranscript) && view && (
-    <SessionViewToggle view={view} onChange={setViewChoice} compact={compact} />
+    <SessionViewToggle
+      view={view}
+      onChange={setViewChoice}
+      compact={compact}
+      className="@max-sm:[&_span]:hidden"
+    />
   );
 
   const layoutToggle = chrome.paneCount > 1 && (

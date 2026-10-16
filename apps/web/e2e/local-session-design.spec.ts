@@ -89,6 +89,7 @@ test("local session controls and usage fit narrow screens, and latest reaches th
         header.getByRole("button", { name: "Open terminal here", exact: true }),
       ).toBeVisible();
       await expect(header.getByRole("button", { name: "Kill", exact: true })).toBeVisible();
+      await expect(header.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
       expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
       // Keep the header compact without dropping the controls or usage above.
       expect((await header.boundingBox())!.height).toBeLessThan(width === 1440 ? 90 : 130);
