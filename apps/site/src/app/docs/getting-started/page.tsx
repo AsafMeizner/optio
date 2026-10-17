@@ -16,10 +16,10 @@ export default function GettingStartedPage() {
       <p className="mt-4 text-text-muted leading-relaxed">
         Optio is a self-hosted platform for running AI agents as{" "}
         <Link href="/docs/sessions" className="text-primary-light hover:underline">
-          sessions
+          work
         </Link>{" "}
-        — on your Kubernetes cluster or on your own machines — and wiring them into workflows and
-        swarms. A session is one noun with five attributes:{" "}
+        — on your Kubernetes cluster or on your own machines — and connecting them to schedules,
+        events, and other agents. Each piece of work has five attributes:{" "}
         <strong className="text-text-heading">When</strong> it starts,{" "}
         <strong className="text-text-heading">Where</strong> it runs,{" "}
         <strong className="text-text-heading">Who</strong> does the work,{" "}
@@ -80,9 +80,9 @@ cd optio
         </li>
       </ul>
 
-      <h2 className="mt-10 text-2xl font-bold text-text-heading">First Session</h2>
+      <h2 className="mt-10 text-2xl font-bold text-text-heading">Your First Work</h2>
       <p className="mt-3 text-text-muted leading-relaxed">
-        From the dashboard, connect a GitHub repository, then create a session that opens a PR:
+        From the dashboard, connect a GitHub repository, then create work that opens a PR:
       </p>
       <ol className="mt-3 list-decimal pl-5 space-y-2 text-[14px] text-text-muted">
         <li>
@@ -93,8 +93,8 @@ cd optio
           (Anthropic API key or Claude OAuth token)
         </li>
         <li>
-          Go to <strong className="text-text-heading">Sessions &rarr; New session</strong> and pick
-          the <strong className="text-text-heading">Open a PR</strong> preset
+          Go to <strong className="text-text-heading">Work &rarr; New work</strong> and pick the{" "}
+          <strong className="text-text-heading">Open a PR</strong> preset
         </li>
         <li>
           Answer When (now), Where (an Optio pod with your repo), Who (Claude Code), What (your
@@ -103,28 +103,29 @@ cd optio
       </ol>
       <p className="mt-3 text-text-muted leading-relaxed">
         Optio will provision a pod, create a worktree, run the agent, and open a PR. You can watch
-        the live logs in the session detail view, and it shows up under{" "}
-        <strong className="text-text-heading">Active</strong> in the Sessions feed. Try the other
+        the live logs in the work detail view, and it shows up under{" "}
+        <strong className="text-text-heading">Active</strong> in the Work feed. Try the other
         presets next: <em>Interactive chat</em>, <em>Scheduled run</em>, and{" "}
         <em>Persistent agent</em>.
       </p>
 
       <h2 className="mt-10 text-2xl font-bold text-text-heading">What Happens Next</h2>
       <p className="mt-3 text-text-muted leading-relaxed">
-        Once the PR is opened, the feedback loop kicks in. Optio polls the PR every 30 seconds:
+        Once the PR is opened, Optio follows its CI, review, and merge status. Enable automatic
+        review, resuming, or merging when those behaviors fit your workflow:
       </p>
       <ul className="mt-3 list-disc pl-5 space-y-1 text-[14px] text-text-muted">
         <li>
           <strong className="text-text-heading">CI fails</strong> — the agent is resumed with the
-          failure context
+          failure context when automatic resuming is enabled
         </li>
         <li>
           <strong className="text-text-heading">Review requests changes</strong> — the agent picks
-          up the review comments
+          up the review comments when automatic resuming is enabled
         </li>
         <li>
-          <strong className="text-text-heading">CI passes + approved</strong> — the PR is
-          squash-merged and the issue is closed
+          <strong className="text-text-heading">CI passes + approved</strong> — the PR is eligible
+          for automatic merging when configured; linked issues can be closed on completion
         </li>
       </ul>
 

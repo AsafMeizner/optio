@@ -1,126 +1,153 @@
 {
-  "captured": "2026-10-07",
+  "captured": "2026-10-17",
   "content": "Fictional example data. Live session activity and usage are simulated. Screens are rendered by the real web, SwiftUI, and Jetpack Compose apps. Apple glance surfaces are native component snapshots.",
   "images": [
     {
+      "captured": "2026-10-17",
       "file": "android-new-work.webp",
       "width": 1080,
       "height": 2424,
-      "bytes": 84030
+      "bytes": 78484
     },
     {
+      "captured": "2026-10-17",
       "file": "android-recurring.webp",
       "width": 1080,
       "height": 2424,
-      "bytes": 106358
+      "bytes": 86646
     },
     {
+      "captured": "2026-10-17",
       "file": "android-session.webp",
       "width": 1080,
       "height": 2424,
-      "bytes": 95490
+      "bytes": 106300
     },
     {
+      "captured": "2026-10-17",
       "file": "android-work.webp",
       "width": 1080,
       "height": 2424,
-      "bytes": 98092
+      "bytes": 92208
     },
     {
       "file": "ios-glances.webp",
       "width": 1616,
       "height": 994,
-      "bytes": 44834
+      "bytes": 44834,
+      "captured": "2026-10-07"
     },
     {
+      "captured": "2026-10-17",
       "file": "ios-new-work.webp",
-      "width": 1170,
-      "height": 2532,
-      "bytes": 78684
+      "width": 1206,
+      "height": 2622,
+      "bytes": 79850
     },
     {
+      "captured": "2026-10-17",
       "file": "ios-overview.webp",
-      "width": 1170,
-      "height": 2532,
-      "bytes": 91114
+      "width": 1206,
+      "height": 2622,
+      "bytes": 74094
     },
     {
+      "captured": "2026-10-17",
       "file": "ios-recurring.webp",
-      "width": 1170,
-      "height": 2532,
-      "bytes": 93194
+      "width": 1206,
+      "height": 2622,
+      "bytes": 86772
     },
     {
+      "captured": "2026-10-17",
       "file": "ios-session.webp",
-      "width": 1170,
-      "height": 2532,
-      "bytes": 119612
+      "width": 1206,
+      "height": 2622,
+      "bytes": 120026
     },
     {
+      "captured": "2026-10-17",
       "file": "ios-work.webp",
-      "width": 1170,
-      "height": 2532,
-      "bytes": 90428
+      "width": 1206,
+      "height": 2622,
+      "bytes": 92726
     },
     {
+      "captured": "2026-10-17",
       "file": "web-agent.webp",
-      "width": 1440,
-      "height": 1000,
-      "bytes": 32160
+      "width": 2880,
+      "height": 2000,
+      "bytes": 84418
     },
     {
+      "captured": "2026-10-17",
       "file": "web-agents.webp",
-      "width": 1440,
-      "height": 1000,
-      "bytes": 40706
+      "width": 2880,
+      "height": 2000,
+      "bytes": 104278
     },
     {
+      "captured": "2026-10-17",
+      "file": "web-conversations.webp",
+      "width": 2880,
+      "height": 2000,
+      "bytes": 179504
+    },
+    {
+      "captured": "2026-10-17",
       "file": "web-create-work.webp",
-      "width": 1440,
-      "height": 1478,
-      "bytes": 96690
+      "width": 2880,
+      "height": 3246,
+      "bytes": 257572
     },
     {
+      "captured": "2026-10-17",
       "file": "web-history.webp",
-      "width": 1440,
-      "height": 1000,
-      "bytes": 62888
+      "width": 2880,
+      "height": 2000,
+      "bytes": 157828
     },
     {
+      "captured": "2026-10-17",
       "file": "web-new-work.webp",
-      "width": 1440,
-      "height": 1000,
-      "bytes": 71052
+      "width": 2880,
+      "height": 2000,
+      "bytes": 165816
     },
     {
+      "captured": "2026-10-17",
       "file": "web-overview.webp",
-      "width": 1440,
-      "height": 1000,
-      "bytes": 56972
+      "width": 2880,
+      "height": 2000,
+      "bytes": 145184
     },
     {
       "file": "web-sessions.webp",
       "width": 1440,
       "height": 1000,
-      "bytes": 61480
+      "bytes": 61480,
+      "captured": "2026-10-07"
     },
     {
+      "captured": "2026-10-17",
       "file": "web-task.webp",
-      "width": 1440,
-      "height": 1000,
-      "bytes": 53936
+      "width": 2880,
+      "height": 2000,
+      "bytes": 154004
     },
     {
+      "captured": "2026-10-17",
       "file": "web-trigger.webp",
-      "width": 1440,
-      "height": 1000,
-      "bytes": 39590
+      "width": 2880,
+      "height": 2000,
+      "bytes": 103266
     },
     {
+      "captured": "2026-10-17",
       "file": "web-work.webp",
-      "width": 1440,
-      "height": 1000,
-      "bytes": 56214
+      "width": 2880,
+      "height": 2000,
+      "bytes": 139844
     }
   ]
 }

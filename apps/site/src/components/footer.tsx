@@ -1,92 +1,69 @@
 import Link from "next/link";
 import Image from "next/image";
 
+const github = "https://github.com/jonwiggins/optio";
+const groups = [
+  {
+    title: "Explore",
+    links: [
+      { title: "Product tour", href: "/#product" },
+      { title: "How it works", href: "/platform" },
+      { title: "Mobile apps", href: "/#mobile" },
+    ],
+  },
+  {
+    title: "Build",
+    links: [
+      { title: "Get started", href: "/docs/getting-started" },
+      { title: "Deployment", href: "/docs/deployment" },
+      { title: "API reference", href: "/docs/api-reference" },
+    ],
+  },
+  {
+    title: "Open source",
+    links: [
+      { title: "GitHub", href: github },
+      { title: "Contributing", href: "/docs/contributing" },
+      { title: "Releases", href: `${github}/releases` },
+      { title: "MIT license", href: `${github}/blob/main/LICENSE` },
+    ],
+  },
+];
 export function Footer() {
   return (
-    <footer className="relative z-10 border-t border-border bg-bg-subtle">
-      <div className="mx-auto max-w-6xl px-6 py-12">
-        <div className="grid grid-cols-2 gap-8 md:grid-cols-4">
-          <div className="col-span-2 md:col-span-1">
-            <Link
-              href="/"
-              className="flex items-center gap-2 text-lg font-bold text-text-heading tracking-tight"
-            >
-              <Image src="/optio-mark.svg" alt="" width={24} height={24} />
+    <footer className="site-footer">
+      <div className="landing-container">
+        <div className="footer-grid">
+          <div>
+            <Link href="/" className="brand">
+              <Image src="/optio-mark.svg" alt="" width={30} height={30} />
               optio
             </Link>
-            <p className="mt-2 text-[13px] text-text-muted leading-relaxed">
-              Workflow orchestration for
+            <p>
+              One workspace for your agents.
               <br />
-              AI coding agents.
+              Built to run on your terms.
             </p>
           </div>
-
-          <div>
-            <h3 className="text-[13px] font-semibold text-text-heading">Documentation</h3>
-            <ul className="mt-3 space-y-2">
-              <li>
-                <Link
-                  href="/docs/getting-started"
-                  className="text-[13px] text-text-muted hover:text-text transition-colors"
-                >
-                  Getting Started
-                </Link>
-              </li>
-              <li>
-                <Link
-                  href="/docs/installation"
-                  className="text-[13px] text-text-muted hover:text-text transition-colors"
-                >
-                  Installation
-                </Link>
-              </li>
-              <li>
-                <Link
-                  href="/docs/api-reference"
-                  className="text-[13px] text-text-muted hover:text-text transition-colors"
-                >
-                  API Reference
-                </Link>
-              </li>
-            </ul>
-          </div>
-
-          <div>
-            <h3 className="text-[13px] font-semibold text-text-heading">Community</h3>
-            <ul className="mt-3 space-y-2">
-              <li>
-                <a
-                  href="https://github.com/jonwiggins/optio"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[13px] text-text-muted hover:text-text transition-colors"
-                >
-                  GitHub
-                </a>
-              </li>
-              <li>
-                <Link
-                  href="/docs/contributing"
-                  className="text-[13px] text-text-muted hover:text-text transition-colors"
-                >
-                  Contributing
-                </Link>
-              </li>
-            </ul>
-          </div>
-
-          <div>
-            <h3 className="text-[13px] font-semibold text-text-heading">Legal</h3>
-            <ul className="mt-3 space-y-2">
-              <li>
-                <span className="text-[13px] text-text-muted">MIT License</span>
-              </li>
-            </ul>
-          </div>
+          {groups.map((group) => (
+            <div key={group.title}>
+              <h2>{group.title}</h2>
+              <ul>
+                {group.links.map((link) => (
+                  <li key={link.href}>
+                    <Link href={link.href}>{link.title}</Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
-
-        <div className="mt-8 border-t border-border pt-8 text-center text-[13px] text-text-muted">
-          &copy; {new Date().getFullYear()} Optio. Open source under the MIT license.
+        <div className="footer-bottom">
+          <span>© {new Date().getFullYear()} Optio</span>
+          <span>Self-hosted. Open source. Yours.</span>
+          <a href={github}>
+            Built in the open <span aria-hidden="true">↗</span>
+          </a>
         </div>
       </div>
     </footer>

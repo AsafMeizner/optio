@@ -20,7 +20,7 @@ and the bundled `optio-postgres` deployment. It requires the local API on port
 
 It adds:
 
-- 12 saved definitions covering all nine trigger types and all seven agent runtimes,
+- 12 saved definitions covering a range of trigger types and all seven agent runtimes,
   plus a shell command and a local automation;
 - three paused persistent-agent specialists;
 - six completed, clearly labeled sample runs;
@@ -74,7 +74,7 @@ node scripts/showcase/capture-web.mjs
 node scripts/showcase/capture-work-form.mjs
 ```
 
-The creation-form capture expands Environment and frames it with all nine trigger
+The creation-form capture expands Environment and frames it with all fourteen trigger
 choices. Its connection credentials are dummy values; the form is never submitted.
 
 Build and install the native **Debug** apps using the [iOS](../../apps/ios/README.md)
@@ -90,7 +90,7 @@ node scripts/showcase/capture-mobile.mjs
 The script uses debug launch options to connect both apps to port 4965 and capture
 Work, Recurring, a conversation, and New work, plus the iOS Overview. It never installs onto or changes a
 physical phone. The Android emulator uses a fixed demo clock and suppresses
-heads-up alerts while capturing. Raw PNGs go to `/tmp/optio-showcase-shots`.
+heads-up alerts while capturing. The Android capture uses an adb tunnel to the private API and waits for each screen’s example content before capturing. Raw PNGs go to `/tmp/optio-showcase-shots`.
 
 For the Apple component sheet, run
 `WidgetContactSheetTests/testProductGalleryGlances` under the `WidgetSnapshots`
@@ -102,6 +102,12 @@ scheme. Copy the simulator output `optio-widget-shots/product-glances-dark.png` 
 node scripts/showcase/optimize.mjs
 node scripts/showcase/capture-social.mjs
 ```
+
+Web captures use a 1440-pixel browser viewport at 2× device scale for sharp text.
+The optimizer preserves the PNG dimensions, records each image’s capture date,
+and retains manifest entries for assets not recaptured in this run. The site’s
+shared `Screenshot` component reads these dimensions and scales images uniformly;
+do not hardcode a phone or browser aspect ratio.
 
 The canonical WebP assets and a provenance manifest live in
 [`apps/site/public/screenshots/showcase`](../../apps/site/public/screenshots/showcase/).

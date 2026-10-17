@@ -19,7 +19,7 @@ const sectionDescriptions: Record<string, string> = {
   "Getting Started":
     "Install Optio, run the setup script, and configure your first repository and agent.",
   "Core Concepts":
-    "Understand the architecture — pod-per-repo isolation, worktree concurrency, and the task state machine.",
+    "Understand the Work model, execution pools, worktree concurrency, and the task lifecycle.",
   Guides:
     "Step-by-step walkthroughs for creating tasks, connecting repos, configuring review agents, building workflows, setting up connections, and integrating with external tools.",
   Reference: "API endpoints, production deployment guide, and contributor documentation.",
@@ -30,20 +30,26 @@ export default function DocsIndex() {
     <>
       <h1 className="text-3xl font-bold text-text-heading">Documentation</h1>
       <p className="mt-4 text-text-muted leading-relaxed">
-        Optio is an orchestration system for AI coding agents. One primary concept — a{" "}
-        <strong>Task</strong> — configures the agent to do something. Attach a repo and the Task
-        drives tickets to merged PRs with an autonomous feedback loop; leave the repo off and the
-        Task runs the agent standalone (reports, triage, automations) with no git checkout. Either
-        flavor supports schedule, webhook, and ticket triggers, and connects agents to external
-        services like Notion, Slack, Linear, and PostgreSQL via MCP.
+        Learn how to deploy Optio, connect your tools, and put your agents to work. Tasks, recurring
+        automations, interactive sessions, and persistent agents share one Work feed. Five choices
+        describe each piece of work: When, Where, Who, What, and Then.
       </p>
-      <p className="mt-3 text-text-muted leading-relaxed">
-        New here?{" "}
-        <Link href="/docs/getting-started" className="text-primary-light hover:underline">
-          Start with the quickstart guide
-        </Link>{" "}
-        to get a local instance running in minutes.
-      </p>
+      <div className="docs-start">
+        <Link href="/docs/getting-started">
+          <h2>Run your first workflow</h2>
+          <p>
+            Deploy locally, connect an agent and repository, and follow your first piece of work.
+          </p>
+          <span>Start the quickstart ↗</span>
+        </Link>
+        <Link href="/docs/deployment">
+          <h2>Plan your deployment</h2>
+          <p>
+            Configure Helm, managed databases, authentication, and execution for your environment.
+          </p>
+          <span>Read the deployment guide ↗</span>
+        </Link>
+      </div>
 
       <div className="mt-10 grid gap-6 sm:grid-cols-2">
         {docsNav.map((section) => (

@@ -1,5 +1,6 @@
 "use client";
 
+import { Screenshot } from "@/components/screenshot";
 import { useRef, useState } from "react";
 
 const slides = [
@@ -24,8 +25,8 @@ const slides = [
     label: "Sessions",
     title: "Stay close to the work.",
     text: "Read the conversation, use the terminal, or open a shell in the same directory. Split sessions side by side and resize the session list. Your pane arrangement stays on this device.",
-    image: "web-sessions",
-    alt: "Claude Code conversation and a terminal side by side with nested sessions in the sidebar",
+    image: "web-conversations",
+    alt: "Claude Code and Codex conversations side by side with sessions in the sidebar",
   },
   {
     id: "agents",
@@ -102,14 +103,7 @@ export function ProductTour() {
             aria-label={`Open full-size screenshot: ${slide.label}`}
             className="product-image"
           >
-            {/* Static export: screenshots have already been optimized to WebP. */}
-            <img
-              src={`/screenshots/showcase/${slide.image}.webp`}
-              alt={slide.alt}
-              width={1440}
-              height={1000}
-              loading="lazy"
-            />
+            <Screenshot file={slide.image} alt={slide.alt} />
             <span className="image-hint">View full size ↗</span>
           </a>
         </div>

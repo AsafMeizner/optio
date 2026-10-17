@@ -9,6 +9,36 @@ const emulator = process.env.OPTIO_SHOWCASE_EMULATOR ?? "emulator-5562";
 if (!/^emulator-\d+$/.test(emulator))
   throw new Error("Screenshots require an isolated Android emulator");
 const adb = `${process.env.ANDROID_HOME ?? `${process.env.HOME}/Library/Android/sdk`}/platform-tools/adb`;
+// Use an explicit tunnel to the private lab, including on Android versions that
+// restrict local-network access. Nothing is forwarded to the user's real API.
+execFileSync(adb, ["-s", emulator, "reverse", "tcp:4965", "tcp:4965"]);
+execFileSync(adb, ["-s", emulator, "shell", "cmd", "uimode", "night", "yes"], { stdio: "ignore" });
+
+async function waitForAndroidScreen(name) {
+  const expected = {
+    work: "Polish the checkout experience",
+    recurring: "Keep dependencies current",
+    session: "Ready for your review",
+    "new-work": "What starts it?",
+  }[name];
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    execFileSync(
+      adb,
+      ["-s", emulator, "shell", "uiautomator", "dump", "/sdcard/optio-showcase.xml"],
+      { stdio: "ignore", timeout: 10000 },
+    );
+    const tree = execFileSync(adb, ["-s", emulator, "shell", "cat", "/sdcard/optio-showcase.xml"], {
+      encoding: "utf8",
+    });
+    if (tree.includes(expected)) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(
+    `Android ${name} did not show its expected demo content; refusing to capture a loading screen.`,
+  );
+}
+
 // The capture target is an isolated demo emulator. Keep system alerts out of the tour.
 for (const args of [
   ["settings", "put", "global", "heads_up_notifications_enabled", "0"],
@@ -104,7 +134,7 @@ for (const [name, url] of screens) {
   const extras = [
     "--es",
     "OPTIO_DEV_SERVER_URL",
-    "http://10.0.2.2:4965",
+    "http://127.0.0.1:4965",
     "--es",
     "OPTIO_DEV_TOKEN",
     "demo",
@@ -137,6 +167,7 @@ for (const [name, url] of screens) {
     { stdio: "ignore" },
   );
   await pause();
+  await waitForAndroidScreen(name);
   execFileSync("xcrun", ["simctl", "io", simulator, "screenshot", `${out}/ios-${name}.png`], {
     stdio: "ignore",
   });

@@ -1,5 +1,5 @@
 .platform-page {
-  color: #b7b0c2;
+  color: var(--color-text-muted);
 }
 .platform-hero {
   padding-top: 76px;
@@ -16,10 +16,10 @@
   line-height: 1.15;
   letter-spacing: -0.055em;
   font-weight: 600;
-  color: #f4f2ed;
+  color: var(--color-text-heading);
 }
 .platform-intro h1 span {
-  color: #b99be9;
+  color: var(--color-primary);
 }
 .platform-intro p {
   font-size: 15px;
@@ -27,7 +27,7 @@
   max-width: 480px;
 }
 .platform-intro strong {
-  color: #eee5fa;
+  color: var(--color-text-heading);
   font-weight: 500;
 }
 .platform-shot {
@@ -51,7 +51,7 @@
   margin-top: 16px;
   font-size: 12px;
   line-height: 1.8;
-  color: #aaa1b8;
+  color: var(--color-text-muted);
 }
 .platform-hero > .platform-shot {
   max-width: 1080px;
@@ -72,7 +72,7 @@
   padding: 34px 0;
   margin-top: 28px;
   font-size: 12px;
-  color: #c4b4d9;
+  color: var(--color-primary);
 }
 .platform-page a:hover {
   text-decoration: underline;
@@ -88,15 +88,16 @@
   gap: 25px;
 }
 .platform-attributes li {
-  border-top: 1px solid #ffffff25;
+  border-top: 1px solid var(--color-border);
   padding-top: 20px;
 }
 .attribute-number {
   font-family: var(--font-ibm-mono), monospace;
   font-size: 11px;
-  color: #9a8da8;
+  color: var(--color-text-muted);
 }
 .platform-attributes h3 {
+  color: var(--color-primary);
   font-size: 21px;
   margin: 20px 0 12px;
   font-weight: 500;
@@ -111,7 +112,7 @@
 .platform-example-heading h3 {
   font-size: 20px;
   letter-spacing: -0.025em;
-  color: #f0eaf6;
+  color: var(--color-text-heading);
 }
 .platform-example-heading p {
   font-size: 12px;
@@ -120,7 +121,8 @@
 .work-examples {
   border: 1px solid #a78bfa35;
   border-radius: 14px;
-  background: linear-gradient(135deg, #21172f80, #15141b);
+  background: #24202e;
+  color: #c6bdd4;
   overflow: hidden;
 }
 .example-picker {
@@ -188,7 +190,7 @@
   font-size: clamp(26px, 3vw, 35px);
   line-height: 1.25;
   letter-spacing: -0.04em;
-  color: #f4f2ed;
+  color: var(--color-text-heading);
   font-weight: 500;
 }
 .platform-copy > p:not(.eyebrow) {
@@ -200,10 +202,10 @@
   display: inline-block;
   font-size: 12px;
   margin-top: 24px;
-  color: #c7adeb;
+  color: var(--color-primary);
 }
 .platform-tinted {
-  background: linear-gradient(125deg, #1e172655, #13141a66);
+  background: #f0eef5;
 }
 .platform-locations {
   display: grid;
@@ -212,7 +214,7 @@
 }
 .platform-locations article {
   padding: 32px;
-  border: 1px solid #ffffff20;
+  border: 1px solid var(--color-border);
   border-radius: 12px;
   background: #ffffff02;
 }
@@ -220,12 +222,12 @@
   font-family: var(--font-ibm-mono), monospace;
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: #bea2ee;
+  color: var(--color-primary);
 }
 .platform-locations h3 {
   font-size: 23px;
   letter-spacing: -0.03em;
-  color: #eee8f5;
+  color: var(--color-text-heading);
   margin-top: 25px;
 }
 .platform-locations p {
@@ -235,7 +237,7 @@
 }
 .platform-locations a {
   font-size: 12px;
-  color: #cbb5ea;
+  color: var(--color-primary);
   display: inline-block;
   margin-top: 24px;
 }
@@ -243,7 +245,7 @@
   font-size: 11px;
   line-height: 1.9;
   margin: 22px 0 40px;
-  color: #aaa1b8;
+  color: var(--color-text-muted);
 }
 .platform-outcomes {
   display: grid;
@@ -256,11 +258,11 @@
 }
 .platform-outcomes span {
   font-size: 11px;
-  color: #af90de;
+  color: var(--color-primary);
 }
 .platform-outcomes h3,
 .platform-controls h3 {
-  color: #eee8f5;
+  color: var(--color-text-heading);
   font-size: 18px;
   font-weight: 500;
   margin-top: 18px;
@@ -279,7 +281,7 @@
   align-items: center;
   margin-top: 85px;
   padding-top: 65px;
-  border-top: 1px solid #ffffff18;
+  border-top: 1px solid var(--color-border);
 }
 .platform-phones {
   display: grid;
@@ -310,11 +312,11 @@
   gap: 36px 64px;
 }
 .platform-controls article {
-  border-top: 1px solid #ffffff20;
+  border-top: 1px solid var(--color-border);
 }
 .platform-cta {
   text-align: center;
-  background: radial-gradient(ellipse at 50% 100%, #6d28d920, transparent 70%);
+  background: #eee8f6;
 }
 .platform-cta .eyebrow,
 .platform-cta .landing-actions {
@@ -325,7 +327,7 @@
   letter-spacing: -0.045em;
   line-height: 1.2;
   font-weight: 500;
-  color: #f4f2ed;
+  color: var(--color-text-heading);
 }
 .platform-cta h2 + p {
   max-width: 500px;
@@ -389,6 +391,7 @@
     padding-top: 4px;
   }
   .platform-attributes h3 {
+    color: var(--color-primary);
     margin: 0;
     font-size: 19px;
   }

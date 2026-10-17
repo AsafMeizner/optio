@@ -1,3 +1,4 @@
+import { DocsPageNavigation } from "@/components/docs/page-navigation";
 import { DocsSidebar } from "@/components/docs/sidebar";
 
 const jsonLd = {
@@ -21,13 +22,17 @@ const jsonLd = {
 
 export default function DocsLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-col md:flex-row min-h-[calc(100vh-65px)]">
+    <div className="docs-layout">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
       <DocsSidebar />
-      <div className="flex-1 px-6 md:px-12 py-10 max-w-4xl">{children}</div>
+      <article className="docs-content">
+        <DocsPageNavigation position="top" />
+        {children}
+        <DocsPageNavigation position="bottom" />
+      </article>
     </div>
   );
 }

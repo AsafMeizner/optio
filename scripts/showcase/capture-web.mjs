@@ -9,7 +9,7 @@ mkdirSync(out, { recursive: true });
 const browser = await chromium.launch();
 const page = await browser.newPage({
   viewport: { width: 1440, height: 1000 },
-  deviceScaleFactor: 1,
+  deviceScaleFactor: 2,
   colorScheme: "dark",
 });
 const errors = [];
@@ -29,15 +29,24 @@ try {
   await shot("web-work", "/work?view=recurring", "Keep dependencies current");
   await shot("web-agents", "/work?view=agents", "Engineering coordinator");
   await shot("web-history", "/work?view=history", "Add keyboard navigation");
-  await shot("web-new-work", `/work/${m.examples.dependencies}/edit`, "Keep dependencies current");
+  await shot("web-new-work", `/work/${m.examples.dependencies}/edit`, "Edit work", async () => {
+    await expect(page.getByRole("textbox", { name: "Work name", exact: true })).toHaveValue(
+      "Keep dependencies current",
+    );
+  });
   await shot("web-agent", `/agents/${m.agents.coordinator}`, "Engineering coordinator");
   await shot("web-task", `/tasks/${m.tasks.checkout}`, "Add keyboard navigation");
   await shot(
-    "web-sessions",
-    `/local/${m.live.claude}?split=${m.live.terminal}`,
+    "web-conversations",
+    `/local/${m.live.claude}?split=${m.live.codex}`,
     "Polish the checkout experience",
     async () => {
-      await page.getByRole("radio", { name: "Chat", exact: true }).first().click();
+      const chats = page.getByRole("radio", { name: "Chat", exact: true });
+      await expect(chats).toHaveCount(2);
+      for (const chat of await chats.all()) await chat.click();
+      await expect(
+        page.getByText("I’ve added request cancellation", { exact: false }),
+      ).toBeVisible();
     },
   );
   await shot("web-trigger", `/jobs/${m.examples.incident}`, "Investigate a production incident");

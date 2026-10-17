@@ -1,3 +1,4 @@
+import { Screenshot as Capture } from "@/components/screenshot";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { WorkComposer } from "@/components/platform/work-composer";
@@ -35,14 +36,7 @@ function Screenshot({
         rel="noreferrer"
         aria-label={`View full size: ${alt}`}
       >
-        <img
-          src={`/screenshots/showcase/${name}.webp`}
-          alt={alt}
-          width={1440}
-          height={1000}
-          loading={eager ? "eager" : "lazy"}
-          fetchPriority={eager ? "high" : "auto"}
-        />
+        <Capture file={name} alt={alt} eager={eager} />
         <span className="image-hint">View full size ↗</span>
       </a>
       <figcaption>{caption}</figcaption>
@@ -114,7 +108,7 @@ export default function PlatformPage() {
             {ANSWERS.map((answer, index) => (
               <li key={answer.key}>
                 <span className="attribute-number">0{index + 1}</span>
-                <h3 style={{ color: answer.color }}>{answer.name}</h3>
+                <h3>{answer.name}</h3>
                 <p>{answer.text}</p>
               </li>
             ))}
@@ -198,9 +192,9 @@ export default function PlatformPage() {
             requires an agent and a repository.
           </p>
           <Screenshot
-            name="web-sessions"
-            alt="Optio sessions with a Claude Code conversation and terminal arranged side by side"
-            caption="Stay hands-on: keep the conversation and terminal together, with sessions arranged side by side."
+            name="web-conversations"
+            alt="Optio sessions with Claude Code and Codex conversations arranged side by side"
+            caption="Stay hands-on: follow two agent conversations with sessions arranged side by side."
           />
         </div>
       </section>
@@ -266,24 +260,18 @@ export default function PlatformPage() {
             <div className="platform-phones">
               <figure>
                 <a href="/screenshots/showcase/ios-session.webp" target="_blank" rel="noreferrer">
-                  <img
-                    src="/screenshots/showcase/ios-session.webp"
+                  <Capture
+                    file="ios-session"
                     alt="Native iOS app showing a live agent conversation"
-                    width={1170}
-                    height={2532}
-                    loading="lazy"
                   />
                 </a>
                 <figcaption>iOS · Pick up the conversation</figcaption>
               </figure>
               <figure>
                 <a href="/screenshots/showcase/android-work.webp" target="_blank" rel="noreferrer">
-                  <img
-                    src="/screenshots/showcase/android-work.webp"
+                  <Capture
+                    file="android-work"
                     alt="Native Android app showing the unified Work list"
-                    width={1080}
-                    height={2424}
-                    loading="lazy"
                   />
                 </a>
                 <figcaption>Android · Check on the work</figcaption>

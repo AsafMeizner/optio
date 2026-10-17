@@ -10,11 +10,11 @@ export const metadata: Metadata = {
 
 function MethodBadge({ method }: { method: string }) {
   const colors: Record<string, string> = {
-    GET: "bg-emerald-500/10 text-emerald-400",
-    POST: "bg-blue-500/10 text-blue-400",
-    PUT: "bg-amber-500/10 text-amber-400",
-    PATCH: "bg-orange-500/10 text-orange-400",
-    DELETE: "bg-red-500/10 text-red-400",
+    GET: "bg-emerald-500/10 text-emerald-700",
+    POST: "bg-blue-500/10 text-blue-700",
+    PUT: "bg-amber-500/10 text-amber-700",
+    PATCH: "bg-orange-500/10 text-orange-700",
+    DELETE: "bg-red-500/10 text-red-700",
   };
   return (
     <span
