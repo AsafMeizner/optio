@@ -148,7 +148,7 @@ test("the session scrollbar and resize handle have independent drag targets", as
     const list = rail.getByRole("region", { name: "Sessions", exact: true });
     const handle = rail.getByRole("separator", { name: "Resize session sidebar" });
     const search = page.getByRole("searchbox", { name: "Search sessions" });
-    await expect(list.getByRole("button", { name: /^Scroll session 1 / })).toBeAttached();
+    await expect(list.locator(`[data-terminal-id="${ids[0]}"]`)).toBeAttached();
     await expect(rail).toHaveCSS("width", "240px");
     const headerY = (await search.boundingBox())!.y;
     await list.evaluate((el) => {
