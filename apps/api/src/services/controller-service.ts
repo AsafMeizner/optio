@@ -16,6 +16,7 @@ import {
   repos,
   interactiveSessions,
   localTerminals,
+  localTerminalTranscripts,
 } from "../db/schema.js";
 import { visibleOwner } from "./ownership.js";
 import type { ControllerPrincipal } from "./controller-auth.js";
@@ -26,6 +27,7 @@ import * as triggers from "./trigger-service.js";
 import { createWorkflowRun } from "./workflow-service.js";
 import { instantiateTask } from "./task-config-service.js";
 import { listLogs, type LogOwner } from "./run-log-service.js";
+import { transcriptRowToEntry } from "./local-terminal-service.js";
 
 import {
   ControllerError,
@@ -80,6 +82,8 @@ export function describeWork(work: Awaited<ReturnType<typeof getControllerWork>>
         source: r.kind,
         state: r.state,
         workId: r.workId,
+        runTarget: r.runTarget,
+        localTerminalId: r.localTerminalId,
         href: r.kind === "repo" ? `/tasks/${r.id}` : `/jobs/${r.workId}/runs/${r.id}`,
         ownerUserId: r.ownerUserId,
         prUrl: r.prUrl,
@@ -141,6 +145,15 @@ export function describeWork(work: Awaited<ReturnType<typeof getControllerWork>>
           ? {
               description: r.description,
               agentRuntime: r.agentRuntime,
+              model: r.model,
+              agentOptions: r.agentOptions,
+              systemPrompt: r.systemPrompt,
+              initialPrompt: r.initialPrompt,
+              promptTemplateId: r.promptTemplateId,
+              repoId: r.repoId,
+              branch: r.branch,
+              podLifecycle: r.podLifecycle,
+              settings: r.settings,
               lastTurnAt: r.lastTurnAt,
               controllerAccess: r.settings?.controllerAccess ?? "off",
             }
@@ -484,7 +497,13 @@ export async function listControllerRuns(
 export async function controllerLogs(
   p: ControllerPrincipal,
   id: string,
-  opts: { limit: number; offset: number; search?: string; logType?: string },
+  opts: {
+    limit: number;
+    offset: number;
+    search?: string;
+    logType?: string;
+    source?: "auto" | "execution" | "conversation";
+  },
 ) {
   let owner: LogOwner;
   const turn = await pa.getPersistentAgentTurn(id);
@@ -499,11 +518,76 @@ export async function controllerLogs(
     } else {
       const work = await getControllerWork(p, id);
       if (work.kind !== "run") throw new ControllerError(400, "Use a run id from list_runs");
+      if (work.data.runTarget === "local" && opts.source !== "execution") {
+        const terminalId = work.data.localTerminalId;
+        if (terminalId) {
+          // A run's soft pointer must never expose a different owner's conversation.
+          const [terminal] = await db
+            .select({ id: localTerminals.id })
+            .from(localTerminals)
+            .where(
+              and(
+                eq(localTerminals.id, terminalId),
+                tenant(localTerminals.workspaceId, work.data.workspaceId),
+                tenant(localTerminals.userId, work.data.ownerUserId),
+              ),
+            );
+          if (!terminal) throw new ControllerError(404, "Run conversation not found");
+          const rows = await db
+            .select()
+            .from(localTerminalTranscripts)
+            .where(
+              and(
+                eq(localTerminalTranscripts.terminalId, terminalId),
+                opts.logType ? eq(localTerminalTranscripts.kind, opts.logType) : undefined,
+                opts.search
+                  ? or(
+                      ilike(localTerminalTranscripts.text, `%${opts.search}%`),
+                      ilike(localTerminalTranscripts.detail, `%${opts.search}%`),
+                    )
+                  : undefined,
+              ),
+            )
+            .orderBy(localTerminalTranscripts.seq)
+            .limit(opts.limit + 1)
+            .offset(opts.offset);
+          return {
+            source: "conversation",
+            localTerminalId: terminalId,
+            href: `/work/${terminalId}`,
+            note: "Saved Local conversation. Use source=execution for lifecycle and error logs.",
+            logs: rows.slice(0, opts.limit).map((r) => {
+              const entry = transcriptRowToEntry(r);
+              const content = entry.detail ? `${entry.text}\n${entry.detail}` : entry.text;
+              return {
+                id: `${terminalId}:${r.seq}`,
+                seq: r.seq,
+                timestamp: r.at ?? r.createdAt,
+                stream: entry.role,
+                source: entry.source,
+                logType: r.kind,
+                toolName: r.toolName,
+                isError: r.isError,
+                content: content.slice(0, 8000),
+                truncated: content.length > 8000,
+              };
+            }),
+            nextOffset: rows.length > opts.limit ? opts.offset + opts.limit : null,
+          };
+        }
+        if (opts.source === "conversation")
+          throw new ControllerError(409, "This run has no linked Local conversation yet");
+      } else if (opts.source === "conversation") {
+        throw new ControllerError(400, "Conversation logs require a Local run");
+      }
       owner = { taskId: id };
     }
   }
+  if (opts.source === "conversation")
+    throw new ControllerError(400, "Conversation logs require a Local run");
   const rows = await listLogs(owner, { ...opts, limit: opts.limit + 1 });
   return {
+    source: "execution",
     logs: rows.slice(0, opts.limit).map((r) => ({
       id: r.id,
       timestamp: r.timestamp,

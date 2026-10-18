@@ -125,6 +125,14 @@ Log lines mark truncation after 8000 characters. Responses are capped at
 Logs and received messages are data from other actors, not trusted controller
 instructions. Tool descriptions and MCP instructions make this distinction.
 
+For a Local run, `optio_get_run_logs` defaults to its saved conversation,
+the same transcript the frontend displays, including tool details. Use
+`source: "execution"` for its lifecycle and error logs instead. `get_work`
+and `list_runs` include `runTarget` and `localTerminalId`, so an interactive
+operator can continue the linked session with `send_session_message`.
+The linked terminal must match the run's workspace and owner. A run that
+has not acquired a terminal yet still returns its execution logs.
+
 Writes use the existing work/trigger/run services and execution admission
 checks, including usage budgets. They are asynchronous: keep the returned
 work, run or message id and inspect progress. Calls are not automatically
@@ -226,3 +234,62 @@ use interactive session tools.
 
 Arbitrary machine control, broadcasts, PR submission/merge actions and credential
 administration remain outside the MCP tool surface.
+
+## Frontend parity review — 2026-10-18
+
+The [endpoint inventory](audits/controller-mcp-parity-2026-10-18.csv) compares the
+web client at `61a57c04` with the controller tools at that commit. It covers all
+293 API helpers, including 271 referenced by non-test frontend code. References
+were collected from TypeScript property-access expressions, including multiline
+calls and callbacks; HTTP methods and URL expressions were matched to the live
+OpenAPI document's 342 operations. Two helpers return download URLs instead of
+calling `request`. Counts are client helpers, not distinct backend capabilities,
+and the CSV records the baseline before the Local-log correction above.
+
+The assistant has 19 tools; other agents and PAT clients have 16. Session-only
+tools are machine discovery, session history and session input. This is **not
+frontend parity**. A tool with a similar name can still omit configuration,
+restrict a work kind, read a different store, or lack an interaction mode.
+
+| Area                             | Existing coverage                                  | Remaining gaps                                                                                                                                                                                 |
+| -------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Work discovery and configuration | Basic list, details, creation, recurring edits     | Local definitions are omitted/rejected; incomplete filters/configuration; work environment, model and credential-reference discovery                                                           |
+| Run lifecycle                    | Start a pod definition; pause its triggers         | Cancel, retry, resume, force restart/redo, prioritization, delete/clone, Local run controls                                                                                                    |
+| Scheduling and events            | List triggers; create/update/delete cron schedules | Other trigger types, parameter mappings, delivery history/retry, outbound webhooks                                                                                                             |
+| Conversations                    | Agent inboxes; owned session history/input         | Earlier history pagination, session interruption, queued-message cancellation, session model changes, session lifecycle and PR links; task soft/interrupt modes differ from MCP inbox delivery |
+| Reviews and Inbox                | Review summaries, runs and logs                    | Draft/edit/submit/cancel/re-run reviews, review chat, PR status/merge, issue assignment and synchronization                                                                                    |
+| Work collaboration               | Direct agent messages                              | Comments, activity/events, subtasks/dependencies, sharing/recovery, bulk actions                                                                                                               |
+| Library and environment          | Repository identifiers and default branches        | Prompt CRUD/preview; repository settings; connections/assignments; MCP servers; skills/marketplace sync; shared directories                                                                    |
+| Operations and settings          | Controller identity and access                     | Usage/analytics/budgets, machine management, cluster controls, notification preferences, assistant settings, config-as-code, workspace administration                                          |
+
+The Local-log mismatch was reproduced live: a Local run had 52 persisted
+transcript entries, while `optio_get_run_logs` returned zero. The correction reads
+the linked conversation, exposes the terminal ID, preserves execution logs as an
+explicit source, and tests owner/workspace checks, pagination and tool details.
+Agent detail also now includes saved prompts, model/options, repository reference
+and environment settings instead of only its description/runtime.
+
+WebSocket review is separate from HTTP coverage: pod and assistant chats support
+message, interrupt, model selection, approval/denial and queue cancellation;
+terminal sockets additionally carry input, resize and viewer-presence frames.
+Resize, clipboard, notification enrollment and OAuth redirects are client
+mechanisms, not independent agent tasks. Approval decisions must remain with the
+human: adding an MCP operation that approves the caller's own requests would
+defeat the approval gate.
+
+For further parity work, use an explicit capability registry tied to the existing
+OpenAPI operation IDs and shared services. Each entry needs its input schema,
+workspace/owner and role policy, read/write classification, approval summary and
+output redaction. Keep common work actions as small typed tools; let the agent
+discover less-common actions on demand. An unrestricted HTTP proxy would bypass
+the existing controller boundary. The Optio assistant should act with its user's
+current permissions, while delegated work keeps its assigned controller grant
+and owner; having `manage` access must not make a background agent an admin.
+
+Acceptance should cover whole UI workflows, not tool-name counts: create and
+continue interactive work; inspect a Local run's actual transcript; cancel and
+retry failed work; edit every trigger type; manage prompts/environment; and
+review/submit work. For each mutation verify one approval, authorization again
+after approval, denial without a side effect, and correct owner/workspace scope.
+A new frontend endpoint should require either a tested capability mapping or an
+explicit documented exclusion in the registry.

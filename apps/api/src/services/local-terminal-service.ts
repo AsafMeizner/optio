@@ -1156,7 +1156,7 @@ export async function getTranscriptBefore(
   return { entries: rows.slice(0, limit).reverse().map(transcriptRowToEntry), hasEarlier };
 }
 
-function transcriptRowToEntry(
+export function transcriptRowToEntry(
   r: typeof localTerminalTranscripts.$inferSelect,
 ): LocalTranscriptEntry {
   return reclassifyStoredTurn({
