@@ -556,8 +556,15 @@ export async function listControllerSessions(
       kind: "session",
       name: s.title,
       state: s.state,
-      runtime: s.agentRuntime,
-      href: `/sessions/${s.id}`,
+      runtime: s.agentRuntime ?? "claude-code",
+      runTarget: "cluster",
+      canMessage:
+        p.access === "manage" &&
+        s.state === "active" &&
+        s.id !== p.run?.sessionId &&
+        !!(s.agentRuntime || s.podId),
+      messageTool: "optio_send_session_message",
+      href: `/work/${s.id}`,
       createdAt: s.createdAt,
       updatedAt: s.createdAt,
     })),
@@ -567,7 +574,10 @@ export async function listControllerSessions(
       name: s.title,
       state: s.state,
       runtime: (s.spec as { agent?: string }).agent,
-      href: `/local/${s.id}`,
+      runTarget: "local",
+      canMessage: p.access === "manage" && s.state === "running" && s.spec.kind === "agent",
+      messageTool: "optio_send_session_message",
+      href: `/work/${s.id}`,
       createdAt: s.createdAt,
       updatedAt: s.createdAt,
     })),

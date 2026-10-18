@@ -57,6 +57,33 @@ final class WebSocketClientTests: XCTestCase {
         await fulfillment(of: [closed], timeout: 3)
         XCTAssertEqual(events, ["closed"])
     }
+    func testLargeSavedHistoryExceedsURLSessionDefaultLimit() async throws {
+        let server = try HandshakeServer()
+        defer { server.stop() }
+        await fulfillment(of: [server.ready], timeout: 3)
+        let client = WebSocketClient(url: try server.url(), tokenProvider: { nil }, autoReconnect: false, maximumMessageSize: 16 * 1024 * 1024)
+        defer { client.disconnect() }
+        let received = expectation(description: "large history restored")
+        let content = String(repeating: "Saved conversation. ", count: 100_000)
+        let pump = Task {
+            for await frame in client.frames {
+                if case .json(let object) = frame, object["type"] as? String == "history" {
+                    let model = OptioAssistantModel()
+                    model.handle(frame)
+                    XCTAssertEqual(model.rows.first?.text, content)
+                    XCTAssertTrue(model.hasLoadedHistory)
+                    received.fulfill()
+                }
+            }
+        }
+        defer { pump.cancel() }
+        client.connect()
+        await fulfillment(of: [server.requestReceived], timeout: 3)
+        try server.accept()
+        try server.sendJSON(["type": "history", "frames": [["type": "text", "content": content]]])
+        await fulfillment(of: [received], timeout: 8)
+    }
+
 }
 
 /// Loopback HTTP endpoint with a manually controlled WebSocket upgrade. Tests
@@ -117,6 +144,15 @@ private final class HandshakeServer {
         let digest = Insecure.SHA1.hash(data: Data("\(key)258EAFA5-E914-47DA-95CA-C5AB0DC85B11".utf8))
         let accept = Data(digest).base64EncodedString()
         send("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\nSec-WebSocket-Protocol: optio-ws-v1\r\n\r\n")
+    }
+
+    func sendJSON(_ object: [String: Any]) throws {
+        let body = try JSONSerialization.data(withJSONObject: object)
+        var frame = Data([0x81, 127])
+        var count = UInt64(body.count).bigEndian
+        withUnsafeBytes(of: &count) { frame.append(contentsOf: $0) }
+        frame.append(body)
+        connection?.send(content: frame, completion: .contentProcessed { _ in })
     }
 
     func reject() {

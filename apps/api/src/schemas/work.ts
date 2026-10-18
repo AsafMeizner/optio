@@ -196,7 +196,11 @@ export const WorkSpecSchema = z
         runTitle: z.string().max(200).nullable().optional(),
       })
       .describe("The prompt (a terminal's command) and what each run is called"),
-    then: z.enum(WORK_THENS).describe("What happens when a turn ends"),
+    then: z
+      .enum(WORK_THENS)
+      .describe(
+        "waits-for-me: interactive session with saved conversation; exits: finite assignment; until-merged: follow a repo PR through merge; waits-for-messages: explicitly requested long-lived named persistent agent. Scheduling is When, not persistence.",
+      ),
     mergeWhenReady: z.boolean().optional(),
     maxRetries: z.number().int().min(0).max(10).optional(),
     priority: z.number().int().min(1).max(1000).optional(),
@@ -212,7 +216,9 @@ export const WorkSpecSchema = z
         podLifecycle: z.enum(["always-on", "sticky", "on-demand"]).optional(),
       })
       .optional()
-      .describe("A persistent agent's identity and pod"),
+      .describe(
+        "Only for then=waits-for-messages: a persistent agent's identity and pod. Omit for ordinary interactive sessions.",
+      ),
     owner: z
       .enum(["workspace", "me"])
       .optional()

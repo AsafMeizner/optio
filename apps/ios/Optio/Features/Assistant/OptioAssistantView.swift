@@ -1,11 +1,14 @@
 import SwiftUI
 
 struct OptioAssistantView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(APIClient.self) private var api
     @Environment(AppRouter.self) private var router
     @Environment(SessionStore.self) private var session
     @State private var settingsContext = MoreContext()
     @State private var showSettings = false
+    @State private var isVisible = false
+    @State private var followsLatest = true
     @Bindable var model: OptioAssistantModel
     @State private var showReset = false
     @State private var navigationError: String?
@@ -15,24 +18,17 @@ struct OptioAssistantView: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 20) {
-                        if model.rows.isEmpty { introduction }
-                        ForEach(model.rows) { row in message(row) }
-                        if !model.queue.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Queued messages (\(model.queue.count))").font(.headline)
-                                Text("These run in order after the current request finishes.").font(.caption).foregroundStyle(.secondary)
-                                ForEach(model.queue) { item in
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text(item.content).textSelection(.enabled)
-                                        Button("Cancel queued message") { Task { await model.cancelQueued(item.requestId) } }
-                                            .font(.caption)
-                                            .disabled(!model.canSend || model.cancellingRequests.contains(item.requestId))
-                                    }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(AppTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                                }
-                            }.accessibilityIdentifier("Queued messages")
+                    // History is bounded by the server. Eager layout keeps long, selectable
+                    // replies stable while scrolling (iOS 26 lazy placement can loop).
+                    VStack(alignment: .leading, spacing: 18) {
+                        if model.rows.isEmpty {
+                            if model.hasLoadedHistory || !session.canCreateWork { introduction }
+                            else { loadingConversation }
                         }
+                        ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
+                            message(row, showsAuthor: index == 0 || model.rows[index - 1].role != row.role || row.isError || row.proposal != nil)
+                        }
+                        if !model.queue.isEmpty { queuedMessages }
                         Color.clear.frame(height: 1).id("bottom")
                     }
                     .padding()
@@ -40,11 +36,26 @@ struct OptioAssistantView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: model.rows.last?.text) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: model.rows.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: model.queue.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { _ in if followsLatest { followsLatest = false } })
+                .overlay(alignment: .bottomTrailing) {
+                    if !followsLatest && !model.rows.isEmpty {
+                        Button {
+                            followsLatest = true
+                            withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                        } label: { Label("Latest", systemImage: "arrow.down") }
+                            .font(.caption.weight(.semibold)).buttonStyle(.borderedProminent)
+                            .clipShape(Capsule()).padding(12).accessibilityLabel("Latest messages")
+                    }
+                }
+                .onChange(of: model.hasLoadedHistory) { _, loaded in
+                    if loaded { followsLatest = true; Task { @MainActor in await Task.yield(); proxy.scrollTo("bottom", anchor: .bottom) } }
+                }
+                .onChange(of: model.rows.last?.text) { _, _ in if followsLatest { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: model.rows.count) { _, _ in if followsLatest { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: model.queue.count) { _, _ in if followsLatest { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
             .background(Surface.page)
+            .safeAreaInset(edge: .top, spacing: 0) { conversationStatus }
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             .navigationTitle("Optio Agent")
             .navigationBarTitleDisplayMode(.inline)
@@ -75,35 +86,114 @@ struct OptioAssistantView: View {
             }
             .serverSwitcherToolbar()
             .task {
-                await settingsContext.refresh(api: api, session: session)
+                isVisible = true
                 if session.canCreateWork { model.start(api: api) }
+                await settingsContext.refresh(api: api, session: session)
             }
-            .onDisappear { model.stop() }
+            .onChange(of: scenePhase) { _, phase in
+                guard isVisible else { return }
+                if phase == .background { model.stop() }
+                if phase == .active, session.canCreateWork { model.start(api: api) }
+            }
+            .onDisappear { isVisible = false; model.stop() }
         }
+    }
+
+    private var conversationStatus: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle().fill(model.status == .ready ? Color.green : AppTheme.accent).frame(width: 6, height: 6)
+                Text(statusLabel).font(.caption.weight(.medium))
+                Spacer(minLength: 8)
+                if let identity = model.identity {
+                    Text(identity).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .accessibilityIdentifier("Agent identity")
+                }
+            }
+            if let error = model.connectionError {
+                HStack(alignment: .top) {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button("Reconnect") { model.reconnect(api: api) }.font(.caption.weight(.semibold))
+                }
+            }
+        }
+        .padding(.horizontal, 20).padding(.vertical, 10)
+        .background(Surface.page)
+        .overlay(alignment: .bottom) { Divider().opacity(0.45) }
+    }
+
+    private var loadingConversation: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Loading conversation…").font(.subheadline).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 56)
+        .accessibilityIdentifier("Loading conversation")
     }
 
     private var introduction: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(session.canCreateWork ? "Turn an idea into work" : "Optio Agent requires member access", systemImage: "sparkles").font(.title2.bold())
-            Text("Describe what you want done. Optio can find your repos and machines, then prepare work for you to review.").foregroundStyle(.secondary)
-            Button("Help me start work on my machine") { model.draft = "Help me start work on my machine" }
-                .buttonStyle(.bordered)
-            Text("To dictate, tap the microphone on your iPhone keyboard. Review the text before sending.")
-                .font(.footnote).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 16) {
+            Image(systemName: "sparkles").font(.system(size: 26)).foregroundStyle(AppTheme.accent)
+                .padding(12).background(AppTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+            Text(session.canCreateWork ? "What would you like to do?" : "Optio Agent requires member access")
+                .font(.title3.weight(.semibold))
+            Text("Find work, plan a change, or start something new.").font(.subheadline).foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                suggestion("Start work on my machine", prompt: "Help me start work on my machine", icon: "laptopcomputer")
+                suggestion("See what’s running", prompt: "Show me my active work", icon: "list.bullet")
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 28)
     }
 
-    private func message(_ row: OptioAssistantModel.Row) -> some View {
+    private func suggestion(_ title: String, prompt: String, icon: String) -> some View {
+        Button { model.draft = prompt; composerFocused = true } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon).frame(width: 20)
+                Text(title).font(.subheadline)
+                Spacer()
+                Image(systemName: "arrow.up.left").font(.caption)
+            }.padding(12).background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(.plain).accessibilityLabel(prompt)
+    }
+
+    private var queuedMessages: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(row.role == "user" ? "You" : "Optio").font(.caption.bold()).foregroundStyle(.secondary)
+            Label("Up next · \(model.queue.count)", systemImage: "text.line.first.and.arrowtriangle.forward")
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(model.queue) { item in
+                HStack(alignment: .top, spacing: 12) {
+                    Text(item.content).font(.subheadline).textSelection(.enabled)
+                    Spacer(minLength: 0)
+                    Button { Task { await model.cancelQueued(item.requestId) } } label: {
+                        Image(systemName: "xmark.circle").font(.body).frame(minWidth: 32, minHeight: 32)
+                    }
+                    .accessibilityLabel("Cancel queued message")
+                    .disabled(!model.canSend || model.cancellingRequests.contains(item.requestId))
+                }.padding(12).background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+            }
+        }.accessibilityIdentifier("Queued messages")
+    }
+
+    private func message(_ row: OptioAssistantModel.Row, showsAuthor: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if row.role != "user" && showsAuthor {
+                Label(row.isError ? "Notice" : "Optio", systemImage: row.isError ? "exclamationmark.circle" : "sparkles")
+                    .font(.caption.weight(.semibold)).foregroundStyle(row.isError ? Color.red : AppTheme.secondaryText)
+            }
             Text((try? AttributedString(markdown: row.text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(row.text))
-                .textSelection(.enabled)
+                .font(.body).lineSpacing(3).textSelection(.enabled)
                 .foregroundStyle(row.isError ? Color.red : Color.primary)
                 .fixedSize(horizontal: false, vertical: true)
             if let proposal = row.proposal {
                 ForEach(Array(proposal.work.enumerated()), id: \.offset) { _, work in workPreview(work) }
-                ForEach(Array(proposal.items.enumerated()), id: \.offset) { _, item in
-                    Text(item).font(.footnote.monospaced()).textSelection(.enabled)
+                if !proposal.items.isEmpty {
+                    DisclosureGroup("Action details") {
+                        ForEach(Array(proposal.items.enumerated()), id: \.offset) { _, item in
+                            Text(item).font(.caption.monospaced()).textSelection(.enabled)
+                        }
+                    }.font(.subheadline)
                 }
                 if let decision = proposal.decision { Text(decision).font(.caption).foregroundStyle(.secondary) }
                 else {
@@ -111,13 +201,17 @@ struct OptioAssistantView: View {
                         HStack { approvalButtons(proposal.id) }
                         VStack(alignment: .leading) { approvalButtons(proposal.id) }
                     }
-                    .disabled(model.status != .waitingForApproval)
+                    .disabled(!model.hasLoadedHistory || model.status != .waitingForApproval)
                 }
             }
         }
-        .padding()
+        .padding(row.role == "user" || row.proposal != nil ? 14 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(row.role == "user" ? AppTheme.accent.opacity(0.08) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
+        .background(row.role == "user" ? AppTheme.accent.opacity(0.08) : row.proposal != nil ? Color.secondary.opacity(0.05) : .clear, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.leading, row.role == "user" ? 32 : 0)
+        .padding(.bottom, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("Conversation message")
     }
 
     @ViewBuilder private func approvalButtons(_ id: String) -> some View {
@@ -183,46 +277,42 @@ struct OptioAssistantView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let identity = model.identity { Text(identity).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("Agent identity") }
-            HStack {
-                Text(statusLabel).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if composerFocused {
-                    Button { composerFocused = false } label: { Image(systemName: "keyboard.chevron.compact.down") }
-                        .accessibilityLabel("Hide keyboard")
-                        .frame(minWidth: 44, minHeight: 32)
-                }
-                if model.status == .disconnected, session.canCreateWork { Button("Reconnect") { model.reconnect(api: api) }.font(.caption.bold()) }
-            }
+        VStack(alignment: .leading, spacing: 6) {
             if let navigationError { Text(navigationError).font(.caption).foregroundStyle(.red) }
-            HStack(alignment: .bottom, spacing: 12) {
-                TextField("Describe the work…", text: $model.draft, axis: .vertical)
-                    .lineLimit(1...6)
-                    .padding(12)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                    .accessibilityLabel("Message to Optio")
-                    .focused($composerFocused)
-                Button { Task { await model.send() } } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 36)).frame(minWidth: 44, minHeight: 44)
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Message Optio…", text: $model.draft, axis: .vertical)
+                    .lineLimit(1...5).padding(.vertical, 10).padding(.leading, 14)
+                    .accessibilityLabel("Message to Optio").focused($composerFocused)
+                Button { followsLatest = true; Task { await model.send() } } label: {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 30)).frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("Send message")
                 .disabled(!model.canSend || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
+            .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 22))
+            HStack {
+                Text(model.isSending ? "Sending…" : model.status == .thinking || model.status == .executing || model.status == .waitingForApproval ? "New messages join the queue" : "Use your keyboard microphone to dictate")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                if composerFocused {
+                    Button { composerFocused = false } label: { Image(systemName: "keyboard.chevron.compact.down").frame(width: 36, height: 28) }
+                        .accessibilityLabel("Hide keyboard")
+                }
+            }.padding(.horizontal, 4)
         }
-        .padding()
-        .background(.regularMaterial)
+        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 8)
+        .background(Surface.page)
     }
 
     private var statusLabel: String {
-        if model.isSending { return "Sending your request…" }
+        if !model.hasLoadedHistory, model.status != .disconnected { return "Syncing conversation" }
         return switch model.status {
-        case .ready: "Ready · use your keyboard microphone to dictate"
-        case .waitingForApproval: "Review the proposal · you can queue another message"
-        case .thinking: "Thinking · send another message to queue it"
-        case .executing: "Working · send another message to queue it"
+        case .ready: "Ready"
+        case .waitingForApproval: "Needs your approval"
+        case .thinking: "Thinking…"
+        case .executing: "Working…"
         case .connecting: "Connecting…"
-        case .disconnected: "Disconnected · your draft is saved"
+        case .disconnected: "Offline"
         }
     }
 

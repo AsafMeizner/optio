@@ -879,23 +879,9 @@ export async function localRoutes(rawApp: FastifyInstance) {
       if (!terminal || !(await canJoinSession("local", terminal, req.user))) {
         return reply.status(404).send({ error: "Terminal not found" });
       }
-      if (terminal.state !== "running") {
-        return reply.status(409).send({ error: `Terminal is ${terminal.state}` });
-      }
-      const { sendToHost } = await import("../services/local-relay.js");
-      const { splitSubmit, SUBMIT_GAP_MS } = await import("../utils/terminal-input.js");
-      // A chat message and its Enter go as two writes a beat apart, so an
-      // agent TUI that reads a burst of keys as a paste still submits it.
-      const writes = splitSubmit(req.body.data);
-      for (const [i, data] of writes.entries()) {
-        if (i > 0) await new Promise((r) => setTimeout(r, SUBMIT_GAP_MS));
-        const sent = await sendToHost(terminal.hostId, {
-          type: "input",
-          terminalId: terminal.id,
-          dataB64: Buffer.from(data, "utf-8").toString("base64"),
-        });
-        if (!sent) return reply.status(409).send({ error: "Host is offline" });
-      }
+      const { sendLocalTerminalInput } = await import("../services/local-terminal-input.js");
+      const result = await sendLocalTerminalInput(terminal, req.body.data);
+      if (result) return reply.status(409).send(result);
       reply.send({});
     },
   );

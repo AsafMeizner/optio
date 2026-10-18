@@ -85,9 +85,14 @@ available under All settings. Work links open their native detail screen.
 
 Use the microphone on the iOS keyboard to dictate into the editable draft, then
 Send. This uses the system keyboard; Optio does not record microphone audio.
-The assistant is a view of a saved harness session. Closing the sheet disconnects
-its view; the server retains the conversation and work continues. Reopening replaces
-the displayed transcript with server history and restores outstanding approvals.
+The assistant displays the same saved conversation as the web app for the selected
+server, workspace and account. Switching tabs or backgrounding the app disconnects
+only the view; work continues on the server. Returning refreshes history and pending
+approvals, and transient network failures reconnect automatically. A loading state
+remains visible until history arrives, so an unconnected view never looks like a new
+conversation. Adjacent streamed text fragments are restored as one readable reply.
+Scrolling back pauses automatic following; Latest returns to the newest message.
+The assistant accepts history frames up to 16 MiB, above URLSession’s default limit.
 Drafts stay local, message echoes are deduplicated by request id, and reconnecting
 never resends an action. Clear conversation is available only while idle with no
 pending approvals or queued messages, and removes history only after server acknowledgement.
@@ -95,8 +100,8 @@ Messages can be submitted while a turn is thinking, executing, or awaiting appro
 A separate queue shows requests in order with cancellation controls; only started
 turns enter the transcript. The draft clears after server acknowledgement, and queue
 snapshots restore state after reconnecting.
-The assistant uses the selected server's PAT and workspace; viewers do not see
-its entry points.
+The assistant uses the selected server’s PAT and workspace. Viewers see a member-access
+explanation; they cannot send messages or approve actions.
 
 ## Local sessions on the phone
 

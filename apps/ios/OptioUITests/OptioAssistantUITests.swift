@@ -18,7 +18,7 @@ final class OptioAssistantUITests: XCTestCase {
             XCTAssertTrue(app.tabBars.buttons[label].exists)
         }
         agentTab.tap()
-        XCTAssertTrue(app.staticTexts["Turn an idea into work"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["What would you like to do?"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Clear conversation"].exists)
         app.buttons["Help me start work on my machine"].tap()
         // SwiftUI reports a multiline field as TextField or TextView across iOS versions.
@@ -59,4 +59,41 @@ final class OptioAssistantUITests: XCTestCase {
         XCTAssertTrue(draft.waitForExistence(timeout: 5))
         XCTAssertEqual(draft.value as? String, "Help me start work on my machine")
     }
+    /// Read-only: validates the same saved conversation through tab and scene changes.
+    /// Run against a server that already has assistant history; this never sends or clears.
+    func testSavedConversationSurvivesTabSwitchAndBackground() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let server = env["OPTIO_UITEST_HISTORY_SERVER_URL"], let token = env["OPTIO_UITEST_TOKEN"] else {
+            throw XCTSkip("Requires an existing conversation on the read-only history test server")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment["OPTIO_DEV_SERVER_URL"] = server
+        app.launchEnvironment["OPTIO_DEV_TOKEN"] = token
+        app.launchEnvironment["OPTIO_DEV_NO_PUSH_PROMPT"] = "1"
+        app.launchEnvironment["OPTIO_DEV_SECTION"] = "work"
+        app.launch()
+        let tab = app.tabBars.buttons["Optio Agent"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 20))
+        tab.tap()
+        let message = app.descendants(matching: .any).matching(identifier: "Conversation message").firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 20))
+        XCTAssertFalse(app.staticTexts["What would you like to do?"].exists)
+        app.swipeDown()
+        let latest = app.buttons["Latest messages"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        latest.tap()
+        app.tabBars.buttons["Work"].tap()
+        app.tabBars.buttons["Optio Agent"].tap()
+        XCTAssertTrue(message.waitForExistence(timeout: 10))
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(message.waitForExistence(timeout: 10))
+        let connectedStatus = app.staticTexts.matching(NSPredicate(format: "label IN %@", ["Ready", "Thinking…", "Working…", "Needs your approval"])).firstMatch
+        XCTAssertTrue(connectedStatus.waitForExistence(timeout: 10), "History must resync even when another client has a running turn")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "ios-agent-saved-conversation"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
 }

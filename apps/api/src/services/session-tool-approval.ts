@@ -22,6 +22,14 @@ export async function sessionFrame(sessionId: string, frame: Record<string, unkn
 }
 
 export function approvalFrame(row: { id: string; tool: string; args: Record<string, unknown> }) {
+  if (row.tool === "send_session_message")
+    return {
+      type: "action_proposal",
+      actionId: row.id,
+      description: "Send this message to the session",
+      work: [],
+      items: [`Session: ${String(row.args.id)}`, String(row.args.body)],
+    };
   const spec = row.tool === "create_work" ? WorkSpecSchema.safeParse(row.args.spec) : null;
   return {
     type: "action_proposal",

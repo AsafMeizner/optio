@@ -8,11 +8,13 @@ final class OptioAssistantModelTests: XCTestCase {
         model.handle(.opened)
         XCTAssertFalse(model.canSend)
         model.handle(.json(["type": "status", "status": "ready"]))
+        XCTAssertFalse(model.canSend, "Status alone must not look like an empty saved conversation")
+        model.handle(.json(["type": "history", "frames": []]))
         XCTAssertTrue(model.canSend)
     }
 
     func testStreamingTextAndActionReceiptsRemainSeparate() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.handle(.json(["type": "text", "content": "Hello "]))
         model.handle(.json(["type": "text", "content": "there"]))
         XCTAssertEqual(model.rows.count, 1)
@@ -25,7 +27,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testStructuredProposalAllowsQueueingButBlocksClearAndPreservesAllSettings() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         let work: [String: Any] = ["name": "Fix login", "where": ["localDir": "/repo"], "settings": ["controllerAccess": "manage"]]
         model.handle(.json(["type": "action_proposal", "actionId": "a1", "description": "Review", "work": [work], "items": []]))
         model.handle(.json(["type": "status", "status": "waiting_for_approval"]))
@@ -39,29 +41,37 @@ final class OptioAssistantModelTests: XCTestCase {
         XCTAssertTrue(OptioAssistantModel.json(proposal.work).contains("manage"))
     }
 
-    func testDisconnectExpiresActionsAndPreservesDraft() {
-        let model = OptioAssistantModel()
+    func testDisconnectKeepsPendingActionsAndPreservesDraft() {
+        let model = loadedModel()
         model.draft = "My dictated message"
         model.handle(.json(["type": "action_proposal", "actionId": "a1", "description": "Review", "items": ["create_task(...)"], "work": []]))
         model.handle(.closed(code: 1006, reason: "Connection lost"))
         XCTAssertEqual(model.status, .disconnected)
-        XCTAssertNotNil(model.rows[0].proposal?.decision)
+        XCTAssertNil(model.rows[0].proposal?.decision)
         XCTAssertEqual(model.draft, "My dictated message")
-        XCTAssertTrue(model.rows.last!.isError)
+        XCTAssertEqual(model.connectionError, "Connection lost")
+        XCTAssertEqual(model.rows.count, 1)
         XCTAssertFalse(model.canSend)
     }
 
-    func testClosingDuringExecutionExplainsUncertainResult() {
-        let model = OptioAssistantModel()
+    func testTabDetachKeepsTranscriptWithoutInventingAnErrorOrExpiringApproval() {
+        let model = loadedModel()
+        model.handle(.json(["type": "text", "content": "Working on your request"]))
         model.handle(.json(["type": "status", "status": "executing"]))
         model.stop()
-        XCTAssertTrue(model.rows.last!.text.contains("Check Work"))
-        XCTAssertTrue(model.rows.last!.text.contains("uncertain"))
-        XCTAssertEqual(model.status, .disconnected)
+        XCTAssertEqual(model.rows.map(\.text), ["Working on your request"])
+        XCTAssertNil(model.connectionError)
+        XCTAssertFalse(model.hasLoadedHistory)
+        XCTAssertFalse(model.canSend)
+        model.handle(.opened)
+        model.handle(.json(["type": "history", "frames": [["type": "text", "content": "Finished while you were away"]]]))
+        model.handle(.json(["type": "status", "status": "ready"]))
+        XCTAssertEqual(model.rows.map(\.text), ["Finished while you were away"])
+        XCTAssertTrue(model.canSend)
     }
 
     func testErrorIsVisibleAndEndsStreamingBubble() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.handle(.json(["type": "text", "content": "Starting"]))
         model.handle(.json(["type": "error", "message": "Please refresh your credentials"]))
         model.handle(.json(["type": "status", "status": "ready"]))
@@ -73,7 +83,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testHistoryReplacesLocalRowsAndPreservesDraftAndSessionIdentity() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.draft = "Unsent dictation"
         model.handle(.json(["type": "text", "content": "Old local response"]))
         let id = UUID().uuidString
@@ -95,7 +105,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testUserEchoDeduplicatesOptimisticAndHistoryMessagesByRequestId() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         let id = UUID().uuidString
         model.appendUserMessage("My prompt", requestId: id)
         model.handle(.json(["type": "user_message", "content": "My prompt", "requestId": id]))
@@ -108,7 +118,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testEmptyHistoryClearsTranscriptAndPendingProposalButKeepsDraft() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.draft = "Keep me"
         model.handle(.json(["type": "action_proposal", "actionId": "pending", "description": "Review", "items": [], "work": []]))
         model.handle(.json(["type": "history", "frames": []]))
@@ -119,10 +129,10 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testReconnectHistoryRestoresPendingProposalAndRejectsExternalSessionHref() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.handle(.json(["type": "action_proposal", "actionId": "pending", "description": "Review", "items": [], "work": []]))
         model.stop()
-        XCTAssertNotNil(model.rows[0].proposal?.decision)
+        XCTAssertNil(model.rows[0].proposal?.decision)
         model.handle(.json(["type": "history", "sessionId": UUID().uuidString, "href": "https://example.com", "frames": []]))
         model.handle(.json(["type": "action_proposal", "actionId": "pending", "description": "Review", "items": [], "work": []]))
         model.handle(.json(["type": "status", "status": "waiting_for_approval"]))
@@ -134,7 +144,7 @@ final class OptioAssistantModelTests: XCTestCase {
 
     func testOtherClientsDecisionAndExpirySettlePendingProposals() {
         for (type, expected) in [("action_decision", "Declined"), ("action_expired", "Expired — request a fresh proposal")] {
-            let model = OptioAssistantModel()
+            let model = loadedModel()
             let proposal: [String: Any] = ["type": "action_proposal", "actionId": "pending", "description": "Review", "items": [], "work": []]
             model.handle(.json(proposal))
             model.handle(.json(proposal))
@@ -148,7 +158,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testActionReceiptRecoversAMissedApprovalDecision() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.handle(.json(["type": "action_proposal", "actionId": "pending", "description": "Review", "items": [], "work": []]))
         model.handle(.json(["type": "action_result", "actionId": "pending", "summary": "Creation failed", "success": false]))
         model.handle(.json(["type": "status", "status": "ready"]))
@@ -158,7 +168,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testBusySubmissionWaitsForQueueAcknowledgementBeforeClearingDraft() throws {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.handle(.json(["type": "status", "status": "thinking"]))
         model.draft = "Next request"
         let frame = try XCTUnwrap(model.prepareSend())
@@ -180,7 +190,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testFastStartAcknowledgesMessageAndPreservesEditsMadeWhileSending() throws {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.handle(.json(["type": "status", "status": "ready"]))
         model.draft = "First"
         let id = try XCTUnwrap(model.prepareSend()?["requestId"] as? String)
@@ -195,7 +205,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testQueueRejectionPreservesDraftAndReconnectSnapshotReplacesQueue() throws {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.handle(.json(["type": "status", "status": "waiting_for_approval"]))
         model.draft = "My queued instruction"
         let id = try XCTUnwrap(model.prepareSend()?["requestId"] as? String)
@@ -207,6 +217,7 @@ final class OptioAssistantModelTests: XCTestCase {
         model.stop()
         model.handle(.json(["type": "queue", "messages": [["requestId": "new", "content": "Saved queue"]]]))
         XCTAssertEqual(model.queue.map(\.requestId), ["new"])
+        model.handle(.json(["type": "history", "frames": []]))
         model.handle(.json(["type": "status", "status": "ready"]))
         XCTAssertFalse(model.canReset)
         model.handle(.json(["type": "queue", "messages": []]))
@@ -215,7 +226,7 @@ final class OptioAssistantModelTests: XCTestCase {
 
     func testReconnectAcknowledgesAcceptedMessageWithoutResending() throws {
         for inHistory in [false, true] {
-            let model = OptioAssistantModel()
+            let model = loadedModel()
             model.handle(.json(["type": "status", "status": "ready"]))
             model.draft = "Accepted before disconnect"
             let id = try XCTUnwrap(model.prepareSend()?["requestId"] as? String)
@@ -233,7 +244,7 @@ final class OptioAssistantModelTests: XCTestCase {
     }
 
     func testRuntimeAndModelIdentitySurviveStatusOnlyUpdates() {
-        let model = OptioAssistantModel()
+        let model = loadedModel()
         model.handle(.json(["type": "status", "status": "ready", "runtime": "codex", "model": "gpt-5.4"]))
         XCTAssertEqual(model.runtime, "codex")
         XCTAssertTrue(model.identity!.contains("gpt-5.4"))
@@ -243,4 +254,22 @@ final class OptioAssistantModelTests: XCTestCase {
         model.handle(.json(["type": "status", "status": "ready", "runtime": "gemini", "model": ""]))
         XCTAssertTrue(model.identity!.contains("Default model"))
     }
+    func testHistoryCombinesStreamChunksAndKeepsTurnBoundaries() {
+        let model = OptioAssistantModel()
+        model.handle(.json(["type": "history", "frames": [
+            ["type": "user_message", "content": "First"],
+            ["type": "text", "content": "Hello "], ["type": "text", "content": "world"],
+            ["type": "action_result", "summary": "Created"],
+            ["type": "text", "content": "All done"],
+            ["type": "user_message", "content": "Next"], ["type": "text", "content": "Next reply"]
+        ]]))
+        XCTAssertEqual(model.rows.map(\.text), ["First", "Hello world", "Created", "All done", "Next", "Next reply"])
+    }
+
+    private func loadedModel() -> OptioAssistantModel {
+        let model = OptioAssistantModel()
+        model.handle(.json(["type": "history", "frames": []]))
+        return model
+    }
+
 }

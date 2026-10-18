@@ -28,6 +28,8 @@ final class OptioAssistantModel {
     var rows: [Row] = []
     var draft = ""
     var status: Status = .disconnected
+    private(set) var hasLoadedHistory = false
+    private(set) var connectionError: String?
     private(set) var sessionId: String?
     private(set) var sessionHref: String?
     private var isClearing = false
@@ -42,19 +44,22 @@ final class OptioAssistantModel {
     private var streamId: UUID?
     private var generation = UUID()
 
-    var canSend: Bool { status != .disconnected && status != .connecting && !isClearing && !isSending }
-    var canReset: Bool { status == .ready && !isClearing && !isSending && queue.isEmpty && !rows.contains { $0.proposal != nil && $0.proposal?.decision == nil } }
+    var canSend: Bool { hasLoadedHistory && status != .disconnected && status != .connecting && !isClearing && !isSending }
+    var canReset: Bool { hasLoadedHistory && status == .ready && !isClearing && !isSending && queue.isEmpty && !rows.contains { $0.proposal != nil && $0.proposal?.decision == nil } }
     var identity: String? {
         guard let runtime else { return nil }
         return WorkFeed.runtimeLabel(runtime) + " · " + (selectedModel?.isEmpty == false ? selectedModel! : "Default model")
     }
 
     func start(api: APIClient) {
-        guard socket == nil else { return }
+        guard socket == nil || status == .disconnected else { return }
+        stop()
+        hasLoadedHistory = false
+        connectionError = nil
         status = .connecting
         let token = api.token
         // Use the selected server and workspace to attach to the saved session.
-        let client = WebSocketClient(url: api.wsURL("/ws/optio/chat"), tokenProvider: { token }, autoReconnect: false, headers: api.workspaceId.map { ["x-workspace-id": $0] } ?? [:])
+        let client = WebSocketClient(url: api.wsURL("/ws/optio/chat"), tokenProvider: { token }, autoReconnect: true, headers: api.workspaceId.map { ["x-workspace-id": $0] } ?? [:], maximumMessageSize: 16 * 1024 * 1024)
         socket = client
         let current = generation
         pump = Task { [weak self] in
@@ -67,51 +72,39 @@ final class OptioAssistantModel {
     }
 
     func stop() {
-        reportUncertainResult()
         generation = UUID()
         pump?.cancel()
         pump = nil
         socket?.disconnect()
         socket = nil
         status = .disconnected
+        hasLoadedHistory = false
         isClearing = false
         isSending = false
         cancellingRequests = []
         streamId = nil
-        expireProposals()
     }
 
     func reconnect(api: APIClient) {
         stop()
-        rows.append(Row(text: "Reconnecting. Previous actions won’t be retried. Check Work before repeating a request whose result is uncertain."))
         start(api: api)
-    }
-
-    private func reportUncertainResult() {
-        if status == .thinking || status == .executing {
-            rows.append(Row(text: "The conversation disconnected before the operation finished. Check Work before repeating a request; its result may be uncertain.", isError: true))
-        }
-    }
-
-    private func expireProposals() {
-        for index in rows.indices where rows[index].proposal != nil && rows[index].proposal?.decision == nil {
-            rows[index].proposal?.decision = "Expired — request a fresh proposal"
-        }
     }
 
     /// Internal so tests can drive actual server frames without a model or microphone.
     func handle(_ frame: WebSocketClient.Frame) {
         switch frame {
-        case .opened: break // Only the server's status frame authorizes input.
+        case .opened:
+            status = .connecting
+            hasLoadedHistory = false
+            connectionError = nil
         case .closed(_, let reason):
-            reportUncertainResult()
             status = .disconnected
+            hasLoadedHistory = false
             isClearing = false
             isSending = false
             cancellingRequests = []
-            expireProposals()
             streamId = nil
-            if let reason, !reason.isEmpty { rows.append(Row(text: reason, isError: true)) }
+            connectionError = reason ?? "Connection lost. Reconnecting to your saved conversation…"
         case .json(let obj):
             switch obj["type"] as? String {
             case "queue":
@@ -124,6 +117,8 @@ final class OptioAssistantModel {
                 if let pendingSend, queue.contains(where: { $0.requestId == pendingSend.requestId }) { acknowledge(pendingSend.requestId) }
             case "history":
                 guard let frames = obj["frames"] as? [[String: Any]] else { return }
+                hasLoadedHistory = true
+                connectionError = nil
                 rows = []
                 streamId = nil
                 isClearing = false
@@ -135,11 +130,15 @@ final class OptioAssistantModel {
                 for frame in frames {
                     switch frame["type"] as? String {
                     case "user_message":
+                        streamId = nil
                         if let content = frame["content"] as? String {
                             if let id = frame["requestId"] as? String { acknowledge(id) }
                             appendUserMessage(content, requestId: frame["requestId"] as? String)
                         }
-                    case "text", "error", "action_result":
+                    case "text":
+                        if let content = frame["content"] as? String { appendText(content) }
+                    case "error", "action_result":
+                        streamId = nil
                         guard let content = frame["content"] as? String ?? frame["message"] as? String ?? frame["summary"] as? String else { continue }
                         let isError = frame["type"] as? String == "error" || frame["success"] as? Bool == false
                         rows.append(Row(text: content, isError: isError))
@@ -162,12 +161,7 @@ final class OptioAssistantModel {
                 if status == .ready { streamId = nil }
             case "text":
                 guard let text = obj["content"] as? String else { return }
-                if let index = rows.firstIndex(where: { $0.id == streamId }) { rows[index].text += text }
-                else {
-                    let row = Row(text: text)
-                    streamId = row.id
-                    rows.append(row)
-                }
+                appendText(text)
             case "action_proposal":
                 guard let id = obj["actionId"] as? String else { return }
                 guard !rows.contains(where: { $0.proposal?.id == id }) else { return }
@@ -198,6 +192,15 @@ final class OptioAssistantModel {
             default: break
             }
         default: break
+        }
+    }
+
+    private func appendText(_ text: String) {
+        if let index = rows.firstIndex(where: { $0.id == streamId }) { rows[index].text += text }
+        else {
+            let row = Row(text: text)
+            streamId = row.id
+            rows.append(row)
         }
     }
 

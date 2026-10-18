@@ -28,6 +28,7 @@ final class WebSocketClient: @unchecked Sendable {
     private let tokenProvider: @Sendable () async -> String?
     private let autoReconnect: Bool
     private let headers: [String: String]
+    private let maximumMessageSize: Int
     private var task: URLSessionWebSocketTask?
     private var closed = false
     private var continuation: AsyncStream<Frame>.Continuation?
@@ -51,11 +52,12 @@ final class WebSocketClient: @unchecked Sendable {
 
     let frames: AsyncStream<Frame>
 
-    init(url: URL, tokenProvider: @escaping @Sendable () async -> String?, autoReconnect: Bool = true, session: URLSession = .shared, headers: [String: String] = [:]) {
+    init(url: URL, tokenProvider: @escaping @Sendable () async -> String?, autoReconnect: Bool = true, session: URLSession = .shared, headers: [String: String] = [:], maximumMessageSize: Int = 1024 * 1024) {
         self.url = url
         self.tokenProvider = tokenProvider
         self.autoReconnect = autoReconnect
         self.headers = headers
+        self.maximumMessageSize = maximumMessageSize
         self.session = session
         var cont: AsyncStream<Frame>.Continuation?
         frames = AsyncStream { cont = $0 }
@@ -85,6 +87,7 @@ final class WebSocketClient: @unchecked Sendable {
             if let token { protocols.append("optio-auth-\(token)") }
             req.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
             let t = session.webSocketTask(with: req)
+            t.maximumMessageSize = maximumMessageSize
             task = t
             // resume() only starts connecting. Wait for the real handshake so
             // recovery requests and terminal hello frames run after it succeeds.
@@ -117,7 +120,7 @@ final class WebSocketClient: @unchecked Sendable {
                 }
             } catch {
                 let code = t.closeCode.rawValue
-                let reason = t.closeReason.flatMap { String(data: $0, encoding: .utf8) }
+                let reason = t.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? error.localizedDescription
                 continuation?.yield(.closed(code: code, reason: reason))
                 if closed || !autoReconnect || code == CloseCode.connectionLimit || code == CloseCode.unauthorized || code == CloseCode.forbidden || code == CloseCode.notFound {
                     return

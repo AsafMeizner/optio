@@ -10,6 +10,7 @@ export const CONTROLLER_TOOL_CATEGORIES = [
       { name: "list_machines", description: "Find your machines" },
       { name: "list_runs", description: "Read run history" },
       { name: "get_run_logs", description: "Read run logs" },
+      { name: "get_session_history", description: "Read your session conversations" },
     ],
   },
   {
@@ -30,6 +31,7 @@ export const CONTROLLER_TOOL_CATEGORIES = [
       { name: "list_agents", description: "Find agents" },
       { name: "read_inbox", description: "Read agent messages" },
       { name: "send_message", description: "Message an agent" },
+      { name: "send_session_message", description: "Send input to your interactive sessions" },
     ],
   },
 ];

@@ -115,6 +115,8 @@ are not copied into the audit.
 | `optio_get_run_logs`                           | Bounded, paginated run logs with optional text/type filters                                         |
 | `optio_list_agents`                            | Discover persistent agents and active task/Job agents, including runtime, address and delivery mode |
 | `optio_send_message`                           | Queue a direct message; wake a persistent recipient or place it in an active run’s inbox            |
+| `optio_get_session_history`                    | Read recent saved messages from your pod or Local conversations (interactive operators only)        |
+| `optio_send_session_message`                   | Continue an existing interactive conversation through its chat input (interactive operators only)   |
 | `optio_read_inbox`                             | Read your own or another visible agent’s inbox, including reply addresses                           |
 
 Lists accept `limit` (1–100, default 25) and `offset`; follow `nextOffset`.
@@ -200,7 +202,27 @@ the run inbox and keep their original user attribution.
 A shared message board is not part of this surface yet. Direct messages are
 addressed to one recipient; they do not broadcast to the workspace.
 
-This first controller surface covers headless pod work, recurring definitions,
-persistent agents and reading PR reviews. Interactive terminals, machine
-control, broadcasts, PR submission/merge actions and credential administration
-are outside the MCP tool surface.
+The Optio assistant is one saved interactive conversation per user and workspace,
+shared by the web and native apps. Its prompt is refreshed from current guidance
+on each turn. New interactive conversations use `then: "waits-for-me"`; only an
+explicitly requested long-lived message-driven agent uses `waits-for-messages`.
+Scheduling belongs to When and does not require a persistent agent. Mutation tools
+show an approval card when confirmation is enabled; the assistant should call the
+tool directly, without asking for an additional yes in chat.
+
+Interactive operators can discover their own pod and Local sessions via
+`optio_list_work` / `optio_get_work`. `canMessage` describes whether that session
+supports input in its current state. `optio_get_session_history` returns the latest
+saved entries (up to 100, each capped at 2000 characters). It also reads finished
+sessions. `optio_send_session_message` uses the same transport as the chat UI:
+harness pod sessions queue durably, legacy pod chats use their existing Claude
+resume session, and Local agent chats send text and Enter to the daemon. A Local
+receipt means input was sent, not that an agent has replied; check history later.
+Pod messages accept a stable `requestId` UUID to prevent duplicate delivery.
+Never resend an uncertain Local delivery automatically. These tools preserve exact
+workspace and owner boundaries, including for admins, and reject self-input,
+finished sessions and shell-only Local terminals. Headless run credentials cannot
+use interactive session tools.
+
+Arbitrary machine control, broadcasts, PR submission/merge actions and credential
+administration remain outside the MCP tool surface.
