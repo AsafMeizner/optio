@@ -61,6 +61,7 @@ import { localTerminalStreamWs } from "./local-terminal-stream.js";
 import { sessionChatWs } from "./session-chat.js";
 import { sessionTerminalWs } from "./session-terminal.js";
 import { optioChatWs } from "./optio-chat.js";
+import { startSessionMessageWorker } from "../workers/session-message-worker.js";
 
 // ─── Instrumentation ─────────────────────────────────────────────────────────
 
@@ -145,6 +146,7 @@ let token = "";
 let userId = "";
 let workspaceId = "";
 let redis: Redis;
+let messageWorker: ReturnType<typeof startSessionMessageWorker>;
 const savedAuthDisabled = process.env.OPTIO_AUTH_DISABLED;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -306,9 +308,11 @@ beforeAll(async () => {
     optioChatWs,
   ]));
   redis = new Redis(process.env.REDIS_URL!);
+  messageWorker = startSessionMessageWorker();
 });
 
 afterAll(async () => {
+  await messageWorker?.close();
   await app?.close();
   redis?.disconnect();
   if (savedAuthDisabled === undefined) delete process.env.OPTIO_AUTH_DISABLED;
@@ -382,11 +386,14 @@ describe("frames sent the instant the socket opens (auth enabled)", () => {
     expect(chat.frames).toEqual([]);
     await lock.release();
 
-    await chat.next((f) => f.type === "status" && f.status === "ready");
-    await chat.next((f) => f.type === "status" && f.status === "thinking");
-    await chat.next((f) => f.type === "text" && f.content.includes("Mock agent handled"));
-    await chat.next((f) => f.type === "status" && f.status === "ready");
-    await chat.close();
+    try {
+      await chat.next((f) => f.type === "status" && f.status === "ready");
+      await chat.next((f) => f.type === "status" && f.status === "thinking");
+      await chat.next((f) => f.type === "text" && f.content.includes("Mock agent handled"));
+      await chat.next((f) => f.type === "status" && f.status === "ready");
+    } finally {
+      await chat.close();
+    }
   });
 
   it("session terminal: the first resize and keystrokes reach the shell, in order", async () => {
