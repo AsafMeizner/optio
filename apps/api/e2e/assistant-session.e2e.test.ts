@@ -67,9 +67,8 @@ it("runs an ordinary session, restores history, deduplicates prompts and changes
       requestId,
     }),
   );
-  await waitFor(async () =>
-    second.frames.find((f) => f.type === "error" && /already accepted/.test(f.message)),
-  );
+  await waitFor(async () => second.frames.find((f) => f.type === "queue"));
+  expect(second.frames.filter((f) => f.type === "user_message")).toHaveLength(0);
 
   const res = await fetch(`${server.baseUrl}/api/optio/settings`, {
     method: "PUT",
@@ -103,4 +102,55 @@ it("runs an ordinary session, restores history, deduplicates prompts and changes
   );
   const session = await fetch(`${server.baseUrl}/api/sessions/${sessionId}`).then((r) => r.json());
   expect(session.session).toMatchObject({ agentRuntime: "cursor", assistant: true });
+}, 120_000);
+
+it("queues while working, restores pending messages to another client and cancels before execution", async () => {
+  const first = await peer();
+  const requestId = randomUUID();
+  first.ws.send(
+    JSON.stringify({
+      type: "message",
+      content: "First queued test [[mock:sleep:3000]]",
+      requestId,
+    }),
+  );
+  await waitFor(async () =>
+    first.frames.find((f) => f.type === "status" && f.status === "thinking"),
+  );
+  const secondId = randomUUID(),
+    cancelledId = randomUUID();
+  first.ws.send(
+    JSON.stringify({ type: "message", content: "Second queued test", requestId: secondId }),
+  );
+  first.ws.send(
+    JSON.stringify({ type: "message", content: "Must not run", requestId: cancelledId }),
+  );
+  await waitFor(async () =>
+    first.frames.find(
+      (f) => f.type === "queue" && f.messages.some((m: any) => m.requestId === cancelledId),
+    ),
+  );
+  const other = await peer();
+  await waitFor(async () =>
+    other.frames.find(
+      (f) => f.type === "queue" && f.messages.some((m: any) => m.requestId === secondId),
+    ),
+  );
+  other.ws.send(JSON.stringify({ type: "cancel_queued", requestId: cancelledId }));
+  await waitFor(async () =>
+    other.frames.find(
+      (f) => f.type === "queue" && f.messages.length === 1 && f.messages[0].requestId === secondId,
+    ),
+  );
+  await waitFor(async () =>
+    first.frames.find((f) => f.type === "user_message" && f.requestId === secondId),
+  );
+  await waitFor(
+    async () => first.frames.filter((f) => f.type === "status" && f.status === "ready").length >= 3,
+  );
+  expect(first.frames.filter((f) => f.type === "user_message").map((f) => f.requestId)).toEqual([
+    requestId,
+    secondId,
+  ]);
+  expect(first.frames.filter((f) => f.type === "error")).toEqual([]);
 }, 120_000);

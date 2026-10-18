@@ -81,8 +81,11 @@ export async function runHarnessSession(
   sessionId: string,
   prompt: string,
   requestId: string = randomUUID(),
+  claimedTurn?: Extract<Awaited<ReturnType<typeof claimSessionTurn>>, { accepted: true }>["turn"],
 ) {
-  const claim = await claimSessionTurn(sessionId, requestId, prompt);
+  const claim = claimedTurn
+    ? { accepted: true as const, turn: claimedTurn }
+    : await claimSessionTurn(sessionId, requestId, prompt);
   if (!claim.accepted) throw new Error(claim.reason);
   const turnId = claim.turn.id;
   let completed = false;
@@ -94,6 +97,12 @@ export async function runHarnessSession(
     let session = await getSession(sessionId);
     if (!session || session.state !== "active" || !session.agentRuntime)
       throw new Error("Session is not active");
+    if (session.workspaceId && session.userId) {
+      const { getUserRole } = await import("./workspace-service.js");
+      const role = await getUserRole(session.workspaceId, session.userId);
+      if (role !== "member" && role !== "admin")
+        throw new Error("The session owner no longer has permission to run work in this workspace");
+    }
     const settings = await getSettings(session.workspaceId);
     if (session.assistant) {
       const [updated] = await db

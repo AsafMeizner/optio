@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Send, Square, Bot, Loader2 } from "lucide-react";
 import { ActionCard } from "@/components/optio-chat/action-card";
+import { QueuedMessages } from "@/components/queued-messages";
 import { LogViewer } from "@/components/log-viewer";
 import { useSessionLogs } from "@/hooks/use-session-logs";
 
@@ -53,7 +54,13 @@ export function SessionChat({
 
   const handleSend = () => {
     const text = input.trim();
-    if (!text || !session.connected || session.status === "thinking") return;
+    if (
+      !text ||
+      !session.connected ||
+      (session.status === "thinking" && !session.canQueue) ||
+      session.queuedMessages.length >= 20
+    )
+      return;
     if (!session.sendMessage(text)) return;
     setInput("");
     requestAnimationFrame(() => {
@@ -70,7 +77,7 @@ export function SessionChat({
     }
   };
 
-  const disabled = !session.connected;
+  const disabled = !session.connected || session.queuedMessages.length >= 20;
 
   return (
     <div className="h-full flex flex-col">
@@ -138,6 +145,7 @@ export function SessionChat({
                 onDeny={(id, feedback) => session.decide(id, false, feedback)}
               />
             ))}
+            <QueuedMessages messages={session.queuedMessages} onCancel={session.cancelQueued} />
             <div className="flex items-end gap-2 rounded-xl border border-border bg-bg px-3 py-2.5 transition-colors focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10">
               <textarea
                 ref={textareaRef}
@@ -152,7 +160,9 @@ export function SessionChat({
                 disabled={disabled}
                 placeholder={
                   session.status === "thinking"
-                    ? "Agent is working…"
+                    ? session.canQueue
+                      ? "Queue another message…"
+                      : "Agent is working…"
                     : disabled
                       ? "Reconnecting…"
                       : "Ask the agent…"
@@ -160,7 +170,7 @@ export function SessionChat({
                 rows={1}
                 className="min-h-[28px] max-h-[160px] min-w-0 flex-1 resize-none border-0 bg-transparent py-1 text-sm text-text outline-none placeholder:text-text-muted/60 disabled:cursor-not-allowed"
               />
-              {session.status === "thinking" ? (
+              {session.status === "thinking" && (
                 <button
                   onClick={session.interrupt}
                   className="shrink-0 p-2 rounded-lg bg-error/10 text-error hover:bg-error/20 transition-colors"
@@ -168,7 +178,8 @@ export function SessionChat({
                 >
                   <Square className="w-4 h-4" />
                 </button>
-              ) : (
+              )}
+              {(session.status !== "thinking" || session.canQueue) && (
                 <button
                   onClick={handleSend}
                   disabled={!input.trim() || disabled}

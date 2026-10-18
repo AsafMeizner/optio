@@ -26,9 +26,12 @@ conversation. The controller grants expire with their turn and remain restricted
 to its owner and workspace; no user API token is forwarded into the pod.
 
 Conversation history and pending approvals survive refresh and reconnect. Several
-clients can view the same session, while only one turn can run at a time. Approval
+clients can view the same session. Send another message while it is working to queue
+it: pending messages persist on the server, appear on every client, and execute in
+order with one active turn. Remove a queued message before it starts; up to 20 can
+wait. Reconnecting never replays a started turn. Approval
 decisions are single-use and synchronized between clients. Clear conversation is
-available after the current request and its approvals finish. Closing the panel
+available after the current request, queued messages and approvals finish. Closing the panel
 keeps its connection; dismissing the native assistant disconnects its viewer.
 Neither operation automatically retries a message or an action.
 
@@ -37,7 +40,8 @@ own column. Click again to float it. The browser remembers this preference; clos
 a docked panel gives its space back to the page. Below 1024px the panel floats and
 on phones it fills the screen.
 
-The iOS and Android apps expose **Ask Optio** from Overview, Work, and More. They
+The iOS and Android apps have a dedicated **Optio Agent** tab, alongside Overview,
+Work, Library and More. Insights remains available in More. They
 show the same conversation and approval cards. Use the system keyboard's microphone
 for dictation. Drafts stay local to the client; saved history comes from the session.
 
@@ -51,7 +55,8 @@ errors leave typed text intact. Dictation can edit a draft even while chat is di
 It needs a secure context (HTTPS or localhost), microphone permission and a browser
 with speech recognition. Browser support and service availability vary. The browser
 may send audio to its speech provider; Optio receives only the text you send. Use OS
-keyboard dictation or typing when browser recognition is unavailable.
+keyboard dictation or typing when browser recognition is unavailable. Dictate is
+disabled in that case, with the explanation in its tooltip.
 
 For broader browser support, the next step is a MediaRecorder capture and authenticated
 server transcription endpoint, with explicit provider configuration, upload limits,

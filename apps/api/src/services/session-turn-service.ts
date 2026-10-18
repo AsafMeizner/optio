@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import { parseIntEnv } from "@optio/shared";
 import { db } from "../db/client.js";
 import { interactiveSessions, sessionChatTurns } from "../db/schema.js";
@@ -87,7 +87,7 @@ export async function finishSessionTurn(id: string, completed: boolean) {
   try {
     await db
       .update(sessionChatTurns)
-      .set({ state: completed ? "completed" : "interrupted", finishedAt: new Date() })
+      .set({ state: completed ? "completed" : "interrupted", finishedAt: new Date(), prompt: null })
       .where(and(eq(sessionChatTurns.id, id), eq(sessionChatTurns.state, "running")));
   } finally {
     await dropTurnLease(id);
@@ -124,8 +124,8 @@ export async function latestSessionTurn(sessionId: string) {
   const [turn] = await db
     .select()
     .from(sessionChatTurns)
-    .where(eq(sessionChatTurns.sessionId, sessionId))
-    .orderBy(desc(sessionChatTurns.startedAt))
+    .where(and(eq(sessionChatTurns.sessionId, sessionId), ne(sessionChatTurns.state, "queued")))
+    .orderBy(desc(sql`${sessionChatTurns.state} = 'running'`), desc(sessionChatTurns.startedAt))
     .limit(1);
   return turn ?? null;
 }
@@ -293,4 +293,120 @@ export function watchTurnControl(
     clearInterval(timer);
     if (interrupts.get(sessionId) === entry) interrupts.delete(sessionId);
   };
+}
+
+/** Pending messages are durable receipts too; never automatically replay a started turn. */
+export async function queuedSessionMessages(sessionId: string) {
+  return db
+    .select({ requestId: sessionChatTurns.requestId, content: sessionChatTurns.prompt })
+    .from(sessionChatTurns)
+    .where(and(eq(sessionChatTurns.sessionId, sessionId), eq(sessionChatTurns.state, "queued")))
+    .orderBy(asc(sessionChatTurns.startedAt), asc(sessionChatTurns.id));
+}
+
+export async function publishSessionQueue(sessionId: string) {
+  broadcastSessionChat(sessionId, {
+    type: "queue",
+    messages: await queuedSessionMessages(sessionId),
+  });
+}
+
+export async function enqueueSessionMessage(sessionId: string, requestId: string, prompt: string) {
+  const promptHash = createHash("sha256").update(prompt).digest("hex");
+  await db.transaction(async (tx) => {
+    // Serialize enqueue, dequeue and cancellation across API replicas.
+    const [session] = await tx
+      .select()
+      .from(interactiveSessions)
+      .where(eq(interactiveSessions.id, sessionId))
+      .for("update");
+    if (!session || session.state !== "active" || !session.agentRuntime)
+      throw new Error("Session is not active");
+    const [existing] = await tx
+      .select()
+      .from(sessionChatTurns)
+      .where(
+        and(eq(sessionChatTurns.sessionId, sessionId), eq(sessionChatTurns.requestId, requestId)),
+      );
+    if (existing) {
+      if (existing.promptHash !== promptHash)
+        throw new Error("Request ID already belongs to a different prompt");
+      // Repeated frames are acknowledgements, never another execution.
+      return;
+    }
+    const waiting = await tx
+      .select({ id: sessionChatTurns.id })
+      .from(sessionChatTurns)
+      .where(and(eq(sessionChatTurns.sessionId, sessionId), eq(sessionChatTurns.state, "queued")));
+    if (waiting.length >= 20)
+      throw new Error("The message queue is full (20 messages). Wait or remove a queued message.");
+    await tx
+      .insert(sessionChatTurns)
+      .values({ sessionId, requestId, prompt, promptHash, state: "queued" });
+  });
+  await publishSessionQueue(sessionId);
+}
+
+export async function cancelQueuedSessionMessage(sessionId: string, requestId: string) {
+  const cancelled = await db.transaction(async (tx) => {
+    await tx
+      .select({ id: interactiveSessions.id })
+      .from(interactiveSessions)
+      .where(eq(interactiveSessions.id, sessionId))
+      .for("update");
+    return tx
+      .update(sessionChatTurns)
+      .set({ state: "interrupted", prompt: null, finishedAt: new Date() })
+      .where(
+        and(
+          eq(sessionChatTurns.sessionId, sessionId),
+          eq(sessionChatTurns.requestId, requestId),
+          eq(sessionChatTurns.state, "queued"),
+        ),
+      )
+      .returning({ id: sessionChatTurns.id });
+  });
+  await publishSessionQueue(sessionId);
+  return cancelled.length > 0;
+}
+
+export async function claimQueuedSessionTurn(sessionId: string) {
+  let leasedId: string | undefined;
+  try {
+    const turn = await db.transaction(async (tx) => {
+      const [session] = await tx
+        .select()
+        .from(interactiveSessions)
+        .where(eq(interactiveSessions.id, sessionId))
+        .for("update");
+      if (!session || session.state !== "active" || !session.agentRuntime) return null;
+      const [running] = await tx
+        .select({ id: sessionChatTurns.id })
+        .from(sessionChatTurns)
+        .where(
+          and(eq(sessionChatTurns.sessionId, sessionId), eq(sessionChatTurns.state, "running")),
+        );
+      if (running) return null;
+      const [next] = await tx
+        .select()
+        .from(sessionChatTurns)
+        .where(and(eq(sessionChatTurns.sessionId, sessionId), eq(sessionChatTurns.state, "queued")))
+        .orderBy(asc(sessionChatTurns.startedAt), asc(sessionChatTurns.id))
+        .limit(1);
+      if (!next) return null;
+      if (!(await acquireLease(turnLeaseKey(next.id), TURN_LEASE_TTL_MS))) return null;
+      leasedId = next.id;
+      const [claimed] = await tx
+        .update(sessionChatTurns)
+        .set({ state: "running", startedAt: new Date() })
+        .where(eq(sessionChatTurns.id, next.id))
+        .returning();
+      return claimed;
+    });
+    if (turn) holdTurnLease(turn.id);
+    return turn;
+  } catch (err) {
+    if (leasedId) await releaseLease(turnLeaseKey(leasedId)).catch(() => {});
+    throw err;
+  }
 }

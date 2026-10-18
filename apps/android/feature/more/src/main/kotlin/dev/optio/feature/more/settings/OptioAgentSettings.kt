@@ -23,12 +23,11 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.produceState
+import dev.optio.core.ui.agent.*
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,11 +72,14 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
 /** The editable Optio assistant settings (iOS `OptioAgentSettingsView` state). */
 data class AgentSettingsForm(
+    val agentRuntime: String = "claude-code",
+    val agentOptions: Map<String, OptionValue> = emptyMap(),
     val model: String = "sonnet",
     val systemPrompt: String = "",
     val confirmWrites: Boolean = true,
@@ -89,11 +91,12 @@ data class AgentSettingsForm(
     val reviewModel: String = "",
 ) {
     /**
-     * The `PUT /api/optio/settings` body. `enabledTools` only when non-empty (the route rejects an
-     * empty list); the review defaults as explicit `null` when cleared, which the route documents
-     * as "null to clear" (iOS omits them, so it can never clear them).
+     * Keeps harness options alongside the selected model, and sends explicit null to clear
+     * review defaults. The tool allowlist remains unchanged because this screen does not edit it.
      */
     fun body(): JsonElement = buildJsonObject {
+        put("agentRuntime", JsonPrimitive(agentRuntime))
+        put("agentOptions", JsonObject(agentOptions.mapValues { it.value.json } + (modelFieldForRuntime(agentRuntime) to JsonPrimitive(model))))
         put("model", JsonPrimitive(model))
         put("systemPrompt", JsonPrimitive(systemPrompt))
         if (enabledTools.isNotEmpty()) put("enabledTools", JsonArray(enabledTools.map(::JsonPrimitive)))
@@ -103,12 +106,19 @@ data class AgentSettingsForm(
         put("defaultReviewModel", reviewModel.trim().ifEmpty { null }?.let(::JsonPrimitive) ?: JsonNull)
     }
 
+    fun withRuntime(runtime: String): AgentSettingsForm = if (runtime == agentRuntime) this
+        else copy(agentRuntime = runtime, agentOptions = emptyMap(), model = "")
+
     companion object {
         const val MIN_TURNS = 5
         const val MAX_TURNS = 50
 
         fun of(row: OptioSettingsRow) = AgentSettingsForm(
-            model = row.model ?: "sonnet",
+            agentRuntime = row.agentRuntime ?: "claude-code",
+            agentOptions = row.agentOptions.orEmpty().mapNotNull { (key, value) -> OptionValue.fromJson(value)?.let { key to it } }.toMap(),
+            model = row.model?.takeIf { it.isNotBlank() }
+                ?: row.agentOptions?.get(modelFieldForRuntime(row.agentRuntime ?: "claude-code"))?.let { OptionValue.fromJson(it)?.stringValue }
+                ?: if (row.model == null && (row.agentRuntime == null || row.agentRuntime == "claude-code")) "sonnet" else "",
             systemPrompt = row.systemPrompt ?: "",
             confirmWrites = row.confirmWrites ?: true,
             maxTurns = (row.maxTurns ?: 20.0).toInt().coerceIn(MIN_TURNS, MAX_TURNS),
@@ -188,8 +198,13 @@ fun OptioAgentSettingsScreen() {
     val form by viewModel.form.collectAsStateWithLifecycle()
     val saving by viewModel.saving.collectAsStateWithLifecycle()
     val saved by viewModel.saved.collectAsStateWithLifecycle()
+    val provider = providerFor(form.agentRuntime)
+    val catalogState by produceState<CatalogState?>(CatalogState.Loading, api, provider) {
+        value = CatalogState.Loading
+        value = AgentCatalogCache.load(api, provider)
+    }
     CollectNotices(viewModel.notices)
-    MoreScaffold("Optio Agent") { padding ->
+    MoreScaffold("Optio Agent settings") { padding ->
         OptioAgentSettingsContent(
             state = state,
             form = form,
@@ -200,6 +215,7 @@ fun OptioAgentSettingsScreen() {
             onRetry = viewModel::refresh,
             onEdit = viewModel::edit,
             onSave = viewModel::save,
+            catalogState = catalogState,
         )
     }
 }
@@ -217,24 +233,32 @@ fun OptioAgentSettingsContent(
     onEdit: ((AgentSettingsForm) -> AgentSettingsForm) -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
+    catalogState: CatalogState? = null,
 ) {
     val colors = OptioTheme.colors
     Loadable(state = state, onRetry = onRetry, what = "the settings", contentPadding = contentPadding, modifier = modifier) {
         LazyColumn(Modifier.fillMaxSize().readableWidth().testTag("agent-settings"), contentPadding = contentPadding) {
             groupedItem("assistant", header = "Assistant") {
-                Column(Modifier.padding(horizontal = Spacing.l, vertical = Spacing.m)) {
-                    Text("Model", style = OptioTheme.type.body, color = colors.label)
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = Spacing.s)) {
-                        MODELS.forEachIndexed { index, (value, label) ->
-                            SegmentedButton(
-                                selected = form.model == value,
-                                onClick = { onEdit { it.copy(model = value) } },
-                                enabled = isAdmin,
-                                shape = SegmentedButtonDefaults.itemShape(index = index, count = MODELS.size),
-                                label = { Text(label) },
-                                modifier = Modifier.testTag("model-$value"),
-                            )
-                        }
+                if (isAdmin) {
+                    RuntimeMenuRow("Agent", form.agentRuntime,
+                        ALL_RUNTIME_CHOICES.filter { it.value != "openclaw" },
+                        onPick = { runtime -> onEdit { it.withRuntime(runtime) } },
+                        modifier = Modifier.testTag("assistant-runtime"))
+                    InsetDivider()
+                    val provider = providerFor(form.agentRuntime)
+                    val modelField = catalogState.catalog?.modelField ?: modelFieldForProvider(provider)
+                    AgentOptionsPicker(provider, catalogState,
+                        form.agentOptions + (modelField to OptionValue.Str(form.model)), local = false,
+                        onChange = { key, value -> onEdit { previous ->
+                            previous.copy(agentOptions = previous.agentOptions + (key to value),
+                                model = if (key == modelField) value.stringValue.orEmpty() else previous.model)
+                        } })
+                    catalogFootnote(catalogState)?.let { CardNote(it) }
+                } else {
+                    Column(Modifier.padding(Spacing.l).testTag("assistant-runtime-readonly")) {
+                        Text("Agent: ${runtimeLabel(form.agentRuntime)}")
+                        Text("Model: ${form.model.ifBlank { "Default" }}")
+                        form.agentOptions.forEach { (key, value) -> Text("$key: ${value.raw}") }
                     }
                 }
                 InsetDivider()
@@ -308,9 +332,6 @@ fun OptioAgentSettingsContent(
         }
     }
 }
-
-/** iOS `Picker("Model")`. */
-private val MODELS = listOf("opus" to "Opus", "sonnet" to "Sonnet", "haiku" to "Haiku")
 
 /** iOS `Stepper("Max turns: N", in: 5...50)`. */
 @Composable

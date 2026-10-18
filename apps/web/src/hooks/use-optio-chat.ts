@@ -47,6 +47,8 @@ interface OptioChatState {
   status: OptioStatus;
   setStatus: (status: OptioStatus) => void;
 
+  queuedMessages: { requestId: string; content: string }[];
+  setQueuedMessages: (messages: { requestId: string; content: string }[]) => void;
   agentRuntime: string | null;
   agentModel: string;
   setAgentConfiguration: (runtime: string, model: string) => void;
@@ -89,6 +91,8 @@ export const useOptioChatStore = create<OptioChatState>((set) => ({
   status: "ready",
   setStatus: (status) => set({ status }),
 
+  queuedMessages: [],
+  setQueuedMessages: (queuedMessages) => set({ queuedMessages }),
   agentRuntime: null,
   agentModel: "",
   setAgentConfiguration: (agentRuntime, agentModel) => set({ agentRuntime, agentModel }),

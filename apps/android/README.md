@@ -2,8 +2,8 @@
 
 Native Android client for Optio (Kotlin, Jetpack Compose, Material 3), at parity with the iOS app in
 `apps/ios/`. The iOS source is the spec; this app ports its behaviour, data flow and copy, and
-adapts the presentation to Material 3. One Activity, five tabs (Overview · Work · Library ·
-Insights · More), one Navigation 3 back stack per tab, manual DI, OkHttp + kotlinx.serialization.
+adapts the presentation to Material 3. One Activity, five tabs (Overview · Work · Optio Agent ·
+Library · More), one Navigation 3 back stack per tab, manual DI, OkHttp + kotlinx.serialization.
 It runs on Android 10 (API 29) and newer and targets Android 17 (API 37).
 
 - **Using the app:** [What's in it](#whats-in-the-app) ·
@@ -23,13 +23,13 @@ It runs on Android 10 (API 29) and newer and targets Android 17 (API 37).
 
 The tabs mirror the web sidebar. Phones get a bottom bar, wide screens a navigation rail.
 
-| Tab          | What it holds                                                                                                 |
-| ------------ | ------------------------------------------------------------------------------------------------------------- |
-| **Overview** | What needs you, usage limits, the Work board, the cluster, recent tasks, and the other paired servers' counts |
-| **Work**     | **All** (the Work feed) · **Reviews** · **Inbox**                                                             |
-| **Library**  | Prompts · Repos · Machines (paired machines and the Local automations that fire on them) · Connections        |
-| **Insights** | Analytics · Costs · Activity · Cluster                                                                        |
-| **More**     | Admin (Secrets, Webhooks, Workspace, Settings) and Account (Servers, workspace, Sign out)                     |
+| Tab             | What it holds                                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------------------------------- |
+| **Overview**    | What needs you, usage limits, the Work board, the cluster, recent tasks, and the other paired servers' counts |
+| **Work**        | **All** (the Work feed) · **Reviews** · **Inbox**                                                             |
+| **Optio Agent** | Saved assistant conversation, work proposals, approvals and queued messages                                   |
+| **Library**     | Prompts · Repos · Machines (paired machines and the Local automations that fire on them) · Connections        |
+| **More**        | Insights (Analytics, Costs, Activity, Cluster), Admin and Account settings                                    |
 
 - **One Work feed.** Work › All merges every kind of work (PR tasks, jobs, scheduled blueprints,
   Local automations and terminals, pod sessions, persistent agents) into one list with **Active**,
@@ -45,15 +45,19 @@ The tabs mirror the web sidebar. Phones get a bottom bar, wide screens a navigat
   What · Then · Name, and a bar pinned at the bottom that says in a sentence what the answers make
   and holds the one button that makes it. There is no type to pick: the kind is derived from the
   answers. Saved recurring work reopens in the same form, with its kind locked.
-- **Ask Optio.** The chat icon on Overview and Work, or **More › Ask Optio**, opens the workspace
-  assistant. Describe the work you want, review its proposed settings, then approve or deny it.
+- **Optio Agent.** The dedicated tab opens the workspace assistant. The chat icons on Overview
+  and Work and **More › Ask Optio** are shortcuts to the same tab. Describe the work you want, review its proposed settings, then approve or deny it.
   The message field supports your keyboard’s microphone dictation; review the text before Send.
-  The assistant is backed by a saved work session.
+  The assistant is backed by a saved work session. Its header shows the active runtime and model;
+  the settings button lets admins configure any of the six supported harnesses and its catalog
+  model/options. The tools allowlist is still configured on the web.
   Reconnecting loads the server’s conversation and pending approvals, including activity from
   another device. Closing the screen disconnects the UI without stopping the work. Requests carry
   unique IDs; echoed messages are deduplicated and reconnecting never retries an action.
+  You can send while the agent is working or awaiting approval. **Up next** shows the server queue
+  with cancellation controls; messages join the conversation when their turn starts.
   **Clear conversation** removes the saved history after confirmation, only when the agent is
-  ready and no approval is pending. The draft stays on the device during this app session.
+  ready, its queue is empty and no approval is pending. The draft stays on the device during this app session.
   Switching servers or workspaces loads that workspace’s assistant session.
 - **Roles.** Actions follow your workspace role: viewers are read-only, and admin-only screens say
   so instead of failing.
@@ -145,17 +149,17 @@ the same registry (iOS needs an App Group for this).
 `:core:data`, a port of iOS `Shared/DeepLink.swift`). Detail links open on the Work tab, and any
 link may add `?server=<id>` (see [Multiple servers](#multiple-servers)).
 
-| Link                               | Opens                                                                                                                                           |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `optio://tasks/<id>`               | A task                                                                                                                                          |
-| `optio://local/<id>`               | A Local terminal; `?compose=1` lands with the composer focused                                                                                  |
-| `optio://agents/<id>`              | A persistent agent (chat first); `?compose=1` focuses the composer                                                                              |
-| `optio://sessions/<id>`            | A pod session                                                                                                                                   |
-| `optio://work/new`                 | The New work form (legacy `optio://sessions/new`)                                                                                               |
-| `optio://needs-you`                | Work › All in the Active view, where needs-you rows rank first                                                                                  |
-| `optio://section/work?view=<view>` | Work › All in a view: `active`, `recurring`, `agents`, `history` or `all`                                                                       |
-| `optio://section/<name>`           | A hub section: `work`, `reviews`, `inbox`, `prompts`, `repos`, `machines`, `connections`, `analytics`, `costs`, `activity`, `cluster` or `more` |
-| `optio://settings`                 | More › Settings (the server's test push links here)                                                                                             |
+| Link                               | Opens                                                                                                                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `optio://tasks/<id>`               | A task                                                                                                                                                                     |
+| `optio://local/<id>`               | A Local terminal; `?compose=1` lands with the composer focused                                                                                                             |
+| `optio://agents/<id>`              | A persistent agent (chat first); `?compose=1` focuses the composer                                                                                                         |
+| `optio://sessions/<id>`            | A pod session                                                                                                                                                              |
+| `optio://work/new`                 | The New work form (legacy `optio://sessions/new`)                                                                                                                          |
+| `optio://needs-you`                | Work › All in the Active view, where needs-you rows rank first                                                                                                             |
+| `optio://section/work?view=<view>` | Work › All in a view: `active`, `recurring`, `agents`, `history` or `all`                                                                                                  |
+| `optio://section/<name>`           | A hub section: `assistant` (Optio Agent), `work`, `reviews`, `inbox`, `prompts`, `repos`, `machines`, `connections`, `analytics`, `costs`, `activity`, `cluster` or `more` |
+| `optio://settings`                 | More › Settings (the server's test push links here)                                                                                                                        |
 
 Legacy section names still work: `sessions` (Work), `tasks` (the All view), `jobs` and
 `scheduled` (Recurring), `agents` (Agents), `local` (Active), `issues` (Inbox), `templates`
@@ -690,13 +694,14 @@ the FAB slot. The section draws only its body. It fills the available space and 
 `contentPadding` to its scrolling container (`LazyColumn(contentPadding = contentPadding)`), so the
 content scrolls under the bars. It never adds a top bar of its own.
 
-| Hub      | Sections (switcher order)                                                                                                                   |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Overview | `OverviewScreen` (`:feature:overview`)                                                                                                      |
-| Work     | All `WorkListSection` (work) · Reviews `ReviewsSection` · Inbox `InboxSection` (reviews)                                                    |
-| Library  | Prompts `PromptsSection` · Repos `ReposSection` (library) · Machines `MachinesSection` (local) · Connections `ConnectionsSection` (library) |
-| Insights | `AnalyticsSection` · `CostsSection` · `ActivitySection` · `ClusterSection` (insights)                                                       |
-| More     | `MoreScreen` (`:feature:more`)                                                                                                              |
+| Hub                   | Sections (switcher order)                                                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Overview              | `OverviewScreen` (`:feature:overview`)                                                                                                      |
+| Work                  | All `WorkListSection` (work) · Reviews `ReviewsSection` · Inbox `InboxSection` (reviews)                                                    |
+| Library               | Prompts `PromptsSection` · Repos `ReposSection` (library) · Machines `MachinesSection` (local) · Connections `ConnectionsSection` (library) |
+| Insights (under More) | `AnalyticsSection` · `CostsSection` · `ActivitySection` · `ClusterSection` (insights)                                                       |
+| Optio Agent           | `OptioAssistantScreen` (`:feature:agents`), with the hub server switcher                                                                    |
+| More                  | `MoreScreen` (`:feature:more`)                                                                                                              |
 
 ### Hub slot API (`dev.optio.core.ui.hub`)
 

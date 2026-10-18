@@ -23,7 +23,13 @@ const state = () => useOptioChatStore.getState();
 beforeEach(() => {
   Socket.all = [];
   vi.stubGlobal("WebSocket", Socket);
-  useOptioChatStore.setState({ isOpen: false, messages: [], status: "ready", exchangeCount: 0 });
+  useOptioChatStore.setState({
+    isOpen: false,
+    messages: [],
+    queuedMessages: [],
+    status: "ready",
+    exchangeCount: 0,
+  });
 });
 afterEach(() => {
   cleanup();
@@ -54,6 +60,13 @@ describe("Optio connection", () => {
       content: "Start Codex",
       requestId: expect.any(String),
     });
+    act(() =>
+      socket.receive({
+        type: "user_message",
+        content: "Start Codex",
+        requestId: JSON.parse(socket.send.mock.calls[0][0]).requestId,
+      }),
+    );
     act(() => socket.receive({ type: "text", content: "I found " }));
     act(() => socket.receive({ type: "text", content: "your Mac." }));
     expect(state().messages[1].content).toBe("I found your Mac.");
@@ -70,7 +83,7 @@ describe("Optio connection", () => {
         items: ["Start Codex"],
       }),
     );
-    expect(result.current.send("another request")).toBe(false);
+
     act(() => result.current.decide("a1", true));
     act(() => result.current.decide("a1", true));
     expect(socket.send).toHaveBeenCalledTimes(1);
@@ -154,4 +167,37 @@ it("updates the harness badge from the session's runtime and model", () => {
   expect(state().agentModel).toBe("test-model");
   act(() => socket.receive({ type: "status", status: "thinking", runtime: "cursor", model: "" }));
   expect(state()).toMatchObject({ agentRuntime: "cursor", agentModel: "" });
+});
+
+it("accepts messages while thinking and waiting for approval, restores the queue and cancels without replay", () => {
+  const { result, socket } = connect();
+  act(() => socket.receive({ type: "status", status: "thinking" }));
+  act(() => expect(result.current.send("Next request")).toBe(true));
+  const sent = JSON.parse(socket.send.mock.calls[0][0]);
+  expect(state().messages).toEqual([]);
+  act(() =>
+    socket.receive({
+      type: "queue",
+      messages: [{ requestId: sent.requestId, content: sent.content }],
+    }),
+  );
+  expect(state().queuedMessages).toHaveLength(1);
+  act(() => result.current.reset());
+  expect(socket.send).toHaveBeenCalledTimes(1);
+  act(() => result.current.cancelQueued(sent.requestId));
+  expect(JSON.parse(socket.send.mock.calls[1][0])).toEqual({
+    type: "cancel_queued",
+    requestId: sent.requestId,
+  });
+  act(() => socket.receive({ type: "queue", messages: [] }));
+  act(() =>
+    socket.receive({
+      type: "action_proposal",
+      actionId: "proposal",
+      description: "Confirm",
+      items: [],
+    }),
+  );
+  act(() => expect(result.current.send("After this approval")).toBe(true));
+  expect(state().queuedMessages).toEqual([]);
 });

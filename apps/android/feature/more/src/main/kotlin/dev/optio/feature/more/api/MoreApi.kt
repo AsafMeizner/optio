@@ -234,6 +234,8 @@ private data class RoleBody(val role: String)
 /** `GET /api/optio/settings` → `{ settings }` (the route answers `z.unknown()`). */
 @Serializable
 data class OptioSettingsRow(
+    val agentRuntime: String? = null,
+    val agentOptions: Map<String, JsonElement>? = null,
     val model: String? = null,
     val systemPrompt: String? = null,
     val enabledTools: List<String>? = null,

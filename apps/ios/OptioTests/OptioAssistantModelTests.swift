@@ -24,12 +24,12 @@ final class OptioAssistantModelTests: XCTestCase {
         XCTAssertEqual(model.rows[2].text, "All done")
     }
 
-    func testStructuredProposalBlocksSendingAndPreservesAllSettings() {
+    func testStructuredProposalAllowsQueueingButBlocksClearAndPreservesAllSettings() {
         let model = OptioAssistantModel()
         let work: [String: Any] = ["name": "Fix login", "where": ["localDir": "/repo"], "settings": ["controllerAccess": "manage"]]
         model.handle(.json(["type": "action_proposal", "actionId": "a1", "description": "Review", "work": [work], "items": []]))
         model.handle(.json(["type": "status", "status": "waiting_for_approval"]))
-        XCTAssertFalse(model.canSend)
+        XCTAssertTrue(model.canSend)
         XCTAssertFalse(model.canReset)
         model.handle(.json(["type": "status", "status": "ready"]))
         XCTAssertFalse(model.canReset, "A pending proposal blocks clear even before waiting status arrives")
@@ -77,7 +77,7 @@ final class OptioAssistantModelTests: XCTestCase {
         model.draft = "Unsent dictation"
         model.handle(.json(["type": "text", "content": "Old local response"]))
         let id = UUID().uuidString
-        let href = "/sessions/\(id)"
+        let href = "/work/\(id)"
         model.handle(.json(["type": "history", "sessionId": id, "href": href, "frames": [
             ["type": "user_message", "content": "Saved prompt", "requestId": "request-1"],
             ["type": "text", "content": "Saved answer"],
@@ -155,5 +155,92 @@ final class OptioAssistantModelTests: XCTestCase {
         XCTAssertEqual(model.rows[0].proposal?.decision, "Approved")
         XCTAssertTrue(model.rows[1].isError)
         XCTAssertTrue(model.canSend)
+    }
+
+    func testBusySubmissionWaitsForQueueAcknowledgementBeforeClearingDraft() throws {
+        let model = OptioAssistantModel()
+        model.handle(.json(["type": "status", "status": "thinking"]))
+        model.draft = "Next request"
+        let frame = try XCTUnwrap(model.prepareSend())
+        let id = try XCTUnwrap(frame["requestId"] as? String)
+        XCTAssertNotNil(UUID(uuidString: id))
+        XCTAssertEqual(frame["content"] as? String, "Next request")
+        XCTAssertEqual(model.draft, "Next request")
+        XCTAssertTrue(model.rows.isEmpty)
+        XCTAssertFalse(model.canSend, "Prevent accidental double submission before acknowledgement")
+        model.handle(.json(["type": "queue", "messages": [["requestId": id, "content": "Next request"]]]))
+        XCTAssertEqual(model.draft, "")
+        XCTAssertEqual(model.queue.count, 1)
+        XCTAssertTrue(model.canSend)
+        XCTAssertFalse(model.canReset)
+        XCTAssertTrue(model.rows.isEmpty, "Queued messages are not yet conversation turns")
+        model.handle(.json(["type": "user_message", "requestId": id, "content": "Next request"]))
+        XCTAssertTrue(model.queue.isEmpty)
+        XCTAssertEqual(model.rows.map(\.text), ["Next request"])
+    }
+
+    func testFastStartAcknowledgesMessageAndPreservesEditsMadeWhileSending() throws {
+        let model = OptioAssistantModel()
+        model.handle(.json(["type": "status", "status": "ready"]))
+        model.draft = "First"
+        let id = try XCTUnwrap(model.prepareSend()?["requestId"] as? String)
+        model.draft = "Another thought"
+        model.handle(.json(["type": "queue", "messages": []]))
+        XCTAssertTrue(model.isSending)
+        model.handle(.json(["type": "user_message", "requestId": id, "content": "First"]))
+        XCTAssertFalse(model.isSending)
+        XCTAssertEqual(model.draft, "Another thought")
+        model.handle(.json(["type": "user_message", "requestId": id, "content": "First"]))
+        XCTAssertEqual(model.rows.count, 1)
+    }
+
+    func testQueueRejectionPreservesDraftAndReconnectSnapshotReplacesQueue() throws {
+        let model = OptioAssistantModel()
+        model.handle(.json(["type": "status", "status": "waiting_for_approval"]))
+        model.draft = "My queued instruction"
+        let id = try XCTUnwrap(model.prepareSend()?["requestId"] as? String)
+        model.handle(.json(["type": "error", "requestId": id, "message": "Queue full"]))
+        XCTAssertEqual(model.draft, "My queued instruction")
+        XCTAssertFalse(model.isSending)
+        XCTAssertTrue(model.canSend)
+        model.handle(.json(["type": "queue", "messages": [["requestId": "old", "content": "Old queue"]]]))
+        model.stop()
+        model.handle(.json(["type": "queue", "messages": [["requestId": "new", "content": "Saved queue"]]]))
+        XCTAssertEqual(model.queue.map(\.requestId), ["new"])
+        model.handle(.json(["type": "status", "status": "ready"]))
+        XCTAssertFalse(model.canReset)
+        model.handle(.json(["type": "queue", "messages": []]))
+        XCTAssertTrue(model.canReset)
+    }
+
+    func testReconnectAcknowledgesAcceptedMessageWithoutResending() throws {
+        for inHistory in [false, true] {
+            let model = OptioAssistantModel()
+            model.handle(.json(["type": "status", "status": "ready"]))
+            model.draft = "Accepted before disconnect"
+            let id = try XCTUnwrap(model.prepareSend()?["requestId"] as? String)
+            model.stop()
+            XCTAssertEqual(model.draft, "Accepted before disconnect")
+            if inHistory {
+                model.handle(.json(["type": "history", "frames": [["type": "user_message", "requestId": id, "content": "Accepted before disconnect"]]]))
+            } else {
+                model.handle(.json(["type": "queue", "messages": [["requestId": id, "content": "Accepted before disconnect"]]]))
+            }
+            XCTAssertEqual(model.draft, "")
+            XCTAssertFalse(model.isSending)
+            XCTAssertFalse(model.canSend, "Reconciliation never starts a new request")
+        }
+    }
+
+    func testRuntimeAndModelIdentitySurviveStatusOnlyUpdates() {
+        let model = OptioAssistantModel()
+        model.handle(.json(["type": "status", "status": "ready", "runtime": "codex", "model": "gpt-5.4"]))
+        XCTAssertEqual(model.runtime, "codex")
+        XCTAssertTrue(model.identity!.contains("gpt-5.4"))
+        model.handle(.json(["type": "status", "status": "thinking"]))
+        XCTAssertEqual(model.selectedModel, "gpt-5.4")
+        XCTAssertTrue(model.canSend)
+        model.handle(.json(["type": "status", "status": "ready", "runtime": "gemini", "model": ""]))
+        XCTAssertTrue(model.identity!.contains("Default model"))
     }
 }

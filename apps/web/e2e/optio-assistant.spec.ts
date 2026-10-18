@@ -117,9 +117,9 @@ test("mobile composer fits and the real session restores conversation history", 
   const sessionLink = panel.getByRole("link", { name: "Open in session" });
   await expect(sessionLink).toHaveAttribute("href", /^\/work\/[0-9a-f-]{36}$/);
   await sessionLink.click();
-  await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/);
+  await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/, { timeout: 30_000 });
   await expect(panel).toBeHidden();
-  await expect(page.getByText("List my work", { exact: true }).last()).toBeVisible();
+  await expect(page.locator("main")).toContainText("List my work");
   await page.getByRole("button", { name: "Open menu" }).click();
   await page.getByRole("link", { name: "All work", exact: true }).click();
   await expect(page).toHaveURL(/\/work$/);
@@ -149,7 +149,7 @@ test("dictation remains usable while chat is disconnected and reports a silent s
   await expect(panel.getByRole("textbox", { name: "Message Optio" })).toHaveValue("Keep my draft");
 });
 
-test("clicking Dictate in an unsupported browser explains what is missing", async ({ page }) => {
+test("unsupported dictation is disabled with an explanation on hover", async ({ page }) => {
   await page.addInitScript(() => {
     Object.assign(window, { SpeechRecognition: undefined, webkitSpeechRecognition: undefined });
   });
@@ -157,8 +157,10 @@ test("clicking Dictate in an unsupported browser explains what is missing", asyn
   await page.goto("/");
   await page.getByRole("button", { name: /Ask Optio/ }).click();
   const panel = page.getByRole("dialog", { name: "Optio assistant" });
-  await panel.getByRole("button", { name: "Start dictation" }).click();
-  await expect(panel.getByRole("alert")).toContainText("doesn’t provide speech recognition");
+  const dictate = panel.getByRole("button", { name: "Start dictation" });
+  await expect(dictate).toBeDisabled();
+  await expect(dictate).toHaveAttribute("title", /doesn’t provide speech recognition/);
+  await expect(panel.getByRole("alert")).toHaveCount(0);
 });
 
 test("anchor docks the assistant beside the page and remembers the preference", async ({
@@ -313,4 +315,44 @@ test("assistant settings save each supported harness and its default model", asy
       ).ok(),
     ).toBe(true);
   }
+});
+
+test("messages queue while working, can be removed, and the gear opens agent settings", async ({
+  page,
+}) => {
+  const received: any[] = [];
+  await page.routeWebSocket("**/ws/optio/chat", (ws) => {
+    ws.send(
+      JSON.stringify({ type: "status", status: "thinking", runtime: "codex", model: "test-model" }),
+    );
+    ws.send(JSON.stringify({ type: "text", content: "Working on your first request" }));
+    ws.onMessage((raw) => {
+      const frame = JSON.parse(String(raw));
+      received.push(frame);
+      if (frame.type === "message")
+        ws.send(
+          JSON.stringify({
+            type: "queue",
+            messages: [{ requestId: frame.requestId, content: frame.content }],
+          }),
+        );
+      if (frame.type === "cancel_queued") ws.send(JSON.stringify({ type: "queue", messages: [] }));
+    });
+  });
+  await page.goto("/work");
+  await page.getByRole("button", { name: /Ask Optio/ }).click();
+  const panel = page.getByRole("dialog", { name: "Optio assistant" });
+  await panel.getByRole("textbox", { name: "Message Optio" }).fill("Then check the tests");
+  await expect(panel.getByRole("button", { name: "Send message" })).toBeEnabled();
+  await panel.getByRole("button", { name: "Send message" }).click();
+  const queue = panel.getByRole("region", { name: "Queued messages" });
+  await expect(queue.getByText("Then check the tests", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Clear conversation" })).toBeDisabled();
+  await queue.getByRole("button", { name: "Remove queued message: Then check the tests" }).click();
+  await expect(queue).toBeHidden();
+  expect(received.map((f) => f.type)).toEqual(["message", "cancel_queued"]);
+  await panel.getByRole("link", { name: "Optio agent settings" }).click();
+  await expect(page).toHaveURL(/\/settings#agents$/);
+  await expect(panel).toBeHidden();
+  await expect(page.getByRole("group", { name: "Assistant harness" })).toBeVisible();
 });

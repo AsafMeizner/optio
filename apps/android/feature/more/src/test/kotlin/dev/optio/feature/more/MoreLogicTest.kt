@@ -86,6 +86,33 @@ class MoreLogicTest {
     }
 
     @Test
+    fun assistantHarnessOptionsRoundTripAndSwitchResetsOldModel() {
+        val row = OptioJson.decodeFromString<OptioSettingsRow>("""{"agentRuntime":"codex","model":"gpt-5.4","agentOptions":{"copilotEffort":"high","yolo":true}}""")
+        val form = AgentSettingsForm.of(row)
+        val body = form.body().jsonObject
+        assertEquals("codex", body["agentRuntime"]?.jsonPrimitive?.content)
+        val options = body["agentOptions"]!!.jsonObject
+        assertEquals("high", options["copilotEffort"]?.jsonPrimitive?.content)
+        assertEquals("true", options["yolo"]?.jsonPrimitive?.content)
+        assertEquals("gpt-5.4", options["copilotModel"]?.jsonPrimitive?.content)
+        val changed = form.withRuntime("gemini")
+        assertEquals("", changed.model)
+        assertTrue(changed.agentOptions.isEmpty())
+        val changedBody = changed.body().jsonObject
+        assertEquals("gemini", changedBody["agentRuntime"]?.jsonPrimitive?.content)
+        assertEquals("", changedBody["agentOptions"]!!.jsonObject["geminiModel"]?.jsonPrimitive?.content)
+        assertFalse("copilotModel" in changedBody["agentOptions"]!!.jsonObject)
+    }
+
+    @Test
+    fun clearingAssistantModelAlsoClearsOptionModel() {
+        val row = OptioJson.decodeFromString<OptioSettingsRow>("""{"agentRuntime":"codex","model":"","agentOptions":{"copilotModel":"gpt-5.4"}}""")
+        val form = AgentSettingsForm.of(row)
+        assertEquals("gpt-5.4", form.model)
+        assertEquals("", form.copy(model = "").body().jsonObject["agentOptions"]!!.jsonObject["copilotModel"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun agentSettingsClampMaxTurns() {
         val row = OptioJson.decodeFromString<OptioSettingsRow>("""{"maxTurns":99,"model":"haiku"}""")
         assertEquals(50, AgentSettingsForm.of(row).maxTurns)

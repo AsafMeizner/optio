@@ -7,16 +7,15 @@ import Observation
 @MainActor
 @Observable
 final class AppRouter {
-    enum Tab: Hashable { case overview, work, library, insights, more }
+    enum Tab: Hashable { case overview, work, assistant, library, more }
 
     enum Section: Hashable {
-        case work, reviews, inbox
+        case work, reviews, inbox, assistant
         case prompts, repos, machines, connections
         case analytics, costs, activity, cluster
     }
 
     var selectedTab: Tab = .overview
-    var showAssistant = false
     var pendingSection: Section?
     /// The Work view to select once the Work list is on screen (Overview tiles,
     /// `optio://section/work?view=…`). The screen consumes it.
@@ -43,6 +42,7 @@ final class AppRouter {
     /// Every old per-kind list is a view of the one Work list.
     static func section(named name: String) -> (Section, WorkView?)? {
         switch name {
+        case "assistant", "optio": return (.assistant, nil)
         case "work", "sessions": return (.work, nil)
         case "tasks": return (.work, .all)
         case "jobs", "scheduled": return (.work, .recurring)
@@ -109,7 +109,8 @@ final class AppRouter {
         switch section {
         case .work, .reviews, .inbox: return .work
         case .prompts, .repos, .machines, .connections: return .library
-        case .analytics, .costs, .activity, .cluster: return .insights
+        case .analytics, .costs, .activity, .cluster: return .more
+        case .assistant: return .assistant
         }
     }
 }

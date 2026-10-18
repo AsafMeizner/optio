@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Optio conversational assistant's settings (`/api/optio/settings`):
-/// model, system prompt, confirm-writes, max turns, and the workspace default
+/// harness, model/options, system prompt, confirm-writes, max turns, and the workspace default
 /// review agent/model. Tool toggles are edited on the web (the tool catalog is
 /// not exposed to this client).
 struct OptioAgentSettingsView: View {
@@ -10,7 +10,10 @@ struct OptioAgentSettingsView: View {
 
     @State private var loaded = false
     @State private var loadError: Error?
-    @State private var model = "sonnet"
+    @State private var runtime = "claude-code"
+    @State private var agentOptions: WorkForm.AgentOptions = [:]
+    @State private var catalogs = AgentCatalogStore()
+    private var provider: String { WorkForm.provider(for: runtime) }
     @State private var systemPrompt = ""
     @State private var confirmWrites = true
     @State private var maxTurns = 20
@@ -40,8 +43,18 @@ struct OptioAgentSettingsView: View {
     private var form: some View {
         Form {
             Section("Assistant") {
-                Picker("Model", selection: $model) {
-                    Text("Opus").tag("opus"); Text("Sonnet").tag("sonnet"); Text("Haiku").tag("haiku")
+                Picker("Harness", selection: Binding(get: { runtime }, set: { value in
+                    runtime = value
+                    agentOptions = [:]
+                    catalogs.load(WorkForm.provider(for: value), api: api)
+                })) {
+                    ForEach(MoreAgentTypes.all, id: \.0) { Text($0.1).tag($0.0) }
+                }
+                AgentOptionsPickerView(provider: provider, state: catalogs.state(provider), values: agentOptions, local: false) { key, value in
+                    agentOptions[key] = value
+                }
+                if let note = AgentOptionsPickerView.footnote(catalogs.state(provider)) {
+                    Text(note).font(.footnote).foregroundStyle(.secondary)
                 }
                 Toggle("Confirm before write operations", isOn: $confirmWrites)
                 Stepper("Max turns: \(maxTurns)", value: $maxTurns, in: 5...50)
@@ -99,7 +112,15 @@ struct OptioAgentSettingsView: View {
     private func load() async {
         do {
             let s = try await api.getOptioSettings()
-            model = s.model ?? "sonnet"
+            runtime = s.agentRuntime ?? "claude-code"
+            agentOptions = (s.agentOptions ?? [:]).compactMapValues { value in
+                if let text = value.stringValue { return WorkForm.OptionValue.string(text) }
+                if let flag = value.boolValue { return WorkForm.OptionValue.bool(flag) }
+                return nil
+            }
+            let field = WorkForm.modelField(forRuntime: runtime)
+            if agentOptions[field] == nil, let model = s.model, !model.isEmpty { agentOptions[field] = .string(model) }
+            catalogs.load(provider, api: api)
             systemPrompt = s.systemPrompt ?? ""
             confirmWrites = s.confirmWrites ?? true
             maxTurns = Int(s.maxTurns ?? 20)
@@ -117,11 +138,12 @@ struct OptioAgentSettingsView: View {
         saving = true
         saved = false
         defer { saving = false }
-        // The route rejects an empty enabledTools array, so only send it when non-empty.
         let input = UpdateOptioSettingsInput(
-            model: model,
+            agentRuntime: runtime,
+            agentOptions: agentOptions.mapValues(\.anyCodable),
+            model: agentOptions[WorkForm.modelField(forRuntime: runtime)]?.stringValue ?? "",
             systemPrompt: systemPrompt,
-            enabledTools: enabledTools.isEmpty ? nil : enabledTools,
+            enabledTools: enabledTools,
             confirmWrites: confirmWrites,
             maxTurns: Double(maxTurns),
             defaultReviewAgentType: defaultReviewAgentType.isEmpty ? nil : defaultReviewAgentType,

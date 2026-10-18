@@ -28,17 +28,27 @@ internal data class AssistantMessage(
     val action: AssistantAction? = null,
 )
 
+internal data class AssistantQueuedMessage(
+    val requestId: String,
+    val content: String,
+    val sending: Boolean = false,
+    val cancelling: Boolean = false,
+)
+
 internal data class AssistantState(
     val status: String = "connecting",
     val messages: List<AssistantMessage> = emptyList(),
     val error: String? = null,
     val sessionId: String? = null,
     val sessionHref: String? = null,
+    val runtime: String? = null,
+    val model: String? = null,
+    val queuedMessages: List<AssistantQueuedMessage> = emptyList(),
 ) {
     val ready get() = status == "ready" || status == "waiting_for_approval"
     val pending get() = messages.any { it.action?.let { action -> action.decision == null } == true }
-    val canSend get() = status == "ready" && !pending
-    val canClear get() = canSend
+    val canSend get() = status in setOf("ready", "thinking", "executing", "waiting_for_approval")
+    val canClear get() = status == "ready" && !pending && queuedMessages.isEmpty()
     val busy get() = status == "thinking" || status == "executing"
 }
 
@@ -64,6 +74,7 @@ internal class OptioAssistantViewModel(
     private var collecting: Job? = null
     private var streamId: String? = null
     private val seenRequests = mutableSetOf<String>()
+    private val submittedRequests = mutableMapOf<String, String>()
     var draft: String = ""
 
     fun connect() {
@@ -86,7 +97,8 @@ internal class OptioAssistantViewModel(
         val previous = mutableState.value
         mutableState.value = previous.copy(
             status = "disconnected",
-            messages = previous.messages + if (previous.busy) listOf(AssistantMessage(
+            queuedMessages = previous.queuedMessages.filterNot { it.sending }.map { it.copy(cancelling = false) },
+            messages = previous.messages + if (previous.busy || previous.queuedMessages.any { it.sending }) listOf(AssistantMessage(
                 content = "The connection closed while work was in progress. Reconnect to load the saved result. Check Work before repeating a request; actions are never retried automatically.",
                 error = true,
             )) else emptyList(),
@@ -110,7 +122,7 @@ internal class OptioAssistantViewModel(
                     "history" -> {
                         val frames = obj["frames"] as? JsonArray ?: return
                         val sessionId = obj["sessionId"]?.stringValue?.takeIf { SESSION_ID.matches(it) }
-                        val href = obj["href"]?.stringValue?.takeIf { sessionId != null && it == "/sessions/$sessionId" }
+                        val href = obj["href"]?.stringValue?.takeIf { sessionId != null && (it == "/work/$sessionId" || it == "/sessions/$sessionId") }
                         streamId = null
                         seenRequests.clear()
                         mutableState.value = previous.copy(messages = emptyList(), error = null,
@@ -123,16 +135,30 @@ internal class OptioAssistantViewModel(
                         }
                         streamId = null
                     }
+                    "queue" -> {
+                        val queue = obj["messages"] as? JsonArray ?: return
+                        val messages = queue.mapNotNull { value ->
+                            val item = value as? JsonObject ?: return@mapNotNull null
+                            val requestId = item["requestId"]?.stringValue ?: return@mapNotNull null
+                            val content = item["content"]?.stringValue ?: return@mapNotNull null
+                            AssistantQueuedMessage(requestId, content)
+                        }.distinctBy { it.requestId }
+                        mutableState.value = previous.copy(queuedMessages = messages)
+                    }
                     "user_message" -> {
                         val content = obj["content"]?.stringValue ?: return
                         val requestId = obj["requestId"]?.stringValue
                         if (requestId != null && !seenRequests.add(requestId)) return
                         streamId = null
-                        mutableState.value = previous.copy(messages = previous.messages + AssistantMessage(content = content, user = true))
+                        requestId?.let { submittedRequests.remove(it) }
+                        mutableState.value = previous.copy(queuedMessages = previous.queuedMessages.filterNot { it.requestId == requestId },
+                            messages = previous.messages + AssistantMessage(content = content, user = true))
                     }
                     "status" -> {
                         val status = obj["status"]?.stringValue ?: return
-                        mutableState.value = previous.copy(status = status)
+                        mutableState.value = previous.copy(status = status,
+                            runtime = obj["runtime"]?.stringValue ?: previous.runtime,
+                            model = obj["model"]?.stringValue ?: previous.model)
                         if (status == "ready") streamId = null
                     }
                     "text" -> {
@@ -181,9 +207,15 @@ internal class OptioAssistantViewModel(
                         val messages = if (obj["type"]?.stringValue == "action_result" && actionId != null) previous.messages.map { message ->
                             if (message.action?.id == actionId) message.copy(action = message.action.copy(decision = "Approved")) else message
                         } else previous.messages
+                        val requestId = obj["requestId"]?.stringValue
+                        val submitted = requestId?.let { submittedRequests.remove(it) }
+                        val content = obj["summary"]?.stringValue ?: obj["message"]?.stringValue ?: "Optio could not process the request."
                         mutableState.value = previous.copy(status = if (previous.status == "clearing") "ready" else previous.status,
+                            queuedMessages = if (requestId != null) previous.queuedMessages.mapNotNull {
+                                if (it.requestId != requestId) it else if (it.sending) null else it.copy(cancelling = false)
+                            } else previous.queuedMessages,
                             messages = messages + AssistantMessage(
-                            content = obj["summary"]?.stringValue ?: obj["message"]?.stringValue ?: "Optio could not process the request.",
+                            content = if (submitted != null && obj["type"]?.stringValue == "error") "Request about “$submitted” failed: $content" else content,
                             error = obj["type"]?.stringValue == "error" || (obj["success"] as? JsonPrimitive)?.booleanOrNull == false,
                         ))
                     }
@@ -209,14 +241,10 @@ internal class OptioAssistantViewModel(
             put("content", content)
             put("requestId", requestId)
         }
-        seenRequests.add(requestId)
-        if (!sendFrame(frame)) {
-            seenRequests.remove(requestId)
-            return false
-        }
-        streamId = null
-        mutableState.value = previous.copy(status = "thinking", error = null,
-            messages = previous.messages + AssistantMessage(content = content, user = true))
+        if (!sendFrame(frame)) return false
+        submittedRequests[requestId] = content
+        mutableState.value = previous.copy(error = null,
+            queuedMessages = previous.queuedMessages + AssistantQueuedMessage(requestId, content, sending = true))
         return true
     }
 
@@ -233,6 +261,16 @@ internal class OptioAssistantViewModel(
             if (message.action?.id == id) message.copy(action = message.action.copy(decision = if (approve) "Approved" else "Denied"))
             else message
         } + if (!approve && feedback.isNotBlank()) listOf(AssistantMessage(content = feedback.trim(), user = true)) else emptyList())
+    }
+
+    fun cancelQueued(requestId: String) {
+        val previous = mutableState.value
+        val queued = previous.queuedMessages.find { it.requestId == requestId } ?: return
+        if (!previous.canSend || queued.sending || queued.cancelling) return
+        if (!sendFrame(buildJsonObject { put("type", "cancel_queued"); put("requestId", requestId) })) return
+        mutableState.value = previous.copy(queuedMessages = previous.queuedMessages.map {
+            if (it.requestId == requestId) it.copy(cancelling = true) else it
+        })
     }
 
     fun reset() {

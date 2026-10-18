@@ -8,6 +8,7 @@ import { runtimeLabel } from "@/components/agent-choice-model";
 import { OptioMark } from "@/components/optio-mark";
 import {
   Minus,
+  Settings,
   ExternalLink,
   ArrowUp,
   Eraser,
@@ -25,6 +26,7 @@ import { useOptioConnection } from "@/hooks/use-optio-connection";
 import { useDictation } from "@/hooks/use-dictation";
 import { ActionCard } from "./action-card.js";
 import { api } from "@/lib/api-client";
+import { QueuedMessages } from "@/components/queued-messages";
 import { ChatMarkdown } from "./chat-markdown.js";
 
 const SUGGESTIONS = [
@@ -48,8 +50,16 @@ const SUGGESTIONS = [
 ];
 
 export function OptioChatPanel() {
-  const { isOpen, messages, prefillInput, status, confirmWrites, agentRuntime, agentModel } =
-    useOptioChatStore();
+  const {
+    isOpen,
+    messages,
+    prefillInput,
+    status,
+    confirmWrites,
+    agentRuntime,
+    agentModel,
+    queuedMessages,
+  } = useOptioChatStore();
   const connection = useOptioConnection();
   const [input, setInput] = useState("");
   const [expanded, setExpanded] = useState(false);
@@ -75,7 +85,7 @@ export function OptioChatPanel() {
           : pending
             ? "Awaiting approval"
             : "Ready";
-  const canCompose = status === "ready" && !pending;
+  const canCompose = connected && queuedMessages.length < 20;
 
   useEffect(() => {
     try {
@@ -234,6 +244,15 @@ export function OptioChatPanel() {
             </h2>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
+            <Link
+              href="/settings#agents"
+              onClick={() => useOptioChatStore.getState().close()}
+              className={iconButton}
+              aria-label="Optio agent settings"
+              title="Optio agent settings"
+            >
+              <Settings className="h-4 w-4" />
+            </Link>
             {connection.sessionHref && (
               <Link
                 href={connection.sessionHref}
@@ -258,7 +277,7 @@ export function OptioChatPanel() {
               className={iconButton}
               title="Clear conversation history"
               aria-label="Clear conversation"
-              disabled={status !== "ready" || pending}
+              disabled={status !== "ready" || pending || queuedMessages.length > 0}
               onClick={() => {
                 dictation.cancel();
                 connection.reset();
@@ -379,6 +398,7 @@ export function OptioChatPanel() {
           className="max-h-[60%] shrink-0 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
           data-testid="optio-composer"
         >
+          <QueuedMessages messages={queuedMessages} onCancel={connection.cancelQueued} />
           {!connected && status !== "starting" && (
             <div className="mb-3 rounded-xl border border-warning/20 bg-warning/5 p-3 text-xs text-text">
               <p>Connection lost. Actions won’t be retried automatically.</p>
@@ -439,13 +459,13 @@ export function OptioChatPanel() {
               <button
                 type="button"
                 onClick={dictation.active ? dictation.stop : dictation.start}
-                disabled={dictation.state === "stopping"}
+                disabled={!dictation.supported || dictation.state === "stopping"}
                 aria-label={dictation.active ? "Stop dictation" : "Start dictation"}
                 aria-pressed={dictation.active}
                 title={
                   dictation.supported
                     ? "Dictate a message"
-                    : "Use keyboard dictation or a supported browser on HTTPS"
+                    : (dictation.unavailable ?? "Checking speech recognition support…")
                 }
                 className={cn(
                   "flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-colors disabled:opacity-40",
@@ -460,7 +480,11 @@ export function OptioChatPanel() {
               <button
                 onClick={send}
                 aria-label="Send message"
-                title="Send (Enter)"
+                title={
+                  busy || pending || queuedMessages.length
+                    ? "Queue message (Enter)"
+                    : "Send (Enter)"
+                }
                 disabled={!input.trim() || !canCompose || dictation.active}
                 className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -468,9 +492,6 @@ export function OptioChatPanel() {
               </button>
             </div>
           </div>
-          {dictation.unavailable && !dictation.error && (
-            <p className="mt-2 px-1 text-xs text-text-muted">{dictation.unavailable}</p>
-          )}
           {dictation.error && (
             <p role="alert" className="mt-2 flex items-start gap-1.5 px-1 text-xs text-error">
               <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />

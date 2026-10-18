@@ -40,6 +40,11 @@ const HISTORICAL_LIMIT = 5000;
  * filter / time-gap rendering works for sessions with no special-casing.
  */
 export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {}) {
+  const [queuedMessages, setQueuedMessages] = useState<{ requestId: string; content: string }[]>(
+    [],
+  );
+  const [canQueue, setCanQueue] = useState(false);
+  const queueSupported = useRef(false);
   const [approvals, setApprovals] = useState<OptioPendingAction[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [userMessages, setUserMessages] = useState<(UserMessage & { requestId?: string })[]>([]);
@@ -139,7 +144,14 @@ export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {})
             logType: msg.success ? "text" : "error",
           });
           break;
+        case "queue":
+          if (Array.isArray(msg.messages)) setQueuedMessages(msg.messages);
+          break;
         case "status":
+          if (typeof msg.runtime === "string") {
+            queueSupported.current = true;
+            setCanQueue(true);
+          }
           setStatus(
             msg.status === "waiting_for_approval"
               ? "ready"
@@ -264,11 +276,13 @@ export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {})
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     const ts = new Date().toISOString();
     const requestId = crypto.randomUUID();
-    setUserMessages((prev) => [
-      ...prev,
-      { text: trimmed, requestId, timestamp: ts, status: "sent" },
-    ]);
-    ownRequests.current.add(requestId);
+    if (!queueSupported.current) {
+      setUserMessages((prev) => [
+        ...prev,
+        { text: trimmed, requestId, timestamp: ts, status: "sent" },
+      ]);
+      ownRequests.current.add(requestId);
+    }
     ws.send(JSON.stringify({ type: "message", content: trimmed, requestId }));
     return true;
   }, []);
@@ -297,6 +311,10 @@ export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {})
     setStatus("thinking");
   }, []);
   return {
+    queuedMessages,
+    canQueue,
+    cancelQueued: (requestId: string) =>
+      wsRef.current?.send(JSON.stringify({ type: "cancel_queued", requestId })),
     approvals,
     decide,
     logs,

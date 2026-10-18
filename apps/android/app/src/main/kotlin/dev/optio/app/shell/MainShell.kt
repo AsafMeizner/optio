@@ -10,12 +10,17 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
@@ -53,7 +58,7 @@ import kotlinx.coroutines.flow.filterNotNull
 
 /**
  * The signed-in shell (PLAN §4): a `NavigationSuiteScaffold` (bottom bar on phones, rail on wide
- * screens) with Overview · Work · Library · Insights · More, and one Navigation 3 back stack per
+ * screens) with Overview · Work · Optio Agent · Library · More, and one Navigation 3 back stack per
  * tab. Re-selecting the tab on screen pops it to its hub; Back at a hub other than Overview
  * returns to Overview.
  *
@@ -120,12 +125,13 @@ fun MainShell(
                 modifier = modifier.semantics { testTagsAsResourceId = true },
                 layoutType = layoutType,
                 navigationSuiteItems = {
-                    Tab.entries.forEach { tab ->
+                    Tab.primary.forEach { tab ->
                         item(
-                            selected = tab == router.selectedTab,
+                            selected = tab == router.selectedTab || (tab == Tab.MORE && router.selectedTab == Tab.INSIGHTS),
                             onClick = { router.select(tab) },
                             icon = { Icon(tab.icon, contentDescription = null) },
-                            label = { Text(tab.label) },
+                            label = { Text(tab.label, maxLines = 2, textAlign = TextAlign.Center,
+                                autoSize = TextAutoSize.StepBased(minFontSize = 10.sp, maxFontSize = LocalTextStyle.current.fontSize)) },
                             modifier = Modifier.testTag("tab-${tab.name.lowercase()}"),
                         )
                     }
@@ -147,7 +153,7 @@ fun MainShell(
                     }
                 val tab = router.selectedTab
                 BackHandler(enabled = tab != Tab.OVERVIEW && router.backStack(tab).size == 1) {
-                    router.select(Tab.OVERVIEW)
+                    router.select(if (tab == Tab.INSIGHTS) Tab.MORE else Tab.OVERVIEW)
                 }
                 key(tab) {
                     NavDisplay(
@@ -166,6 +172,7 @@ private val Tab.icon: ImageVector
     get() =
         when (this) {
             Tab.OVERVIEW -> Icons.Outlined.GridView
+            Tab.ASSISTANT -> Icons.Outlined.ChatBubbleOutline
             Tab.WORK -> Icons.Outlined.Terminal
             Tab.LIBRARY -> Icons.AutoMirrored.Outlined.LibraryBooks
             Tab.INSIGHTS -> Icons.Outlined.BarChart

@@ -464,6 +464,8 @@ struct LookupUser: Decodable {
 // MARK: - Settings
 
 struct OptioSettingsRow: Decodable {
+    var agentRuntime: String?
+    var agentOptions: [String: AnyCodable]?
     var model: String?
     var systemPrompt: String?
     var enabledTools: [String]?

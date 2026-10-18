@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import dev.optio.feature.agents.OptioAssistantScreen
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -53,6 +55,10 @@ import androidx.compose.material3.MaterialTheme
  */
 @Composable
 internal fun HubScreen(tab: Tab) {
+    if (tab == Tab.ASSISTANT) {
+        OptioAssistantScreen(showBack = false, headerContent = { HubServerSwitcher() })
+        return
+    }
     val navigator = LocalNavigator.current
     val router = LocalAppRouter.current
     val controller = rememberHubController()
@@ -67,6 +73,11 @@ internal fun HubScreen(tab: Tab) {
             Column(Modifier.background(TopAppBarDefaults.topAppBarColors().containerColor)) {
                 TopAppBar(
                     title = { Text(tab.label, style = MaterialTheme.typography.headlineMedium) },
+                    navigationIcon = {
+                        if (tab == Tab.INSIGHTS) IconButton(onClick = {
+                            if (router.selectedTab == Tab.INSIGHTS) router.openTab(Tab.MORE) else navigator.pop()
+                        }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    },
                     actions = {
                         if ((tab == Tab.OVERVIEW || tab == Tab.WORK) && Roles.canMutate) {
                             IconButton(onClick = { navigator.push(OptioAssistantRoute) }) { Icon(Icons.Outlined.ChatBubbleOutline, "Ask Optio") }
@@ -97,6 +108,7 @@ private fun HubContent(
 ) {
     when (tab) {
         Tab.OVERVIEW -> OverviewScreen(contentPadding)
+        Tab.ASSISTANT -> Unit
         Tab.MORE -> MoreScreen(contentPadding)
         Tab.WORK, Tab.LIBRARY, Tab.INSIGHTS ->
             when (section) {

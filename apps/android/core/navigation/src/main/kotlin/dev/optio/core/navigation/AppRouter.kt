@@ -166,6 +166,7 @@ class AppRouter(
                 when {
                     target != null -> open(target.first, explicitView ?: target.second)
                     link.name == "more" -> openTab(Tab.MORE)
+                    link.name in setOf("optio", "assistant") -> openTab(Tab.ASSISTANT)
                     else -> return false
                 }
             }

@@ -54,6 +54,28 @@ class OptioAssistantUiTest {
         } }
         compose.onNodeWithContentDescription("Clear conversation").assertIsNotEnabled()
     }
+    @Test fun agentTabShowsIdentitySettingsAndQueuedCancellation() {
+        var settings = 0
+        val cancelled = mutableListOf<String>()
+        val sent = mutableListOf<String>()
+        compose.setContent { OptioTheme {
+            OptioAssistantContent(AssistantState(status = "thinking", runtime = "codex", model = "gpt-5.4",
+                queuedMessages = listOf(AssistantQueuedMessage("queued-one", "Run this next"))),
+                { sent += it; true }, { _, _, _ -> }, {}, {}, {}, showBack = false,
+                onSettings = { settings++ }, onCancelQueued = { cancelled += it })
+        } }
+        compose.onNodeWithText("Optio Agent").assertExists()
+        compose.onNodeWithTag("assistant-identity").assertTextEquals("OpenAI Codex · gpt-5.4")
+        compose.onNodeWithContentDescription("Back").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Optio Agent settings").performClick()
+        assertEquals(1, settings)
+        compose.onNodeWithText("Cancel queued message").performClick()
+        assertEquals(listOf("queued-one"), cancelled)
+        compose.onNodeWithTag("assistant-draft").performTextInput("Another task")
+        compose.onNodeWithText("Queue message").performClick()
+        assertEquals(listOf("Another task"), sent)
+        compose.onNodeWithContentDescription("Clear conversation").assertIsNotEnabled()
+    }
     @Test fun disconnectedChatStillAllowsDraftingButCannotSend() {
         compose.setContent { OptioTheme {
             OptioAssistantContent(AssistantState(status = "disconnected"), { false }, { _, _, _ -> }, {}, {}, {})

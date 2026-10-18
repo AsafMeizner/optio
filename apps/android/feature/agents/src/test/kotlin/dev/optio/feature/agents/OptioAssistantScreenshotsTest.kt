@@ -10,6 +10,13 @@ class OptioAssistantScreenshotsTest : ScreenshotTest() {
     @Test fun empty() = captureScreens("OptioAssistant_empty") {
         OptioAssistantContent(AssistantState(status = "ready"), { true }, { _, _, _ -> }, {}, {}, {})
     }
+    @Test fun queuedTab() = captureScreens("OptioAssistant_queued_tab") {
+        OptioAssistantContent(AssistantState(status = "thinking", runtime = "codex", model = "gpt-5.4", messages = listOf(
+            AssistantMessage(user = true, content = "Find my active work."),
+            AssistantMessage(content = "Checking the workspace…")
+        ), queuedMessages = listOf(AssistantQueuedMessage("queued", "Then create a work session to fix login."))),
+            { true }, { _, _, _ -> }, {}, {}, {}, showBack = false, onSettings = {}, onCancelQueued = {})
+    }
     @Test fun review() = captureScreens("OptioAssistant_review") {
         val work = Json.parseToJsonElement("""{
             "name":"Fix login on my machine", "when":{"type":"manual"},

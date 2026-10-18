@@ -1,24 +1,31 @@
 import { getProviderCatalog, providerForAgentType } from "@optio/shared";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
-import type { WsConnection } from "./ws-connection.js";
+import { serializeWsInput, type WsConnection, type WsConnectionSocket } from "./ws-connection.js";
 import { db } from "../db/client.js";
-import { sessionChatEvents, sessionToolApprovals } from "../db/schema.js";
+import {
+  interactiveSessions,
+  sessionChatTurns,
+  sessionChatEvents,
+  sessionToolApprovals,
+} from "../db/schema.js";
 import { getSession, listSessionChatEvents } from "../services/interactive-session-service.js";
 import {
+  enqueueSessionMessage,
+  queuedSessionMessages,
+  cancelQueuedSessionMessage,
   broadcastSessionChat,
   latestSessionTurn,
   subscribeSessionChat,
   interruptSessionChat,
 } from "../services/session-turn-service.js";
-import { runHarnessSession } from "../services/session-harness-service.js";
 import { approvalFrame, decideSessionApproval } from "../services/session-tool-approval.js";
 import { isMessageWithinSizeLimit } from "./ws-limits.js";
 
 /** Two presentations of the same saved interactive session. */
 export async function attachHarnessChat(
-  socket: { readyState: number; send(data: string): unknown },
+  socket: WsConnectionSocket & { send(data: string): unknown },
   conn: WsConnection,
   sessionId: string,
   mayInput: () => Promise<boolean>,
@@ -96,59 +103,79 @@ export async function attachHarnessChat(
         )
       : undefined,
   });
-  let accepting = false;
-  conn.ready((data) => {
-    void (async () => {
-      if (!isMessageWithinSizeLimit(data) || !(await mayInput())) return;
-      const session = await getSession(sessionId);
-      if (!session || session.state !== "active") throw new Error("Session has ended");
-      const msg = JSON.parse(String(data));
-      if (msg.type === "message") {
-        if (typeof msg.content !== "string" || !msg.content.trim())
-          throw new Error("Empty message");
-        if (accepting) throw new Error("Already processing a request");
-        const requestId =
-          msg.requestId === undefined ? randomUUID() : z.string().uuid().parse(msg.requestId);
-        accepting = true;
-        try {
-          await runHarnessSession(sessionId, msg.content.trim(), requestId);
-        } finally {
-          accepting = false;
-        }
-      } else if (msg.type === "approve" || msg.type === "deny") {
-        if (
-          !z.string().uuid().safeParse(msg.actionId).success ||
-          !(await decideSessionApproval(
+  send({ type: "queue", messages: await queuedSessionMessages(sessionId) });
+  conn.ready(
+    serializeWsInput(socket, async (data) => {
+      let requestId: string | undefined;
+      await (async () => {
+        if (!isMessageWithinSizeLimit(data) || !(await mayInput())) return;
+        const session = await getSession(sessionId);
+        if (!session || session.state !== "active") throw new Error("Session has ended");
+        const msg = JSON.parse(String(data));
+        if (typeof msg.requestId === "string") requestId = msg.requestId;
+        if (msg.type === "message") {
+          if (typeof msg.content !== "string" || !msg.content.trim())
+            throw new Error("Empty message");
+          const requestId =
+            msg.requestId === undefined ? randomUUID() : z.string().uuid().parse(msg.requestId);
+          await enqueueSessionMessage(sessionId, requestId, msg.content.trim());
+        } else if (msg.type === "cancel_queued") {
+          const requestId = z.string().uuid().parse(msg.requestId);
+          if (!(await cancelQueuedSessionMessage(sessionId, requestId)))
+            throw new Error("This message has already started or is no longer queued");
+        } else if (msg.type === "approve" || msg.type === "deny") {
+          if (
+            !z.string().uuid().safeParse(msg.actionId).success ||
+            !(await decideSessionApproval(
+              sessionId,
+              msg.actionId,
+              msg.type === "approve",
+              msg.feedback,
+            ))
+          )
+            throw new Error("No pending action to decide");
+        } else if (msg.type === "interrupt") {
+          if (!panel) {
+            await interruptSessionChat(sessionId);
+            return;
+          }
+          await db.transaction(async (tx) => {
+            await tx
+              .select({ id: interactiveSessions.id })
+              .from(interactiveSessions)
+              .where(eq(interactiveSessions.id, sessionId))
+              .for("update");
+            const [pending] = await tx
+              .select({ id: sessionChatTurns.id })
+              .from(sessionChatTurns)
+              .where(
+                and(
+                  eq(sessionChatTurns.sessionId, sessionId),
+                  inArray(sessionChatTurns.state, ["queued", "running"]),
+                ),
+              )
+              .limit(1);
+            if (pending)
+              throw new Error(
+                "Wait for queued messages and the current request to finish before clearing the conversation",
+              );
+            await tx.delete(sessionChatEvents).where(eq(sessionChatEvents.sessionId, sessionId));
+          });
+          broadcastSessionChat(sessionId, {
+            type: "history",
             sessionId,
-            msg.actionId,
-            msg.type === "approve",
-            msg.feedback,
-          ))
-        )
-          throw new Error("No pending action to decide");
-      } else if (msg.type === "interrupt") {
-        if (!panel) {
-          await interruptSessionChat(sessionId);
-          return;
+            href: `/work/${sessionId}`,
+            frames: [],
+          });
+          send({ type: "status", status: "ready" });
         }
-        if ((await latestSessionTurn(sessionId))?.state === "running")
-          throw new Error(
-            "Wait for the current request to finish before clearing the conversation",
-          );
-        await db.delete(sessionChatEvents).where(eq(sessionChatEvents.sessionId, sessionId));
-        broadcastSessionChat(sessionId, {
-          type: "history",
-          sessionId,
-          href: `/work/${sessionId}`,
-          frames: [],
-        });
-        send({ type: "status", status: "ready" });
-      }
-    })().catch((err) =>
-      send({
-        type: "error",
-        message: err instanceof Error ? err.message : "Unable to process message",
-      }),
-    );
-  });
+      })().catch((err) =>
+        send({
+          type: "error",
+          requestId,
+          message: err instanceof Error ? err.message : "Unable to process message",
+        }),
+      );
+    }),
+  );
 }

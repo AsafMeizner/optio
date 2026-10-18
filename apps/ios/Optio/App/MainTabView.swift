@@ -2,8 +2,8 @@ import OSLog
 import SwiftUI
 
 /// Top-level navigation. Mirrors the web sidebar groups:
-/// Overview · Work (Sessions/Reviews/Inbox) · Library (Prompts/Repos/Machines/Connections)
-/// · Insights (Analytics/Costs/Activity/Cluster) · More (Admin + Settings + Account).
+/// Overview · Work (Sessions/Reviews/Inbox) · Optio Agent
+/// · Library (Prompts/Repos/Machines/Connections) · More (Insights + Admin + Settings + Account).
 struct MainTabView: View {
     @Environment(SessionStore.self) private var session
     @State private var router = AppRouter()
@@ -14,7 +14,6 @@ struct MainTabView: View {
         tabs
             .tint(AppTheme.accent)
             .environment(router)
-            .sheet(isPresented: $router.showAssistant) { OptioAssistantView(model: assistant).environment(router) }
             .onOpenURL { url in handle(url: url) }
             .onReceive(NotificationCenter.default.publisher(for: .optioOpenURL)) { note in if let url = note.object as? URL { handle(url: url) } }
             .onAppear {
@@ -44,8 +43,8 @@ struct MainTabView: View {
             TabView(selection: $router.selectedTab) {
                 Tab("Overview", systemImage: "square.grid.2x2", value: AppRouter.Tab.overview) { OverviewView() }
                 Tab("Work", systemImage: "terminal", value: AppRouter.Tab.work) { WorkHubView() }
+                Tab("Optio Agent", systemImage: "sparkles", value: AppRouter.Tab.assistant) { OptioAssistantView(model: assistant) }
                 Tab("Library", systemImage: "books.vertical", value: AppRouter.Tab.library) { LibraryHubView() }
-                Tab("Insights", systemImage: "chart.bar", value: AppRouter.Tab.insights) { InsightsHubView() }
                 Tab("More", systemImage: "ellipsis", value: AppRouter.Tab.more) { MoreHubView() }
             }
             .tabBarMinimizeBehavior(.onScrollDown)
@@ -53,16 +52,16 @@ struct MainTabView: View {
             TabView(selection: $router.selectedTab) {
                 Tab("Overview", systemImage: "square.grid.2x2", value: AppRouter.Tab.overview) { OverviewView() }
                 Tab("Work", systemImage: "terminal", value: AppRouter.Tab.work) { WorkHubView() }
+                Tab("Optio Agent", systemImage: "sparkles", value: AppRouter.Tab.assistant) { OptioAssistantView(model: assistant) }
                 Tab("Library", systemImage: "books.vertical", value: AppRouter.Tab.library) { LibraryHubView() }
-                Tab("Insights", systemImage: "chart.bar", value: AppRouter.Tab.insights) { InsightsHubView() }
                 Tab("More", systemImage: "ellipsis", value: AppRouter.Tab.more) { MoreHubView() }
             }
         } else {
             TabView(selection: $router.selectedTab) {
                 OverviewView().tabItem { Label("Overview", systemImage: "square.grid.2x2") }.tag(AppRouter.Tab.overview)
                 WorkHubView().tabItem { Label("Work", systemImage: "terminal") }.tag(AppRouter.Tab.work)
+                OptioAssistantView(model: assistant).tabItem { Label("Optio Agent", systemImage: "sparkles") }.tag(AppRouter.Tab.assistant)
                 LibraryHubView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(AppRouter.Tab.library)
-                InsightsHubView().tabItem { Label("Insights", systemImage: "chart.bar") }.tag(AppRouter.Tab.insights)
                 MoreHubView().tabItem { Label("More", systemImage: "ellipsis") }.tag(AppRouter.Tab.more)
             }
         }

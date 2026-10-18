@@ -46,18 +46,19 @@ class OptioAssistantTest {
         assertNull(request["conversationContext"])
         socket.sendText("""{"type":"user_message","content":"Make some work","requestId":"$requestId"}""")
         socket.sendText("""{"type":"user_message","content":"Make some work","requestId":"$requestId"}""")
-        assertFalse(main.onMain { vm.send("second") })
+        assertTrue(vm.state.value.canSend)
         socket.sendText("""{"type":"text","content":"Hello "}""")
         socket.sendText("""{"type":"text","content":"world"}""")
         socket.sendText("""{"type":"status","status":"ready"}""")
-        eventually { vm.state.value.messages.last().content == "Hello world" }
+        eventually { vm.state.value.messages.lastOrNull()?.content == "Hello world" }
         assertEquals(2, vm.state.value.messages.size)
     }
     @Test fun proposalRequiresExplicitSingleUseDecision() {
         val socket = connect()
         proposal(socket)
         assertEquals("Fix login", vm.state.value.messages.last().action?.work?.single()?.get("name")?.stringValue)
-        assertFalse(main.onMain { vm.send("new request") })
+        assertTrue(vm.state.value.canSend)
+        assertFalse(vm.state.value.canClear)
         assertTrue(socket.received.isEmpty())
         main.onMain { vm.decide("11111111-1111-4111-8111-111111111111", true); vm.decide("11111111-1111-4111-8111-111111111111", true) }
         assertEquals("approve", Json.parseToJsonElement(socket.awaitText()).jsonObject["type"]?.stringValue)
@@ -103,7 +104,7 @@ class OptioAssistantTest {
         assertTrue(main.onMain { vm.send("Optimistic request") })
         val request = Json.parseToJsonElement(socket.awaitText()).jsonObject
         val id = request["requestId"]!!.stringValue!!
-        socket.sendText("""{"type":"history","sessionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","href":"/sessions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","frames":[
+        socket.sendText("""{"type":"history","sessionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","href":"/work/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","frames":[
             {"type":"user_message","content":"Saved request","requestId":"$id"},
             {"type":"text","content":"Saved "},{"type":"text","content":"response"},
             {"type":"error","message":"Saved error"},
@@ -112,13 +113,13 @@ class OptioAssistantTest {
         socket.sendText("""{"type":"user_message","content":"From another device","requestId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}""")
         socket.sendText("""{"type":"user_message","content":"From another device","requestId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}""")
         socket.sendText("""{"type":"status","status":"ready"}""")
-        eventually { vm.state.value.status == "ready" }
+        eventually { vm.state.value.messages.lastOrNull()?.content == "From another device" }
         assertEquals(listOf("Saved request", "Saved response", "Saved error", "Action failed", "From another device"), vm.state.value.messages.map { it.content })
         assertTrue(vm.state.value.messages.first().user)
         assertTrue(vm.state.value.messages[2].error)
         assertTrue(vm.state.value.messages[3].error)
         assertEquals("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", vm.state.value.sessionId)
-        assertEquals("/sessions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", vm.state.value.sessionHref)
+        assertEquals("/work/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", vm.state.value.sessionHref)
     }
     @Test fun historyThenPendingProposalRestoresReviewWithoutOldCards() {
         val socket = connect()
@@ -148,7 +149,7 @@ class OptioAssistantTest {
         proposal(socket)
         socket.sendText("""{"type":"action_decision","actionId":"11111111-1111-4111-8111-111111111111","approved":false}""")
         socket.sendText("""{"type":"status","status":"ready"}""")
-        eventually { vm.state.value.canSend }
+        eventually { vm.state.value.status == "ready" && !vm.state.value.pending }
         assertEquals("Denied", vm.state.value.messages.single().action?.decision)
         assertTrue(vm.state.value.canClear)
         assertTrue(socket.received.isEmpty())
@@ -159,7 +160,7 @@ class OptioAssistantTest {
         socket.sendText("""{"type":"action_decision","actionId":"11111111-1111-4111-8111-111111111111","approved":true}""")
         socket.sendText("""{"type":"action_result","actionId":"11111111-1111-4111-8111-111111111111","success":true,"summary":"Created work"}""")
         socket.sendText("""{"type":"status","status":"ready"}""")
-        eventually { vm.state.value.canSend }
+        eventually { vm.state.value.status == "ready" && !vm.state.value.pending }
         assertEquals("Approved", vm.state.value.messages.first().action?.decision)
         assertEquals("Created work", vm.state.value.messages.last().content)
         assertEquals(2, vm.state.value.messages.size)
@@ -175,7 +176,7 @@ class OptioAssistantTest {
         eventually { vm.state.value.pending }
         socket.sendText("""{"type":"action_expired","actionId":"cccccccc-cccc-4ccc-8ccc-cccccccccccc"}""")
         socket.sendText("""{"type":"status","status":"ready"}""")
-        eventually { vm.state.value.canSend }
+        eventually { vm.state.value.status == "ready" && !vm.state.value.pending }
         assertTrue(vm.state.value.messages.last().action!!.decision!!.startsWith("Expired"))
         assertTrue(socket.received.isEmpty())
     }
@@ -187,9 +188,72 @@ class OptioAssistantTest {
         assertEquals("interrupt", Json.parseToJsonElement(socket.awaitText()).jsonObject["type"]?.stringValue)
         assertEquals("Saved conversation", vm.state.value.messages.single().content)
         assertFalse(vm.state.value.canClear)
-        socket.sendText("""{"type":"history","sessionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","href":"/sessions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","frames":[]}""")
+        socket.sendText("""{"type":"history","sessionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","href":"/work/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","frames":[]}""")
         socket.sendText("""{"type":"status","status":"ready"}""")
         eventually { vm.state.value.messages.isEmpty() && vm.state.value.ready }
+    }
+    @Test fun runtimeAndModelComeFromStatusAndSurviveStateOnlyFrames() {
+        val socket = connect()
+        socket.sendText("""{"type":"status","status":"ready","runtime":"codex","model":"gpt-5.4"}""")
+        socket.sendText("""{"type":"status","status":"thinking"}""")
+        eventually { vm.state.value.status == "thinking" }
+        assertEquals("codex", vm.state.value.runtime)
+        assertEquals("gpt-5.4", vm.state.value.model)
+    }
+    @Test fun busyAndPendingApprovalMessagesQueueWithoutPrematureHistory() {
+        val socket = connect()
+        socket.sendText("""{"type":"status","status":"thinking"}""")
+        eventually { vm.state.value.busy }
+        assertTrue(main.onMain { vm.send("Next task") })
+        val first = Json.parseToJsonElement(socket.awaitText()).jsonObject["requestId"]!!.stringValue!!
+        assertTrue(vm.state.value.messages.isEmpty())
+        assertTrue(vm.state.value.queuedMessages.single().sending)
+        socket.sendText("""{"type":"queue","messages":[{"requestId":"$first","content":"Next task"}]}""")
+        eventually { vm.state.value.queuedMessages.singleOrNull()?.sending == false }
+        proposal(socket)
+        assertTrue(main.onMain { vm.send("One more task") })
+        val second = Json.parseToJsonElement(socket.awaitText()).jsonObject["requestId"]!!.stringValue!!
+        assertEquals(1, vm.state.value.messages.size, "Only the proposal is in history")
+        assertFalse(vm.state.value.canClear)
+        socket.sendText("""{"type":"queue","messages":[{"requestId":"$first","content":"Next task"},{"requestId":"$second","content":"One more task"}]}""")
+        eventually { vm.state.value.queuedMessages.all { !it.sending } }
+        main.onMain { vm.cancelQueued(first) }
+        val cancelled = Json.parseToJsonElement(socket.awaitText()).jsonObject
+        assertEquals("cancel_queued", cancelled["type"]?.stringValue)
+        assertEquals(first, cancelled["requestId"]?.stringValue)
+        assertTrue(vm.state.value.queuedMessages.first().cancelling)
+        socket.sendText("""{"type":"queue","messages":[{"requestId":"$second","content":"One more task"}]}""")
+        socket.sendText("""{"type":"user_message","requestId":"$second","content":"One more task"}""")
+        socket.sendText("""{"type":"user_message","requestId":"$second","content":"One more task"}""")
+        eventually { vm.state.value.queuedMessages.isEmpty() }
+        assertEquals(listOf("One more task"), vm.state.value.messages.filter { it.user }.map { it.content })
+    }
+    @Test fun reconnectLoadsSavedQueueWithoutResendingIt() {
+        val socket = connect()
+        assertTrue(main.onMain { vm.send("Keep queued") })
+        val id = Json.parseToJsonElement(socket.awaitText()).jsonObject["requestId"]!!.stringValue!!
+        socket.sendText("""{"type":"queue","messages":[{"requestId":"$id","content":"Keep queued"}]}""")
+        eventually { vm.state.value.queuedMessages.singleOrNull()?.sending == false }
+        main.onMain { vm.disconnect() }
+        assertFalse(vm.state.value.canSend)
+        val next = connect()
+        next.sendText("""{"type":"history","sessionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","href":"/work/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","frames":[]}""")
+        next.sendText("""{"type":"queue","messages":[{"requestId":"$id","content":"Keep queued"}]}""")
+        eventually { vm.state.value.sessionId != null }
+        assertEquals(id, vm.state.value.queuedMessages.single().requestId)
+        assertFalse(vm.state.value.canClear)
+        assertTrue(next.received.isEmpty())
+    }
+    @Test fun rejectedEnqueueKeepsTheRequestTextInItsError() {
+        val socket = connect()
+        assertTrue(main.onMain { vm.send("Keep this request") })
+        val id = Json.parseToJsonElement(socket.awaitText()).jsonObject["requestId"]!!.stringValue!!
+        socket.sendText("""{"type":"error","requestId":"$id","message":"Queue is full"}""")
+        eventually { vm.state.value.messages.lastOrNull()?.error == true }
+        assertTrue(vm.state.value.queuedMessages.isEmpty())
+        assertTrue(vm.state.value.messages.last().content.contains("Keep this request"))
+        assertTrue(vm.state.value.messages.last().content.contains("Queue is full"))
+        assertTrue(vm.state.value.messages.none { it.user })
     }
     @Test fun pendingApprovalCannotBeClearedEvenIfStatusSaysReady() {
         val socket = connect()

@@ -19,6 +19,11 @@ final class OptioAssistantModel {
         var proposal: Proposal?
         var requestId: String?
     }
+    struct QueuedMessage: Identifiable, Equatable {
+        let requestId: String
+        let content: String
+        var id: String { requestId }
+    }
     enum Status: String { case disconnected, connecting, ready, thinking, executing, waitingForApproval }
     var rows: [Row] = []
     var draft = ""
@@ -26,13 +31,23 @@ final class OptioAssistantModel {
     private(set) var sessionId: String?
     private(set) var sessionHref: String?
     private var isClearing = false
+    private(set) var queue: [QueuedMessage] = []
+    private(set) var isSending = false
+    private var pendingSend: QueuedMessage?
+    private(set) var cancellingRequests: Set<String> = []
+    private(set) var runtime: String?
+    private(set) var selectedModel: String?
     private var socket: WebSocketClient?
     private var pump: Task<Void, Never>?
     private var streamId: UUID?
     private var generation = UUID()
 
-    var canSend: Bool { status == .ready && !isClearing && !rows.contains { $0.proposal?.decision == nil && $0.proposal != nil } }
-    var canReset: Bool { canSend }
+    var canSend: Bool { status != .disconnected && status != .connecting && !isClearing && !isSending }
+    var canReset: Bool { status == .ready && !isClearing && !isSending && queue.isEmpty && !rows.contains { $0.proposal != nil && $0.proposal?.decision == nil } }
+    var identity: String? {
+        guard let runtime else { return nil }
+        return WorkFeed.runtimeLabel(runtime) + " · " + (selectedModel?.isEmpty == false ? selectedModel! : "Default model")
+    }
 
     func start(api: APIClient) {
         guard socket == nil else { return }
@@ -60,6 +75,8 @@ final class OptioAssistantModel {
         socket = nil
         status = .disconnected
         isClearing = false
+        isSending = false
+        cancellingRequests = []
         streamId = nil
         expireProposals()
     }
@@ -90,11 +107,21 @@ final class OptioAssistantModel {
             reportUncertainResult()
             status = .disconnected
             isClearing = false
+            isSending = false
+            cancellingRequests = []
             expireProposals()
             streamId = nil
             if let reason, !reason.isEmpty { rows.append(Row(text: reason, isError: true)) }
         case .json(let obj):
             switch obj["type"] as? String {
+            case "queue":
+                guard let messages = obj["messages"] as? [[String: Any]] else { return }
+                queue = messages.compactMap { value in
+                    guard let id = value["requestId"] as? String, let content = value["content"] as? String else { return nil }
+                    return QueuedMessage(requestId: id, content: content)
+                }
+                cancellingRequests = cancellingRequests.intersection(Set(queue.map(\.requestId)))
+                if let pendingSend, queue.contains(where: { $0.requestId == pendingSend.requestId }) { acknowledge(pendingSend.requestId) }
             case "history":
                 guard let frames = obj["frames"] as? [[String: Any]] else { return }
                 rows = []
@@ -103,12 +130,13 @@ final class OptioAssistantModel {
                 sessionId = (obj["sessionId"] as? String).flatMap { UUID(uuidString: $0) == nil ? nil : $0 }
                 sessionHref = sessionId.flatMap { id in
                     let href = obj["href"] as? String
-                    return href == "/sessions/\(id)" ? href : nil
+                    return href == "/work/\(id)" || href == "/sessions/\(id)" ? href : nil
                 }
                 for frame in frames {
                     switch frame["type"] as? String {
                     case "user_message":
                         if let content = frame["content"] as? String {
+                            if let id = frame["requestId"] as? String { acknowledge(id) }
                             appendUserMessage(content, requestId: frame["requestId"] as? String)
                         }
                     case "text", "error", "action_result":
@@ -121,8 +149,14 @@ final class OptioAssistantModel {
             case "user_message":
                 guard let content = obj["content"] as? String else { return }
                 streamId = nil
+                if let id = obj["requestId"] as? String {
+                    queue.removeAll { $0.requestId == id }
+                    acknowledge(id)
+                }
                 appendUserMessage(content, requestId: obj["requestId"] as? String)
             case "status":
+                if let runtime = obj["runtime"] as? String { self.runtime = runtime }
+                if let model = obj["model"] as? String { selectedModel = model }
                 let value = obj["status"] as? String
                 status = value == "waiting_for_approval" ? .waitingForApproval : Status(rawValue: value ?? "") ?? .connecting
                 if status == .ready { streamId = nil }
@@ -151,7 +185,13 @@ final class OptioAssistantModel {
                 if obj["type"] as? String == "action_result", let id = obj["actionId"] as? String {
                     settleProposal(id, decision: "Approved")
                 }
-                if obj["type"] as? String == "error" { isClearing = false }
+                if obj["type"] as? String == "error" {
+                    isClearing = false
+                    if let id = obj["requestId"] as? String {
+                        cancellingRequests.remove(id)
+                        if pendingSend?.requestId == id { pendingSend = nil; isSending = false }
+                    }
+                }
                 streamId = nil
                 let isError = obj["type"] as? String == "error" || obj["success"] as? Bool == false
                 rows.append(Row(text: obj["summary"] as? String ?? obj["message"] as? String ?? "Optio couldn’t process the request.", isError: isError))
@@ -161,7 +201,7 @@ final class OptioAssistantModel {
         }
     }
 
-    /// Both optimistic sends and server echoes use the same request identity.
+    /// Saved history and live messages use the same request identity.
     func appendUserMessage(_ content: String, requestId: String?) {
         if let requestId, rows.contains(where: { $0.requestId == requestId }) { return }
         rows.append(Row(role: "user", text: content, requestId: requestId))
@@ -180,20 +220,42 @@ final class OptioAssistantModel {
         return String(decoding: data, as: UTF8.self)
     }
 
-    func send() async {
+    private func acknowledge(_ id: String) {
+        guard let pendingSend, pendingSend.requestId == id else { return }
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines) == pendingSend.content { draft = "" }
+        self.pendingSend = nil
+        isSending = false
+    }
+
+    /// Start a submission without claiming it is queued or part of the transcript yet.
+    func prepareSend() -> [String: Any]? {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canSend, !text.isEmpty, let socket else { return }
+        guard canSend, !text.isEmpty else { return nil }
         let requestId = UUID().uuidString
-        status = .thinking
-        streamId = nil
-        // Insert before sending so even an immediate server echo cannot duplicate it.
-        appendUserMessage(text, requestId: requestId)
+        pendingSend = QueuedMessage(requestId: requestId, content: text)
+        isSending = true
+        return ["type": "message", "content": text, "requestId": requestId]
+    }
+
+    func send() async {
+        guard let socket, let frame = prepareSend() else { return }
         do {
-            try await socket.send(json: ["type": "message", "content": text, "requestId": requestId])
-            if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
+            // Queue acknowledgement (or a turn's user_message) owns the draft clear.
+            // Never add queued requests to the transcript before the turn starts.
+            try await socket.send(json: frame)
         } catch {
             stop()
-            rows.append(Row(text: "Couldn’t send. Your draft is preserved. Reconnect before trying again.", isError: true))
+            rows.append(Row(text: "Couldn’t queue the request. Your draft is preserved. Reconnect before trying again.", isError: true))
+        }
+    }
+
+    func cancelQueued(_ id: String) async {
+        guard canSend, queue.contains(where: { $0.requestId == id }), !cancellingRequests.contains(id), let socket else { return }
+        cancellingRequests.insert(id)
+        do { try await socket.send(json: ["type": "cancel_queued", "requestId": id]) }
+        catch {
+            cancellingRequests.remove(id)
+            stop()
         }
     }
 

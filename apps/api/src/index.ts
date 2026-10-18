@@ -342,6 +342,8 @@ async function main() {
 
   const { startGlanceSweepWorker } = await import("./workers/glance-sweep-worker.js");
   const glanceSweepWorker = startGlanceSweepWorker();
+  const { startSessionMessageWorker } = await import("./workers/session-message-worker.js");
+  const sessionMessageWorker = startSessionMessageWorker();
   logger.info("Glance sweep worker started");
 
   // Config as code: the configuration directory, when the deployment has one.
@@ -353,6 +355,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     logger.info("Shutting down...");
+    await sessionMessageWorker.close();
     // First: let go of every run this instance streams — the exec severed,
     // the lease given up now — so another instance picks them up in
     // seconds (run-attachment.ts). The agents keep running in their pods.

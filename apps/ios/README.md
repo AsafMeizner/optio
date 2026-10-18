@@ -2,9 +2,9 @@
 
 Native SwiftUI client for the full Optio experience, built around one noun:
 **Work**. The tabs mirror the web sidebar — **Overview**; **Work** (All ·
-Reviews · Inbox); **Library** (Prompts · Repos · Machines · Connections);
-**Insights** (Analytics · Costs · Activity · Cluster); **More** (Admin, Settings,
-Account). The Work screen merges every kind of work — PR tasks, jobs,
+Reviews · Inbox); **Optio Agent**; **Library** (Prompts · Repos · Machines · Connections);
+**More** (Insights, Admin, Settings, Account). Insights includes Analytics, Costs,
+Activity and Cluster. The Work screen merges every kind of work — PR tasks, jobs,
 scheduled blueprints, Local automations and terminals, pod sessions, persistent
 agents — into one list (`Features/Work/Feed/WorkFeed.swift`, a port of the
 web's `lib/work-feed.ts`) with Active / Recurring / Agents / History / All
@@ -75,7 +75,10 @@ Optio container release does not publish the iOS app.
 
 ## Ask Optio
 
-**Ask Optio** is available from the Overview and Work toolbars, and from More.
+**Optio Agent** has its own tab, also reached by Ask Optio shortcuts from Overview,
+Work and More. The gear opens native settings for all six harnesses, catalog models
+and runtime options, with admin-only saving. The chat shows the runtime/model
+reported by the server. Tool allowlist editing remains available on the web.
 The native assistant streams replies from `/ws/optio/chat`, previews proposed work,
 and provides explicit Approve / Decline controls. Every proposed setting remains
 available under All settings. Work links open their native detail screen.
@@ -87,7 +90,11 @@ its view; the server retains the conversation and work continues. Reopening repl
 the displayed transcript with server history and restores outstanding approvals.
 Drafts stay local, message echoes are deduplicated by request id, and reconnecting
 never resends an action. Clear conversation is available only while idle with no
-pending approvals, and removes history only after server acknowledgement.
+pending approvals or queued messages, and removes history only after server acknowledgement.
+Messages can be submitted while a turn is thinking, executing, or awaiting approval.
+A separate queue shows requests in order with cancellation controls; only started
+turns enter the transcript. The draft clears after server acknowledgement, and queue
+snapshots restore state after reconnecting.
 The assistant uses the selected server's PAT and workspace; viewers do not see
 its entry points.
 
@@ -203,7 +210,7 @@ Pass the variables with `xcrun simctl launch --terminate-running-process …`: a
 separate `simctl terminate` followed by `launch` drops the `SIMCTL_CHILD_`
 environment, and the app then silently reuses whatever was paired last time.
 
-Sections: sessions, reviews, inbox, prompts, repos, machines, connections,
+Sections: assistant (or optio), sessions, reviews, inbox, prompts, repos, machines, connections,
 analytics, costs, activity, cluster, more. The legacy names (tasks, jobs,
 scheduled, agents, local, issues) still work and land on the matching Sessions
 view (`optio://section/sessions?view=recurring` selects a view directly). With `OPTIO_AUTH_DISABLED=true` on

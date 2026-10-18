@@ -1,6 +1,7 @@
 package dev.optio.core.navigation
 
 import androidx.navigation3.runtime.NavKey
+import dev.optio.core.navigation.routes.OptioAssistantRoute
 
 /**
  * How feature code moves around the app. Read it with `LocalNavigator.current`.
@@ -66,7 +67,9 @@ class RouterNavigator(
     private val onOpenDeepLink: (url: String) -> Unit = { router.handle(it) },
     private val onOpenExternal: (url: String) -> Unit,
 ) : Navigator {
-    override fun push(route: NavKey) = router.push(route)
+    override fun push(route: NavKey) {
+        if (route == OptioAssistantRoute) router.openTab(Tab.ASSISTANT) else router.push(route)
+    }
 
     override fun pop() {
         router.pop()

@@ -183,7 +183,8 @@ class RoleGatingTest {
     @Test
     fun agentSettingsReadOnlyForNonAdmins() {
         show { OptioAgentSettingsContent(LoadState.Loaded(AgentSettingsForm()), AgentSettingsForm(), isAdmin = false, saving = false, saved = false, contentPadding = PaddingValues(), onRetry = {}, onEdit = {}, onSave = {}) }
-        compose.onNodeWithTag("model-opus").assertIsNotEnabled()
+        compose.onNodeWithTag("assistant-runtime-readonly").assertExists()
+        compose.onAllNodesWithTag("assistant-runtime").assertCountEquals(0)
         compose.onNodeWithTag("max-turns-plus").assertIsNotEnabled()
         compose.onAllNodesWithTag("save-settings").assertCountEquals(0)
         compose.onNodeWithTag("agent-settings").performScrollToNode(hasTestTag("review-model"))
@@ -193,7 +194,7 @@ class RoleGatingTest {
     @Test
     fun agentSettingsAdminSaves() {
         show { OptioAgentSettingsContent(LoadState.Loaded(AgentSettingsForm()), AgentSettingsForm(), isAdmin = true, saving = false, saved = false, contentPadding = PaddingValues(), onRetry = {}, onEdit = {}, onSave = {}) }
-        compose.onNodeWithTag("model-opus").assertIsEnabled()
+        compose.onNodeWithTag("assistant-runtime").assertIsEnabled()
         compose.onNodeWithTag("agent-settings").performScrollToNode(hasTestTag("save-settings"))
         compose.onNodeWithTag("save-settings").assertIsEnabled()
     }

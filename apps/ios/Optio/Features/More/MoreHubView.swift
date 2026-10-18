@@ -4,6 +4,8 @@ import SwiftUI
 /// card (the Library group has its own tab). Each row pushes its own screen;
 /// creation flows are sheets.
 struct MoreHubView: View {
+    @Environment(AppRouter.self) private var router
+    @State private var insightPath: [AppRouter.Section] = []
     @Environment(APIClient.self) private var api
     @Environment(SessionStore.self) private var session
     @State private var context = MoreContext()
@@ -12,10 +14,16 @@ struct MoreHubView: View {
     @State private var currentWorkspaceName: String?
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $insightPath) {
             List {
                 Section { accountCard }
                 Section { AskOptioButton() }
+                Section("Insights") {
+                    NavigationLink("Analytics", value: AppRouter.Section.analytics)
+                    NavigationLink("Costs", value: AppRouter.Section.costs)
+                    NavigationLink("Activity", value: AppRouter.Section.activity)
+                    NavigationLink("Cluster", value: AppRouter.Section.cluster)
+                }
                 Section {
                     NavigationLink { SecretsView() } label: {
                         Label("Secrets", systemImage: "key")
@@ -73,6 +81,17 @@ struct MoreHubView: View {
             .background(Surface.page)
             .symbolRenderingMode(.hierarchical)
             .navigationTitle("More")
+            .navigationDestination(for: AppRouter.Section.self) { section in
+                switch section {
+                case .analytics: AnalyticsView().navigationTitle("Analytics")
+                case .costs: CostsView().navigationTitle("Costs")
+                case .activity: ActivityView().navigationTitle("Activity")
+                case .cluster: ClusterView().navigationTitle("Cluster")
+                default: EmptyView()
+                }
+            }
+            .onAppear(perform: consumeInsightRoute)
+            .onChange(of: router.pendingSection) { _, _ in consumeInsightRoute() }
             .hubChrome()
             .serverSwitcherToolbar()
             .environment(context)
@@ -93,6 +112,13 @@ struct MoreHubView: View {
         // On the stack itself, not the List: pushed destinations (Settings, Repos, …)
         // inherit the stack's environment, not the List's. Missing it crashes on push.
         .environment(context)
+    }
+
+    private func consumeInsightRoute() {
+        guard let section = router.pendingSection,
+              [.analytics, .costs, .activity, .cluster].contains(section) else { return }
+        insightPath = [section]
+        router.pendingSection = nil
     }
 
     private var accountCard: some View {

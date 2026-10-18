@@ -16,6 +16,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.BarChart
+import dev.optio.core.navigation.Tab
+import dev.optio.core.navigation.routes.HubRoute
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.Devices
@@ -154,6 +157,10 @@ fun MoreHubContent(
             groupedItem("identity") { AccountCard(user = user, host = active?.host) }
             if (user?.canMutate != false) groupedItem("assistant", header = "Assistant") {
                 SettingsRow("Ask Optio", icon = Icons.Outlined.ChatBubbleOutline, onClick = { onOpen(OptioAssistantRoute) }, modifier = Modifier.testTag("more-assistant"))
+            }
+            groupedItem("insights", header = "Insights") {
+                SettingsRow("Analytics, costs and activity", icon = Icons.Outlined.BarChart,
+                    onClick = { onOpen(HubRoute(Tab.INSIGHTS)) }, modifier = Modifier.testTag("more-insights"))
             }
             groupedItem("admin", header = "Admin") {
                 SettingsRow("Secrets", icon = Icons.Outlined.Key, onClick = { onOpen(SecretsRoute) }, modifier = Modifier.testTag("more-secrets"))

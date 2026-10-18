@@ -9,6 +9,10 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.ui.text.style.TextOverflow
+import dev.optio.core.ui.agent.runtimeLabel
+import dev.optio.core.ui.auth.Roles
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -48,11 +52,12 @@ fun OptioAssistantHost(content: @Composable () -> Unit) {
 
 /** Full-screen composition keeps the keyboard, review cards and navigation from overlapping. */
 @Composable
-internal fun OptioAssistantScreen() {
+fun OptioAssistantScreen(showBack: Boolean = true, headerContent: @Composable () -> Unit = {}) {
     val api = LocalApiClient.current
     val vm = LocalAssistant.current
     val state by vm.state.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
+    val canMutate = Roles.canMutate
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val scope = rememberCoroutineScope()
     var linkError by remember { mutableStateOf<String?>(null) }
@@ -71,18 +76,21 @@ internal fun OptioAssistantScreen() {
             } else if (uri.startsWith("https://") || uri.startsWith("http://")) navigator.openExternal(uri)
         }
     } }
-    DisposableEffect(vm, lifecycle) {
+    DisposableEffect(vm, lifecycle, canMutate) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_START) vm.connect()
+            if (event == Lifecycle.Event.ON_START && canMutate) vm.connect()
             if (event == Lifecycle.Event.ON_STOP) vm.disconnect()
         }
         lifecycle.addObserver(observer)
-        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) vm.connect()
+        if (canMutate && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) vm.connect()
         onDispose { lifecycle.removeObserver(observer); vm.disconnect() }
     }
     CompositionLocalProvider(LocalUriHandler provides uriHandler) {
-        OptioAssistantContent(state, vm::send, vm::decide, vm::reset, vm::reconnect,
-            onBack = { navigator.pop() }, linkError = linkError, initialDraft = vm.draft, onDraftChange = { vm.draft = it })
+        OptioAssistantContent(if (canMutate) state else state.copy(status = "readonly", error = "Optio Agent requires workspace member access."),
+            vm::send, vm::decide, vm::reset, vm::reconnect,
+            onBack = { navigator.pop() }, linkError = linkError, initialDraft = vm.draft, onDraftChange = { vm.draft = it },
+            showBack = showBack, headerContent = headerContent,
+            onSettings = { navigator.push(OptioAgentSettingsRoute) }, onCancelQueued = vm::cancelQueued)
     }
 }
 
@@ -97,12 +105,16 @@ internal fun OptioAssistantContent(
     linkError: String? = null,
     initialDraft: String = "",
     onDraftChange: (String) -> Unit = {},
+    showBack: Boolean = true,
+    headerContent: @Composable () -> Unit = {},
+    onSettings: (() -> Unit)? = null,
+    onCancelQueued: (String) -> Unit = {},
 ) {
     var draft by rememberSaveable { mutableStateOf(initialDraft) }
     fun updateDraft(value: String) { draft = value; onDraftChange(value) }
     var confirmClear by rememberSaveable { mutableStateOf(false) }
     val list = rememberLazyListState()
-    LaunchedEffect(state.messages.lastOrNull()?.content, state.messages.size, state.status) {
+    LaunchedEffect(state.messages.lastOrNull()?.content, state.messages.size, state.status, state.queuedMessages) {
         if (list.layoutInfo.totalItemsCount > 0) list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1)
     }
     if (confirmClear) AlertDialog(
@@ -115,11 +127,23 @@ internal fun OptioAssistantContent(
     Scaffold(
         modifier = Modifier.testTag("optio-assistant"),
         topBar = {
-            TopAppBar(title = { Text("Ask Optio") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = {
-                    IconButton(onClick = { confirmClear = true }, enabled = state.canClear && state.messages.isNotEmpty()) { Icon(Icons.Outlined.DeleteSweep, "Clear conversation") }
-                })
+            Column {
+                TopAppBar(title = {
+                    Column {
+                        Text("Optio Agent")
+                        state.runtime?.let { runtime ->
+                            Text(listOfNotNull(runtimeLabel(runtime), state.model?.takeIf { it.isNotBlank() }).joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("assistant-identity"))
+                        }
+                    }
+                }, navigationIcon = { if (showBack) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                    actions = {
+                        onSettings?.let { IconButton(onClick = it) { Icon(Icons.Outlined.Settings, "Optio Agent settings") } }
+                        IconButton(onClick = { confirmClear = true }, enabled = state.canClear && state.messages.isNotEmpty()) { Icon(Icons.Outlined.DeleteSweep, "Clear conversation") }
+                    })
+                headerContent()
+            }
         },
         bottomBar = {
             Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -131,6 +155,7 @@ internal fun OptioAssistantContent(
                         "executing" -> "Working…"
                         "waiting_for_approval" -> "Review the proposal above"
                         "disconnected" -> "Disconnected"
+                        "readonly" -> "Read-only"
                         else -> "Ready"
                     }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
                     if (state.status == "disconnected") TextButton(onClick = onReconnect) { Text("Reconnect") }
@@ -142,7 +167,7 @@ internal fun OptioAssistantContent(
                     placeholder = { Text("Describe the work you want…") }, minLines = 2, maxLines = 5,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
                 Button(onClick = { if (onSend(draft)) updateDraft("") },
-                    enabled = state.canSend && draft.isNotBlank(), modifier = Modifier.fillMaxWidth().testTag("assistant-send")) { Text("Send") }
+                    enabled = state.canSend && draft.isNotBlank(), modifier = Modifier.fillMaxWidth().testTag("assistant-send")) { Text(if (state.busy || state.pending || state.queuedMessages.isNotEmpty()) "Queue message" else "Send") }
             }
         },
     ) { padding ->
@@ -164,6 +189,22 @@ internal fun OptioAssistantContent(
                         Text(if (message.user) "You" else "Optio", style = MaterialTheme.typography.labelMedium)
                         SelectionContainer { MarkdownText(message.content) }
                         message.action?.let { AssistantActionView(it, state.ready, onDecide) }
+                    }
+                }
+            }
+            if (state.queuedMessages.isNotEmpty()) {
+                item(key = "queue-label") {
+                    Text("Up next", style = MaterialTheme.typography.titleMedium)
+                    Text("Queued messages run in order after the current request.", style = MaterialTheme.typography.bodySmall)
+                }
+                items(state.queuedMessages, key = { "queue-${it.requestId}" }) { queued ->
+                    OutlinedCard(Modifier.fillMaxWidth().testTag("assistant-queue-${queued.requestId}")) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(if (queued.sending) "Sending…" else if (queued.cancelling) "Cancelling…" else "Queued", style = MaterialTheme.typography.labelMedium)
+                            SelectionContainer { Text(queued.content) }
+                            if (!queued.sending) TextButton(onClick = { onCancelQueued(queued.requestId) },
+                                enabled = state.canSend && !queued.cancelling) { Text("Cancel queued message") }
+                        }
                     }
                 }
             }

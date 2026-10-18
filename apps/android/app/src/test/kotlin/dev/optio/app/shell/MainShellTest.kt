@@ -8,6 +8,7 @@ import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -64,6 +65,15 @@ class MainShellTest {
         compose.onNodeWithTag("hub-overview").assertIsDisplayed()
         compose.onRoot().captureRoboImage("build/outputs/roborazzi/MainShell_overview.png")
 
+        compose.onNodeWithTag("tab-assistant").performClick()
+        compose.onNodeWithTag("optio-assistant").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Back").assertDoesNotExist()
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/MainShell_assistant.png")
+        compose.onNodeWithContentDescription("Optio Agent settings").performClick()
+        compose.runOnIdle { assertEquals(Tab.ASSISTANT, router.selectedTab); router.pop() }
+        compose.onNodeWithTag("optio-assistant").assertIsDisplayed()
+        compose.onNodeWithTag("tab-insights").assertDoesNotExist()
+
         // Library › Repos via the bar and the segmented switcher.
         compose.onNodeWithTag("tab-library").performClick()
         compose.onNodeWithTag("section-repos").performClick()
@@ -112,8 +122,20 @@ class MainShellTest {
                 OptioTheme { MainShell(router = router) }
             }
         }
+        compose.onNodeWithTag("tab-assistant").performClick()
+        compose.onRoot().captureRoboImage("build/outputs/roborazzi/MainShell_assistant_large_font.png")
+        for (tab in Tab.primary) {
+            val label = hasText(tab.label) and hasAnyAncestor(hasTestTag("tab-${tab.name.lowercase()}"))
+            val node = compose.onNode(label, useUnmergedTree = true).fetchSemanticsNode()
+            val layouts = mutableListOf<TextLayoutResult>()
+            node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
+            assertFalse("${tab.label} is cut off in the tab bar", layouts.single().hasVisualOverflow)
+        }
         for (tab in listOf(Tab.WORK, Tab.LIBRARY, Tab.INSIGHTS)) {
-            compose.onNodeWithTag("tab-${tab.name.lowercase()}").performClick()
+            if (tab == Tab.INSIGHTS) {
+                compose.onNodeWithTag("tab-more").performClick()
+                compose.onNodeWithTag("more-insights").performClick()
+            } else compose.onNodeWithTag("tab-${tab.name.lowercase()}").performClick()
             for (section in tab.sections) {
                 val label = hasText(section.label) and hasAnyAncestor(hasTestTag("section-${section.name.lowercase()}"))
                 val node = compose.onNode(label, useUnmergedTree = true).fetchSemanticsNode()

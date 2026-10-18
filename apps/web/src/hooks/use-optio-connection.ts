@@ -17,7 +17,6 @@ export function useOptioConnection() {
   const isOpen = useOptioChatStore((s) => s.isOpen);
   const [started, setStarted] = useState(false);
   const [sessionHref, setSessionHref] = useState<string | null>(null);
-  const sentRequests = useRef(new Set<string>());
   const [attempt, setAttempt] = useState(0);
   const socket = useRef<WebSocket | null>(null);
   const streamId = useRef<string | null>(null);
@@ -64,8 +63,10 @@ export function useOptioConnection() {
               });
           }
           break;
+        case "queue":
+          if (Array.isArray(frame.messages)) s.setQueuedMessages(frame.messages);
+          break;
         case "user_message":
-          if (sentRequests.current.delete(frame.requestId)) break;
           if (typeof frame.content === "string")
             s.addMessage({ ...message(frame.content), role: "user" });
           streamId.current = null;
@@ -160,20 +161,13 @@ export function useOptioConnection() {
       const s = store();
       if (
         !text.trim() ||
-        s.status !== "ready" ||
-        s.messages.some((m) => m.action?.decision === null)
+        !["ready", "thinking"].includes(s.status) ||
+        s.queuedMessages.length >= 20
       )
         return false;
       const requestId = crypto.randomUUID();
-      sentRequests.current.add(requestId);
-      if (!sendFrame({ type: "message", content: text.trim(), requestId })) {
-        sentRequests.current.delete(requestId);
-        return false;
-      }
-      streamId.current = null;
-      s.addMessage({ ...message(text.trim()), role: "user" });
+      if (!sendFrame({ type: "message", content: text.trim(), requestId })) return false;
       s.incrementExchange();
-      s.setStatus("thinking");
       return true;
     },
     [sendFrame],
@@ -195,7 +189,11 @@ export function useOptioConnection() {
   );
 
   const reset = useCallback(() => {
-    if (store().status !== "ready" || store().messages.some((m) => m.action?.decision === null))
+    if (
+      store().status !== "ready" ||
+      store().queuedMessages.length ||
+      store().messages.some((m) => m.action?.decision === null)
+    )
       return;
     if (!sendFrame({ type: "interrupt" })) return;
     streamId.current = null;
@@ -216,5 +214,12 @@ export function useOptioConnection() {
     setAttempt((n) => n + 1);
   }, []);
 
-  return { send, decide, reset, reconnect, sessionHref };
+  return {
+    send,
+    decide,
+    reset,
+    reconnect,
+    sessionHref,
+    cancelQueued: (requestId: string) => sendFrame({ type: "cancel_queued", requestId }),
+  };
 }

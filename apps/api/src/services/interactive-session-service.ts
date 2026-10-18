@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { eq, and, desc, gte, isNull, lte, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { getPod } from "./agent-pod-pool.js";
-import { interactiveSessions, sessionPrs, sessionChatEvents, repos } from "../db/schema.js";
+import {
+  interactiveSessions,
+  sessionPrs,
+  sessionChatEvents,
+  sessionChatTurns,
+  repos,
+} from "../db/schema.js";
 import { publishEvent, publishSessionEvent } from "./event-bus.js";
 import {
   InteractiveSessionState,
@@ -198,6 +204,15 @@ export async function endSession(id: string) {
     })
     .where(eq(interactiveSessions.id, id))
     .returning();
+
+  if (session.agentRuntime) {
+    await db
+      .update(sessionChatTurns)
+      .set({ state: "interrupted", prompt: null, finishedAt: new Date() })
+      .where(and(eq(sessionChatTurns.sessionId, id), eq(sessionChatTurns.state, "queued")));
+    const { publishSessionQueue } = await import("./session-turn-service.js");
+    await publishSessionQueue(id);
+  }
 
   // Sockets and the running turn may be on any instance: both go through the
   // session bus, and the ended state above is what a missed message falls

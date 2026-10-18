@@ -66,7 +66,7 @@ final class MobileDesignUITests: XCTestCase {
     func testHubDestinationsRemainReachable() throws {
         let app = try launch(section: "work")
         XCTAssertTrue(app.buttons["New work"].firstMatch.waitForExistence(timeout: 15))
-        for (tab, section) in [("Library", "Repos"), ("Insights", "Costs"), ("Work", "Reviews"), ("Work", "Inbox")] {
+        for (tab, section) in [("Library", "Repos"), ("Work", "Reviews"), ("Work", "Inbox")] {
             app.tabBars.buttons[tab].tap()
             let button = app.buttons[section].firstMatch
             XCTAssertTrue(button.waitForExistence(timeout: 5))
@@ -74,12 +74,21 @@ final class MobileDesignUITests: XCTestCase {
             XCTAssertTrue(button.isSelected)
             save(app, "ios-\(section.lowercased())")
         }
+        app.tabBars.buttons["More"].tap()
+        app.buttons["Costs"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Costs"].waitForExistence(timeout: 5))
+        save(app, "ios-costs-in-more")
+        app.navigationBars.buttons["More"].tap()
         app.tabBars.buttons["Overview"].tap()
         XCTAssertTrue(app.navigationBars["Overview"].waitForExistence(timeout: 5))
         save(app, "ios-overview")
         app.tabBars.buttons["More"].tap()
-        XCTAssertTrue(app.staticTexts["Servers"].firstMatch.waitForExistence(timeout: 5))
+        let servers = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Servers")).firstMatch
+        for _ in 0..<4 where !servers.isHittable { app.swipeUp() }
+        XCTAssertTrue(servers.isHittable)
         save(app, "ios-more")
+        servers.tap()
+        XCTAssertTrue(app.navigationBars["Servers"].waitForExistence(timeout: 5))
     }
 
     private func launch(section: String) throws -> XCUIApplication {

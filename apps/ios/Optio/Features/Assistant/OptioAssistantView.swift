@@ -3,10 +3,13 @@ import SwiftUI
 struct OptioAssistantView: View {
     @Environment(APIClient.self) private var api
     @Environment(AppRouter.self) private var router
-    @Environment(\.dismiss) private var dismiss
+    @Environment(SessionStore.self) private var session
+    @State private var settingsContext = MoreContext()
+    @State private var showSettings = false
     @Bindable var model: OptioAssistantModel
     @State private var showReset = false
     @State private var navigationError: String?
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -15,21 +18,41 @@ struct OptioAssistantView: View {
                     LazyVStack(alignment: .leading, spacing: 20) {
                         if model.rows.isEmpty { introduction }
                         ForEach(model.rows) { row in message(row) }
+                        if !model.queue.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Queued messages (\(model.queue.count))").font(.headline)
+                                Text("These run in order after the current request finishes.").font(.caption).foregroundStyle(.secondary)
+                                ForEach(model.queue) { item in
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(item.content).textSelection(.enabled)
+                                        Button("Cancel queued message") { Task { await model.cancelQueued(item.requestId) } }
+                                            .font(.caption)
+                                            .disabled(!model.canSend || model.cancellingRequests.contains(item.requestId))
+                                    }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(AppTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                                }
+                            }.accessibilityIdentifier("Queued messages")
+                        }
                         Color.clear.frame(height: 1).id("bottom")
                     }
                     .padding()
                     .frame(maxWidth: 720)
                     .frame(maxWidth: .infinity)
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .onChange(of: model.rows.last?.text) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                 .onChange(of: model.rows.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                .onChange(of: model.queue.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .background(Surface.page)
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-            .navigationTitle("Ask Optio")
+            .navigationTitle("Optio Agent")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Agent settings")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { showReset = true } label: { Image(systemName: "eraser") }
                         .accessibilityLabel("Clear conversation")
@@ -44,14 +67,24 @@ struct OptioAssistantView: View {
                 Task { await openWork(url) }
                 return .handled
             })
-            .task { model.start(api: api) }
+            .sheet(isPresented: $showSettings, onDismiss: { if session.canCreateWork { model.reconnect(api: api) } }) {
+                NavigationStack {
+                    OptioAgentSettingsView()
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
+                }.environment(settingsContext)
+            }
+            .serverSwitcherToolbar()
+            .task {
+                await settingsContext.refresh(api: api, session: session)
+                if session.canCreateWork { model.start(api: api) }
+            }
             .onDisappear { model.stop() }
         }
     }
 
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Turn an idea into work", systemImage: "sparkles").font(.title2.bold())
+            Label(session.canCreateWork ? "Turn an idea into work" : "Optio Agent requires member access", systemImage: "sparkles").font(.title2.bold())
             Text("Describe what you want done. Optio can find your repos and machines, then prepare work for you to review.").foregroundStyle(.secondary)
             Button("Help me start work on my machine") { model.draft = "Help me start work on my machine" }
                 .buttonStyle(.bordered)
@@ -151,10 +184,16 @@ struct OptioAssistantView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let identity = model.identity { Text(identity).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("Agent identity") }
             HStack {
                 Text(statusLabel).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                if model.status == .disconnected { Button("Reconnect") { model.reconnect(api: api) }.font(.caption.bold()) }
+                if composerFocused {
+                    Button { composerFocused = false } label: { Image(systemName: "keyboard.chevron.compact.down") }
+                        .accessibilityLabel("Hide keyboard")
+                        .frame(minWidth: 44, minHeight: 32)
+                }
+                if model.status == .disconnected, session.canCreateWork { Button("Reconnect") { model.reconnect(api: api) }.font(.caption.bold()) }
             }
             if let navigationError { Text(navigationError).font(.caption).foregroundStyle(.red) }
             HStack(alignment: .bottom, spacing: 12) {
@@ -163,6 +202,7 @@ struct OptioAssistantView: View {
                     .padding(12)
                     .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityLabel("Message to Optio")
+                    .focused($composerFocused)
                 Button { Task { await model.send() } } label: {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: 36)).frame(minWidth: 44, minHeight: 44)
                 }
@@ -175,11 +215,12 @@ struct OptioAssistantView: View {
     }
 
     private var statusLabel: String {
-        switch model.status {
+        if model.isSending { return "Sending your request…" }
+        return switch model.status {
         case .ready: "Ready · use your keyboard microphone to dictate"
-        case .waitingForApproval: "Review the proposed work above"
-        case .thinking: "Optio is thinking…"
-        case .executing: "Optio is working…"
+        case .waitingForApproval: "Review the proposal · you can queue another message"
+        case .thinking: "Thinking · send another message to queue it"
+        case .executing: "Working · send another message to queue it"
         case .connecting: "Connecting…"
         case .disconnected: "Disconnected · your draft is saved"
         }
@@ -191,7 +232,7 @@ struct OptioAssistantView: View {
             navigationError = "Open this link from the web app."
             return
         }
-        if parts.count == 1 { router.open(.work); dismiss(); return }
+        if parts.count == 1 { router.open(.work); return }
         guard let id = parts.last, UUID(uuidString: id) != nil else { return }
         struct Resolved: Decodable { let source: String }
         do {
@@ -209,7 +250,6 @@ struct OptioAssistantView: View {
             }
             router.createdWork = destination
             router.open(.work)
-            dismiss()
         } catch { navigationError = "Couldn’t open this work: \(error.localizedDescription)" }
     }
 }
@@ -219,7 +259,7 @@ struct AskOptioButton: View {
     @Environment(SessionStore.self) private var session
     var body: some View {
         if session.canCreateWork {
-            Button { router.showAssistant = true } label: { Label("Ask Optio", systemImage: "sparkles") }
+            Button { router.open(.assistant) } label: { Label("Ask Optio", systemImage: "sparkles") }
         }
     }
 }

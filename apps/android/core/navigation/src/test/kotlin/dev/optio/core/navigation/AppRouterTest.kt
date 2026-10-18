@@ -85,6 +85,19 @@ class AppRouterTest {
     }
 
     @Test
+    fun assistantShortcutAndDeepLinkOpenDedicatedTab() {
+        val router = AppRouter()
+        val navigator = RouterNavigator(router, onOpenExternal = {})
+        navigator.push(dev.optio.core.navigation.routes.OptioAssistantRoute)
+        assertEquals(Tab.ASSISTANT, router.selectedTab)
+        assertEquals(listOf(HubRoute(Tab.ASSISTANT)), router.currentBackStack.toList())
+        assertEquals(listOf(Tab.OVERVIEW, Tab.WORK, Tab.ASSISTANT, Tab.LIBRARY, Tab.MORE), Tab.primary)
+        router.select(Tab.WORK)
+        assertTrue(router.handle("optio://section/assistant"))
+        assertEquals(Tab.ASSISTANT, router.selectedTab)
+    }
+
+    @Test
     fun saverRestoresTabSectionsAndStacks() {
         val router = AppRouter()
         router.open(Section.CLUSTER)
