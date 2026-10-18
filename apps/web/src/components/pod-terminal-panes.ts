@@ -8,5 +8,5 @@ export function parsePodTerminals(params: { get(name: string): string | null }):
 export function podTerminalsHref(id: string, panes: PodTerminalPane[]): string {
   const query = new URLSearchParams();
   if (panes.length) query.set("terminals", panes.join(","));
-  return `/sessions/${id}${query.size ? `?${query}` : ""}`;
+  return `/work/${id}${query.size ? `?${query}` : ""}`;
 }

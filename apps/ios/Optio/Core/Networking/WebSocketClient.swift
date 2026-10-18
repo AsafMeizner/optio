@@ -27,6 +27,7 @@ final class WebSocketClient: @unchecked Sendable {
     private let url: URL
     private let tokenProvider: @Sendable () async -> String?
     private let autoReconnect: Bool
+    private let headers: [String: String]
     private var task: URLSessionWebSocketTask?
     private var closed = false
     private var continuation: AsyncStream<Frame>.Continuation?
@@ -50,10 +51,11 @@ final class WebSocketClient: @unchecked Sendable {
 
     let frames: AsyncStream<Frame>
 
-    init(url: URL, tokenProvider: @escaping @Sendable () async -> String?, autoReconnect: Bool = true, session: URLSession = .shared) {
+    init(url: URL, tokenProvider: @escaping @Sendable () async -> String?, autoReconnect: Bool = true, session: URLSession = .shared, headers: [String: String] = [:]) {
         self.url = url
         self.tokenProvider = tokenProvider
         self.autoReconnect = autoReconnect
+        self.headers = headers
         self.session = session
         var cont: AsyncStream<Frame>.Continuation?
         frames = AsyncStream { cont = $0 }
@@ -78,6 +80,7 @@ final class WebSocketClient: @unchecked Sendable {
             let token = await tokenProvider()
             if closed { return }
             var req = URLRequest(url: url)
+            for (key, value) in headers { req.setValue(value, forHTTPHeaderField: key) }
             var protocols = ["optio-ws-v1"]
             if let token { protocols.append("optio-auth-\(token)") }
             req.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")

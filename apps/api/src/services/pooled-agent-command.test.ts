@@ -20,7 +20,7 @@ describe("buildPooledAgentCommand — opencode", () => {
         OPTIO_OPENCODE_AGENT: "build",
       }),
     ).toBe(
-      'opencode run --format json --model "openai/gpt-4.1" --agent "build" "$OPTIO_PROMPT" </dev/null',
+      `opencode run --format json --model 'openai/gpt-4.1' --agent 'build' "$OPTIO_PROMPT" </dev/null`,
     );
   });
 });
@@ -37,7 +37,7 @@ describe("buildPooledAgentCommand — codex", () => {
       opts,
     );
     expect(lines.find((l) => l.startsWith("codex exec"))).toContain(
-      '--app-server "http://as:1455"',
+      "--app-server 'http://as:1455'",
     );
   });
 
@@ -53,6 +53,7 @@ describe("buildPooledAgentCommand — each runtime's MCP config", () => {
   it("Gemini runs in the run's own home", () => {
     const script = buildPooledAgentCommand("gemini", { OPTIO_PROMPT: "hi" }, opts).join("\n");
     expect(script).toContain('export GEMINI_CLI_HOME="$OPTIO_GEMINI_HOME"');
+    expect(script).toContain("--output-format stream-json");
     expect(script.indexOf("GEMINI_CLI_HOME")).toBeLessThan(script.indexOf("gemini -p"));
   });
 

@@ -20,6 +20,7 @@ export function Screenshot({
       alt={alt}
       width={capture.width}
       height={capture.height}
+      decoding="async"
       loading={eager ? "eager" : "lazy"}
       fetchPriority={eager ? "high" : "auto"}
     />

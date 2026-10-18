@@ -112,6 +112,8 @@ export async function recoverSessionTurns(): Promise<number> {
       )
     RETURNING t."id", t."session_id"`);
   for (const row of rows) {
+    const { expireSessionApprovals } = await import("./session-tool-approval.js");
+    await expireSessionApprovals(row.id);
     broadcastSessionChat(row.session_id, { type: "status", status: "idle", recovery: "resumable" });
   }
   if (rows.length > 0) logger.info({ settled: rows.length }, "Settled orphaned chat turns");

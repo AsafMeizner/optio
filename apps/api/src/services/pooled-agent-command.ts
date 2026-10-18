@@ -32,7 +32,7 @@ export function buildPooledAgentCommand(
   opts: { maxTurns: number; label: string },
 ): string[] {
   const { maxTurns, label } = opts;
-  const q = (s: string) => JSON.stringify(s);
+  const q = shellQuote;
 
   switch (agentType) {
     case "claude-code": {
@@ -47,7 +47,7 @@ export function buildPooledAgentCommand(
       const flags: string[] = [];
       if (env.OPTIO_CLAUDE_MODEL) {
         const ctx = env.OPTIO_CLAUDE_CONTEXT_WINDOW === "1m" ? "[1m]" : "";
-        flags.push(`--model ${env.OPTIO_CLAUDE_MODEL}${ctx}`);
+        flags.push(`--model ${q(env.OPTIO_CLAUDE_MODEL + ctx)}`);
       }
       // Effort + extended thinking, as the same settings keys the claude-code
       // adapter writes to ~/.claude/settings.json for Repo Tasks.
@@ -107,7 +107,7 @@ export function buildPooledAgentCommand(
       return [
         `echo "[optio] Running ${label} (Gemini)..."`,
         ...EXPORT_GEMINI_HOME,
-        `gemini${modelFlag}${approvalFlag} -p "$OPTIO_PROMPT"`,
+        `gemini${modelFlag}${approvalFlag} -p "$OPTIO_PROMPT" --output-format stream-json`,
       ];
     }
     case "cursor": {

@@ -3,6 +3,7 @@ import { db } from "../db/client.js";
 import { optioSettings } from "../db/schema.js";
 import {
   DEFAULT_OPTIO_AGENT_MODEL,
+  ALL_OPTIO_TOOL_NAMES,
   type OptioSettings,
   type UpdateOptioSettingsInput,
 } from "@optio/shared";
@@ -36,6 +37,8 @@ export async function getSettings(workspaceId?: string | null): Promise<OptioSet
   // Return defaults (no row in DB yet)
   return {
     id: "",
+    agentRuntime: "claude-code",
+    agentOptions: {},
     model: DEFAULT_OPTIO_AGENT_MODEL,
     systemPrompt: "",
     enabledTools: [],
@@ -69,6 +72,8 @@ export async function upsertSettings(
   if (existing) {
     // Update existing row
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (input.agentRuntime !== undefined) updates.agentRuntime = input.agentRuntime;
+    if (input.agentOptions !== undefined) updates.agentOptions = input.agentOptions;
     if (input.model !== undefined) updates.model = input.model;
     if (input.systemPrompt !== undefined) updates.systemPrompt = input.systemPrompt;
     if (input.enabledTools !== undefined) updates.enabledTools = input.enabledTools;
@@ -90,6 +95,8 @@ export async function upsertSettings(
     const [row] = await db
       .insert(optioSettings)
       .values({
+        agentRuntime: input.agentRuntime ?? "claude-code",
+        agentOptions: input.agentOptions ?? {},
         model: input.model ?? DEFAULT_OPTIO_AGENT_MODEL,
         systemPrompt: input.systemPrompt ?? "",
         enabledTools: input.enabledTools ?? [],
@@ -107,9 +114,13 @@ export async function upsertSettings(
 function mapRow(row: typeof optioSettings.$inferSelect): OptioSettings {
   return {
     id: row.id,
+    agentRuntime: row.agentRuntime,
+    agentOptions: row.agentOptions,
     model: row.model,
     systemPrompt: row.systemPrompt,
-    enabledTools: row.enabledTools,
+    enabledTools: ALL_OPTIO_TOOL_NAMES.every((name) => row.enabledTools.includes(name))
+      ? []
+      : row.enabledTools,
     confirmWrites: row.confirmWrites,
     maxTurns: row.maxTurns,
     defaultReviewAgentType: row.defaultReviewAgentType ?? null,

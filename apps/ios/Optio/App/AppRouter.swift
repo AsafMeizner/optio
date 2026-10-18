@@ -16,6 +16,7 @@ final class AppRouter {
     }
 
     var selectedTab: Tab = .overview
+    var showAssistant = false
     var pendingSection: Section?
     /// The Work view to select once the Work list is on screen (Overview tiles,
     /// `optio://section/work?view=…`). The screen consumes it.

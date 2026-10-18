@@ -3162,6 +3162,8 @@ data class OptioSettings(
      * An alias ("opus", "sonnet", "haiku", "fable": always the newest of that
      * family) or a specific model id, pinned.
      */
+    val agentRuntime: String,
+    val agentOptions: Map<String, JsonElement>,
     val model: String,
     val systemPrompt: String,
     val enabledTools: List<String>,
@@ -3182,6 +3184,8 @@ data class OptioSettings(
 
 @Serializable
 data class UpdateOptioSettingsInput(
+    val agentRuntime: String? = null,
+    val agentOptions: Map<String, JsonElement>? = null,
     val model: String? = null,
     val systemPrompt: String? = null,
     val enabledTools: List<String>? = null,

@@ -35,9 +35,10 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   // Keep the rail mounted while another work id resolves, but forget the
   // pending-session fallback when navigating out to the rest of the app.
   useEffect(() => {
-    if (!workId) useWorkSession.setState({ pathname: null, terminalId: null, local: false });
+    if (!workId)
+      useWorkSession.setState({ pathname: null, terminalId: null, local: false, pod: false });
   }, [workId]);
-  const inPodSession = /^\/sessions\/[^/]+$/.test(pathname) && pathname !== "/sessions/new";
+  const inPodSession = !!(workId && !inLocalTerminal && session.pod);
   const inSession = inLocalTerminal || inPodSession;
   // The attention watcher (favicon dot, tab badge, notifications for local
   // terminals) runs wherever those terminals are listed or open: the

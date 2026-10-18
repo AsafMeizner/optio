@@ -77,7 +77,8 @@ export interface AgentEnvironmentInput {
    */
   runId?: string | null;
   /** Only trusted task / Job / persistent-agent workers opt into controller grants. */
-  controllerRunKind?: "work-run" | "turn";
+  controllerOnly?: boolean;
+  controllerRunKind?: "work-run" | "turn" | "session-turn";
 }
 
 type McpEntry = { command: string; args: string[]; env?: Record<string, string> };
@@ -337,14 +338,15 @@ export async function buildAgentEnvironment(
 ): Promise<Record<string, string>> {
   const agentType = input.agentType;
   const agent = agentType ? { ...input, agentType } : null;
-  const [servers, connections, skills, installed] = agent
-    ? await Promise.all([
-        mcpServersFor(agent),
-        connectionsFor(agent),
-        skillsFor(agent),
-        installedSkillsFor(agent),
-      ])
-    : [[], [], [], []];
+  const [servers, connections, skills, installed] =
+    agent && !input.controllerOnly
+      ? await Promise.all([
+          mcpServersFor(agent),
+          connectionsFor(agent),
+          skillsFor(agent),
+          installedSkillsFor(agent),
+        ])
+      : [[], [], [], []];
 
   const setupFiles: SetupFile[] = [...extraFiles];
   const env: Record<string, string> = {};

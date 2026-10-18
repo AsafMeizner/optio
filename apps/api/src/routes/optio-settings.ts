@@ -8,33 +8,23 @@ import { modelBelongsToAgent } from "../services/agent-options-service.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
 import { requireRole } from "../plugins/auth.js";
 
-const MODEL_ALIASES = Object.keys(ANTHROPIC_CATALOG.aliases).join(" / ");
-
-/**
- * An alias, or any Claude model id — not just the baseline's: the live model
- * list offers models the baseline catalog hasn't heard of yet.
- */
-const isOptioModel = (m: string) =>
-  Object.hasOwn(ANTHROPIC_CATALOG.aliases, m) || /^claude-[a-z0-9][a-z0-9.-]*$/.test(m);
-
 const updateSettingsSchema = z
   .object({
+    agentRuntime: z
+      .enum(["claude-code", "codex", "copilot", "gemini", "opencode", "cursor"])
+      .optional(),
+    agentOptions: z.record(z.union([z.string().max(2000), z.boolean()])).optional(),
     model: z
       .string()
       .trim()
       .max(128)
-      .refine(isOptioModel, { message: `Expected ${MODEL_ALIASES} or a Claude model id` })
       .optional()
-      .describe(
-        `Claude model for the Optio assistant: an alias (${MODEL_ALIASES}) that always ` +
-          "means the newest model of that family, or a specific model id",
-      ),
+      .describe("Model for the selected assistant harness; blank uses its default"),
     systemPrompt: z.string().optional(),
     enabledTools: z
       .array(z.string())
-      .min(1, "At least one tool must be enabled")
       .optional()
-      .describe("Subset of tools the assistant is allowed to use"),
+      .describe("Subset of controller MCP tools; an empty array enables all"),
     confirmWrites: z.boolean().optional().describe("If true, prompt before write operations"),
     maxTurns: z.number().int().min(5).max(50).optional(),
     defaultReviewAgentType: z
@@ -90,6 +80,23 @@ export async function optioSettingsRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       const body = req.body;
+      const current = await optioSettingsService.getSettings(req.user?.workspaceId ?? null);
+      const runtime = body.agentRuntime ?? current?.agentRuntime ?? "claude-code";
+      if (
+        body.model &&
+        !(runtime === "claude-code"
+          ? Object.hasOwn(ANTHROPIC_CATALOG.aliases, body.model) ||
+            /^claude-[a-z0-9][a-z0-9.-]*$/.test(body.model)
+          : await modelBelongsToAgent(runtime, body.model, {
+              workspaceId: req.user?.workspaceId ?? null,
+            }))
+      ) {
+        return reply.status(400).send({ error: `Model does not belong to ${runtime}` });
+      }
+      if (body.agentRuntime && body.agentRuntime !== current?.agentRuntime) {
+        body.model ??= "";
+        body.agentOptions ??= {};
+      }
 
       // Mirror the per-repo validation: a default review model only makes
       // sense in the context of an explicit agent. If both fields are

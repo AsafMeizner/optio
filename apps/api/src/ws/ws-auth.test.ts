@@ -14,7 +14,12 @@ vi.mock("../services/oauth/index.js", () => ({
   isAuthDisabled: () => authDisabled,
 }));
 
-import { authenticateWs, extractSessionToken } from "./ws-auth.js";
+const mockValidateApiKey = vi.fn();
+vi.mock("../services/api-key-service.js", () => ({
+  validateApiKey: (...args: unknown[]) => mockValidateApiKey(...args),
+}));
+
+import { authenticateWs, authenticateWsWithCredentials, extractSessionToken } from "./ws-auth.js";
 import type { FastifyRequest } from "fastify";
 
 function createMockSocket() {
@@ -276,5 +281,42 @@ describe("extractSessionToken", () => {
   it("returns undefined when no token is present", () => {
     const req = createMockRequest();
     expect(extractSessionToken(req)).toBeUndefined();
+  });
+});
+
+describe("authenticated WebSocket credential passthrough", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authDisabled = false;
+  });
+  it("keeps the native PAT that actually authenticated, ignoring an invalid cookie", async () => {
+    const user = { id: "native-user", workspaceId: "workspace-a" };
+    mockValidateSession.mockResolvedValue(null);
+    mockValidateApiKey.mockResolvedValue(user);
+    const req = createMockRequest({ cookie: "optio_session=expired", token: "optio_pat_native" });
+    expect(await authenticateWsWithCredentials(createMockSocket(), req)).toEqual({
+      user,
+      token: "optio_pat_native",
+    });
+    expect(mockValidateApiKey).toHaveBeenCalledWith("optio_pat_native");
+  });
+  it("never forwards a consumed one-time upgrade token", async () => {
+    const user = { id: "cross-origin-user", workspaceId: "workspace-a" };
+    mockValidateWsToken.mockResolvedValue(user);
+    const result = await authenticateWsWithCredentials(
+      createMockSocket(),
+      createMockRequest({ token: "one-time" }),
+    );
+    expect(result).toEqual({ user });
+  });
+  it("does not forward a different PAT when the cookie authenticated", async () => {
+    const user = { id: "browser-user", workspaceId: "workspace-b" };
+    mockValidateSession.mockResolvedValue(user);
+    const result = await authenticateWsWithCredentials(
+      createMockSocket(),
+      createMockRequest({ cookie: "optio_session=valid", token: "optio_pat_other" }),
+    );
+    expect(result).toEqual({ user, token: "valid" });
+    expect(mockValidateApiKey).not.toHaveBeenCalled();
   });
 });

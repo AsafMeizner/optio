@@ -228,25 +228,25 @@ test.describe("New work form creates every kind", () => {
     expect(workflow.promptTemplate).toBe("./scripts/nightly-report.sh");
   });
 
-  test("pod-session: waiting for me in a pod keeps the name, and only chats with Claude Code", async ({
+  test("pod-session: waiting for me keeps the selected harness, name and prompt", async ({
     page,
   }) => {
     await open(page);
     await choosePreset(page, "Open a PR");
-    // Codex can't wait for you in a pod — the card says why.
+    // Interactive pod sessions support the same harnesses as other work.
     await who(page, "OpenAI Codex").click();
-    await expect(then(page, "Wait for me")).toBeDisabled();
-    await who(page, "Claude Code").click();
+    await expect(then(page, "Wait for me")).toBeEnabled();
     await then(page, "Wait for me").click();
-    // The first message is typed in the session, so there is no prompt here.
-    await expect(page.locator("#session-prompt")).toHaveCount(0);
+    await prompt(page).fill("Help with this repository");
     await nameInput(page).fill(named("pod session"));
     await expect(submit(page)).toHaveText(/Open session/);
     await submit(page).click();
-    await expect(page).toHaveURL(/\/sessions\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/work\/[0-9a-f-]{36}$/, { timeout: 30_000 });
     const id = page.url().split("/").pop()!;
     const { session } = await api(`/api/sessions/${id}`);
     expect(session.title).toBe(named("pod session"));
+    expect(session.agentRuntime).toBe("codex");
+    expect(session.initialPrompt).toBe("Help with this repository");
     expect(session.repoUrl).toBe("https://github.com/e2e-org/e2e-repo");
   });
 
@@ -256,6 +256,7 @@ test.describe("New work form creates every kind", () => {
     await open(page);
     await choosePreset(page, "Interactive chat");
     await pickMachine(page, "/Users/e2e/repos/e2e-repo");
+    await who(page, "Claude Code").click();
     await page.getByRole("button", { name: "New branch", exact: true }).click();
     await prompt(page).fill("Rename the widget");
     await nameInput(page).fill(named("local chat"));
@@ -283,6 +284,7 @@ test.describe("New work form creates every kind", () => {
     // Every trigger works with every Where — the pod stays available.
     await expect(where(page, "Optio pod")).toBeEnabled();
     await pickMachine(page, "/Users/e2e/repos/e2e-repo");
+    await who(page, "Claude Code").click();
     await page.getByRole("button", { name: "New branch", exact: true }).click();
     // "Assigned" is about you, so the login is required before submit.
     await prompt(page).fill("We were assigned {{ticketUrl}}. Triage it.");
@@ -323,6 +325,7 @@ test.describe("New work form creates every kind", () => {
     await choosePreset(page, "Interactive chat");
     await when(page, "GitHub").click();
     await pickMachine(page, "/Users/e2e/repos/e2e-repo");
+    await who(page, "Claude Code").click();
     await prompt(page).fill("Review {{url}} with me");
     await nameInput(page).fill(named("github automation"));
     await page.getByPlaceholder("octocat").fill("octocat");

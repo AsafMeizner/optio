@@ -100,6 +100,7 @@ test("pod terminal panes have their own streams and only group in the current vi
   try {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/sessions/${session.id}`);
+    await expect(page).toHaveURL(new RegExp(`/work/${session.id}$`));
     await page.getByTitle("Hide Terminal", { exact: true }).click();
     await page.getByRole("button", { name: "Open terminal here", exact: true }).click();
     await expect(page).toHaveURL(/terminals=1$/);
@@ -112,14 +113,17 @@ test("pod terminal panes have their own streams and only group in the current vi
     await expect.poll(() => streams.some((url) => url.endsWith("/terminal?terminal=1"))).toBe(true);
     await page.screenshot({ path: "/tmp/optio-session-panes-pod.png" });
     const other = await context.newPage();
-    await other.goto(`/sessions/${session.id}`);
+    await other.goto(`/sessions/${session.id}?terminals=2#chat`);
+    await expect(other).toHaveURL(new RegExp(`/work/${session.id}\\?terminals=2#chat$`));
+    await expect(other.locator('[data-session-pane="pod-2"]')).toBeVisible();
     await expect(
       other.getByRole("button", { name: "Open terminal here", exact: true }),
     ).toBeVisible();
     await expect(other.locator('[data-session-pane="pod-1"]')).toHaveCount(0);
     await other.close();
-    await page.goto("/work");
-    await page.goto(`/sessions/${session.id}`);
+    await page.getByRole("link", { name: "All work", exact: true }).click();
+    await expect(page).toHaveURL(/\/work$/);
+    await page.locator(`a[href="/work/${session.id}"]`).first().click();
     await expect(page.locator('[data-session-pane="pod-1"]')).toBeVisible();
     await page.getByRole("button", { name: "Open terminal here", exact: true }).click();
     await expect(

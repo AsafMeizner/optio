@@ -82,7 +82,7 @@ export function workHref(kind: WorkKind, id: string): string {
     case "local-terminal":
       return `/local/${id}`;
     case "pod-session":
-      return `/sessions/${id}`;
+      return `/work/${id}`;
     case "persistent-agent":
       return `/agents/${id}`;
   }
@@ -124,7 +124,9 @@ function check(spec: WorkSpec, kind: WorkKind): void {
     );
   }
   if (
-    (kind === "repo-task" || kind === "repo-blueprint" || kind === "pod-session") &&
+    (kind === "repo-task" ||
+      kind === "repo-blueprint" ||
+      (kind === "pod-session" && !spec.who.runtime)) &&
     !spec.where.repoUrl
   ) {
     throw new WorkError(400, `A ${NOUN[kind]} needs a repo`);
@@ -447,9 +449,14 @@ export async function createWork(
     }
 
     case "pod-session": {
-      // A terminal plus a Claude Code chat in a repo pod: only the repo and the name travel.
+      // Agent sessions retain the harness, prompt and environment; terminals use the repo shell.
       const session = await sessionService.createSession({
-        repoUrl: spec.where.repoUrl!,
+        repoUrl: spec.where.repoUrl || undefined,
+        repoBranch: spec.where.repoBranch,
+        agentRuntime: spec.who.runtime,
+        agentOptions: options(spec),
+        initialPrompt: spec.what.prompt,
+        settings: settingsOf(spec, kind),
         userId: actor.userId ?? undefined,
         workspaceId: actor.workspaceId,
         title: spec.name.trim(),

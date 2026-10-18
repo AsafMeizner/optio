@@ -1,8 +1,9 @@
-node_modules
+**/node_modules
 .git
-dist
-.next
-.turbo
+**/dist
+**/.next
+**/.next-e2e
+**/.turbo
 *.tsbuildinfo
 # Local dev env files must never bake into images (NEXT_PUBLIC_* is inlined at build time).
 **/.env

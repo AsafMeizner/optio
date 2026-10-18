@@ -76,7 +76,7 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
                     data-session-group={s.id === id && panes.length ? s.id : undefined}
                   >
                     <Link
-                      href={`/sessions/${s.id}`}
+                      href={`/work/${s.id}`}
                       onClick={(e) => {
                         if (s.id === id) {
                           e.preventDefault();
@@ -103,7 +103,9 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
                         </span>
                       </div>
                       <div className="mt-0.5 truncate pl-3.5 font-mono text-[10px] text-text-muted/80">
-                        {s.repoUrl.split("/").slice(-2).join("/")}
+                        {s.repoUrl
+                          ? s.repoUrl.split("/").slice(-2).join("/")
+                          : (s.agentRuntime ?? "Pod")}
                       </div>
                     </Link>
                     {s.id === id && panes.length > 0 && (

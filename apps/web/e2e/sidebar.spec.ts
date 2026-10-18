@@ -115,8 +115,8 @@ async function createSession(request: APIRequestContext, kind: "local" | "pod") 
     expect(response.ok()).toBe(true);
     const { session } = await response.json();
     return {
-      href: `/sessions/${session.id}`,
-      row: `a[href="/sessions/${session.id}"]`,
+      href: `/work/${session.id}`,
+      row: `a[href="/work/${session.id}"]`,
       done: () => request.post(`${API}/api/sessions/${session.id}/end`),
     };
   }
@@ -274,3 +274,30 @@ for (const kind of ["local", "pod"] as const) {
     }
   });
 }
+
+test("account settings use shared theme controls and fit a small screen", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  await page.goto("/work");
+  await page.getByRole("button", { name: "Open menu" }).click();
+  const account = page.getByRole("button", { name: "Account menu" });
+  await account.click();
+  const popup = page.getByRole("region", { name: "Account settings" });
+  await expect(popup).toBeVisible();
+  const theme = popup.getByRole("group", { name: "Theme", exact: true });
+  await theme.getByRole("button", { name: "Light", exact: true }).click();
+  await expect(theme.getByRole("button", { name: "Light", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("html")).toHaveClass(/light/);
+  const box = (await popup.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(320);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  await page.screenshot({ path: "/tmp/optio-account-menu-light.png" });
+  await theme.getByRole("button", { name: "Dark", exact: true }).click();
+  await page.screenshot({ path: "/tmp/optio-account-menu-dark.png" });
+  await page.keyboard.press("Escape");
+  await expect(popup).toBeHidden();
+  await expect(account).toBeFocused();
+});

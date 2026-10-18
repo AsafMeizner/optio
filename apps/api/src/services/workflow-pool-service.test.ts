@@ -1,3 +1,4 @@
+import { db } from "../db/client.js";
 import { isStatefulSetEnabled } from "./k8s-workload-service.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -8,6 +9,7 @@ vi.mock("../db/client.js", () => ({
     select: vi.fn().mockReturnThis(),
     from: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockResolvedValue([]),
     groupBy: vi.fn().mockResolvedValue([]),
     update: vi.fn().mockReturnThis(),
     set: vi.fn().mockReturnThis(),
@@ -35,6 +37,8 @@ vi.mock("../db/schema.js", () => ({
     managedBy: "managedBy",
     jobName: "jobName",
   },
+  interactiveSessions: { id: "id", podId: "podId", state: "state" },
+  sessionChatTurns: { id: "id", sessionId: "sessionId", state: "state" },
   workflowRuns: {
     id: "id",
     state: "state",
@@ -168,6 +172,13 @@ beforeEach(() => {
 // ── cleanupIdleWorkflowPods ─────────────────────────────────────────
 
 describe("cleanupIdleWorkflowPods", () => {
+  it("keeps an interactive workspace while its owner is away", async () => {
+    podPool.idlePods.mockResolvedValueOnce([workflowPod()]);
+    vi.mocked((db as any).limit).mockResolvedValueOnce([{ id: "active-session" }]);
+    expect(await cleanupIdleWorkflowPods()).toBe(0);
+    expect(mockRuntimeDestroy).not.toHaveBeenCalled();
+    expect(podPool.deletePod).not.toHaveBeenCalled();
+  });
   it("returns 0 when no idle pods exist", async () => {
     podPool.idlePods.mockResolvedValueOnce([]);
 

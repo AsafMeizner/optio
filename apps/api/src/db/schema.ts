@@ -653,6 +653,11 @@ export const interactiveSessions = pgTable(
     // Claude Code session id captured from the first chat turn; later turns
     // pass `--resume <id>` so the chat is one conversation across WS connects.
     agentSessionId: text("agent_session_id"),
+    agentRuntime: text("agent_runtime"),
+    agentOptions: jsonb("agent_options").$type<Record<string, string | boolean>>(),
+    initialPrompt: text("initial_prompt").notNull().default(""),
+    settings: jsonb("settings").$type<WorkSettings>(),
+    assistant: boolean("assistant").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
   },
@@ -661,6 +666,12 @@ export const interactiveSessions = pgTable(
     index("interactive_sessions_state_idx").on(table.state),
     index("interactive_sessions_user_id_idx").on(table.userId),
     index("interactive_sessions_workspace_id_idx").on(table.workspaceId),
+    uniqueIndex("interactive_sessions_assistant_owner_key")
+      .on(
+        sql`COALESCE(${table.workspaceId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        sql`COALESCE(${table.userId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+      )
+      .where(sql`${table.assistant} AND ${table.state} = 'active'`),
   ],
 );
 
@@ -1459,6 +1470,11 @@ export const optioSettings = pgTable(
   "optio_settings",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    agentRuntime: text("agent_runtime").notNull().default("claude-code"),
+    agentOptions: jsonb("agent_options")
+      .$type<Record<string, string | boolean>>()
+      .notNull()
+      .default({}),
     model: text("model").notNull().default("opus"), // alias (newest of a family) or a pinned model id
     systemPrompt: text("system_prompt").notNull().default(""), // custom additions appended to base prompt
     enabledTools: jsonb("enabled_tools").$type<string[]>().notNull().default([]), // empty = all enabled
@@ -2308,3 +2324,23 @@ export const usageBudgets = pgTable("usage_budgets", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Approval receipts for MCP mutations requested by an interactive session. */
+export const sessionToolApprovals = pgTable(
+  "session_tool_approvals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => interactiveSessions.id, { onDelete: "cascade" }),
+    turnId: uuid("turn_id")
+      .notNull()
+      .references(() => sessionChatTurns.id, { onDelete: "cascade" }),
+    tool: text("tool").notNull(),
+    args: jsonb("args").$type<Record<string, unknown>>().notNull(),
+    state: text("state").notNull().default("pending"),
+    feedback: text("feedback"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("session_tool_approvals_session_idx").on(t.sessionId)],
+);

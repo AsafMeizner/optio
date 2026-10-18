@@ -371,7 +371,6 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                         </span>
                         <div className="min-w-0 flex-1">
                           <div className="flex min-w-0 items-center gap-1.5 pr-18">
-                            <span className="truncate text-[13px] font-medium">{t.title}</span>
                             <SpawnSourceBadge
                               spawnedBy={t.spawnedBy}
                               triggerType={t.triggerType}
@@ -379,6 +378,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                               compact
                               colored
                             />
+                            <span className="truncate text-[13px] font-medium">{t.title}</span>
                             {inSplit && (
                               <Columns2
                                 className="h-3 w-3 shrink-0 text-primary"
@@ -477,7 +477,6 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                               title={`Focus ${child.title}`}
                             >
                               <LocalSessionIcon terminal={child} className="h-4 w-4" />
-                              <span className="truncate">{child.title}</span>
                               <SpawnSourceBadge
                                 spawnedBy={child.spawnedBy}
                                 triggerType={child.triggerType}
@@ -485,6 +484,7 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
                                 compact
                                 colored
                               />
+                              <span className="truncate">{child.title}</span>
                               <span
                                 className={cn(
                                   "ml-auto h-1.5 w-1.5 shrink-0 rounded-full",

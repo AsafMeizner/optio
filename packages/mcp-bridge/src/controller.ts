@@ -33,7 +33,7 @@ export function createControllerProxy(client: Client): Server {
   );
   server.setRequestHandler(ListToolsRequestSchema, (req) => client.listTools(req.params));
   server.setRequestHandler(CallToolRequestSchema, (req, extra) =>
-    client.callTool(req.params, undefined, { signal: extra.signal }),
+    client.callTool(req.params, undefined, { signal: extra.signal, timeout: 11 * 60_000 }),
   );
   return server;
 }

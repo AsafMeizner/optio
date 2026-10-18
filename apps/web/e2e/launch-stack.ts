@@ -21,7 +21,7 @@
  * Fixed ports (chosen to avoid dev defaults): API 4931, web 3131.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,11 @@ import { startApiServer, type ApiServerHandle } from "../../api/src/test-utils/e
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = join(HERE, "..");
 const REPO_ROOT = join(WEB_DIR, "..", "..");
+const nextEnvPath = join(WEB_DIR, "next-env.d.ts");
+const nextEnvBefore = readFileSync(nextEnvPath, "utf8").replace(
+  "./.next-e2e/types/",
+  "./.next/types/",
+);
 
 export const API_PORT = 4931;
 export const WEB_PORT = 3131;
@@ -46,6 +51,12 @@ let stopping = false;
 async function shutdown(code: number): Promise<void> {
   if (stopping) return;
   stopping = true;
+  // Next writes its generated route-types reference even with a separate
+  // distDir. Restore only our exact change, not edits from a live dev server.
+  const testNextEnv = nextEnvBefore.replace("./.next/types/", "./.next-e2e/types/");
+  if (readFileSync(nextEnvPath, "utf8") === testNextEnv) {
+    writeFileSync(nextEnvPath, nextEnvBefore);
+  }
   try {
     web?.kill("SIGTERM");
   } catch {
@@ -229,6 +240,7 @@ async function main(): Promise<void> {
     cwd: WEB_DIR,
     env: {
       ...process.env,
+      OPTIO_NEXT_DIST_DIR: ".next-e2e",
       INTERNAL_API_URL: API_URL,
       PUBLIC_API_URL: API_URL,
       // Beats the stale apps/web/.env.local value so WebSockets hit our API.

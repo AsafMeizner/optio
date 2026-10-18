@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { WorkSpec } from "@optio/shared";
 
 /** A proposed action from Optio that needs user confirmation. */
 export interface OptioPendingAction {
@@ -7,6 +8,8 @@ export interface OptioPendingAction {
   items: string[];
   /** null = pending, true = approved, false = denied */
   decision: null | boolean;
+  work?: WorkSpec[];
+  expired?: boolean;
 }
 
 export interface OptioChatMessage {
@@ -18,6 +21,7 @@ export interface OptioChatMessage {
   action?: OptioPendingAction;
   /** If this is a denial feedback from user */
   isDenialFeedback?: boolean;
+  isError?: boolean;
 }
 
 export type OptioStatus = "ready" | "unavailable" | "starting" | "thinking" | "disconnected";
@@ -42,6 +46,10 @@ interface OptioChatState {
   /** Optio agent status */
   status: OptioStatus;
   setStatus: (status: OptioStatus) => void;
+
+  agentRuntime: string | null;
+  agentModel: string;
+  setAgentConfiguration: (runtime: string, model: string) => void;
 
   /** Exchange counter (user messages sent) */
   exchangeCount: number;
@@ -80,6 +88,10 @@ export const useOptioChatStore = create<OptioChatState>((set) => ({
 
   status: "ready",
   setStatus: (status) => set({ status }),
+
+  agentRuntime: null,
+  agentModel: "",
+  setAgentConfiguration: (agentRuntime, agentModel) => set({ agentRuntime, agentModel }),
 
   exchangeCount: 0,
   incrementExchange: () => set((s) => ({ exchangeCount: s.exchangeCount + 1 })),

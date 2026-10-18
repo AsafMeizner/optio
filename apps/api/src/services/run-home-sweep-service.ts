@@ -11,7 +11,13 @@
 import { and, inArray, isNotNull, sql } from "drizzle-orm";
 import { shellQuote } from "@optio/shared";
 import { db } from "../db/client.js";
-import { agentPods, persistentAgentTurns, prReviewRuns, workRuns } from "../db/schema.js";
+import {
+  agentPods,
+  sessionChatTurns,
+  persistentAgentTurns,
+  prReviewRuns,
+  workRuns,
+} from "../db/schema.js";
 import { getRuntime } from "./container-service.js";
 import { podHandle } from "./agent-pod-pool.js";
 import { RUN_HOMES_DIR } from "../utils/harness-config.js";
@@ -129,6 +135,22 @@ export async function finishedRuns(ids: string[]): Promise<Map<string, FinishedR
       finishedAt: t.finishedAt,
     });
   }
+  const sessions = await db
+    .select({ id: sessionChatTurns.id, finishedAt: sessionChatTurns.finishedAt })
+    .from(sessionChatTurns)
+    .where(
+      and(
+        inArray(sessionChatTurns.id, ids),
+        inArray(sessionChatTurns.state, ["completed", "interrupted"]),
+      ),
+    );
+  for (const turn of sessions)
+    found.set(turn.id, {
+      id: turn.id,
+      protocol: false,
+      consumedBytes: 0,
+      finishedAt: turn.finishedAt,
+    });
   return found;
 }
 

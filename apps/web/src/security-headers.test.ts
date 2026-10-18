@@ -68,7 +68,7 @@ describe("next.config.ts security headers", () => {
       );
     });
 
-    it("includes Permissions-Policy restricting sensitive APIs", async () => {
+    it("allows same-origin dictation while restricting other sensitive APIs", async () => {
       const config = await loadConfig();
       const result = await config.headers();
       const headers = result[0].headers;
@@ -76,7 +76,7 @@ describe("next.config.ts security headers", () => {
         expect.arrayContaining([
           expect.objectContaining({
             key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=()",
+            value: "camera=(), microphone=(self), geolocation=()",
           }),
         ]),
       );

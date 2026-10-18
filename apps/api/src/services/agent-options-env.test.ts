@@ -74,8 +74,8 @@ describe("buildPooledAgentCommand", () => {
       opts,
     );
     const last = cmds[cmds.length - 1];
-    expect(last).toContain("--model opus[1m]");
-    expect(last).toContain(`--settings "{\\"effortLevel\\":\\"high\\"}"`);
+    expect(last).toContain("--model 'opus[1m]'");
+    expect(last).toContain(`--settings '{"effortLevel":"high"}'`);
     expect(cmds.join("\n")).toContain("--max-turns 10");
   });
 
@@ -91,13 +91,13 @@ describe("buildPooledAgentCommand", () => {
         { COPILOT_MODEL: "gpt-5", COPILOT_EFFORT: "low" },
         opts,
       ).join("\n"),
-    ).toContain(`--model "gpt-5" --effort "low"`);
+    ).toContain(`--model 'gpt-5' --effort 'low'`);
     expect(
       buildPooledAgentCommand("opencode", { OPTIO_OPENCODE_AGENT: "plan" }, opts).join("\n"),
-    ).toContain(`--agent "plan"`);
+    ).toContain(`--agent 'plan'`);
     expect(
       buildPooledAgentCommand("gemini", { OPTIO_GEMINI_APPROVAL_MODE: "yolo" }, opts).join("\n"),
-    ).toContain(`gemini --approval-mode "yolo" -p`);
+    ).toContain(`gemini --approval-mode 'yolo' -p`);
   });
 
   it("labels the echo line with the caller's label", () => {

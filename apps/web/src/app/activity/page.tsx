@@ -139,7 +139,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
       : item.resourceType === "workflow" && item.resourceId
         ? `/jobs/${item.resourceId}`
         : item.resourceType === "session" && item.resourceId
-          ? `/sessions/${item.resourceId}`
+          ? `/work/${item.resourceId}`
           : null;
 
   return (

@@ -5,6 +5,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -18,6 +22,9 @@ import dev.optio.core.data.LocalSessionStore
 import dev.optio.core.navigation.LocalAppRouter
 import dev.optio.core.navigation.Section
 import dev.optio.core.navigation.Tab
+import dev.optio.core.navigation.LocalNavigator
+import dev.optio.core.navigation.routes.OptioAssistantRoute
+import dev.optio.core.ui.auth.Roles
 import dev.optio.core.ui.components.SectionTabs
 import dev.optio.core.ui.hub.LocalHubController
 import dev.optio.core.ui.hub.rememberHubController
@@ -46,6 +53,7 @@ import androidx.compose.material3.MaterialTheme
  */
 @Composable
 internal fun HubScreen(tab: Tab) {
+    val navigator = LocalNavigator.current
     val router = LocalAppRouter.current
     val controller = rememberHubController()
     val section = router.section(tab)
@@ -60,6 +68,9 @@ internal fun HubScreen(tab: Tab) {
                 TopAppBar(
                     title = { Text(tab.label, style = MaterialTheme.typography.headlineMedium) },
                     actions = {
+                        if ((tab == Tab.OVERVIEW || tab == Tab.WORK) && Roles.canMutate) {
+                            IconButton(onClick = { navigator.push(OptioAssistantRoute) }) { Icon(Icons.Outlined.ChatBubbleOutline, "Ask Optio") }
+                        }
                         if (showSwitcher) HubServerSwitcher()
                         controller.actions?.invoke(this)
                     },

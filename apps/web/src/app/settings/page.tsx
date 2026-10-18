@@ -1,5 +1,8 @@
 "use client";
 
+import { useOptioChatStore } from "@/hooks/use-optio-chat";
+import { AgentChoice } from "@/components/agent-choice";
+
 import { useState, useEffect, type ReactNode } from "react";
 import { SettingsLayout } from "@/components/settings/settings-layout";
 import { usePageTitle } from "@/hooks/use-page-title";
@@ -23,9 +26,11 @@ import {
   Store,
 } from "lucide-react";
 import {
-  OPTIO_TOOL_CATEGORIES,
-  ALL_OPTIO_TOOL_NAMES,
+  CONTROLLER_TOOL_CATEGORIES,
+  ALL_CONTROLLER_TOOL_NAMES,
   DEFAULT_OPTIO_AGENT_MODEL,
+  providerForAgentType,
+  getProviderCatalog,
   type AgentType,
 } from "@optio/shared";
 import { NotificationPreferences } from "@/components/notifications/notification-preferences";
@@ -34,7 +39,6 @@ import { ModelProvidersManager } from "@/components/settings/model-providers-man
 import { SignInSettings } from "@/components/settings/sign-in-settings";
 import { ReviewAgentPicker } from "@/components/review-agent-picker";
 import { AgentIcon, BrandIcon, brandFor } from "@/components/brand-icon";
-import { AgentOptionsPicker } from "@/components/agent-options-picker";
 import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { SectionCard } from "@/components/ui/section-card";
@@ -1314,9 +1318,11 @@ function AuthenticationSettings() {
 }
 
 function OptioAgentSettings() {
+  const [runtime, setRuntime] = useState("claude-code");
+  const [agentOptions, setAgentOptions] = useState<Record<string, string | boolean>>({});
   const [model, setModel] = useState(DEFAULT_OPTIO_AGENT_MODEL);
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [enabledTools, setEnabledTools] = useState<string[]>([...ALL_OPTIO_TOOL_NAMES]);
+  const [enabledTools, setEnabledTools] = useState<string[]>([...ALL_CONTROLLER_TOOL_NAMES]);
   const [confirmWrites, setConfirmWrites] = useState(true);
   const [maxTurns, setMaxTurns] = useState(20);
   const [loading, setLoading] = useState(true);
@@ -1329,11 +1335,15 @@ function OptioAgentSettings() {
       .getOptioSettings()
       .then((res) => {
         const s = res.settings;
+        setRuntime(s.agentRuntime ?? "claude-code");
+        setAgentOptions(s.agentOptions ?? {});
         setModel(s.model);
         setSystemPrompt(s.systemPrompt);
         // Empty array means "all enabled" (default state)
         setEnabledTools(
-          s.enabledTools && s.enabledTools.length > 0 ? s.enabledTools : [...ALL_OPTIO_TOOL_NAMES],
+          s.enabledTools && s.enabledTools.length > 0
+            ? s.enabledTools
+            : [...ALL_CONTROLLER_TOOL_NAMES],
         );
         setConfirmWrites(s.confirmWrites);
         setMaxTurns(s.maxTurns);
@@ -1350,14 +1360,18 @@ function OptioAgentSettings() {
     setSaving(true);
     try {
       // If all tools are enabled, store empty array (meaning "all")
-      const toolsToSave = enabledTools.length === ALL_OPTIO_TOOL_NAMES.length ? [] : enabledTools;
+      const toolsToSave =
+        enabledTools.length === ALL_CONTROLLER_TOOL_NAMES.length ? [] : enabledTools;
       await api.updateOptioSettings({
+        agentRuntime: runtime,
+        agentOptions,
         model,
         systemPrompt,
-        enabledTools: toolsToSave.length === 0 ? ALL_OPTIO_TOOL_NAMES : toolsToSave,
+        enabledTools: toolsToSave,
         confirmWrites,
         maxTurns,
       });
+      useOptioChatStore.getState().setAgentConfiguration(runtime, model);
       toast.success("Optio agent settings saved");
     } catch (err) {
       toast.error("Failed to save settings", {
@@ -1374,7 +1388,7 @@ function OptioAgentSettings() {
     );
   };
 
-  const enableAll = () => setEnabledTools([...ALL_OPTIO_TOOL_NAMES]);
+  const enableAll = () => setEnabledTools([...ALL_CONTROLLER_TOOL_NAMES]);
   const disableAll = () => setEnabledTools([]);
 
   const label = "Optio agent";
@@ -1382,25 +1396,46 @@ function OptioAgentSettings() {
   if (loading) return <SkeletonCard label={label} hint={hint} rows={4} />;
 
   const toolCount =
-    enabledTools.length === ALL_OPTIO_TOOL_NAMES.length
+    enabledTools.length === ALL_CONTROLLER_TOOL_NAMES.length
       ? "all tools"
-      : `${enabledTools.length}/${ALL_OPTIO_TOOL_NAMES.length} tools`;
+      : `${enabledTools.length}/${ALL_CONTROLLER_TOOL_NAMES.length} tools`;
 
   return (
     <SectionCard
       label={label}
       hint={hint}
-      summary={`${model} · ${toolCount}`}
+      summary={`${getProviderCatalog(providerForAgentType(runtime))?.label ?? runtime} · ${model || "default model"} · ${toolCount}`}
       bodyClassName="p-4 space-y-5"
     >
-      {/* Model: the live list, with each family's "always the latest" alias */}
-      <AgentOptionsPicker
-        provider="anthropic"
-        values={{ claudeModel: model }}
-        onChange={(v) => setModel(String(v.claudeModel || DEFAULT_OPTIO_AGENT_MODEL))}
-        modelOnly
+      <AgentChoice
+        aria-label="Assistant harness"
+        runtime={runtime}
+        runtimes={["claude-code", "codex", "copilot", "gemini", "opencode", "cursor"].map(
+          (value) => ({ value }),
+        )}
+        agentOptions={{
+          ...agentOptions,
+          [getProviderCatalog(providerForAgentType(runtime))!.modelField]: model,
+        }}
+        onRuntimeChange={(next) => {
+          if (next === runtime) return;
+          setRuntime(next);
+          setModel("");
+          setAgentOptions({});
+        }}
+        onOptionsChange={(values) => {
+          setAgentOptions(values);
+          setModel(
+            String(values[getProviderCatalog(providerForAgentType(runtime))!.modelField] ?? ""),
+          );
+        }}
+        note="Changes apply to the next request."
         latestAliases
       />
+      <p className="text-xs text-text-muted">
+        Runs in an Optio pod using your configured credentials for this harness. Conversation
+        history is saved with the session.
+      </p>
 
       <div className="pt-4 border-t border-border space-y-2">
         <Field
@@ -1421,9 +1456,9 @@ function OptioAgentSettings() {
           label="About the base system prompt"
         >
           <p className="p-3 rounded-lg bg-bg border border-border text-xs text-text-muted">
-            The base system prompt is defined in code and includes instructions for task execution,
-            PR creation, and tool usage. Your custom prompt above is appended after the base prompt
-            to provide additional context.
+            The base system prompt is defined in code and includes instructions for discovering
+            destinations, creating work, and using the Optio MCP. Your custom prompt above is
+            appended after the base prompt to provide additional context.
           </p>
         </Disclosure>
       </div>
@@ -1444,7 +1479,7 @@ function OptioAgentSettings() {
         </div>
         <Disclosure open={showTools} onToggle={() => setShowTools(!showTools)} label="Choose tools">
           <div className="grid grid-cols-1 gap-3">
-            {OPTIO_TOOL_CATEGORIES.map((category) => (
+            {CONTROLLER_TOOL_CATEGORIES.map((category) => (
               <div key={category.name} className="p-3 rounded-lg bg-bg border border-border">
                 <h4 className="text-xs font-medium mb-2">{category.name}</h4>
                 <div className="space-y-1.5">
@@ -1494,7 +1529,10 @@ function OptioAgentSettings() {
             </p>
           )}
         </Field>
-        <Field label="Max conversation turns" help="Per session (5–50).">
+        <Field
+          label="Max agent steps"
+          help="Per request, for harnesses that support a turn limit (5–50)."
+        >
           <NumberInput
             min={5}
             max={50}

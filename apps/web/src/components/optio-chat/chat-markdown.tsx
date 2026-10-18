@@ -1,6 +1,7 @@
 "use client";
 
 import { memo } from "react";
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -37,16 +38,21 @@ const components: Components = {
       {children}
     </pre>
   ),
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-primary hover:underline"
-    >
-      {children}
-    </a>
-  ),
+  a: ({ href, children }) =>
+    href?.startsWith("/") && !href.startsWith("//") ? (
+      <Link href={href} className="text-primary hover:underline">
+        {children}
+      </Link>
+    ) : (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary hover:underline"
+      >
+        {children}
+      </a>
+    ),
   blockquote: ({ children }) => (
     <blockquote className="border-l-2 border-primary/30 pl-3 text-text-muted italic mb-2 last:mb-0">
       {children}

@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // Browser tests can run alongside a developer server without sharing chunks.
+  distDir: process.env.OPTIO_NEXT_DIST_DIR || ".next",
   transpilePackages: ["@optio/shared"],
   webpack: (config) => {
     // Resolve .js imports to .ts files in workspace packages
@@ -33,7 +35,7 @@ const nextConfig: NextConfig = {
       { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
       {
         key: "Permissions-Policy",
-        value: "camera=(), microphone=(), geolocation=()",
+        value: "camera=(), microphone=(self), geolocation=()",
       },
       {
         key: "Content-Security-Policy-Report-Only",

@@ -53,6 +53,7 @@ export interface AgentChoiceProps {
   /** Only the model control (a review agent takes just a model). */
   modelOnly?: boolean;
   hideRefresh?: boolean;
+  latestAliases?: boolean;
   "aria-label"?: string;
 }
 
@@ -80,6 +81,7 @@ export function AgentChoice({
   hostId,
   modelOnly = false,
   hideRefresh = true,
+  latestAliases = false,
   "aria-label": ariaLabel,
 }: AgentChoiceProps) {
   const disabled = runtimes.filter((r) => r.disabled);
@@ -145,6 +147,7 @@ export function AgentChoice({
                 hostId={hostId}
                 modelOnly={modelOnly}
                 hideRefresh={hideRefresh}
+                latestAliases={latestAliases}
               />
             </>
           )}

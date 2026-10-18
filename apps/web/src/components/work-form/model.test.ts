@@ -174,10 +174,8 @@ suite("constraints flow downstream", () => {
     expect(flipped.then).toBe("exits");
   });
 
-  it("a pod session chats with Claude Code, so other runtimes can't wait for you there", () => {
-    expect(enabled(thenOptions({ ...EMPTY_DRAFT, runtime: "codex" }))).not.toContain(
-      "waits-for-me",
-    );
+  it("a pod session can use any supported harness", () => {
+    expect(enabled(thenOptions({ ...EMPTY_DRAFT, runtime: "codex" }))).toContain("waits-for-me");
     expect(enabled(thenOptions({ ...EMPTY_DRAFT, runtime: "claude-code" }))).toContain(
       "waits-for-me",
     );
@@ -280,7 +278,9 @@ suite("the sentence", () => {
       missingFields(normalize(local({ ...EMPTY_DRAFT, then: "waits-for-me", withRepo: false }))),
     ).toEqual([]);
     expect(
-      missingFields(normalize({ ...EMPTY_DRAFT, then: "waits-for-me", repoUrl: "x" })),
+      missingFields(
+        normalize({ ...EMPTY_DRAFT, runtime: TERMINAL, then: "waits-for-me", repoUrl: "x" }),
+      ),
     ).toEqual([]);
   });
 });

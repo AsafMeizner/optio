@@ -8,7 +8,7 @@ import { podIsolationKey, isolatedPodResource } from "./pod-isolation.js";
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { workflowRuns } from "../db/schema.js";
+import { workflowRuns, interactiveSessions, sessionChatTurns } from "../db/schema.js";
 import { getRuntime } from "./container-service.js";
 import type { ContainerSpec } from "@optio/shared";
 import { generateWorkflowPodName, parseIntEnv, type RepoImageConfig } from "@optio/shared";
@@ -245,6 +245,13 @@ export async function cleanupIdleWorkflowPods(): Promise<number> {
 
   for (const pod of [...idle].sort((a, b) => b.instanceIndex - a.instanceIndex)) {
     try {
+      // An interactive workspace is still in use while it waits for its owner.
+      const [session] = await db
+        .select({ id: interactiveSessions.id })
+        .from(interactiveSessions)
+        .where(and(eq(interactiveSessions.podId, pod.id), eq(interactiveSessions.state, "active")))
+        .limit(1);
+      if (session) continue;
       if (pod.managedBy === "job" && pod.jobName) {
         await getWorkloadManager().deleteJob(pod.jobName);
       } else if (pod.podName) {
@@ -285,8 +292,15 @@ export async function reconcileActiveRunCounts(): Promise<number> {
       ),
     )
     .groupBy(workflowRuns.podId);
-  return podPool.reconcileActiveCounts(
-    "standalone",
-    new Map(rows.map((r) => [r.podId as string, r.n])),
-  );
+  const sessions = await db
+    .select({ podId: interactiveSessions.podId, n: sql<number>`count(*)::int` })
+    .from(sessionChatTurns)
+    .innerJoin(interactiveSessions, eq(sessionChatTurns.sessionId, interactiveSessions.id))
+    .where(
+      and(eq(sessionChatTurns.state, "running"), sql`${interactiveSessions.podId} IS NOT NULL`),
+    )
+    .groupBy(interactiveSessions.podId);
+  const counts = new Map(rows.map((r) => [r.podId as string, r.n]));
+  for (const row of sessions) counts.set(row.podId!, (counts.get(row.podId!) ?? 0) + row.n);
+  return podPool.reconcileActiveCounts("standalone", counts);
 }

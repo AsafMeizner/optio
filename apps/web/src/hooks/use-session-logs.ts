@@ -1,5 +1,6 @@
 "use client";
 
+import type { OptioPendingAction } from "./use-optio-chat";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "@/lib/api-client";
 import { getWsBaseUrl } from "@/lib/ws-client.js";
@@ -39,6 +40,7 @@ const HISTORICAL_LIMIT = 5000;
  * filter / time-gap rendering works for sessions with no special-casing.
  */
 export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {}) {
+  const [approvals, setApprovals] = useState<OptioPendingAction[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [userMessages, setUserMessages] = useState<(UserMessage & { requestId?: string })[]>([]);
   const [status, setStatus] = useState<SessionStatus>("connecting");
@@ -105,9 +107,47 @@ export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {})
         return;
       }
       switch (msg.type) {
+        case "history":
+          if (Array.isArray(msg.frames) && msg.frames.length === 0) {
+            pendingLive.length = 0;
+            setLogs([]);
+            setUserMessages([]);
+            setApprovals([]);
+          }
+          break;
+        case "action_proposal":
+          setApprovals((prev) => [
+            ...prev.filter((a) => a.id !== msg.actionId),
+            {
+              id: msg.actionId,
+              description: msg.description,
+              items: msg.items,
+              work: msg.work,
+              decision: null,
+            },
+          ]);
+          break;
+        case "action_decision":
+        case "action_expired":
+          setApprovals((prev) => prev.filter((action) => action.id !== msg.actionId));
+          break;
+        case "action_result":
+          appendLive({
+            content: msg.summary,
+            stream: "stdout",
+            timestamp: new Date().toISOString(),
+            logType: msg.success ? "text" : "error",
+          });
+          break;
         case "status":
-          setStatus(msg.status as SessionStatus);
-          if (msg.model) setModelState(msg.model);
+          setStatus(
+            msg.status === "waiting_for_approval"
+              ? "ready"
+              : msg.status === "executing"
+                ? "thinking"
+                : (msg.status as SessionStatus),
+          );
+          if (msg.model || msg.runtime) setModelState(msg.model ?? msg.runtime);
           if (typeof msg.costUsd === "number") {
             setCostUsd(msg.costUsd);
             onCostUpdateRef.current?.(msg.costUsd);
@@ -248,7 +288,17 @@ export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {})
     setUserMessages([]);
   }, []);
 
+  const decide = useCallback((id: string, approved: boolean, feedback?: string) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(
+      JSON.stringify({ type: approved ? "approve" : "deny", actionId: id, feedback }),
+    );
+    setApprovals((prev) => prev.map((a) => (a.id === id ? { ...a, decision: approved } : a)));
+    setStatus("thinking");
+  }, []);
   return {
+    approvals,
+    decide,
     logs,
     connected: status === "ready" || status === "thinking" || status === "idle",
     capped,

@@ -353,3 +353,79 @@ describe("optio-tool-executor", () => {
     });
   });
 });
+
+describe("conversational work creation", () => {
+  it("forwards the complete nested WorkSpec using the user's session", async () => {
+    const response = JSON.stringify({ kind: "local-terminal", id: "work-1", href: "/work/work-1" });
+    const app = mockApp({ statusCode: 201, body: response });
+    const spec = {
+      name: "Investigate login",
+      when: { type: "manual" },
+      where: { runTarget: "local", localHostId: "machine-1", localDir: "/repo" },
+      who: { runtime: "codex" },
+      what: { prompt: "Find the login bug" },
+      then: "waits-for-me",
+    };
+    expect(await executeToolCall(app, "create_work", spec, "user-session")).toEqual({
+      success: true,
+      result: response,
+    });
+    expect(app.inject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        url: "/api/work",
+        payload: spec,
+        headers: expect.objectContaining({ cookie: "optio_session=user-session" }),
+      }),
+    );
+  });
+  it("preserves API rejection of inaccessible machines", async () => {
+    const app = mockApp({ statusCode: 403, body: '{"error":"Forbidden"}' });
+    expect(
+      (await executeToolCall(app, "create_work", { name: "work" }, "user-session")).success,
+    ).toBe(false);
+  });
+});
+
+describe("Optio native credential forwarding", () => {
+  it("pins tool calls to the authenticated workspace and sends the reusable PAT as Bearer", async () => {
+    const app = mockApp({ statusCode: 200, body: "[]" });
+    await executeToolCall(
+      app,
+      "list_work",
+      {},
+      { token: "optio_pat_native", workspaceId: "workspace-a" },
+    );
+    expect(injectMock(app).mock.calls[0][0].headers).toEqual({
+      authorization: "Bearer optio_pat_native",
+      "x-workspace-id": "workspace-a",
+      "content-type": "application/json",
+    });
+  });
+  it("keeps the same workspace and PAT on each watch poll", async () => {
+    const app = mockAppSeq([
+      { statusCode: 200, body: taskDetailBody("running") },
+      { statusCode: 200, body: taskDetailBody("completed") },
+    ]);
+    await watchTask(
+      app,
+      { id: "task-1" },
+      { token: "optio_pat_native", workspaceId: "workspace-a" },
+      makeFakeClock(),
+    );
+    expect(injectMock(app).mock.calls).toHaveLength(2);
+    for (const [call] of injectMock(app).mock.calls)
+      expect(call.headers).toMatchObject({
+        authorization: "Bearer optio_pat_native",
+        "x-workspace-id": "workspace-a",
+      });
+  });
+  it("does not invent credentials for a one-time-token connection", async () => {
+    const app = mockApp({ statusCode: 401, body: "Unauthorized" });
+    expect(
+      (await executeToolCall(app, "list_work", {}, { workspaceId: "workspace-a" })).success,
+    ).toBe(false);
+    expect(injectMock(app).mock.calls[0][0].headers).not.toHaveProperty("authorization");
+    expect(injectMock(app).mock.calls[0][0].headers).not.toHaveProperty("cookie");
+  });
+});

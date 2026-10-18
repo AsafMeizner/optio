@@ -59,7 +59,14 @@ export async function controllerMcpRoutes(app: FastifyInstance) {
           .code(405)
           .header("Allow", "POST")
           .send({ error: "This MCP endpoint is stateless; use POST" });
-      const server = createControllerMcp(principal);
+      const server = createControllerMcp(
+        principal,
+        async () =>
+          !!(await authenticateController(
+            req.headers.authorization,
+            req.headers["x-workspace-id"] as string | undefined,
+          )),
+      );
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,

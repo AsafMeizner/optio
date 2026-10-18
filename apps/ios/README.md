@@ -73,6 +73,24 @@ See [RELEASING.md](RELEASING.md) for signing, archive/export/upload commands,
 privacy declarations, internal testing, and physical-device checks. The main
 Optio container release does not publish the iOS app.
 
+## Ask Optio
+
+**Ask Optio** is available from the Overview and Work toolbars, and from More.
+The native assistant streams replies from `/ws/optio/chat`, previews proposed work,
+and provides explicit Approve / Decline controls. Every proposed setting remains
+available under All settings. Work links open their native detail screen.
+
+Use the microphone on the iOS keyboard to dictate into the editable draft, then
+Send. This uses the system keyboard; Optio does not record microphone audio.
+The assistant is a view of a saved harness session. Closing the sheet disconnects
+its view; the server retains the conversation and work continues. Reopening replaces
+the displayed transcript with server history and restores outstanding approvals.
+Drafts stay local, message echoes are deduplicated by request id, and reconnecting
+never resends an action. Clear conversation is available only while idle with no
+pending approvals, and removes history only after server acknowledgement.
+The assistant uses the selected server's PAT and workspace; viewers do not see
+its entry points.
+
 ## Local sessions on the phone
 
 A Local (on-your-machine) session opens on its **Chat** — the agent's

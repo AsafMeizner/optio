@@ -3,6 +3,7 @@ node_modules/
 dist/
 .turbo/
 .next/
+.next-e2e/
 .env
 .env.local
 .optio-run-token

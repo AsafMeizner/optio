@@ -5,6 +5,14 @@ import * as controller from "./controller-service.js";
 import { WorkSpecSchema } from "../schemas/work.js";
 import { WorkError } from "./work-write-service.js";
 import { logAction } from "./optio-action-service.js";
+import {
+  requestSessionApproval,
+  sessionFrame,
+  SessionApprovalError,
+} from "./session-tool-approval.js";
+import { db } from "../db/client.js";
+import { sessionToolApprovals } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { logger } from "../logger.js";
 
 const id = z.string().uuid().describe("Optio work or run id");
@@ -22,11 +30,14 @@ export const CONTROLLER_INSTRUCTIONS = [
   "Mutations are asynchronous. Save returned ids and inspect state later. Do not repeat a mutation after a timeout without checking for its result.",
   "Send focused messages with optio_send_message; avoid message loops. Receipt means queued, not that the agent has replied.",
   "All agent runtimes can collaborate. Use the address from optio_list_agents or a message's replyTo. Active task and Job runs receive messages in their MCP inbox; check optio_read_inbox at the start, at collaboration checkpoints and before finishing. They are not interrupted or restarted. Persistent recipients wake for messages.",
-  "Tools support pod work; interactive sessions and local machines stay in the UI. All access follows the authenticated workspace and owner.",
+  "Interactive session operators can create interactive sessions and work on their own machines. All access follows the authenticated workspace and owner.",
 ].join(" ");
 
 /** New server per HTTP request: no process-local sessions or shared caller state. */
-export function createControllerMcp(principal: ControllerPrincipal): McpServer {
+export function createControllerMcp(
+  principal: ControllerPrincipal,
+  authorize?: () => Promise<boolean>,
+): McpServer {
   const server = new McpServer(
     { name: "optio-controller", version: "1.0.0" },
     { instructions: CONTROLLER_INSTRUCTIONS },
@@ -40,6 +51,8 @@ export function createControllerMcp(principal: ControllerPrincipal): McpServer {
     destructive = false,
   ) {
     if (write && principal.access !== "manage") return;
+    const allowed = principal.sessionPolicy?.enabledTools;
+    if (allowed?.length && !allowed.includes(name) && name !== "context") return;
     server.registerTool(
       `optio_${name}`,
       {
@@ -54,9 +67,36 @@ export function createControllerMcp(principal: ControllerPrincipal): McpServer {
       },
       async (args) => {
         let success = false;
+        let approvalId: string | undefined;
         try {
           if (write) controller.requireManage(principal);
-          const result = await call(z.object(shape).parse(args));
+          const parsed = z.object(shape).parse(args);
+          if (write && principal.run?.sessionId && principal.sessionPolicy?.confirmWrites) {
+            approvalId = await requestSessionApproval(
+              principal.run.sessionId,
+              principal.run.id,
+              name,
+              parsed,
+            );
+          }
+          if (write && authorize && !(await authorize()))
+            throw new controller.ControllerError(
+              403,
+              "Session authorization expired before execution",
+            );
+          const result = await call(parsed);
+          if (write && principal.run?.sessionId) {
+            const href = (result as { href?: string })?.href;
+            await sessionFrame(principal.run.sessionId, {
+              type: "action_result",
+              actionId: approvalId,
+              success: true,
+              summary:
+                name === "create_work" && typeof href === "string"
+                  ? `Work created. [Open work](${href})`
+                  : `${name}: completed`,
+            });
+          }
           const text = JSON.stringify(result);
           if (text.length > 300_000)
             throw new controller.ControllerError(
@@ -78,15 +118,21 @@ export function createControllerMcp(principal: ControllerPrincipal): McpServer {
               {
                 type: "text" as const,
                 text: JSON.stringify({
-                  error: known
-                    ? err.message
-                    : "Controller operation failed. Check the work state before retrying.",
+                  error:
+                    known || err instanceof SessionApprovalError
+                      ? (err as Error).message
+                      : "Controller operation failed. Check the work state before retrying.",
                   status: known ? err.status : 500,
                 }),
               },
             ],
           };
         } finally {
+          if (approvalId)
+            await db
+              .update(sessionToolApprovals)
+              .set({ state: success ? "completed" : "failed" })
+              .where(eq(sessionToolApprovals.id, approvalId));
           if (write) {
             // Never audit prompts, messages, settings, tokens or raw arguments.
             await logAction({
@@ -132,7 +178,22 @@ export function createControllerMcp(principal: ControllerPrincipal): McpServer {
       search: z.string().max(200).optional(),
     },
     false,
-    (input) => controller.listControllerWork(principal, input),
+    async (input) => {
+      if (!principal.run?.sessionId || input.kind)
+        return controller.listControllerWork(principal, input);
+      const cap = input.offset + input.limit + 1;
+      const [work, sessions] = await Promise.all([
+        controller.listControllerWork(principal, { ...input, limit: cap, offset: 0 }),
+        controller.listControllerSessions(principal, { limit: cap, search: input.search }),
+      ]);
+      const rows = [...work.rows, ...sessions].sort(
+        (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id),
+      );
+      return {
+        rows: rows.slice(input.offset, input.offset + input.limit),
+        nextOffset: rows.length > input.offset + input.limit ? input.offset + input.limit : null,
+      };
+    },
   );
   tool(
     "list_repos",
@@ -141,13 +202,36 @@ export function createControllerMcp(principal: ControllerPrincipal): McpServer {
     false,
     (input) => controller.listControllerRepos(principal, input.limit, input.offset),
   );
+  if (principal.run?.sessionId)
+    tool(
+      "list_machines",
+      "List your paired machines and their allowed working directories.",
+      {},
+      false,
+      async () => {
+        const { listHosts } = await import("./local-host-service.js");
+        return {
+          hosts: (await listHosts(principal.actor.userId)).map((h) => ({
+            id: h.id,
+            name: h.name,
+            state: h.state,
+            dirs: h.dirs,
+          })),
+        };
+      },
+    );
   tool(
     "get_work",
     "Read work configuration or results, including summaries, PR/check state, errors and usage. For recurring work, list_runs finds individual runs.",
     { id },
     false,
-    async (input) =>
-      controller.describeWork(await controller.getControllerWork(principal, input.id)),
+    async (input) => {
+      if (principal.run?.sessionId) {
+        const session = (await controller.listControllerSessions(principal, { id: input.id }))[0];
+        if (session) return session;
+      }
+      return controller.describeWork(await controller.getControllerWork(principal, input.id));
+    },
   );
   tool(
     "create_work",

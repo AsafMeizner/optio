@@ -68,16 +68,26 @@ export async function authenticateWs(
   socket: WsSocket,
   req: FastifyRequest,
 ): Promise<SessionUser | null> {
+  return (await authenticateWsWithCredentials(socket, req))?.user ?? null;
+}
+
+/** Retain only the reusable credential that actually authenticated the upgrade. */
+export async function authenticateWsWithCredentials(
+  socket: WsSocket,
+  req: FastifyRequest,
+): Promise<{ user: SessionUser; token?: string } | null> {
   if (isAuthDisabled()) {
     return {
-      id: "local",
-      provider: "local",
-      email: "dev@localhost",
-      displayName: "Local Dev",
-      username: null,
-      avatarUrl: null,
-      workspaceId: null,
-      workspaceRole: null,
+      user: {
+        id: "local",
+        provider: "local",
+        email: "dev@localhost",
+        displayName: "Local Dev",
+        username: null,
+        avatarUrl: null,
+        workspaceId: null,
+        workspaceRole: null,
+      },
     };
   }
 
@@ -87,7 +97,7 @@ export async function authenticateWs(
     const user = cookieToken.startsWith("optio_pat_")
       ? await validateApiKey(cookieToken)
       : await validateSession(cookieToken);
-    if (user) return user;
+    if (user) return { user, token: cookieToken };
     // Cookie was present but invalid/expired — fall through to protocol check
   }
 
@@ -98,7 +108,8 @@ export async function authenticateWs(
     const user = upgradeToken.startsWith("optio_pat_")
       ? await validateApiKey(upgradeToken)
       : await validateWsToken(upgradeToken);
-    if (user) return user;
+    if (user)
+      return { user, ...(upgradeToken.startsWith("optio_pat_") ? { token: upgradeToken } : {}) };
     // Token was present but invalid/expired/already consumed
   }
 

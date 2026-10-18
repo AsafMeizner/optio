@@ -19,3 +19,7 @@ data class AgentFormRoute(val id: String? = null) : NavKey
  */
 @Serializable
 data class AgentTurnRoute(val agentId: String, val turnId: String, val turnNumber: Int = 0) : NavKey
+
+/** The workspace assistant: conversational work discovery and creation. */
+@Serializable
+data object OptioAssistantRoute : NavKey

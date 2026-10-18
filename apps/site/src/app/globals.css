@@ -76,8 +76,8 @@ button {
   position: sticky;
   top: 0;
   z-index: 50;
-  background: #fcfbf8f5;
-  backdrop-filter: blur(16px);
+  /* Keep scrolling screenshots from requiring a backdrop blur on every frame. */
+  background: var(--color-bg);
   border-bottom: 1px solid var(--color-border);
 }
 .header-inner {

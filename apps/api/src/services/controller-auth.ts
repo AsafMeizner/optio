@@ -8,7 +8,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client.js";
-import { workRuns, workDefinitions } from "../db/schema.js";
+import { workRuns, workDefinitions, interactiveSessions, sessionChatTurns } from "../db/schema.js";
 import { getRedisClient } from "./event-bus.js";
 import { getPersistentAgentTurn, getPersistentAgentUnscoped } from "./persistent-agent-service.js";
 import { validateApiKey } from "./api-key-service.js";
@@ -20,12 +20,19 @@ export interface ControllerPrincipal {
   actor: Actor;
   access: "read" | "manage";
   name: string;
-  run?: { kind: "work-run" | "turn"; id: string; agentId?: string; slug?: string };
+  sessionPolicy?: { confirmWrites: boolean; enabledTools: string[] };
+  run?: {
+    kind: "work-run" | "turn" | "session-turn";
+    sessionId?: string;
+    id: string;
+    agentId?: string;
+    slug?: string;
+  };
 }
 
 const Grant = z
   .object({
-    kind: z.enum(["work-run", "turn"]),
+    kind: z.enum(["work-run", "turn", "session-turn"]),
     id: z.string().uuid(),
     workspaceId: z.string().uuid().nullable(),
     ownerUserId: z.string().uuid().nullable(),
@@ -81,8 +88,29 @@ export async function validateControllerToken(
   let workspace: string | null;
   let settings: { controllerAccess?: string } | null;
   let name: string;
+  let sessionPolicy: ControllerPrincipal["sessionPolicy"];
   let run: NonNullable<ControllerPrincipal["run"]> = { kind: g.kind, id: g.id };
-  if (g.kind === "turn") {
+  if (g.kind === "session-turn") {
+    if (purpose === "messages") return null;
+    const [turn] = await db.select().from(sessionChatTurns).where(eq(sessionChatTurns.id, g.id));
+    if (!turn || turn.state !== "running" || turn.finishedAt) return null;
+    const [session] = await db
+      .select()
+      .from(interactiveSessions)
+      .where(eq(interactiveSessions.id, turn.sessionId));
+    if (!session || session.state !== "active" || !session.agentRuntime) return null;
+    owner = session.userId;
+    workspace = session.workspaceId;
+    settings = session.settings;
+    name = session.title ?? "Interactive session";
+    const { getSettings } = await import("./optio-settings-service.js");
+    const policy = session.assistant ? await getSettings(workspace) : null;
+    sessionPolicy = {
+      confirmWrites: policy?.confirmWrites ?? true,
+      enabledTools: policy?.enabledTools ?? [],
+    };
+    run = { ...run, sessionId: session.id };
+  } else if (g.kind === "turn") {
     const turn = await getPersistentAgentTurn(g.id);
     if (!turn || turn.finishedAt || turn.haltReason || turn.execState === "exited") return null;
     const agent = await getPersistentAgentUnscoped(turn.agentId);
@@ -143,6 +171,7 @@ export async function validateControllerToken(
     access: g.access === "read" ? "read" : "manage",
     name,
     run,
+    sessionPolicy,
   };
 }
 

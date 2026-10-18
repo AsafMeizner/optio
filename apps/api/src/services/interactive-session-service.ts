@@ -9,19 +9,55 @@ import {
   normalizeRepoUrl,
   shellQuote,
   type PresetImageId,
+  type WorkSettings,
 } from "@optio/shared";
 import { getOrCreateRepoPod } from "./repo-pool-service.js";
 import { logger } from "../logger.js";
 
 export async function createSession(input: {
-  repoUrl: string;
+  repoUrl?: string;
+  repoBranch?: string | null;
+  agentRuntime?: string | null;
+  agentOptions?: Record<string, string | boolean> | null;
+  initialPrompt?: string;
+  settings?: WorkSettings | null;
+  assistant?: boolean;
   userId?: string;
   workspaceId?: string | null;
   /** The name the user gave the session (New session form). */
   title?: string | null;
 }) {
-  const repoUrl = normalizeRepoUrl(input.repoUrl);
+  const repoUrl = input.repoUrl ? normalizeRepoUrl(input.repoUrl) : "";
   const sessionId = randomUUID();
+  if (input.agentRuntime) {
+    const [session] = await db
+      .insert(interactiveSessions)
+      .values({
+        id: sessionId,
+        repoUrl,
+        branch: input.repoBranch ?? "",
+        title: input.title?.trim() || null,
+        userId: input.userId ?? null,
+        workspaceId: input.workspaceId ?? null,
+        worktreePath: `/workspace/sessions/${sessionId}`,
+        state: "active",
+        agentRuntime: input.agentRuntime,
+        agentOptions: input.agentOptions,
+        initialPrompt: input.initialPrompt ?? "",
+        settings: input.settings,
+        assistant: input.assistant ?? false,
+      })
+      .returning();
+    await publishEvent({
+      type: "session:created",
+      sessionId,
+      repoUrl,
+      state: InteractiveSessionState.ACTIVE,
+      timestamp: new Date().toISOString(),
+    });
+    return { ...session, podName: null };
+  }
+  if (!repoUrl) throw new Error("A terminal session needs a repository");
 
   // Look up repo config for branch and image settings
   const [repoConfig] = await db

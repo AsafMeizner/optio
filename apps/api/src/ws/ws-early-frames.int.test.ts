@@ -98,6 +98,12 @@ vi.mock("../services/container-service.js", async (importOriginal) => {
   const { FakeContainerRuntime } = await import("@optio/container-runtime");
   const fake = new FakeContainerRuntime();
   const runtime = {
+    create: fake.create.bind(fake),
+    destroy: fake.destroy.bind(fake),
+    startRun: fake.startRun.bind(fake),
+    attachRun: fake.attachRun.bind(fake),
+    killRun: fake.killRun.bind(fake),
+    status: fake.status.bind(fake),
     exec: async (...args: Parameters<ContainerRuntime["exec"]>) => {
       if (!args[2]?.tty) return fake.exec(...args);
       const shell = { events: [] as string[], closed: false, command: args[1] };
@@ -124,6 +130,12 @@ vi.mock("../services/container-service.js", async (importOriginal) => {
   };
   return { ...actual, getRuntime: () => runtime };
 });
+
+// Pod lifecycle stays in the fake runtime, just like the legacy chat execs.
+vi.mock("../services/k8s-workload-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/k8s-workload-service.js")>()),
+  isStatefulSetEnabled: () => false,
+}));
 
 // ─── Harness ─────────────────────────────────────────────────────────────────
 
@@ -372,10 +384,8 @@ describe("frames sent the instant the socket opens (auth enabled)", () => {
 
     await chat.next((f) => f.type === "status" && f.status === "ready");
     await chat.next((f) => f.type === "status" && f.status === "thinking");
-    // No Anthropic credentials in this database: the prompt was processed and
-    // refused, which is all this test needs to see (no network call).
-    const error = await chat.next((f) => f.type === "error");
-    expect(error.message).toMatch(/No Anthropic credentials configured/);
+    await chat.next((f) => f.type === "text" && f.content.includes("Mock agent handled"));
+    await chat.next((f) => f.type === "status" && f.status === "ready");
     await chat.close();
   });
 
@@ -606,7 +616,7 @@ describe("a client that leaves while it is being authenticated", () => {
     }
   });
 
-  it("optio chat: the one-conversation slot is not taken by the departed client", async () => {
+  it("optio chat: a departed client does not prevent another viewer connecting", async () => {
     const lock = await lockTable("api_keys");
     const gone = new Client("/ws/optio/chat", { onOpen: (c) => c.ws.close() });
     await gone.closed;

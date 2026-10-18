@@ -6,5 +6,6 @@ import { create } from "zustand";
 export const useWorkSession = create<{
   pathname: string | null;
   local: boolean;
+  pod: boolean;
   terminalId: string | null;
-}>(() => ({ pathname: null, terminalId: null, local: false }));
+}>(() => ({ pathname: null, terminalId: null, local: false, pod: false }));

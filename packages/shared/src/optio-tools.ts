@@ -9,13 +9,16 @@
 
 /** JSON Schema representation of a tool parameter. */
 export interface ToolParameterSchema {
-  type: string;
+  type: string | string[];
   description?: string;
   enum?: string[];
   default?: unknown;
   minimum?: number;
   maximum?: number;
   items?: ToolParameterSchema;
+  properties?: Record<string, ToolParameterSchema>;
+  required?: string[];
+  additionalProperties?: boolean | ToolParameterSchema;
 }
 
 /** Standard tool definition compatible with Claude and Codex function calling. */
@@ -33,6 +36,165 @@ export interface OptioToolSchema {
     required?: string[];
   };
 }
+
+// Work uses the same authenticated endpoints as the creation form. The API
+// validates the spec and applies workspace, owner and machine access checks.
+const create_work: OptioToolSchema = {
+  name: "create_work",
+  description:
+    "Create work from its five attributes, including interactive sessions on a machine or pod, repo tasks, Jobs, scheduled work and persistent agents. Discover repos and machines first; never invent ids or local paths. Returns id and href: link the user to that href. Manual work starts immediately. Do not retry after an uncertain outcome without checking list_work.",
+  category: "Work",
+  endpoint: "POST /api/work",
+  method: "POST",
+  input_schema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "A short descriptive name" },
+      description: { type: "string" },
+      when: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            enum: [
+              "manual",
+              "schedule",
+              "webhook",
+              "ticket",
+              "github",
+              "gitlab",
+              "slack",
+              "linear",
+              "jira",
+              "pylon",
+              "pagerduty",
+              "sentry",
+              "alertmanager",
+              "datadog",
+            ],
+          },
+          config: {
+            type: "object",
+            description:
+              "Trigger configuration. Schedule: {cronExpression, timezone} with five-field cron and an IANA timezone. Omit for manual.",
+            additionalProperties: true,
+          },
+        },
+        required: ["type"],
+      },
+      where: {
+        type: "object",
+        properties: {
+          runTarget: { type: "string", enum: ["cluster", "local"] },
+          repoUrl: { type: "string", description: "Exact configured repo URL from list_repos" },
+          repoBranch: {
+            type: "string",
+            description:
+              "Base branch. For local work, setting this requests a new branch and PR; omit for a session in the existing directory.",
+          },
+          localHostId: { type: "string", description: "Machine id from list_machines" },
+          localDir: { type: "string", description: "Absolute allowed directory on that machine" },
+        },
+        required: ["runTarget"],
+      },
+      who: {
+        type: "object",
+        properties: {
+          runtime: {
+            type: ["string", "null"],
+            description:
+              "claude-code, codex, copilot, gemini, opencode, cursor; null for a terminal",
+          },
+          agentOptions: {
+            type: "object",
+            description: "Model and runtime options from get_agent_options",
+            additionalProperties: { type: ["string", "boolean"] },
+          },
+          model: { type: "string" },
+        },
+        required: ["runtime"],
+      },
+      what: {
+        type: "object",
+        properties: {
+          prompt: {
+            type: "string",
+            description:
+              "Instructions for the agent; command for a terminal. May be empty for an interactive session.",
+          },
+          runTitle: { type: "string" },
+        },
+        required: ["prompt"],
+      },
+      then: {
+        type: "string",
+        enum: ["exits", "waits-for-me", "waits-for-messages", "until-merged"],
+        description:
+          "waits-for-me opens an interactive work session; exits runs a task or Job; waits-for-messages creates a persistent pod agent; until-merged follows a repo PR.",
+      },
+      mergeWhenReady: { type: "boolean" },
+      owner: { type: "string", enum: ["workspace", "me"] },
+      agent: {
+        type: "object",
+        properties: {
+          slug: { type: "string" },
+          systemPrompt: { type: "string" },
+          podLifecycle: { type: "string", enum: ["always-on", "sticky", "on-demand"] },
+        },
+      },
+    },
+    required: ["name", "when", "where", "who", "what", "then"],
+  },
+};
+
+const list_work: OptioToolSchema = {
+  name: "list_work",
+  category: "Work",
+  endpoint: "GET /api/work",
+  method: "GET",
+  description:
+    "List all visible work, including machine and pod sessions, tasks, Jobs and agents. Check here before repeating a creation with an uncertain result.",
+  input_schema: {
+    type: "object",
+    properties: { view: { type: "string", enum: ["active", "recurring", "agents", "history"] } },
+  },
+};
+const get_work: OptioToolSchema = {
+  name: "get_work",
+  category: "Work",
+  endpoint: "GET /api/work/:id",
+  method: "GET",
+  description: "Read a piece of work of any kind, its attributes, status and navigation link.",
+  input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+};
+const list_machines: OptioToolSchema = {
+  name: "list_machines",
+  category: "Work",
+  endpoint: "GET /api/local/hosts",
+  method: "GET",
+  description:
+    "Discover the caller's paired machines, availability, allowed directories and agent capabilities before creating local work. Ask which directory if more than one fits.",
+  input_schema: { type: "object", properties: {} },
+};
+const get_agent_options: OptioToolSchema = {
+  name: "get_agent_options",
+  category: "Work",
+  endpoint: "GET /api/agents/:provider/options",
+  method: "GET",
+  description:
+    "Get current model names and runtime options for a provider. Codex uses openai; Claude Code uses anthropic. Pass hostId for machine-specific models.",
+  input_schema: {
+    type: "object",
+    properties: {
+      provider: {
+        type: "string",
+        enum: ["anthropic", "openai", "gemini", "copilot", "opencode", "cursor"],
+      },
+      hostId: { type: "string" },
+    },
+    required: ["provider"],
+  },
+};
 
 // ─── Task Tools ─────────────────────────────────────────────────────────────
 
@@ -489,8 +651,13 @@ const watch_task: OptioToolSchema = {
 
 // ─── Exports ────────────────────────────────────────────────────────────────
 
-/** All 18 Optio tool definitions. */
+/** All executable Optio tool definitions. */
 export const OPTIO_TOOL_SCHEMAS: OptioToolSchema[] = [
+  create_work,
+  list_work,
+  get_work,
+  list_machines,
+  get_agent_options,
   // Tasks (8)
   list_tasks,
   get_task,

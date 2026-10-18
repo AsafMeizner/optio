@@ -6784,6 +6784,8 @@ public struct OptioSettings: Codable, Hashable, Sendable {
     public let id: String
     /// An alias ("opus", "sonnet", "haiku", "fable": always the newest of that
     /// family) or a specific model id, pinned.
+    public let agentRuntime: String
+    public let agentOptions: [String: AnyCodable]
     public let model: String
     public let systemPrompt: String
     public let enabledTools: [String]
@@ -6801,6 +6803,8 @@ public struct OptioSettings: Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id = "id"
+        case agentRuntime = "agentRuntime"
+        case agentOptions = "agentOptions"
         case model = "model"
         case systemPrompt = "systemPrompt"
         case enabledTools = "enabledTools"
@@ -6815,6 +6819,8 @@ public struct OptioSettings: Codable, Hashable, Sendable {
 
     public init(
         id: String,
+        agentRuntime: String,
+        agentOptions: [String: AnyCodable],
         model: String,
         systemPrompt: String,
         enabledTools: [String],
@@ -6827,6 +6833,8 @@ public struct OptioSettings: Codable, Hashable, Sendable {
         updatedAt: Date
     ) {
         self.id = id
+        self.agentRuntime = agentRuntime
+        self.agentOptions = agentOptions
         self.model = model
         self.systemPrompt = systemPrompt
         self.enabledTools = enabledTools
@@ -6841,6 +6849,8 @@ public struct OptioSettings: Codable, Hashable, Sendable {
 }
 
 public struct UpdateOptioSettingsInput: Codable, Hashable, Sendable {
+    public let agentRuntime: String?
+    public let agentOptions: [String: AnyCodable]?
     public let model: String?
     public let systemPrompt: String?
     public let enabledTools: [String]?
@@ -6850,6 +6860,8 @@ public struct UpdateOptioSettingsInput: Codable, Hashable, Sendable {
     public let defaultReviewModel: String?
 
     private enum CodingKeys: String, CodingKey {
+        case agentRuntime = "agentRuntime"
+        case agentOptions = "agentOptions"
         case model = "model"
         case systemPrompt = "systemPrompt"
         case enabledTools = "enabledTools"
@@ -6860,6 +6872,8 @@ public struct UpdateOptioSettingsInput: Codable, Hashable, Sendable {
     }
 
     public init(
+        agentRuntime: String? = nil,
+        agentOptions: [String: AnyCodable]? = nil,
         model: String? = nil,
         systemPrompt: String? = nil,
         enabledTools: [String]? = nil,
@@ -6868,6 +6882,8 @@ public struct UpdateOptioSettingsInput: Codable, Hashable, Sendable {
         defaultReviewAgentType: String? = nil,
         defaultReviewModel: String? = nil
     ) {
+        self.agentRuntime = agentRuntime
+        self.agentOptions = agentOptions
         self.model = model
         self.systemPrompt = systemPrompt
         self.enabledTools = enabledTools

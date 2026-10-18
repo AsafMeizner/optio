@@ -15,6 +15,7 @@ struct MoreHubView: View {
         NavigationStack {
             List {
                 Section { accountCard }
+                Section { AskOptioButton() }
                 Section {
                     NavigationLink { SecretsView() } label: {
                         Label("Secrets", systemImage: "key")

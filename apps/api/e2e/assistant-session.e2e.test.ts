@@ -1,0 +1,106 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, expect, it } from "vitest";
+import { startApiServer, waitFor, type ApiServerHandle } from "../src/test-utils/e2e/api-server.js";
+
+let server: ApiServerHandle;
+const sockets: WebSocket[] = [];
+beforeAll(async () => {
+  server = await startApiServer();
+  for (const name of ["ANTHROPIC_API_KEY", "CURSOR_API_KEY"]) {
+    const res = await fetch(`${server.baseUrl}/api/secrets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, value: "dummy-test-key" }),
+    });
+    expect([200, 201]).toContain(res.status);
+  }
+}, 150_000);
+afterAll(async () => {
+  for (const ws of sockets) ws.close();
+  await server?.stop();
+});
+
+async function peer(path = "/ws/optio/chat") {
+  const frames: any[] = [];
+  const ws = new WebSocket(server.baseUrl.replace("http", "ws") + path);
+  sockets.push(ws);
+  ws.addEventListener("message", (event) => frames.push(JSON.parse(String(event.data))));
+  await waitFor(async () => frames.find((f) => f.type === "status"), { label: "chat ready" });
+  return { ws, frames };
+}
+
+it("runs an ordinary session, restores history, deduplicates prompts and changes harness on its next turn", async () => {
+  const first = await peer();
+  const { sessionId, href } = first.frames.find((f) => f.type === "history");
+  expect(href).toBe(`/work/${sessionId}`);
+  const requestId = randomUUID();
+  first.ws.send(
+    JSON.stringify({
+      type: "message",
+      content: "Help me plan [[mock:script:claude --print]]",
+      requestId,
+    }),
+  );
+  await waitFor(
+    async () =>
+      first.frames.find(
+        (f) => f.type === "text" && f.content.includes("script claude --print=present"),
+      ),
+    { label: "Claude harness command" },
+  );
+  await waitFor(
+    async () =>
+      first.frames.filter((f) => f.type === "status" && f.status === "ready").length === 2,
+  );
+  expect(
+    first.frames.filter((f) => f.type === "error"),
+    server.logs(),
+  ).toEqual([]);
+  const second = await peer();
+  const history = second.frames.find((f) => f.type === "history");
+  expect(history.sessionId).toBe(sessionId);
+  expect(history.frames.filter((f: any) => f.type === "user_message")).toHaveLength(1);
+  second.ws.send(
+    JSON.stringify({
+      type: "message",
+      content: "Help me plan [[mock:script:claude --print]]",
+      requestId,
+    }),
+  );
+  await waitFor(async () =>
+    second.frames.find((f) => f.type === "error" && /already accepted/.test(f.message)),
+  );
+
+  const res = await fetch(`${server.baseUrl}/api/optio/settings`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agentRuntime: "cursor", model: "" }),
+  });
+  expect(res.status).toBe(200);
+  const page = await peer(`/ws/sessions/${sessionId}/chat`);
+  second.ws.send(
+    JSON.stringify({
+      type: "message",
+      content: "Continue [[mock:script:cursor-agent --print]]",
+      requestId: randomUUID(),
+    }),
+  );
+  await waitFor(
+    async () =>
+      second.frames.find(
+        (f) => f.type === "text" && f.content.includes("script cursor-agent --print=present"),
+      ),
+    { label: "Cursor harness command" },
+  );
+  await waitFor(
+    async () =>
+      page.frames.find(
+        (f) =>
+          f.type === "chat_event" &&
+          f.event.content?.includes("script cursor-agent --print=present"),
+      ),
+    { label: "same conversation on session page" },
+  );
+  const session = await fetch(`${server.baseUrl}/api/sessions/${sessionId}`).then((r) => r.json());
+  expect(session.session).toMatchObject({ agentRuntime: "cursor", assistant: true });
+}, 120_000);

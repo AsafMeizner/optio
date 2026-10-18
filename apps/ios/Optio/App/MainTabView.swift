@@ -7,12 +7,14 @@ import SwiftUI
 struct MainTabView: View {
     @Environment(SessionStore.self) private var session
     @State private var router = AppRouter()
+    @State private var assistant = OptioAssistantModel()
     private static let log = Logger(subsystem: "dev.optio.ios", category: "router")
 
     var body: some View {
         tabs
             .tint(AppTheme.accent)
             .environment(router)
+            .sheet(isPresented: $router.showAssistant) { OptioAssistantView(model: assistant).environment(router) }
             .onOpenURL { url in handle(url: url) }
             .onReceive(NotificationCenter.default.publisher(for: .optioOpenURL)) { note in if let url = note.object as? URL { handle(url: url) } }
             .onAppear {

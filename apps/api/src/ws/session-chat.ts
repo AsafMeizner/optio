@@ -111,6 +111,12 @@ export async function sessionChatWs(app: FastifyInstance) {
     }
 
     if (session.state !== "active") return reject("Session is not active");
+    if (session.agentRuntime) {
+      const { attachHarnessChat } = await import("./harness-session-chat.js");
+      const mayInput = watchSessionAccess("pod", session, user, socket);
+      await attachHarnessChat(socket, conn, sessionId, mayInput);
+      return;
+    }
     if (!session.podId) return reject("Session has no pod assigned");
 
     // Get pod info

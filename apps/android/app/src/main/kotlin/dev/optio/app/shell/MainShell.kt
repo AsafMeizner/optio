@@ -20,6 +20,7 @@ import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
+import dev.optio.feature.agents.OptioAssistantHost
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -113,46 +114,48 @@ fun MainShell(
             Modifier
         }
 
-    CompositionLocalProvider(LocalAppRouter provides router, LocalNavigator provides navigator) {
-        NavigationSuiteScaffold(
-            modifier = modifier.semantics { testTagsAsResourceId = true },
-            layoutType = layoutType,
-            navigationSuiteItems = {
-                Tab.entries.forEach { tab ->
-                    item(
-                        selected = tab == router.selectedTab,
-                        onClick = { router.select(tab) },
-                        icon = { Icon(tab.icon, contentDescription = null) },
-                        label = { Text(tab.label) },
-                        modifier = Modifier.testTag("tab-${tab.name.lowercase()}"),
-                    )
-                }
-            },
-        ) {
-            val entriesByTab =
-                Tab.entries.associateWith { tab ->
-                    key(tab) {
-                        rememberDecoratedNavEntries(
-                            backStack = router.backStack(tab),
-                            entryDecorators =
-                                listOf(
-                                    rememberSaveableStateHolderNavEntryDecorator<NavKey>(),
-                                    rememberViewModelStoreNavEntryDecorator<NavKey>(),
-                                ),
-                            entryProvider = entryProvider,
+    OptioAssistantHost {
+        CompositionLocalProvider(LocalAppRouter provides router, LocalNavigator provides navigator) {
+            NavigationSuiteScaffold(
+                modifier = modifier.semantics { testTagsAsResourceId = true },
+                layoutType = layoutType,
+                navigationSuiteItems = {
+                    Tab.entries.forEach { tab ->
+                        item(
+                            selected = tab == router.selectedTab,
+                            onClick = { router.select(tab) },
+                            icon = { Icon(tab.icon, contentDescription = null) },
+                            label = { Text(tab.label) },
+                            modifier = Modifier.testTag("tab-${tab.name.lowercase()}"),
                         )
                     }
+                },
+            ) {
+                val entriesByTab =
+                    Tab.entries.associateWith { tab ->
+                        key(tab) {
+                            rememberDecoratedNavEntries(
+                                backStack = router.backStack(tab),
+                                entryDecorators =
+                                    listOf(
+                                        rememberSaveableStateHolderNavEntryDecorator<NavKey>(),
+                                        rememberViewModelStoreNavEntryDecorator<NavKey>(),
+                                    ),
+                                entryProvider = entryProvider,
+                            )
+                        }
+                    }
+                val tab = router.selectedTab
+                BackHandler(enabled = tab != Tab.OVERVIEW && router.backStack(tab).size == 1) {
+                    router.select(Tab.OVERVIEW)
                 }
-            val tab = router.selectedTab
-            BackHandler(enabled = tab != Tab.OVERVIEW && router.backStack(tab).size == 1) {
-                router.select(Tab.OVERVIEW)
-            }
-            key(tab) {
-                NavDisplay(
-                    entries = entriesByTab.getValue(tab),
-                    modifier = contentModifier,
-                    onBack = { router.pop(tab) },
-                )
+                key(tab) {
+                    NavDisplay(
+                        entries = entriesByTab.getValue(tab),
+                        modifier = contentModifier,
+                        onBack = { router.pop(tab) },
+                    )
+                }
             }
         }
     }

@@ -29,6 +29,7 @@ struct WorkHubView: View {
             .background(Surface.page)
             .hubChrome()
             .serverSwitcherToolbar()
+            .toolbar { ToolbarItem(placement: .primaryAction) { AskOptioButton() } }
             .workDestinations()
             .navigationDestination(for: AppRouter.PendingDetail.self) { detail in
                 switch detail.kind {

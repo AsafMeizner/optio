@@ -201,6 +201,7 @@ describe("projectWork", () => {
     expect(rows.find((r) => r.source === "pod-session")).toMatchObject({
       who: "terminal",
       name: "session/x",
+      href: "/work/s1abcdef-0000-0000-0000-000000000000",
       status: "waiting",
     });
 

@@ -16,15 +16,15 @@ import {
   type SplitLayout,
 } from "@/components/local/split-state";
 import { TaskWorkspace } from "@/components/tasks/task-workspace";
+import { PodWorkDetail } from "./pod-work-detail";
 import { useWorkSession } from "./session-context";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
 
-type Resolved = { kind: "task" | "terminal"; work: any };
+type Resolved = { kind: "task" | "terminal" | "pod"; work: any };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function WorkDetail({ id }: { id: string }) {
-  useSessionLayout("local");
   const router = useRouter();
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +35,13 @@ export function WorkDetail({ id }: { id: string }) {
     const local = !error && (resolved?.kind === "terminal" || resolved?.work.runTarget === "local");
     // Resolution ends the shell's pending navigation. Unmount must not clear
     // the previous session while the next work page is still loading.
-    if (!local) useWorkSession.setState({ pathname, local: false, terminalId: null });
+    if (!local)
+      useWorkSession.setState({
+        pathname,
+        local: false,
+        pod: resolved?.kind === "pod",
+        terminalId: null,
+      });
   }, [pathname, resolved, error]);
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +61,7 @@ export function WorkDetail({ id }: { id: string }) {
         if (result.source === "repo-task") setResolved({ kind: "task", work: result.work });
         else if (result.source === "local-terminal")
           setResolved({ kind: "terminal", work: result.work });
+        else if (result.source === "pod-session") setResolved({ kind: "pod", work: result.work });
         else redirect(result.row.href);
       } catch {
         // Linked terminals are omitted from /api/work to avoid duplicate list rows.
@@ -106,10 +113,12 @@ export function WorkDetail({ id }: { id: string }) {
       </div>
     );
   if (!resolved) return <div className="p-6 text-sm text-text-muted">Loading work…</div>;
+  if (resolved.kind === "pod") return <PodWorkDetail id={id} />;
   return <Workspace id={id} resolved={resolved} />;
 }
 
 function Workspace({ id, resolved }: { id: string; resolved: Resolved }) {
+  useSessionLayout("local");
   const router = useRouter();
   const replaceLayout = (href: string) => router.replace(rememberSessionLayout(href));
   const pushLayout = (href: string) => router.push(rememberSessionLayout(href));
@@ -149,7 +158,12 @@ function Workspace({ id, resolved }: { id: string; resolved: Resolved }) {
   const local = resolved.kind === "terminal" || task?.runTarget === "local";
   useEffect(() => {
     if (!local) return;
-    useWorkSession.setState({ pathname, local: true, terminalId: valid ? primary : null });
+    useWorkSession.setState({
+      pathname,
+      local: true,
+      pod: false,
+      terminalId: valid ? primary : null,
+    });
   }, [local, valid, pathname, primary]);
 
   const baseHref = `${pathname}${params.size ? `?${params}` : ""}`;

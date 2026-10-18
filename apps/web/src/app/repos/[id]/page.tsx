@@ -340,7 +340,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
     try {
       const res = await api.createSession({ repoUrl: repo.repoUrl });
       toast.success("Session created");
-      window.location.href = `/sessions/${res.session.id}`;
+      window.location.href = `/work/${res.session.id}`;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to create session");
     }
@@ -427,7 +427,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
                   return (
                     <Link
                       key={session.id}
-                      href={`/sessions/${session.id}`}
+                      href={`/work/${session.id}`}
                       className="flex items-center gap-3 p-2.5 rounded-lg border border-border hover:border-primary/30 hover:bg-bg-hover transition-colors"
                     >
                       <div

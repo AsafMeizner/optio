@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.Devices
@@ -47,6 +48,7 @@ import coil3.compose.AsyncImage
 import dev.optio.core.data.LocalSessionStore
 import dev.optio.core.data.ServerProfile
 import dev.optio.core.navigation.LocalNavigator
+import dev.optio.core.navigation.routes.OptioAssistantRoute
 import dev.optio.core.navigation.routes.SecretsRoute
 import dev.optio.core.navigation.routes.ServersRoute
 import dev.optio.core.navigation.routes.SettingsRoute
@@ -150,6 +152,9 @@ fun MoreHubContent(
     PullRefresh(onRefresh = onRefresh, modifier = modifier.testTag("more-hub")) {
         LazyColumn(Modifier.fillMaxSize().readableWidth(), contentPadding = contentPadding) {
             groupedItem("identity") { AccountCard(user = user, host = active?.host) }
+            if (user?.canMutate != false) groupedItem("assistant", header = "Assistant") {
+                SettingsRow("Ask Optio", icon = Icons.Outlined.ChatBubbleOutline, onClick = { onOpen(OptioAssistantRoute) }, modifier = Modifier.testTag("more-assistant"))
+            }
             groupedItem("admin", header = "Admin") {
                 SettingsRow("Secrets", icon = Icons.Outlined.Key, onClick = { onOpen(SecretsRoute) }, modifier = Modifier.testTag("more-secrets"))
                 InsetDivider(start = 56.dp)

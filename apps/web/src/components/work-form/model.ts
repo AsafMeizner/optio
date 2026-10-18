@@ -637,18 +637,13 @@ export function thenOptions(d: WorkDraft): Choice<Then>[] {
     },
     {
       value: "waits-for-me",
-      ...(!local && !d.withRepo
+      ...(!local && !d.withRepo && terminal
         ? { disabled: "A pod terminal is attached to a repo — pick a repository above." }
         : !local && isTriggered(d)
           ? {
               disabled: "A pod terminal is opened by hand. On your machine, triggers can open one.",
             }
-          : !local && !terminal && d.runtime !== "claude-code"
-            ? {
-                disabled:
-                  "A pod session chats with Claude Code — pick Terminal or Claude Code above.",
-              }
-            : {}),
+          : {}),
     },
     {
       // In a pod, with or without a repo (it then works in a checkout of
@@ -1058,7 +1053,7 @@ export function missingFields(d: WorkDraft, ctx: Parameters<typeof describe>[1] 
 /** Whether the What section asks for anything: an agent's prompt, or a command to run. */
 export function asksForPrompt(d: WorkDraft): boolean {
   // A pod session starts empty: only its repo and name travel.
-  if (deriveKind(d) === "pod-session") return false;
+  if (deriveKind(d) === "pod-session" && d.runtime === TERMINAL) return false;
   return d.runtime !== TERMINAL || d.then === "exits";
 }
 

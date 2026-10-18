@@ -168,7 +168,7 @@ describe("buildWorkflowAgentCommand", () => {
         OPTIO_PROMPT: "Do work",
         OPTIO_CLAUDE_MODEL: "sonnet",
       });
-      expect(cmds.some((c) => c.includes("--model sonnet"))).toBe(true);
+      expect(cmds.some((c) => c.includes("--model 'sonnet'"))).toBe(true);
     });
 
     it("does not embed the prompt in the command", () => {

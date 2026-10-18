@@ -14,6 +14,8 @@ import {
   prReviews,
   prReviewRuns,
   repos,
+  interactiveSessions,
+  localTerminals,
 } from "../db/schema.js";
 import { visibleOwner } from "./ownership.js";
 import type { ControllerPrincipal } from "./controller-auth.js";
@@ -285,7 +287,7 @@ export async function listControllerRepos(p: ControllerPrincipal, limit: number,
 
 function checkSpec(p: ControllerPrincipal, spec: WorkSpec) {
   requireManage(p);
-  if (spec.where.runTarget !== "cluster" || spec.then === "waits-for-me")
+  if (!p.run?.sessionId && (spec.where.runTarget !== "cluster" || spec.then === "waits-for-me"))
     throw new ControllerError(
       400,
       "Controller tools create headless pod work and persistent agents; use the UI for interactive sessions and machines",
@@ -512,4 +514,62 @@ export async function controllerLogs(
     })),
     nextOffset: rows.length > opts.limit ? opts.offset + opts.limit : null,
   };
+}
+
+/** Interactive operators can discover the sessions they create, inside the same tenant/owner. */
+export async function listControllerSessions(
+  p: ControllerPrincipal,
+  opts: { id?: string; search?: string; limit?: number } = {},
+) {
+  if (!p.run?.sessionId) return [];
+  const [sessions, terminals] = await Promise.all([
+    db
+      .select()
+      .from(interactiveSessions)
+      .where(
+        and(
+          tenant(interactiveSessions.workspaceId, p.actor.workspaceId),
+          tenant(interactiveSessions.userId, p.actor.userId),
+          opts.id ? eq(interactiveSessions.id, opts.id) : undefined,
+          opts.search ? ilike(interactiveSessions.title, `%${opts.search}%`) : undefined,
+        ),
+      )
+      .orderBy(desc(interactiveSessions.createdAt), desc(interactiveSessions.id))
+      .limit(opts.limit ?? 500),
+    db
+      .select()
+      .from(localTerminals)
+      .where(
+        and(
+          tenant(localTerminals.workspaceId, p.actor.workspaceId),
+          tenant(localTerminals.userId, p.actor.userId),
+          opts.id ? eq(localTerminals.id, opts.id) : undefined,
+          opts.search ? ilike(localTerminals.title, `%${opts.search}%`) : undefined,
+        ),
+      )
+      .orderBy(desc(localTerminals.createdAt), desc(localTerminals.id))
+      .limit(opts.limit ?? 500),
+  ]);
+  return [
+    ...sessions.map((s) => ({
+      id: s.id,
+      kind: "session",
+      name: s.title,
+      state: s.state,
+      runtime: s.agentRuntime,
+      href: `/sessions/${s.id}`,
+      createdAt: s.createdAt,
+      updatedAt: s.createdAt,
+    })),
+    ...terminals.map((s) => ({
+      id: s.id,
+      kind: "session",
+      name: s.title,
+      state: s.state,
+      runtime: (s.spec as { agent?: string }).agent,
+      href: `/local/${s.id}`,
+      createdAt: s.createdAt,
+      updatedAt: s.createdAt,
+    })),
+  ];
 }

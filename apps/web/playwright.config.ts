@@ -6,7 +6,7 @@ import { defineConfig, devices } from "@playwright/test";
  * e2e/launch-stack.ts owns infra startup and data seeding.
  *
  * Run with:  pnpm --filter @optio/web test:e2e
- * First time: npx playwright install chromium
+ * First time: npx playwright install chromium firefox
  */
 export default defineConfig({
   testDir: "./e2e",
@@ -22,7 +22,14 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    {
+      name: "firefox",
+      testMatch: "**/optio-assistant.spec.ts",
+      use: { ...devices["Desktop Firefox"] },
+    },
+  ],
   webServer: {
     command: "npx tsx e2e/launch-stack.ts",
     url: "http://127.0.0.1:3131",

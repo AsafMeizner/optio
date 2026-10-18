@@ -11,8 +11,8 @@ import {
 } from "./optio-tools.js";
 
 describe("OPTIO_TOOL_SCHEMAS", () => {
-  it("contains 18 tool definitions", () => {
-    expect(OPTIO_TOOL_SCHEMAS).toHaveLength(18);
+  it("contains 23 tool definitions", () => {
+    expect(OPTIO_TOOL_SCHEMAS).toHaveLength(23);
   });
 
   it("every tool has required fields", () => {

@@ -1,483 +1,491 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { inputClass } from "@/components/ui/input";
+import { AgentIcon } from "@/components/brand-icon";
+import { runtimeLabel } from "@/components/agent-choice-model";
 import { OptioMark } from "@/components/optio-mark";
-import { X, Send, RotateCcw, User, Loader2, AlertCircle, Info } from "lucide-react";
 import {
-  useOptioChatStore,
-  DEFAULT_MAX_EXCHANGES,
-  type OptioChatMessage,
-  type OptioPendingAction,
-} from "@/hooks/use-optio-chat";
+  Minus,
+  ExternalLink,
+  ArrowUp,
+  Eraser,
+  Loader2,
+  Mic,
+  Square,
+  Maximize2,
+  Minimize2,
+  ArrowUpRight,
+  AlertCircle,
+  Anchor,
+} from "lucide-react";
+import { useOptioChatStore } from "@/hooks/use-optio-chat";
+import { useOptioConnection } from "@/hooks/use-optio-connection";
+import { useDictation } from "@/hooks/use-dictation";
 import { ActionCard } from "./action-card.js";
 import { api } from "@/lib/api-client";
 import { ChatMarkdown } from "./chat-markdown.js";
 
+const SUGGESTIONS = [
+  {
+    title: "Start a work session",
+    detail: "Choose a machine, repo and agent together",
+    prompt:
+      "Help me start an agent work session. Show me my machines and repos so we can choose where it should run.",
+  },
+  {
+    title: "Hand off a task",
+    detail: "Describe a change and have an agent take it on",
+    prompt:
+      "I want to hand off a coding task. Help me choose a repo and an agent, then create the work.",
+  },
+  {
+    title: "See what needs me",
+    detail: "Catch up on work across the workspace",
+    prompt: "Look at my work and summarize what needs my attention.",
+  },
+];
+
 export function OptioChatPanel() {
-  const {
-    isOpen,
-    close,
-    messages,
-    addMessage,
-    updateMessage,
-    resetMessages,
-    prefillInput,
-    setPrefillInput,
-    status,
-    setStatus,
-    exchangeCount,
-    incrementExchange,
-    maxTurns,
-    setMaxTurns,
-    confirmWrites,
-    setConfirmWrites,
-  } = useOptioChatStore();
-
+  const { isOpen, messages, prefillInput, status, confirmWrites, agentRuntime, agentModel } =
+    useOptioChatStore();
+  const connection = useOptioConnection();
   const [input, setInput] = useState("");
-  const wsRef = useRef<WebSocket | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [docked, setDocked] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const pathname = usePathname();
-  const prevPathname = useRef(pathname);
+  const panelRef = useRef<HTMLElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  const appendTranscript = useCallback((text: string) => {
+    if (text) setInput((draft) => (draft ? `${draft.trimEnd()} ${text}` : text));
+  }, []);
+  const dictation = useDictation(appendTranscript);
+  const pending = messages.some((m) => m.action?.decision === null);
+  const busy = status === "thinking";
+  const connected = status === "ready" || busy;
+  const statusLabel =
+    status === "starting"
+      ? "Connecting"
+      : busy
+        ? "Working"
+        : !connected
+          ? "Disconnected"
+          : pending
+            ? "Awaiting approval"
+            : "Ready";
+  const canCompose = status === "ready" && !pending;
 
-  // Reset conversation on page navigation
   useEffect(() => {
-    if (prevPathname.current !== pathname) {
-      resetMessages();
-      prevPathname.current = pathname;
+    try {
+      setDocked(localStorage.getItem("optio.assistant.docked") === "true");
+    } catch {
+      // Docking still works when browser storage is unavailable.
     }
-  }, [pathname, resetMessages]);
-
-  // Apply prefill input
-  useEffect(() => {
-    if (prefillInput && isOpen) {
-      setInput(prefillInput);
-      setPrefillInput("");
-      // Focus the input after a tick so the panel is visible
-      setTimeout(() => inputRef.current?.focus(), 100);
-    }
-  }, [prefillInput, isOpen, setPrefillInput]);
-
-  // Focus input when panel opens
-  useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => inputRef.current?.focus(), 200);
-    }
-  }, [isOpen]);
-
-  // Load Optio settings (maxTurns, confirmWrites) on mount
-  useEffect(() => {
-    api
-      .getOptioSettings()
-      .then((res) => {
-        const s = res.settings;
-        if (s.maxTurns) setMaxTurns(s.maxTurns);
-        if (s.confirmWrites !== undefined) setConfirmWrites(s.confirmWrites);
-      })
-      .catch(() => {});
-  }, [setMaxTurns, setConfirmWrites]);
-
-  // Escape key to close
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isOpen) {
-        close();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, close]);
-
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
-  // Auto-scroll when messages change
-  useEffect(() => {
-    if (isOpen) {
-      setTimeout(scrollToBottom, 50);
-    }
-  }, [messages, isOpen, scrollToBottom]);
-
-  // Simulated message handling — in a real implementation this would connect
-  // to WS /ws/optio/chat. For now we simulate responses to demonstrate the UI.
-  const handleSend = useCallback(() => {
-    const text = input.trim();
-    if (!text || status === "thinking" || exchangeCount >= maxTurns) return;
-
-    const userMsg: OptioChatMessage = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      content: text,
-      timestamp: new Date().toISOString(),
-    };
-    addMessage(userMsg);
-    incrementExchange();
-    setInput("");
-
-    // Set thinking state
-    setStatus("thinking");
-
-    // Simulate assistant response
-    setTimeout(() => {
-      const isActionRequest =
-        text.toLowerCase().includes("retry") ||
-        text.toLowerCase().includes("update") ||
-        text.toLowerCase().includes("cancel") ||
-        text.toLowerCase().includes("change");
-
-      if (isActionRequest) {
-        const actionId = `action-${Date.now()}`;
-        const actionItems = parseActionItems(text);
-        const assistantMsg: OptioChatMessage = {
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: "I'd like to do the following:",
-          timestamp: new Date().toISOString(),
-          action: {
-            id: actionId,
-            description: "I'd like to do the following:",
-            items: actionItems,
-            decision: null,
-          },
-        };
-        addMessage(assistantMsg);
-      } else {
-        const assistantMsg: OptioChatMessage = {
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: generateSimulatedResponse(text),
-          timestamp: new Date().toISOString(),
-        };
-        addMessage(assistantMsg);
-      }
-      setStatus("ready");
-    }, 1200);
-  }, [input, status, exchangeCount, maxTurns, addMessage, incrementExchange, setStatus]);
-
-  const handleApprove = useCallback(
-    (actionId: string) => {
-      const msg = messages.find((m) => m.action?.id === actionId);
-      if (!msg) return;
-
-      updateMessage(msg.id, {
-        action: { ...msg.action!, decision: true },
-      });
-
-      // Simulate execution result
-      setStatus("thinking");
-      setTimeout(() => {
-        addMessage({
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: "Done! All actions have been executed successfully.",
-          timestamp: new Date().toISOString(),
-        });
-        setStatus("ready");
-      }, 800);
-    },
-    [messages, updateMessage, addMessage, setStatus],
-  );
-
-  const handleDeny = useCallback(
-    (actionId: string, feedback: string) => {
-      const msg = messages.find((m) => m.action?.id === actionId);
-      if (!msg) return;
-
-      updateMessage(msg.id, {
-        action: { ...msg.action!, decision: false },
-      });
-
-      // Add the user's denial feedback
-      addMessage({
-        id: `user-deny-${Date.now()}`,
-        role: "user",
-        content: feedback,
-        timestamp: new Date().toISOString(),
-        isDenialFeedback: true,
-      });
-
-      // Simulate revised plan
-      setStatus("thinking");
-      setTimeout(() => {
-        addMessage({
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: `Got it. Let me revise the plan based on your feedback: "${feedback}"`,
-          timestamp: new Date().toISOString(),
-        });
-        setStatus("ready");
-      }, 1000);
-    },
-    [messages, updateMessage, addMessage, setStatus],
-  );
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const toggleDocked = () => {
+    const next = !docked;
+    setDocked(next);
+    try {
+      localStorage.setItem("optio.assistant.docked", String(next));
+    } catch {
+      // Keep the preference for this visit.
     }
   };
 
-  const atLimit = exchangeCount >= maxTurns;
+  useEffect(() => {
+    api
+      .getOptioSettings()
+      .then(({ settings }) => {
+        const store = useOptioChatStore.getState();
+        store.setConfirmWrites(settings.confirmWrites);
+        if (!store.agentRuntime) store.setAgentConfiguration(settings.agentRuntime, settings.model);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (prefillInput && isOpen) {
+      setInput(prefillInput);
+      useOptioChatStore.getState().setPrefillInput("");
+    }
+  }, [prefillInput, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      dictation.cancel();
+      return;
+    }
+    const previous = document.activeElement as HTMLElement | null;
+    inputRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        useOptioChatStore.getState().close();
+      }
+      // The desktop panel is non-modal; only trap focus in the mobile overlay.
+      if (event.key === "Tab" && window.matchMedia("(max-width: 767px)").matches) {
+        const controls = panelRef.current?.querySelectorAll<HTMLElement>(
+          "button:not(:disabled), textarea:not(:disabled), input:not(:disabled), a[href]",
+        );
+        if (!controls?.length) return;
+        const first = controls[0],
+          last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previous?.focus();
+    };
+  }, [isOpen, dictation.cancel]);
+
+  useEffect(() => {
+    if (isOpen && follow.current && scrollRef.current)
+      scrollRef.current.scrollTop = messages.length ? scrollRef.current.scrollHeight : 0;
+  }, [messages, busy, isOpen]);
+
+  useEffect(() => {
+    const field = inputRef.current;
+    if (field) {
+      field.style.height = "auto";
+      field.style.height = `${Math.min(field.scrollHeight, 120)}px`;
+    }
+  }, [input, isOpen]);
+
+  const send = () => {
+    if (dictation.active || !canCompose) return;
+    if (connection.send(input)) {
+      setInput("");
+      follow.current = true;
+    }
+  };
+  const iconButton =
+    "rounded-lg p-2 text-text-muted transition-colors hover:bg-bg-hover hover:text-text disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-primary";
 
   return (
     <>
-      {/* Backdrop overlay */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/30 md:bg-black/20 transition-opacity"
-          onClick={close}
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => useOptioChatStore.getState().close()}
         />
       )}
-
-      {/* Panel */}
-      <div
+      <aside
         ref={panelRef}
+        role="dialog"
+        aria-label="Optio assistant"
+        aria-hidden={!isOpen}
+        inert={!isOpen}
+        data-docked={docked}
         className={cn(
-          "fixed inset-y-0 right-0 z-50 w-full md:w-[420px] flex flex-col",
-          "bg-bg border-l border-border shadow-2xl",
-          "transition-transform duration-300 ease-out",
-          isOpen ? "translate-x-0" : "translate-x-full",
+          "fixed inset-y-0 right-0 z-50 flex min-h-0 h-[var(--app-height,100dvh)] w-full flex-col overflow-hidden md:h-auto border-l border-border bg-bg shadow-2xl md:inset-y-3 md:right-3 md:rounded-2xl md:border",
+          expanded ? "md:w-[min(720px,calc(100vw-280px))]" : "md:w-[480px]",
+          docked &&
+            "lg:static lg:z-10 lg:h-full lg:shrink-0 lg:rounded-none lg:border-0 lg:border-l lg:shadow-none",
+          docked && (expanded ? "lg:w-[min(640px,45vw)]" : "lg:w-[clamp(360px,32vw,480px)]"),
+          !isOpen && "hidden",
         )}
       >
-        {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-bg-card">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center">
-              <OptioMark className="w-4 h-4 text-primary" />
+        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+              <OptioMark className="h-5 w-5 text-primary" />
+              {agentRuntime && (
+                <span
+                  role="img"
+                  aria-label={`${runtimeLabel(agentRuntime)} · ${agentModel || "Default model"}`}
+                  title={`${runtimeLabel(agentRuntime)} · ${agentModel || "Default model"}`}
+                  className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-md border border-border bg-bg-card shadow-sm"
+                >
+                  <AgentIcon runtime={agentRuntime} colored className="h-3 w-3" />
+                </span>
+              )}
             </div>
-            <div>
-              <span className="font-semibold text-sm text-text">Optio</span>
-              <span className="block text-[10px] text-text-muted leading-none mt-0.5">
-                AI Assistant
-              </span>
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={resetMessages}
-              className="p-1.5 rounded-md hover:bg-bg-hover text-text-muted hover:text-text transition-colors"
-              title="Reset conversation"
+            <h2
+              aria-label="Optio Agent"
+              className="flex min-w-0 items-center gap-2 text-sm font-semibold text-text-heading"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
+              <span className="truncate">Optio Agent</span>
+              <span
+                role="status"
+                aria-label={statusLabel}
+                title={statusLabel}
+                className={cn(
+                  "h-1.5 w-1.5 shrink-0 rounded-full",
+                  busy || status === "starting"
+                    ? "animate-pulse bg-primary"
+                    : pending
+                      ? "bg-warning"
+                      : connected
+                        ? "bg-success"
+                        : "bg-text-muted/50",
+                )}
+              />
+            </h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            {connection.sessionHref && (
+              <Link
+                href={connection.sessionHref}
+                onClick={() => useOptioChatStore.getState().close()}
+                className={iconButton}
+                aria-label="Open in session"
+                title="Open in session"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </Link>
+            )}
+            <button
+              className={cn(iconButton, "hidden lg:block", docked && "bg-primary/10 text-primary")}
+              title={docked ? "Float assistant" : "Dock assistant beside the page"}
+              aria-label={docked ? "Float assistant" : "Dock assistant"}
+              aria-pressed={docked}
+              onClick={toggleDocked}
+            >
+              <Anchor className="h-4 w-4" />
             </button>
             <button
-              onClick={close}
-              className="p-1.5 rounded-md hover:bg-bg-hover text-text-muted hover:text-text transition-colors"
-              title="Close (Esc)"
+              className={iconButton}
+              title="Clear conversation history"
+              aria-label="Clear conversation"
+              disabled={status !== "ready" || pending}
+              onClick={() => {
+                dictation.cancel();
+                connection.reset();
+                setInput("");
+              }}
             >
-              <X className="w-4 h-4" />
+              <Eraser className="h-4 w-4" />
+            </button>
+            <button
+              className={cn(iconButton, "hidden md:block")}
+              title={expanded ? "Narrow panel" : "Expand panel"}
+              aria-label={expanded ? "Narrow panel" : "Expand panel"}
+              onClick={() => setExpanded(!expanded)}
+            >
+              {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </button>
+            <button
+              className={iconButton}
+              title="Minimize (Esc)"
+              aria-label="Minimize Optio"
+              onClick={() => useOptioChatStore.getState().close()}
+            >
+              <Minus className="h-4 w-4" />
             </button>
           </div>
-        </div>
+        </header>
 
-        {/* Session reset notice */}
-        <div className="shrink-0 px-4 py-1.5 border-b border-border/50 bg-bg-subtle">
-          <div className="flex items-center gap-1.5 text-[10px] text-text-muted">
-            <Info className="w-3 h-3 shrink-0" />
-            Session resets on page change
-          </div>
-        </div>
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-          {messages.length === 0 && (
-            <div className="h-full flex items-center justify-center text-text-muted">
-              <div className="text-center px-6">
-                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
-                  <OptioMark className="w-6 h-6 text-primary/60" />
-                </div>
-                <p className="text-sm font-medium text-text mb-1">Ask Optio anything</p>
-                <p className="text-xs text-text-muted max-w-[260px] mx-auto leading-relaxed">
-                  Retry failed tasks, update repo settings, check status, or get help with your
-                  workflow. Optio will ask for confirmation before taking action.
-                </p>
+        <div
+          ref={scrollRef}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-6"
+          data-testid="optio-conversation-scroll"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          }}
+        >
+          {messages.length === 0 ? (
+            <div className="flex min-h-full flex-col pb-2">
+              <p className="mb-3 text-xs font-medium text-primary">FROM IDEA TO RUNNING WORK</p>
+              <h3 className="max-w-sm text-3xl font-semibold tracking-tight text-text-heading">
+                What would you like
+                <br />
+                to get done?
+              </h3>
+              <p className="mt-3 max-w-sm text-sm leading-relaxed text-text-muted">
+                Tell me what you have in mind. I can find the right repo, start an agent, and set up
+                the work with you.
+              </p>
+              <div className="mt-8 space-y-2">
+                {SUGGESTIONS.map((suggestion) => (
+                  <button
+                    key={suggestion.title}
+                    onClick={() => {
+                      setInput(suggestion.prompt);
+                      inputRef.current?.focus();
+                    }}
+                    className="group flex w-full items-center justify-between gap-3 rounded-xl border border-border/70 bg-bg-card px-4 py-3.5 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+                  >
+                    <span>
+                      <span className="block text-sm font-medium text-text">
+                        {suggestion.title}
+                      </span>
+                      <span className="mt-1 block text-xs text-text-muted">
+                        {suggestion.detail}
+                      </span>
+                    </span>
+                    <ArrowUpRight className="h-4 w-4 shrink-0 text-text-muted group-hover:text-primary" />
+                  </button>
+                ))}
               </div>
             </div>
-          )}
-
-          {messages.map((msg) => (
-            <div key={msg.id}>
-              {msg.role === "user" ? (
-                <div className="flex gap-2.5 justify-end">
-                  <div className="max-w-[85%]">
-                    <div
-                      className={cn(
-                        "rounded-lg px-3.5 py-2.5 text-sm whitespace-pre-wrap",
-                        msg.isDenialFeedback
-                          ? "bg-error/10 border border-error/20"
-                          : "bg-primary/10 border border-primary/20",
-                      )}
-                    >
+          ) : (
+            <div className="space-y-6" role="log" aria-label="Conversation">
+              {messages.map((msg) => (
+                <div key={msg.id} className={cn("min-w-0", msg.role === "user" && "ml-8")}>
+                  {msg.role === "user" ? (
+                    <div className="whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-primary/10 px-4 py-3 text-sm leading-relaxed text-text">
                       {msg.content}
                     </div>
-                  </div>
-                  <div className="shrink-0 mt-1">
-                    <div className="w-6 h-6 rounded-full bg-bg-card border border-border flex items-center justify-center">
-                      <User className="w-3.5 h-3.5 text-text-muted" />
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-xs font-medium text-text-muted">
+                        <OptioMark className="h-3.5 w-3.5 text-primary" />
+                        Optio
+                      </div>
+                      {msg.action ? (
+                        <ActionCard
+                          action={msg.action}
+                          disabled={!connected || busy}
+                          onApprove={(id) => connection.decide(id, true)}
+                          onDeny={(id, feedback) => connection.decide(id, false, feedback)}
+                        />
+                      ) : (
+                        <div
+                          className={cn(
+                            "break-words",
+                            msg.isError && "rounded-xl border border-error/20 bg-error/5 p-3",
+                          )}
+                        >
+                          <ChatMarkdown content={msg.content} />
+                        </div>
+                      )}
                     </div>
-                  </div>
+                  )}
                 </div>
-              ) : (
-                <div className="flex gap-2.5">
-                  <div className="shrink-0 mt-1">
-                    <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center">
-                      <OptioMark className="w-3.5 h-3.5 text-primary" />
-                    </div>
-                  </div>
-                  <div className="max-w-[85%] min-w-0 space-y-2">
-                    {msg.action ? (
-                      <ActionCard
-                        action={msg.action}
-                        onApprove={handleApprove}
-                        onDeny={handleDeny}
-                      />
-                    ) : (
-                      <ChatMarkdown content={msg.content} />
-                    )}
-                  </div>
+              ))}
+              {busy && (
+                <div role="status" className="flex items-center gap-2 text-xs text-text-muted">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Working on it…
                 </div>
               )}
-            </div>
-          ))}
-
-          {status === "thinking" && (
-            <div className="flex gap-2.5">
-              <div className="shrink-0 mt-1">
-                <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center">
-                  <OptioMark className="w-3.5 h-3.5 text-primary animate-pulse" />
-                </div>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-text-muted">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                Thinking...
-              </div>
             </div>
           )}
-
-          <div ref={messagesEndRef} />
         </div>
 
-        {/* Exchange limit reached */}
-        {atLimit && (
-          <div className="shrink-0 px-4 py-3 border-t border-warning/20 bg-warning/5">
-            <p className="text-xs text-warning mb-2">
-              This conversation is getting long. Start a fresh one?
+        <div
+          className="max-h-[60%] shrink-0 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
+          data-testid="optio-composer"
+        >
+          {!connected && status !== "starting" && (
+            <div className="mb-3 rounded-xl border border-warning/20 bg-warning/5 p-3 text-xs text-text">
+              <p>Connection lost. Actions won’t be retried automatically.</p>
+              <button
+                onClick={connection.reconnect}
+                className="mt-2 font-medium text-primary hover:underline"
+              >
+                Reconnect
+              </button>
+            </div>
+          )}
+          {pending && connected && (
+            <p className="pb-3 text-xs text-text-muted">
+              Review the proposed action above to continue.
             </p>
-            <button
-              onClick={resetMessages}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors btn-press"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Reset conversation
-            </button>
-          </div>
-        )}
+          )}
 
-        {/* Status: unavailable */}
-        {status === "unavailable" && (
-          <div className="shrink-0 px-4 py-3 border-t border-error/20 bg-error/5">
-            <div className="flex items-center gap-2 text-xs text-error">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              Optio is currently unavailable. Please try again later.
-            </div>
-          </div>
-        )}
-
-        {/* Input area */}
-        <div className="shrink-0 border-t border-border px-4 py-3 bg-bg-card">
-          <div className="flex items-end gap-2">
-            <div className="flex-1 relative">
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={
-                  atLimit
-                    ? "Conversation limit reached"
-                    : status === "thinking"
-                      ? "Optio is working..."
-                      : status === "unavailable"
-                        ? "Unavailable"
-                        : "Ask Optio..."
+          <div
+            className={cn(
+              "optio-composer rounded-xl border bg-bg-card p-2 transition-colors focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10",
+              dictation.active ? "border-primary/60" : "border-border",
+            )}
+          >
+            <textarea
+              ref={inputRef}
+              aria-label="Message Optio"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  send();
                 }
-                disabled={status === "unavailable" || status === "thinking" || atLimit}
-                rows={1}
-                className={inputClass({
-                  className:
-                    "resize-none py-2.5 disabled:cursor-not-allowed min-h-[40px] max-h-[100px]",
-                })}
-                style={{ height: "auto" }}
-                onInput={(e) => {
-                  const target = e.target as HTMLTextAreaElement;
-                  target.style.height = "auto";
-                  target.style.height = `${Math.min(target.scrollHeight, 100)}px`;
-                }}
-              />
+              }}
+              placeholder="Message Optio…"
+              rows={1}
+              className="block min-h-8 max-h-[min(120px,calc(var(--app-height,100dvh)*0.25))] w-full resize-none bg-transparent px-1 py-1 text-sm leading-relaxed text-text outline-none placeholder:text-text-muted"
+            />
+            {dictation.active && (
+              <div
+                role="status"
+                className="mb-2 rounded-lg bg-primary/5 px-2 py-2 text-xs text-primary"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                  {dictation.state === "starting"
+                    ? "Opening microphone…"
+                    : dictation.state === "stopping"
+                      ? "Finishing dictation…"
+                      : "Listening…"}
+                </span>
+                {dictation.interim && (
+                  <p className="mt-1.5 leading-relaxed text-text-muted">{dictation.interim}</p>
+                )}
+              </div>
+            )}
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={dictation.active ? dictation.stop : dictation.start}
+                disabled={dictation.state === "stopping"}
+                aria-label={dictation.active ? "Stop dictation" : "Start dictation"}
+                aria-pressed={dictation.active}
+                title={
+                  dictation.supported
+                    ? "Dictate a message"
+                    : "Use keyboard dictation or a supported browser on HTTPS"
+                }
+                className={cn(
+                  "flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-colors disabled:opacity-40",
+                  dictation.active
+                    ? "bg-primary/10 text-primary"
+                    : "text-text-muted hover:bg-bg-hover hover:text-text",
+                )}
+              >
+                {dictation.active ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                {dictation.active ? "Stop dictation" : "Dictate"}
+              </button>
+              <button
+                onClick={send}
+                aria-label="Send message"
+                title="Send (Enter)"
+                disabled={!input.trim() || !canCompose || dictation.active}
+                className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ArrowUp className="h-4 w-4" />
+              </button>
             </div>
-            <button
-              onClick={handleSend}
-              disabled={
-                !input.trim() || status === "thinking" || status === "unavailable" || atLimit
-              }
-              className={cn(
-                "shrink-0 p-2.5 rounded-lg transition-colors",
-                input.trim() && status !== "thinking"
-                  ? "bg-primary text-white hover:bg-primary-hover"
-                  : "bg-bg-card text-text-muted border border-border",
-                "disabled:opacity-50 disabled:cursor-not-allowed",
-              )}
-              title="Send (Enter)"
-            >
-              <Send className="w-4 h-4" />
-            </button>
           </div>
-          <div className="flex items-center justify-between mt-1.5">
-            <span className="text-[10px] text-text-muted">
-              Enter to send, Shift+Enter for new line
-            </span>
-            <span className="text-[10px] text-text-muted tabular-nums">
-              {exchangeCount}/{maxTurns}
-            </span>
-          </div>
+          {dictation.unavailable && !dictation.error && (
+            <p className="mt-2 px-1 text-xs text-text-muted">{dictation.unavailable}</p>
+          )}
+          {dictation.error && (
+            <p role="alert" className="mt-2 flex items-start gap-1.5 px-1 text-xs text-error">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {dictation.error}
+            </p>
+          )}
+          {(dictation.active || !confirmWrites) && (
+            <p className="mt-2 px-1 text-center text-[11px] leading-relaxed text-text-muted">
+              {dictation.active
+                ? "Review your words, then send. Audio is handled by your browser’s speech service."
+                : "Actions run directly · confirmation is off in Settings."}
+            </p>
+          )}
         </div>
-      </div>
+      </aside>
     </>
   );
-}
-
-/** Parse user text to generate mock action items. */
-function parseActionItems(text: string): string[] {
-  const lower = text.toLowerCase();
-  if (lower.includes("retry")) {
-    return ["Retry failed tasks matching your criteria", "Monitor for successful completion"];
-  }
-  if (lower.includes("cancel")) {
-    return ["Cancel the specified active tasks"];
-  }
-  if (lower.includes("update") || lower.includes("change")) {
-    return ["Update the specified settings", "Apply changes immediately"];
-  }
-  return ["Perform the requested action"];
-}
-
-/** Generate a simulated response for demo purposes. */
-function generateSimulatedResponse(text: string): string {
-  const lower = text.toLowerCase();
-  if (lower.includes("status") || lower.includes("how")) {
-    return "Here's a quick summary: check the dashboard for real-time task status, cluster health, and recent activity. You can also ask me to retry failed tasks or adjust settings.";
-  }
-  if (lower.includes("help")) {
-    return "I can help you with:\n\n- Retrying failed tasks\n- Cancelling active tasks\n- Updating repo settings (concurrency, model, etc.)\n- Checking task and cluster status\n- Troubleshooting errors\n\nJust describe what you need and I'll propose a plan for your approval.";
-  }
-  if (lower.includes("fail") || lower.includes("error")) {
-    return 'I can see some tasks have encountered issues. Would you like me to retry the failed ones? Just say "retry failed tasks" and I\'ll prepare an action plan for you.';
-  }
-  return "I understand your request. Let me know if you'd like me to take any specific actions — I'll always ask for your confirmation before making changes.";
 }

@@ -45,6 +45,16 @@ The tabs mirror the web sidebar. Phones get a bottom bar, wide screens a navigat
   What · Then · Name, and a bar pinned at the bottom that says in a sentence what the answers make
   and holds the one button that makes it. There is no type to pick: the kind is derived from the
   answers. Saved recurring work reopens in the same form, with its kind locked.
+- **Ask Optio.** The chat icon on Overview and Work, or **More › Ask Optio**, opens the workspace
+  assistant. Describe the work you want, review its proposed settings, then approve or deny it.
+  The message field supports your keyboard’s microphone dictation; review the text before Send.
+  The assistant is backed by a saved work session.
+  Reconnecting loads the server’s conversation and pending approvals, including activity from
+  another device. Closing the screen disconnects the UI without stopping the work. Requests carry
+  unique IDs; echoed messages are deduplicated and reconnecting never retries an action.
+  **Clear conversation** removes the saved history after confirmation, only when the agent is
+  ready and no approval is pending. The draft stays on the device during this app session.
+  Switching servers or workspaces loads that workspace’s assistant session.
 - **Roles.** Actions follow your workspace role: viewers are read-only, and admin-only screens say
   so instead of failing.
 - **Glanceable surfaces.** An ongoing Watch notification, alerts with actions, home-screen widgets,

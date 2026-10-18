@@ -46,6 +46,7 @@ struct OverviewView: View {
             .workDestinations()
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    AskOptioButton()
                     Button { Task { await refreshAll() } } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Refresh")
                     // Viewers are read-only: no "+" (Android hides it too).

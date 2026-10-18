@@ -7,7 +7,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 export function rememberSessionLayout(href: string): string {
   try {
     const url = new URL(href, window.location.origin);
-    const names = url.pathname.startsWith("/sessions/") ? ["terminals"] : ["split", "layout"];
+    const names = ["terminals", "split", "layout"];
     const layout = new URLSearchParams();
     for (const name of names) {
       if (url.searchParams.has(name)) layout.set(name, url.searchParams.get(name)!);

@@ -164,7 +164,7 @@ describe("PUT /api/optio/settings", () => {
   });
 
   it("rejects invalid model", async () => {
-    for (const model of ["gpt-4", "claude opus", "", "constructor"]) {
+    for (const model of ["gpt-4", "claude opus", "constructor"]) {
       const res = await app.inject({
         method: "PUT",
         url: "/api/optio/settings",
@@ -237,13 +237,33 @@ describe("PUT /api/optio/settings", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("rejects empty enabledTools array", async () => {
+  it("accepts empty enabledTools as all controller tools", async () => {
     const res = await app.inject({
       method: "PUT",
       url: "/api/optio/settings",
       payload: { enabledTools: [] },
     });
 
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(200);
   });
 });
+
+it.each(["claude-code", "codex", "copilot", "gemini", "opencode", "cursor"])(
+  "selects the %s harness with its default model",
+  async (agentRuntime) => {
+    const app = await buildTestApp();
+    mockGetSettings.mockResolvedValue({ ...defaultSettings, agentRuntime: "claude-code" });
+    mockUpsertSettings.mockResolvedValue({ ...defaultSettings, agentRuntime, model: "" });
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/optio/settings",
+      payload: { agentRuntime, model: "", agentOptions: {} },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockUpsertSettings).toHaveBeenLastCalledWith(
+      { agentRuntime, model: "", agentOptions: {} },
+      "ws-1",
+    );
+    await app.close();
+  },
+);

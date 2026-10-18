@@ -869,6 +869,13 @@
       "when": 1792030002000,
       "tag": "1792030002_agent_messaging",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1792277000000,
+      "tag": "1792277000_session_harnesses",
+      "breakpoints": true
     }
   ]
 }

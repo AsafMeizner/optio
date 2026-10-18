@@ -130,6 +130,11 @@ html.light select:not([multiple]):not([size]) {
   border-radius: 4px;
 }
 
+/* The composer has one focus ring around the input and its controls. */
+.optio-composer textarea:focus-visible {
+  outline: none;
+}
+
 /* Smooth transitions on theme switch */
 html.theme-transition,
 html.theme-transition *,

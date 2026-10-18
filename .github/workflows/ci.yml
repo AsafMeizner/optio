@@ -141,8 +141,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: bash scripts/test-infra.sh start
-      - name: Install Playwright chromium
-        run: cd apps/web && npx playwright install --with-deps chromium
+      - name: Install Playwright Chromium and Firefox
+        run: cd apps/web && npx playwright install --with-deps chromium firefox
       - run: pnpm --filter @optio/web test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()

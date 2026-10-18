@@ -43,6 +43,23 @@ export interface WatchTaskOptions {
   now?: () => number;
 }
 
+/** Credentials validated at socket upgrade; workspace remains pinned for this conversation. */
+export interface OptioToolAuth {
+  token?: string;
+  workspaceId?: string | null;
+}
+
+function toolHeaders(auth: string | OptioToolAuth): Record<string, string> {
+  // String support preserves the existing executor callers' session-cookie contract.
+  if (typeof auth === "string")
+    return { cookie: `optio_session=${auth}`, "content-type": "application/json" };
+  return {
+    ...(auth.token ? { authorization: `Bearer ${auth.token}` } : {}),
+    ...(auth.workspaceId ? { "x-workspace-id": auth.workspaceId } : {}),
+    "content-type": "application/json",
+  };
+}
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -91,7 +108,7 @@ function safeParseJson(body: string): unknown {
 export async function watchTask(
   app: FastifyInstance,
   toolInput: Record<string, unknown>,
-  sessionToken: string,
+  auth: string | OptioToolAuth,
   options: WatchTaskOptions = {},
 ): Promise<{ success: boolean; result: string }> {
   const sleep = options.sleep ?? defaultSleep;
@@ -129,10 +146,7 @@ export async function watchTask(
     const response = await app.inject({
       method: "GET",
       url,
-      headers: {
-        cookie: `optio_session=${sessionToken}`,
-        "content-type": "application/json",
-      },
+      headers: toolHeaders(auth),
     });
     const statusOk = response.statusCode >= 200 && response.statusCode < 300;
     lastBody = response.body;
@@ -190,13 +204,13 @@ export async function watchTask(
  * @param app           Fastify instance (used for `app.inject`)
  * @param toolName      Name of the tool (must match an OPTIO_TOOL_SCHEMAS entry)
  * @param toolInput     Input parameters from the model
- * @param sessionToken  The user's session token for auth
+ * @param auth          The validated credential and fixed workspace context
  */
 export async function executeToolCall(
   app: FastifyInstance,
   toolName: string,
   toolInput: Record<string, unknown>,
-  sessionToken: string,
+  auth: string | OptioToolAuth,
 ): Promise<{ success: boolean; result: string }> {
   const schema = OPTIO_TOOL_MAP[toolName];
   if (!schema) {
@@ -208,7 +222,7 @@ export async function executeToolCall(
   // query string that GET /api/tasks/:id ignores, returning an immediate
   // snapshot. Dispatch to the dedicated poller so the tool honors its contract.
   if (toolName === "watch_task") {
-    return watchTask(app, toolInput, sessionToken);
+    return watchTask(app, toolInput, auth);
   }
 
   try {
@@ -244,10 +258,7 @@ export async function executeToolCall(
     const injectOptions: Record<string, unknown> = {
       method: schema.method,
       url,
-      headers: {
-        cookie: `optio_session=${sessionToken}`,
-        "content-type": "application/json",
-      },
+      headers: toolHeaders(auth),
     };
 
     if (schema.method !== "GET" && Object.keys(remainingParams).length > 0) {
