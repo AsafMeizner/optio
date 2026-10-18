@@ -38,6 +38,12 @@ Open `Optio.xcodeproj` in Xcode for day-to-day work. Re-run `make generate`
 after adding or moving source files (XcodeGen globs the `Optio/` tree, so new
 files inside existing folders are picked up automatically on regeneration).
 
+UI tests against a dev-bypass API can launch DEBUG builds with
+`--optio-ui-test-server=http://127.0.0.1:4968`. This uses only the `dev` token and
+a port-specific fixture name; assistant settings tests verify that identity before
+writing. It avoids Xcode 27 dropping launch environment values and silently using a
+cached server. The argument is unavailable in Release builds.
+
 ## Shared protocol
 
 `Optio/Generated/SharedTypes.swift` is emitted by `packages/shared/scripts/gen-swift.ts`

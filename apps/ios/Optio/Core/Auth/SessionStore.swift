@@ -126,7 +126,17 @@ final class SessionStore {
 
     #if DEBUG
     private func applyDevServers() {
-        let env = ProcessInfo.processInfo.environment
+        var env = ProcessInfo.processInfo.environment
+        // Xcode 27 can relaunch a UI-test app without its launch environment.
+        // This DEBUG-only fixture uses the dev-bypass token, never a real PAT in argv.
+        let fixturePrefix = "--optio-ui-test-server="
+        if let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix(fixturePrefix) }),
+           let url = URL(string: String(argument.dropFirst(fixturePrefix.count))),
+           ["http", "https"].contains(url.scheme ?? "") {
+            env["OPTIO_DEV_SERVER_URL"] = url.absoluteString
+            env["OPTIO_DEV_TOKEN"] = "dev"
+            env["OPTIO_DEV_SERVER_NAME"] = "UI test \(url.port.map(String.init) ?? url.host ?? "server")"
+        }
         var profiles: [ServerProfile] = []
         for suffix in ["", "_2", "_3", "_4"] {
             guard let token = env["OPTIO_DEV_TOKEN\(suffix)"], let raw = env["OPTIO_DEV_SERVER_URL\(suffix)"], let url = URL(string: raw) else { continue }

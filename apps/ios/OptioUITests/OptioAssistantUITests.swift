@@ -6,11 +6,15 @@ final class OptioAssistantUITests: XCTestCase {
         guard let server = env["OPTIO_UITEST_SERVER_URL"], let token = env["OPTIO_UITEST_TOKEN"] else {
             throw XCTSkip("Requires the isolated mobile dev API")
         }
+        let fixtureName = "UI test \(URL(string: server)?.port.map(String.init) ?? URL(string: server)?.host ?? "server")"
         let app = XCUIApplication()
+        app.terminate()
+        if token == "dev" { app.launchArguments = ["--optio-ui-test-server=\(server)"] }
         app.launchEnvironment["OPTIO_DEV_SERVER_URL"] = server
         app.launchEnvironment["OPTIO_DEV_TOKEN"] = token
         app.launchEnvironment["OPTIO_DEV_NO_PUSH_PROMPT"] = "1"
         app.launchEnvironment["OPTIO_DEV_SECTION"] = "work"
+        app.launchEnvironment["OPTIO_DEV_SERVER_NAME"] = fixtureName
         app.launch()
         let agentTab = app.tabBars.buttons["Optio Agent"]
         XCTAssertTrue(agentTab.waitForExistence(timeout: 20))
@@ -18,6 +22,10 @@ final class OptioAssistantUITests: XCTestCase {
             XCTAssertTrue(app.tabBars.buttons[label].exists)
         }
         agentTab.tap()
+        guard app.buttons["Server: \(fixtureName)"].waitForExistence(timeout: 5) else {
+            XCTFail("Refusing settings test on a cached live server")
+            return
+        }
         XCTAssertTrue(app.staticTexts["What would you like to do?"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Clear conversation"].exists)
         app.buttons["Help me start work on my machine"].tap()
@@ -67,6 +75,8 @@ final class OptioAssistantUITests: XCTestCase {
             throw XCTSkip("Requires an existing conversation on the read-only history test server")
         }
         let app = XCUIApplication()
+        app.terminate()
+        if token == "dev" { app.launchArguments = ["--optio-ui-test-server=\(server)"] }
         app.launchEnvironment["OPTIO_DEV_SERVER_URL"] = server
         app.launchEnvironment["OPTIO_DEV_TOKEN"] = token
         app.launchEnvironment["OPTIO_DEV_NO_PUSH_PROMPT"] = "1"
