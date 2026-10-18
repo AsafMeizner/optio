@@ -1,3 +1,4 @@
+import { controlTask } from "../services/task-control-service.js";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -904,13 +905,7 @@ export async function taskRoutes(rawApp: FastifyInstance) {
       // A private task runs with its owner's credentials: only they may act on it.
       const changeErr = await workChangeError(existing.ownerUserId, workActor(req), "run");
       if (changeErr) return reply.status(403).send({ error: changeErr });
-      const task = await taskService.transitionTask(
-        id,
-        TaskState.CANCELLED,
-        "user_cancel",
-        undefined,
-        req.user?.id,
-      );
+      const task = await controlTask(id, "cancel", { userId: req.user?.id, task: existing });
       logAction({
         workspaceId: req.user?.workspaceId ?? null,
         userId: req.user?.id,
@@ -954,22 +949,7 @@ export async function taskRoutes(rawApp: FastifyInstance) {
       // A private task runs with its owner's credentials: only they may act on it.
       const changeErr = await workChangeError(existing.ownerUserId, workActor(req), "run");
       if (changeErr) return reply.status(403).send({ error: changeErr });
-      const task = await taskService.transitionTask(
-        id,
-        TaskState.QUEUED,
-        "user_retry",
-        undefined,
-        req.user?.id,
-      );
-      const hasPrBranch = !!existing.prUrl;
-      await taskQueue.add(
-        "process-task",
-        { taskId: id, ...(hasPrBranch && { restartFromBranch: true }) },
-        {
-          jobId: `${id}-retry-${Date.now()}`,
-          attempts: 1,
-        },
-      );
+      const task = await controlTask(id, "retry", { userId: req.user?.id, task: existing });
       logAction({
         workspaceId: req.user?.workspaceId ?? null,
         userId: req.user?.id,
@@ -1015,22 +995,7 @@ export async function taskRoutes(rawApp: FastifyInstance) {
       const changeErr = await workChangeError(existing.ownerUserId, workActor(req), "run");
       if (changeErr) return reply.status(403).send({ error: changeErr });
 
-      const existingJobs = await taskQueue.getJobs(["waiting", "delayed", "prioritized"]);
-      for (const job of existingJobs) {
-        if (job.data?.taskId === id) {
-          await job.remove().catch(() => {});
-        }
-      }
-
-      const task = await taskService.forceRedoTask(id);
-      await taskQueue.add(
-        "process-task",
-        { taskId: id },
-        {
-          jobId: `${id}-redo-${Date.now()}`,
-          attempts: 1,
-        },
-      );
+      const task = await controlTask(id, "redo", { task: existing });
       logAction({
         workspaceId: req.user?.workspaceId ?? null,
         userId: req.user?.id,
@@ -1339,27 +1304,7 @@ export async function taskRoutes(rawApp: FastifyInstance) {
         return reply.status(400).send({ error: "Task is not in queued state" });
       }
 
-      await db
-        .update(tasks)
-        .set({ ignoreOffPeak: true, updatedAt: new Date() })
-        .where(eq(tasks.id, id));
-
-      const existingJobs = await taskQueue.getJobs(["waiting", "delayed", "prioritized"]);
-      for (const job of existingJobs) {
-        if (job.data?.taskId === id) {
-          await job.remove().catch(() => {});
-        }
-      }
-      await taskQueue.add(
-        "process-task",
-        { taskId: id },
-        {
-          jobId: `${id}-runnow-${Date.now()}`,
-          priority: existing.priority ?? 100,
-        },
-      );
-
-      const task = await taskService.getTask(id);
+      const task = await controlTask(id, "run-now", { task: existing });
       logAction({
         workspaceId: req.user?.workspaceId ?? null,
         userId: req.user?.id,

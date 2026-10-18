@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, and, desc, gte, isNull, lte, sql } from "drizzle-orm";
+import { eq, and, desc, gte, isNull, lt, lte, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { getPod } from "./agent-pod-pool.js";
 import {
@@ -402,12 +402,20 @@ export async function appendSessionChatEvent(input: AppendSessionChatEventInput)
  * MAX_SESSION_CHAT_EVENTS; a shorter window must be its latest stretch, the
  * part a replay or a history view has to show.
  */
-export async function listSessionChatEvents(sessionId: string, opts?: { limit?: number }) {
+export async function listSessionChatEvents(
+  sessionId: string,
+  opts?: { limit?: number; beforeSeq?: number },
+) {
   const limit = Math.min(opts?.limit ?? 1000, MAX_SESSION_CHAT_EVENTS);
   const newestFirst = await db
     .select()
     .from(sessionChatEvents)
-    .where(eq(sessionChatEvents.sessionId, sessionId))
+    .where(
+      and(
+        eq(sessionChatEvents.sessionId, sessionId),
+        opts?.beforeSeq !== undefined ? lt(sessionChatEvents.seq, opts.beforeSeq) : undefined,
+      ),
+    )
     // seq breaks ties: several events share one millisecond.
     .orderBy(desc(sessionChatEvents.timestamp), desc(sessionChatEvents.seq))
     .limit(limit);

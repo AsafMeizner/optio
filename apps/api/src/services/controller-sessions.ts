@@ -40,15 +40,21 @@ async function resolveSession(p: ControllerPrincipal, id: string) {
   throw new ControllerError(404, "Session not found");
 }
 
-export async function controllerSessionHistory(p: ControllerPrincipal, id: string, limit: number) {
+export async function controllerSessionHistory(
+  p: ControllerPrincipal,
+  id: string,
+  limit: number,
+  beforeSeq?: number,
+) {
   const target = await resolveSession(p, id);
   const cap = Math.max(1, Math.min(limit, 100));
   if (target.kind === "local") {
-    const page = await getTranscriptBefore(id, 2147483647, cap);
+    const page = await getTranscriptBefore(id, beforeSeq ?? 2147483647, cap);
     return {
       id,
       href: `/work/${id}`,
       hasEarlier: page.hasEarlier,
+      nextBeforeSeq: page.hasEarlier ? (page.entries[0]?.seq ?? null) : null,
       entries: page.entries.map((e) => ({
         seq: e.seq,
         role: e.role,
@@ -59,11 +65,12 @@ export async function controllerSessionHistory(p: ControllerPrincipal, id: strin
       })),
     };
   }
-  const entries = await listSessionChatEvents(id, { limit: cap + 1 });
+  const entries = await listSessionChatEvents(id, { limit: cap + 1, beforeSeq });
   return {
     id,
     href: `/work/${id}`,
     hasEarlier: entries.length > cap,
+    nextBeforeSeq: entries.length > cap ? (entries.slice(-cap)[0]?.seq ?? null) : null,
     entries: entries.slice(-cap).map((e) => ({
       seq: e.seq,
       type: e.logType,
@@ -145,4 +152,44 @@ export async function sendControllerSessionMessage(
       });
     },
   );
+}
+
+/** Lifecycle controls share the same session owner checks as chat input. */
+export async function controlControllerSession(
+  p: ControllerPrincipal,
+  id: string,
+  action: "interrupt" | "end" | "cancel_queued",
+  requestId?: string,
+) {
+  requireManage(p);
+  const target = await resolveSession(p, id);
+  if (id === p.run?.sessionId) throw new ControllerError(409, "Cannot control your own session");
+  if (target.kind === "local") {
+    if (action === "cancel_queued")
+      throw new ControllerError(400, "Local sessions do not have a pod message queue");
+    if (action === "end") {
+      if (!["running", "launching", "pending"].includes(target.row.state))
+        throw new ControllerError(409, "Session is not active");
+      const { killTerminal } = await import("./local-terminal-service.js");
+      await killTerminal(target.row);
+    } else {
+      const failure = await sendLocalTerminalInput(target.row, "\x03");
+      if (failure) throw new ControllerError(409, failure.error);
+    }
+  } else {
+    if (target.row.state !== "active") throw new ControllerError(409, "Session is not active");
+    if (action === "end") {
+      const { endSession } = await import("./interactive-session-service.js");
+      await endSession(id);
+    } else if (action === "interrupt") {
+      const { interruptSessionChat } = await import("./session-turn-service.js");
+      await interruptSessionChat(id);
+    } else {
+      if (!requestId) throw new ControllerError(400, "cancel_queued requires requestId");
+      const { cancelQueuedSessionMessage } = await import("./session-turn-service.js");
+      if (!(await cancelQueuedSessionMessage(id, requestId)))
+        throw new ControllerError(409, "Message is no longer queued");
+    }
+  }
+  return { id, action, accepted: true };
 }

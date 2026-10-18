@@ -341,7 +341,11 @@ export async function listOpenPrs(
 
 // ── Create / launch ─────────────────────────────────────────────────────────
 
+export class ReviewScopeError extends Error {}
+
 interface LaunchPrReviewInput {
+  /** MCP pins the exact tenant, including the null local tenant, across lookups/races. */
+  expectedWorkspaceId?: string | null;
   prUrl: string;
   workspaceId?: string;
   createdBy?: string;
@@ -420,6 +424,16 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
     throw new Error(`Repository ${owner}/${repoName} is not configured in Optio. Add it first.`);
   }
 
+  const checkScope = (row: { workspaceId: string | null } | undefined) => {
+    if (
+      row &&
+      input.expectedWorkspaceId !== undefined &&
+      row.workspaceId !== input.expectedWorkspaceId
+    )
+      throw new ReviewScopeError("Review or repository is outside this workspace");
+  };
+  checkScope(repoConfig);
+
   // Fetch PR context up-front to pin head_sha and build prompt.
   const prContext = await fetchPrContext(repoUrl, prNumber, input.createdBy);
   if (!prContext.headSha) throw new Error("Could not determine PR head SHA");
@@ -428,6 +442,7 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
 
   // Upsert pr_reviews row.
   const existing = await findReviewByUrl(input.prUrl);
+  checkScope(existing);
   if (existing && input.seenVersion === null) {
     // The caller saw no review; someone launched one since.
     logger.info({ prUrl: input.prUrl, reviewId: existing.id }, "PR review launched elsewhere");
@@ -467,6 +482,7 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
       .returning();
     if (!reset) {
       const theirs = (await findReviewByUrl(input.prUrl)) ?? existing;
+      checkScope(theirs);
       logger.info({ prUrl: input.prUrl, reviewId: theirs.id }, "PR review relaunched elsewhere");
       return { review: theirs, raced: true as const };
     }
@@ -501,6 +517,7 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
       if (!isUniqueViolation(err)) throw err;
       const theirs = await findReviewByUrl(input.prUrl);
       if (!theirs) throw err;
+      checkScope(theirs);
       logger.info({ prUrl: input.prUrl, reviewId: theirs.id }, "PR review launched elsewhere");
       return { review: theirs, raced: true as const };
     }

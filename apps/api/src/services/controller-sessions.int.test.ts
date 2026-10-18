@@ -22,7 +22,11 @@ import {
   finishSessionTurn,
   queuedSessionMessages,
 } from "./session-turn-service.js";
-import { controllerSessionHistory, sendControllerSessionMessage } from "./controller-sessions.js";
+import {
+  controlControllerSession,
+  controllerSessionHistory,
+  sendControllerSessionMessage,
+} from "./controller-sessions.js";
 import { listControllerSessions } from "./controller-service.js";
 import { createControllerMcp } from "./controller-mcp.js";
 import type { ControllerPrincipal } from "./controller-auth.js";
@@ -366,6 +370,84 @@ describe("Controller interactive session tools", () => {
           await server.close();
         }
       }
+    } finally {
+      await s.close();
+    }
+  });
+});
+
+describe("Controller session pagination and controls", () => {
+  it("pages older pod and Local history without repeating entries", async () => {
+    const s = await setup();
+    try {
+      for (let i = 0; i < 5; i++)
+        await appendSessionChatEvent({
+          sessionId: s.target.id,
+          stream: "stdout",
+          logType: "text",
+          content: `Message ${i}`,
+        });
+      const recent = await controllerSessionHistory(s.p, s.target.id, 2);
+      expect(recent.entries.map((e) => e.text)).toEqual(["Message 3", "Message 4"]);
+      const older = await controllerSessionHistory(s.p, s.target.id, 2, recent.nextBeforeSeq!);
+      expect(older.entries.map((e) => e.text)).toEqual(["Message 1", "Message 2"]);
+      const oldest = await controllerSessionHistory(s.p, s.target.id, 2, older.nextBeforeSeq!);
+      expect(oldest.entries.map((e) => e.text)).toEqual(["Message 0"]);
+      expect(oldest.nextBeforeSeq).toBeNull();
+      const terminal = await local(s.p);
+      await db.insert(localTerminalTranscripts).values(
+        [1, 2, 3].map((seq) => ({
+          terminalId: terminal.id,
+          seq,
+          role: "assistant",
+          kind: "text",
+          text: `Local ${seq}`,
+        })),
+      );
+      const first = await controllerSessionHistory(s.p, terminal.id, 2);
+      const last = await controllerSessionHistory(s.p, terminal.id, 2, first.nextBeforeSeq!);
+      expect(last.entries.map((e) => e.text)).toEqual(["Local 1"]);
+    } finally {
+      await s.close();
+    }
+  });
+  it("cancels queued pod input, interrupts active turns and ends only owned sessions", async () => {
+    const s = await setup();
+    try {
+      const requestId = randomUUID();
+      await sendControllerSessionMessage(s.p, s.target.id, "Queued", requestId);
+      await controlControllerSession(s.p, s.target.id, "cancel_queued", requestId);
+      expect(await queuedSessionMessages(s.target.id)).toEqual([]);
+      await expect(
+        controlControllerSession(s.p, s.target.id, "cancel_queued", requestId),
+      ).rejects.toMatchObject({ status: 409 });
+      await expect(
+        controlControllerSession({ ...s.p, access: "read" }, s.target.id, "end"),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(controlControllerSession(s.p, s.caller.id, "end")).rejects.toMatchObject({
+        status: 409,
+      });
+      await expect(
+        controlControllerSession(
+          { ...s.p, actor: { ...s.p.actor, userId: s.other.id, isAdmin: true } },
+          s.target.id,
+          "end",
+        ),
+      ).rejects.toMatchObject({ status: 404 });
+      const turn = await claimSessionTurn(s.target.id, randomUUID(), "Working");
+      if (!turn.accepted) throw new Error("claim failed");
+      await controlControllerSession(s.p, s.target.id, "interrupt");
+      expect(
+        (await db.select().from(sessionChatTurns).where(eq(sessionChatTurns.id, turn.turn.id)))[0]
+          .finishedAt,
+      ).not.toBeNull();
+      await controlControllerSession(s.p, s.target.id, "end");
+      expect(
+        (
+          await db.select().from(interactiveSessions).where(eq(interactiveSessions.id, s.target.id))
+        )[0].state,
+      ).toBe("ended");
+      await finishSessionTurn(turn.turn.id, false);
     } finally {
       await s.close();
     }

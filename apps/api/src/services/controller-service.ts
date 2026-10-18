@@ -52,8 +52,11 @@ export async function getControllerWork(p: ControllerPrincipal, id: string) {
   const definition = await definitions.getDefinition(id);
   if (definition) {
     requireVisible(p, definition);
-    if (definition.kind === "local-blueprint")
-      throw new ControllerError(400, "Controller tools currently support pod work");
+    if (
+      definition.kind === "local-blueprint" &&
+      (!p.run?.sessionId || definition.ownerUserId !== p.actor.userId)
+    )
+      throw new ControllerError(404, "Work not found");
     return { kind: "definition" as const, data: definition };
   }
   const agent = await pa.getPersistentAgentUnscoped(id);
@@ -108,11 +111,19 @@ export function describeWork(work: Awaited<ReturnType<typeof getControllerWork>>
         source: r.kind,
         enabled: r.enabled,
         ownerUserId: r.ownerUserId,
-        href: r.kind === "standalone" ? `/jobs/${r.id}` : `/tasks/scheduled/${r.id}`,
+        href:
+          r.kind === "local-blueprint"
+            ? `/local/automations/${r.id}`
+            : r.kind === "standalone"
+              ? `/jobs/${r.id}`
+              : `/tasks/scheduled/${r.id}`,
         ...(detail
           ? {
               description: r.description,
               prompt: r.prompt,
+              promptTemplateId: r.promptTemplateId,
+              paramsSchema: r.paramsSchema,
+              spawnMode: r.spawnMode,
               repoUrl: r.repoUrl,
               repoBranch: r.repoBranch,
               agentType: r.agentType,
@@ -120,6 +131,9 @@ export function describeWork(work: Awaited<ReturnType<typeof getControllerWork>>
               agentOptions: r.agentOptions,
               runTitle: r.runTitle,
               runTarget: r.runTarget,
+              hostId: r.localHostId,
+              dir: r.localDir,
+              sessionMode: r.localSessionMode,
               maxRetries: r.maxRetries,
               priority: r.priority,
               autoResume: r.autoResume,
@@ -240,6 +254,12 @@ export async function listControllerWork(
               or(
                 eq(workDefinitions.kind, "standalone"),
                 eq(workDefinitions.kind, "repo-blueprint"),
+                p.run?.sessionId
+                  ? and(
+                      eq(workDefinitions.kind, "local-blueprint"),
+                      tenant(workDefinitions.ownerUserId, p.actor.userId),
+                    )
+                  : undefined,
               ),
               matches(workDefinitions.name),
             ),
@@ -366,8 +386,16 @@ export async function runControllerWork(
     );
   if (!work.data.enabled)
     throw new ControllerError(409, "Work is disabled; enable it before running");
-  if (work.data.runTarget !== "cluster")
-    throw new ControllerError(403, "Controller tools cannot start work on a machine");
+  if (work.data.kind === "local-blueprint") {
+    const { toLocalBlueprint, spawnFromBlueprint } = await import("./local-blueprint-service.js");
+    const terminal = await spawnFromBlueprint(toLocalBlueprint(work.data), { params });
+    return {
+      workId: id,
+      sessionId: terminal.id,
+      state: terminal.state,
+      href: `/work/${terminal.id}`,
+    };
+  }
   const run =
     work.data.kind === "standalone"
       ? await createWorkflowRun(id, { params })
@@ -375,12 +403,13 @@ export async function runControllerWork(
   return { workId: id, runId: run.id, state: run.state };
 }
 
-async function triggerTarget(p: ControllerPrincipal, id: string, write: boolean) {
+export async function triggerTarget(p: ControllerPrincipal, id: string, write: boolean) {
   const work = await getControllerWork(p, id);
   if (write) requireChange(p, work.data);
   let targetType: TriggerTargetType;
   if (work.kind === "definition") targetType = definitions.TRIGGER_TARGET[work.data.kind];
   else if (work.kind === "agent") targetType = "persistent_agent";
+  else if (work.kind === "review") targetType = "pr_review";
   else
     throw new ControllerError(
       400,
@@ -434,7 +463,32 @@ export async function listControllerRuns(
 ) {
   const work = await getControllerWork(p, id);
   let rows: unknown[];
-  if (work.kind === "definition") {
+  if (work.kind === "definition" && work.data.kind === "local-blueprint") {
+    const terminals = await db
+      .select()
+      .from(localTerminals)
+      .where(
+        and(
+          eq(localTerminals.blueprintId, id),
+          tenant(localTerminals.workspaceId, p.actor.workspaceId),
+          tenant(localTerminals.userId, p.actor.userId),
+        ),
+      )
+      .orderBy(desc(localTerminals.createdAt), desc(localTerminals.id))
+      .limit(limit + 1)
+      .offset(offset);
+    rows = terminals.map((t) => ({
+      id: t.id,
+      kind: "session",
+      state: t.state,
+      title: t.title,
+      createdAt: t.createdAt,
+      endedAt: t.endedAt,
+      errorMessage: t.errorMessage,
+      href: `/work/${t.id}`,
+      historyTool: "optio_get_session_history",
+    }));
+  } else if (work.kind === "definition") {
     rows = await db
       .select()
       .from(workRuns)

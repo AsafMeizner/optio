@@ -29,7 +29,7 @@ export function requireVisible(
 export function requireChange(p: ControllerPrincipal, row: Scoped) {
   requireManage(p);
   requireVisible(p, row);
-  if (row.runTarget === "local")
+  if (row.runTarget === "local" && (!p.run?.sessionId || row.ownerUserId !== p.actor.userId))
     throw new ControllerError(403, "Controller tools cannot operate work on a machine");
   if (!canUse(row.ownerUserId, p.actor.userId))
     throw new ControllerError(403, "Only its owner can change or run private work");

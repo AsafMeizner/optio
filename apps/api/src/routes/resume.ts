@@ -2,9 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { workActor, workChangeError } from "../services/work-ownership.js";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { TaskState } from "@optio/shared";
 import * as taskService from "../services/task-service.js";
-import { taskQueue } from "../workers/task-worker.js";
+import { controlTask } from "../services/task-control-service.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { TaskSchema } from "../schemas/task.js";
 import { requireRole } from "../plugins/auth.js";
@@ -87,22 +86,7 @@ export async function resumeRoutes(rawApp: FastifyInstance) {
         });
       }
 
-      await taskService.transitionTask(id, TaskState.QUEUED, "user_resume", body.prompt);
-
-      await taskQueue.add(
-        "process-task",
-        {
-          taskId: id,
-          resumeSessionId: task.sessionId,
-          resumePrompt: body.prompt ?? "Continue working on this task.",
-        },
-        {
-          jobId: `${id}-resume-${Date.now()}`,
-          attempts: 1,
-        },
-      );
-
-      const updated = await taskService.getTask(id);
+      const updated = await controlTask(id, "resume", { prompt: body.prompt, task });
       reply.send({ task: updated });
     },
   );
@@ -153,67 +137,8 @@ export async function resumeRoutes(rawApp: FastifyInstance) {
         });
       }
 
-      const prompt = body.prompt ?? buildRestartPrompt(task);
-      const hasPrBranch = !!task.prUrl;
-
-      await taskService.transitionTask(id, TaskState.QUEUED, "force_restart", prompt.slice(0, 200));
-
-      await taskQueue.add(
-        "process-task",
-        {
-          taskId: id,
-          resumePrompt: prompt,
-          restartFromBranch: hasPrBranch,
-        },
-        {
-          jobId: `${id}-restart-${Date.now()}`,
-          attempts: 1,
-        },
-      );
-
-      const updated = await taskService.getTask(id);
+      const updated = await controlTask(id, "restart", { prompt: body.prompt, task });
       reply.send({ task: updated });
     },
   );
-}
-
-function buildRestartPrompt(task: {
-  prUrl?: string | null;
-  prNumber?: number | null;
-  prChecksStatus?: string | null;
-  prReviewStatus?: string | null;
-  prReviewComments?: string | null;
-  errorMessage?: string | null;
-}): string {
-  const parts: string[] = [];
-
-  if (task.prUrl) {
-    parts.push(`You have an existing PR (${task.prUrl}) on this branch. Do NOT create a new PR.`);
-  }
-
-  if (task.prChecksStatus === "conflicts") {
-    parts.push(
-      "Your PR has merge conflicts with the base branch. Please:\n1. Run `git fetch origin && git rebase origin/main`\n2. Resolve any conflicts\n3. Run the tests to make sure everything still works\n4. Force-push: `git push --force-with-lease`",
-    );
-  } else if (task.prChecksStatus === "failing") {
-    parts.push(
-      "CI checks are failing on the PR. Investigate the failures, fix the issues, and push.",
-    );
-  }
-
-  if (task.prReviewStatus === "changes_requested" && task.prReviewComments) {
-    parts.push(
-      `A reviewer requested changes:\n\n${task.prReviewComments}\n\nPlease address this feedback.`,
-    );
-  }
-
-  if (task.errorMessage) {
-    parts.push(`The previous run failed with: ${task.errorMessage}`);
-  }
-
-  if (parts.length === 0) {
-    parts.push("Continue working on this task. Review the current state and fix any issues.");
-  }
-
-  return parts.join("\n\n");
 }

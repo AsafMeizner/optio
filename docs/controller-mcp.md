@@ -246,12 +246,12 @@ OpenAPI document's 342 operations. Two helpers return download URLs instead of
 calling `request`. Counts are client helpers, not distinct backend capabilities,
 and the CSV records the baseline before the Local-log correction above.
 
-The assistant has 19 tools; other agents and PAT clients have 16. Session-only
-tools are machine discovery, session history and session input. This is **not
-frontend parity**. A tool with a similar name can still omit configuration,
+At the audited baseline, the assistant had 19 tools; other agents and PAT clients
+had 16. Session-only tools were machine discovery, session history and session
+input. That baseline was **not frontend parity**. A tool with a similar name can still omit configuration,
 restrict a work kind, read a different store, or lack an interaction mode.
 
-| Area                             | Existing coverage                                  | Remaining gaps                                                                                                                                                                                 |
+| Area                             | Baseline coverage                                  | Remaining gaps                                                                                                                                                                                 |
 | -------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Work discovery and configuration | Basic list, details, creation, recurring edits     | Local definitions are omitted/rejected; incomplete filters/configuration; work environment, model and credential-reference discovery                                                           |
 | Run lifecycle                    | Start a pod definition; pause its triggers         | Cancel, retry, resume, force restart/redo, prioritization, delete/clone, Local run controls                                                                                                    |
@@ -277,7 +277,7 @@ mechanisms, not independent agent tasks. Approval decisions must remain with the
 human: adding an MCP operation that approves the caller's own requests would
 defeat the approval gate.
 
-For further parity work, use an explicit capability registry tied to the existing
+For remaining parity work, use an explicit capability registry tied to the existing
 OpenAPI operation IDs and shared services. Each entry needs its input schema,
 workspace/owner and role policy, read/write classification, approval summary and
 output redaction. Keep common work actions as small typed tools; let the agent
@@ -293,3 +293,44 @@ review/submit work. For each mutation verify one approval, authorization again
 after approval, denial without a side effect, and correct owner/workspace scope.
 A new frontend endpoint should require either a tested capability mapping or an
 explicit documented exclusion in the registry.
+
+## Workflow and library expansion
+
+The first expansion follows the agreed scope: work, conversations, reviews and
+the prompt library. Administration stays in Settings. The baseline CSV above is
+historical; it is not a claim that newly implemented operations are still missing.
+
+| Tools                                                                                             | Frontend operations now available                                                                                                                             |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control_run`                                                                                     | Cancel/retry task and Job runs; resume or restart tasks, force redo and override the off-peak hold. Task HTTP routes and MCP share `task-control-service.ts`. |
+| `delete_work`, `control_agent`                                                                    | Delete recurring definitions; pause/resume/archive/restart persistent agents.                                                                                 |
+| `create_trigger`, `update_trigger`, `delete_trigger`                                              | Event triggers, parameter mappings, enabled state, cron and webhook configuration using the common trigger service. Review schedules are supported too.       |
+| `get_session_history`, `control_session`                                                          | Follow `nextBeforeSeq` to read older messages; interrupt/end owned sessions or cancel queued pod messages.                                                    |
+| `list_prompts`, `get_prompt`, `preview_prompt`, `create_prompt`, `update_prompt`, `delete_prompt` | Browse, render and manage reusable prompt templates. New prompts inherit the caller's owner.                                                                  |
+| `get_environment`, `get_models`                                                                   | Discover usable connection/MCP/skill references and runtime model/options. Raw commands, credentials and setup scripts are omitted.                           |
+| `create_review`, `update_review`, `control_review`                                                | Launch reviews, edit ready/stale drafts, cancel/re-review and submit the draft to the git provider.                                                           |
+| `get_review_chat`, `send_review_message`, `get_pr_status`, `merge_pr`                             | Read/continue review conversations, inspect PR checks and merge the PR attached to a task or review.                                                          |
+| `get_task_activity`, `write_task_comment`                                                         | Read task events/comments; add comments and edit/delete the caller's own comments.                                                                            |
+
+Interactive operators can now discover, edit, enable/disable, run and delete
+their own Local recurring definitions. Their run history returns terminal ids
+for the session-history tool. Background run credentials still cannot operate
+machines or private interactive sessions. All new writes use the existing
+single approval card, recheck authorization after approval, and obey controller
+read/manage grants and the assistant's per-tool allowlist.
+
+Credential administration is excluded. MCP refuses trigger `config.secret`;
+Pylon, Alertmanager and Datadog triggers must initially be created in the UI so a
+person receives the one-time secret. MCP can edit their filters or enabled state
+without returning or replacing the stored secret. Integration setup, repository
+administration, workspace membership, cluster management and sign-in settings
+remain in Settings/their existing administrative UI.
+
+Remaining workflow differences are explicit: issue assignment/synchronization,
+trigger delivery inspection/retry, task subtasks/dependencies and bulk edits,
+session model switching/sharing/recovery/PR links, and persistent-agent
+configuration edits beyond lifecycle controls. The inventory retains these as
+follow-up work; this release expands the core workflows without claiming every
+frontend operation is covered. Client-only interactions (resize, clipboard,
+viewer presence and device enrollment) and human approval decisions are not MCP
+operations.

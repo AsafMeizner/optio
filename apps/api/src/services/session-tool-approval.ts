@@ -30,6 +30,24 @@ export function approvalFrame(row: { id: string; tool: string; args: Record<stri
       work: [],
       items: [`Session: ${String(row.args.id)}`, String(row.args.body)],
     };
+  const controlLabels: Record<string, string> = {
+    control_run: "run",
+    control_agent: "agent",
+    control_session: "session",
+    control_review: "review",
+  };
+  if (controlLabels[row.tool])
+    return {
+      type: "action_proposal",
+      actionId: row.id,
+      description: `${String(row.args.action).replaceAll("_", " ")} ${controlLabels[row.tool]}`,
+      work: [],
+      items: [
+        `${controlLabels[row.tool]}: ${String(row.args.id)}`,
+        ...(row.args.prompt ? [String(row.args.prompt)] : []),
+        ...(row.args.requestId ? [`Queued message: ${String(row.args.requestId)}`] : []),
+      ],
+    };
   const spec = row.tool === "create_work" ? WorkSpecSchema.safeParse(row.args.spec) : null;
   return {
     type: "action_proposal",
