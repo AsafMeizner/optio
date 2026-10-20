@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-20
+
+### Changed
+
+- Session sidebar: a running session's row shows a **Kill** button instead of the trash. One click stops the session; once it has exited the same slot becomes the **Delete** trash button. Stopped sessions show the trash straight away.
+- Deleting the session you are viewing moves you to the next session in the sidebar (or the previous one when it was last) instead of the landing page.
+
 ## [0.17.4] - 2026-10-15
 
 ### Fixed

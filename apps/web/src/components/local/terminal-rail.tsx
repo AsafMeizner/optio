@@ -6,8 +6,8 @@ import { useWorkSession } from "@/components/work-detail/session-context";
 import { terminalWorkHref } from "@/lib/work-href";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api-client";
-import { deleteSession as stopAndDeleteSession } from "./delete-session";
-import { BellRing, Columns2, X, Pin, Laptop, Zap, Trash2, Loader2 } from "lucide-react";
+import { deleteSession as stopAndDeleteSession, stopSession } from "./delete-session";
+import { BellRing, Columns2, X, Pin, Laptop, Zap, Trash2, Loader2, XCircle } from "lucide-react";
 import { attentionLabel, dirTail, SpawnSourceBadge } from "./terminal-card";
 import { SESSION_DOT, sessionTone } from "./attention";
 import { toast } from "sonner";
@@ -76,65 +76,6 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
 
   const { terminals: feedTerminals, hosts } = useLocalFeed();
   // A pin toggles the row's place at once; the feed's next refresh agrees.
-  const [deleting, setDeleting] = useState<string | null>(null);
-  const deleteSession = async (terminal: any) => {
-    setDeleting(terminal.id);
-    try {
-      await stopAndDeleteSession(terminal.id);
-      forgetSessionPane(terminal.id);
-      useLocalFeedStore.setState((state) => ({
-        terminals: state.terminals.filter((t) => t.id !== terminal.id),
-      }));
-      if (terminal.id === activeId) {
-        const next = feedTerminals.find((t) => t.id !== terminal.id);
-        router.push(next ? terminalWorkHref(next) : "/work");
-      } else if (activeId && splitState.split.includes(terminal.id)) {
-        router.replace(
-          rememberSessionLayout(
-            splitHref(
-              activeId,
-              splitState.split.filter((id) => id !== terminal.id),
-              splitState.layout,
-              `${pathname}?${searchParams}`,
-            ),
-          ),
-        );
-      }
-      toast.success("Session deleted");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to delete session");
-    } finally {
-      setDeleting(null);
-    }
-  };
-  const deleteButton = (terminal: any, child = false) => {
-    return (
-      <span
-        className={cn(
-          "inline-flex shrink-0 transition-opacity md:opacity-0 focus-within:opacity-100",
-          child ? "md:group-hover/child:opacity-100" : "md:group-hover:opacity-100",
-        )}
-      >
-        <button
-          type="button"
-          aria-label={`Delete ${terminal.title}`}
-          title="Delete session"
-          disabled={deleting !== null}
-          onClick={(event) => {
-            event.stopPropagation();
-            void deleteSession(terminal);
-          }}
-          className="shrink-0 rounded-md p-1 text-text-muted/60 hover:bg-error/10 hover:text-error disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          {deleting === terminal.id ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Trash2 className="h-3.5 w-3.5" />
-          )}
-        </button>
-      </span>
-    );
-  };
   const [pinOverride, setPinOverride] = useState<Record<string, string | null>>({});
   const pinnedTerminals = useMemo(
     () =>
@@ -199,6 +140,92 @@ export function TerminalRail({ onNavigate }: { onNavigate?: () => void }) {
     }
     return groupTerminals(roots);
   }, [filtered, terminals, activeId, splitState.split]);
+
+  // Rows in the order the rail shows them, so "next" after a delete means the
+  // row below (or, for the last row, the one above).
+  const railOrder = useMemo(() => groups.flatMap((g) => g.items), [groups]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const patchFeedTerminal = (id: string, patch: Record<string, unknown>) =>
+    useLocalFeedStore.setState((state) => ({
+      terminals: state.terminals.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    }));
+  const killSession = async (terminal: any) => {
+    setBusy(terminal.id);
+    try {
+      const stopped = await stopSession(terminal.id);
+      patchFeedTerminal(terminal.id, { state: stopped.state, exitCode: stopped.exitCode });
+      toast.success("Session stopped");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to stop session");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const deleteSession = async (terminal: any) => {
+    setBusy(terminal.id);
+    try {
+      await stopAndDeleteSession(terminal.id);
+      forgetSessionPane(terminal.id);
+      useLocalFeedStore.setState((state) => ({
+        terminals: state.terminals.filter((t) => t.id !== terminal.id),
+      }));
+      if (terminal.id === activeId) {
+        const at = railOrder.findIndex((t) => t.id === terminal.id);
+        const next =
+          (at >= 0 ? (railOrder[at + 1] ?? railOrder[at - 1]) : undefined) ??
+          feedTerminals.find((t) => t.id !== terminal.id);
+        router.push(next ? terminalWorkHref(next) : "/work");
+      } else if (activeId && splitState.split.includes(terminal.id)) {
+        router.replace(
+          rememberSessionLayout(
+            splitHref(
+              activeId,
+              splitState.split.filter((id) => id !== terminal.id),
+              splitState.layout,
+              `${pathname}?${searchParams}`,
+            ),
+          ),
+        );
+      }
+      toast.success("Session deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete session");
+    } finally {
+      setBusy(null);
+    }
+  };
+  // A live row offers Kill; once the session has stopped the same slot offers Delete.
+  const deleteButton = (terminal: any, child = false) => {
+    const live = !isFinishedSession(terminal);
+    return (
+      <span
+        className={cn(
+          "inline-flex shrink-0 transition-opacity md:opacity-0 focus-within:opacity-100",
+          child ? "md:group-hover/child:opacity-100" : "md:group-hover:opacity-100",
+        )}
+      >
+        <button
+          type="button"
+          aria-label={`${live ? "Kill" : "Delete"} ${terminal.title}`}
+          title={live ? "Kill the process" : "Delete session"}
+          disabled={busy !== null}
+          onClick={(event) => {
+            event.stopPropagation();
+            void (live ? killSession(terminal) : deleteSession(terminal));
+          }}
+          className="shrink-0 rounded-md p-1 text-text-muted/60 hover:bg-error/10 hover:text-error disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          {busy === terminal.id ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : live ? (
+            <XCircle className="h-3.5 w-3.5" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </span>
+    );
+  };
   const ordered = useMemo(
     () =>
       groups.flatMap((g) =>
