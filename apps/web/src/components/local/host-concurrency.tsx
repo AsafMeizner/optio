@@ -12,7 +12,7 @@ const MAX = 50;
 
 /**
  * A machine's agent limit: how many agent terminals run on it at once. Agents
- * that automations, Jobs and Tasks start past it wait ("Waiting for a slot")
+ * that automations, Jobs and Tasks start past it queue ("Queued")
  * and start as others finish; a session you open by hand always starts. The
  * machines' answer to a repo's concurrency limit.
  */

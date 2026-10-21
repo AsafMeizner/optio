@@ -80,6 +80,29 @@ test("Add machine shows this server's pairing commands", async ({ page }) => {
   await expect(main.getByRole("heading", { name: "Pair another machine" })).toHaveCount(0);
 });
 
+test("a machine's agent limit is set from its card and persists", async ({ page, request }) => {
+  await page.goto("/machines");
+  const card = page.locator("main").getByRole("region", { name: "E2E laptop", exact: true });
+  const input = card.getByLabel("Agents the machine runs at once");
+  await expect(input).toHaveValue("3", { timeout: 30_000 });
+  await input.fill("5");
+  await input.press("Enter");
+  await expect(page.getByText("Up to 5 agents at once")).toBeVisible();
+  // Persisted: the API and a fresh page both say 5.
+  const hosts = await request.get("/api/local/hosts").then((r) => r.json());
+  const laptop = hosts.hosts.find((h: { name: string }) => h.name === "E2E laptop");
+  expect(laptop.maxConcurrentAgents).toBe(5);
+  await page.reload();
+  await expect(
+    page
+      .locator("main")
+      .getByRole("region", { name: "E2E laptop", exact: true })
+      .getByLabel("Agents the machine runs at once"),
+  ).toHaveValue("5", { timeout: 30_000 });
+  // Back to the default, so the other specs see what they expect.
+  await request.patch(`/api/local/hosts/${laptop.id}`, { data: { maxConcurrentAgents: 3 } });
+});
+
 test("the New work form offers no directory it can't add on an offline machine", async ({
   page,
 }) => {

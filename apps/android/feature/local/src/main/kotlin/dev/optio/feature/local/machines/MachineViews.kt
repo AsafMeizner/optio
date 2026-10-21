@@ -12,6 +12,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Remove
+import androidx.compose.material3.IconButton
+import dev.optio.core.ui.theme.medium
+import dev.optio.core.ui.theme.tabularNums
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.AccountTree
@@ -104,12 +109,50 @@ internal fun MachineCard(
             }
         }
         Text(hostFacts(host), style = type.footnote, color = colors.secondaryLabel, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+        Text(agentLimitText(host), style = type.footnote, color = colors.tertiaryLabel, maxLines = 1)
         if (host.dirs.isEmpty()) {
             Text("No directories exposed — `optio local add <dir>` on the machine.", style = type.footnote, color = colors.tertiaryLabel)
         } else {
             Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 host.dirs.forEach { DirLine(it) }
             }
+        }
+    }
+}
+
+/** The machine's agent limit, 3 when a server before it says nothing. */
+internal fun agentLimit(host: LocalHost): Int = host.maxConcurrentAgents?.toInt() ?: 3
+
+/** "Up to 3 agents at once" (iOS `MachineAgentLimit`). */
+internal fun agentLimitText(host: LocalHost): String {
+    val n = agentLimit(host)
+    return "Up to $n agent${if (n == 1) "" else "s"} at once"
+}
+
+/**
+ * The agent limit as a stepper row (iOS `Stepper`): the value and − / + that stop at 1 and
+ * 50. Each tap saves; the row shows the value the server confirmed.
+ */
+@Composable
+internal fun AgentLimitRow(
+    host: LocalHost,
+    enabled: Boolean,
+    onChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = OptioTheme.colors
+    val value = agentLimit(host)
+    Row(
+        modifier.fillMaxWidth().padding(start = Spacing.l, end = Spacing.s, top = 2.dp, bottom = 2.dp).testTag("agent-limit"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Agents at once", style = OptioTheme.type.body, color = colors.label, modifier = Modifier.weight(1f))
+        Text(value.toString(), style = OptioTheme.type.body.tabularNums().medium(), color = colors.label, modifier = Modifier.padding(end = Spacing.xs))
+        IconButton(onClick = { onChange(value - 1) }, enabled = enabled && value > 1) {
+            Icon(Icons.Outlined.Remove, contentDescription = "Decrease agents at once")
+        }
+        IconButton(onClick = { onChange(value + 1) }, enabled = enabled && value < 50) {
+            Icon(Icons.Outlined.Add, contentDescription = "Increase agents at once")
         }
     }
 }

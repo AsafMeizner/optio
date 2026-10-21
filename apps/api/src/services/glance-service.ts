@@ -179,7 +179,7 @@ export function terminalStatusLabel(row: {
     return row.pendingReason === "host_offline"
       ? "host offline"
       : row.pendingReason === "capacity"
-        ? "waiting for a slot"
+        ? "queued"
         : "pending";
   if (row.attentionState === "needs_you") return "needs you";
   if (row.attentionState === "idle") return "idle";

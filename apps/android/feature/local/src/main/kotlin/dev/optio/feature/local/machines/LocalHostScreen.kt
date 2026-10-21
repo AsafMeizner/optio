@@ -55,6 +55,7 @@ import dev.optio.core.model.LocalChangedEvent
 import dev.optio.core.model.LocalHost
 import dev.optio.core.model.LocalHostState
 import dev.optio.core.model.LocalTerminal
+import dev.optio.feature.local.api.LocalHostBody
 import dev.optio.feature.local.api.LocalTrigger
 import dev.optio.core.model.LocalTerminalState
 import dev.optio.core.navigation.LocalNavigator
@@ -90,6 +91,7 @@ import dev.optio.feature.local.api.listLocalBlueprints
 import dev.optio.feature.local.api.pinLocalTerminal
 import dev.optio.feature.local.api.unpinLocalTerminal
 import dev.optio.feature.local.api.listLocalHosts
+import dev.optio.feature.local.api.updateLocalHost
 import dev.optio.feature.local.api.listLocalTerminals
 import dev.optio.feature.local.model.LocalPresentation
 import dev.optio.feature.local.ui.TerminalRow
@@ -107,6 +109,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
@@ -228,6 +231,20 @@ class LocalHostViewModel(
 
     fun reload() {
         viewModelScope.launch { refresh() }
+    }
+
+    /** The machine's agent limit (1–50): automation agents past it queue. */
+    fun setAgentLimit(limit: Int) {
+        viewModelScope.launch {
+            try {
+                val updated = api.updateLocalHost(hostId, LocalHostBody(maxConcurrentAgents = limit.coerceIn(1, 50)))
+                _page.update { state -> state.value?.let { LoadState.Loaded(it.copy(host = updated)) } ?: state }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                eventChannel.send(Event.Failed(e, "change the agent limit"))
+            }
+        }
     }
 
     private var attachedBefore = false
@@ -352,6 +369,7 @@ fun LocalHostScreen(hostId: String) {
         onRetry = vm::reload,
         onForget = vm::forget,
         onTogglePin = vm::togglePin,
+        onSetAgentLimit = vm::setAgentLimit,
     )
 }
 
@@ -365,6 +383,7 @@ internal fun LocalHostContent(
     onRetry: () -> Unit = {},
     onForget: () -> Unit = {},
     onTogglePin: (LocalTerminal) -> Unit = {},
+    onSetAgentLimit: (Int) -> Unit = {},
 ) {
     val data = page.value
     val confirm = rememberConfirmState()
@@ -418,7 +437,7 @@ internal fun LocalHostContent(
     ) { padding ->
         PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize().padding(padding)) {
             when {
-                data != null -> HostBody(data, navigator, canMutate, onTogglePin)
+                data != null -> HostBody(data, navigator, canMutate, onTogglePin, onSetAgentLimit)
                 page is LoadState.Failed ->
                     LazyColumn(Modifier.fillMaxSize()) { item { ErrorRow(error = page.error, what = "machine", retry = onRetry) } }
                 else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp) }
@@ -434,6 +453,7 @@ private fun HostBody(
     navigator: Navigator,
     canMutate: Boolean,
     onTogglePin: (LocalTerminal) -> Unit,
+    onSetAgentLimit: (Int) -> Unit = {},
 ) {
     val host = data.host
     LazyColumn(Modifier.fillMaxSize().readableWidth().testTag("host-page"), contentPadding = PaddingValues(bottom = Spacing.xl)) {
@@ -451,6 +471,12 @@ private fun HostBody(
                     DirLine(dir, Modifier.padding(horizontal = Spacing.l, vertical = Spacing.m))
                     if (i < host.dirs.lastIndex) InsetDivider()
                 }
+            }
+        }
+        item {
+            // iOS `MachineAgentLimit`: how many agent sessions run here at once.
+            GroupedSection(header = "Agents at once", footer = "Automation agents past this queue for a free slot; a session you open yourself always starts.") {
+                AgentLimitRow(host = host, enabled = canMutate, onChange = onSetAgentLimit)
             }
         }
         terminalsSection(data.terminals, navigator, if (canMutate) onTogglePin else null)

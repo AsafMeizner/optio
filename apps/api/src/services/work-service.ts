@@ -182,7 +182,7 @@ function terminalStatus(t: LocalTerminalRow): [WorkStatus, string] {
       t.pendingReason === "host_offline"
         ? "host offline"
         : t.pendingReason === "capacity"
-          ? "waiting for a slot"
+          ? "queued"
           : "pending",
     ];
   }

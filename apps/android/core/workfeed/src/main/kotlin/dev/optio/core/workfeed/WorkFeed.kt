@@ -458,7 +458,7 @@ object WorkFeed {
         t.state == "exited" -> WorkStatus.DONE to "exited"
         t.state == "pending" -> WorkStatus.QUEUED to when (t.pendingReason) {
             "host_offline" -> "host offline"
-            "capacity" -> "waiting for a slot"
+            "capacity" -> "queued"
             else -> "pending"
         }
         t.attentionState == "needs_you" -> WorkStatus.NEEDS_YOU to "needs you"

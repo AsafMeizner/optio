@@ -50,6 +50,9 @@ struct MachinesView: View {
                                   whereLabel: { WorkFeed.shortDir($0.where.dir) },
                                   empty: "Nothing running here, and nothing set up to run here.")
                         MachineDirectories(host: host)
+                        MachineAgentLimit(host: host) { updated in
+                            hosts = hosts.map { $0.id == updated.id ? updated : $0 }
+                        }
                     } header: {
                         MachineHeader(host: host, summary: places.machines[host.id]?.nowSummary) {
                             pendingForget = host
@@ -273,6 +276,69 @@ private struct MachineHeader: View {
             .foregroundStyle(Color(.tertiaryLabel))
         }
         .padding(.top, Spacing.m)
+    }
+}
+
+/// The machine's agent limit: how many agent sessions it runs at once. Agent
+/// sessions that automations, Jobs and Tasks start past it queue and start as
+/// others finish; one you open by hand always starts. Saved a moment after
+/// the last tap, so stepping through values is one request.
+struct MachineAgentLimit: View {
+    let host: LocalHost
+    let onChanged: (LocalHost) -> Void
+    @Environment(APIClient.self) private var api
+    @Environment(SessionStore.self) private var session
+    @State private var value: Int
+    @State private var saveTask: Task<Void, Never>?
+    @State private var error: String?
+
+    static let range = 1...50
+
+    init(host: LocalHost, onChanged: @escaping (LocalHost) -> Void) {
+        self.host = host
+        self.onChanged = onChanged
+        _value = State(initialValue: Self.limit(of: host))
+    }
+
+    static func limit(of host: LocalHost) -> Int {
+        Int(host.maxConcurrentAgents ?? 3)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if session.canCreateWork {
+                Stepper("Agents at once: \(value)", value: $value, in: Self.range)
+                    .font(.footnote)
+                    .onChange(of: value) { _, next in schedule(next) }
+            } else {
+                Label("Agents at once: \(value)", systemImage: "gauge.with.dots.needle.33percent")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Text(error ?? "Automation agents past this queue for a free slot.")
+                .font(.caption2)
+                .foregroundStyle(error == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Tone.warning.textStyle))
+        }
+        .onChange(of: Self.limit(of: host)) { _, next in
+            if saveTask == nil { value = next }
+        }
+    }
+
+    private func schedule(_ next: Int) {
+        guard next != Self.limit(of: host) else { return }
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            do {
+                let updated = try await api.updateLocalHost(host.id, maxConcurrentAgents: next)
+                error = nil
+                onChanged(updated)
+            } catch {
+                self.error = error.localizedDescription
+            }
+            saveTask = nil
+        }
     }
 }
 

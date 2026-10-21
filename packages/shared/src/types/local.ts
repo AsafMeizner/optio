@@ -99,8 +99,9 @@ export interface LocalHost {
    * automations, Jobs and Tasks start past this wait in `pending` /
    * `capacity` and start as others finish; a session a person opens by hand
    * always starts, but counts. Shells and plain commands don't count.
+   * Absent from servers before 0.19 (treat as 3).
    */
-  maxConcurrentAgents: number;
+  maxConcurrentAgents?: number;
   /**
    * Whether the connected daemon can hand Optio a fresh Claude OAuth token
    * from the machine's own Claude Code login (Keychain / credentials file).

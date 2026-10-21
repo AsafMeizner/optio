@@ -44,7 +44,7 @@ export function localStateLabel(terminal: any): string {
   return terminal.state === "pending" && terminal.pendingReason === "host_offline"
     ? "Host offline"
     : terminal.state === "pending" && terminal.pendingReason === "capacity"
-      ? "Waiting for a slot"
+      ? "Queued"
       : terminal.state === "pending" && terminal.pendingReason === "hold"
         ? "Held"
         : style.label;
@@ -111,13 +111,13 @@ function baseStatusDescriptor(terminal: any): {
           terminal.pendingReason === "host_offline"
             ? "Waiting for host"
             : terminal.pendingReason === "capacity"
-              ? "Waiting for a slot"
+              ? "Queued"
               : terminal.pendingReason === "hold"
                 ? "Held"
                 : "Pending",
         detail:
           terminal.pendingReason === "capacity"
-            ? "starts when another agent on the machine finishes"
+            ? "waiting for a free agent slot on the machine"
             : null,
       };
     case "launching":

@@ -154,7 +154,7 @@ final class WorkFeedTests: XCTestCase {
         XCTAssertEqual(F.taskStatus("waiting_on_deps").1, "waiting on deps")
         XCTAssertEqual(F.taskStatus("cancelled").0, .done)
         XCTAssertEqual(F.terminalStatus(.init(state: "pending", pendingReason: "host_offline")).1, "host offline")
-        XCTAssertEqual(F.terminalStatus(.init(state: "pending", pendingReason: "capacity")).1, "waiting for a slot")
+        XCTAssertEqual(F.terminalStatus(.init(state: "pending", pendingReason: "capacity")).1, "queued")
         XCTAssertEqual(F.terminalStatus(.init(state: "running", attentionState: "idle")).0, .waiting)
         XCTAssertEqual(F.terminalStatus(.init(state: "exited")).0, .done)
         XCTAssertEqual(F.agentStatus(.init(state: "archived")).0, .done)

@@ -23,7 +23,7 @@ struct TerminalRowView: View {
         if terminal.state == .pending {
             switch terminal.pendingReason {
             case .hostOffline: return ("Host offline", nil)
-            case .capacity: return ("Waiting for a slot", nil)
+            case .capacity: return ("Queued", nil)
             default: return ("Held", nil)
             }
         }

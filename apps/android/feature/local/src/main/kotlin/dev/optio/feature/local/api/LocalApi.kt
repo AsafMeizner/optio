@@ -16,6 +16,8 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 // Endpoints of `apps/api/src/routes/local.ts`, as ApiClient extensions (iOS `LocalAPI.swift`, which
 // mirrors the "Optio Local" block of the web's api-client.ts). Route-local envelopes live here.
@@ -55,6 +57,9 @@ data class LocalTranscriptPage(
 
 @Serializable
 internal data class HostsEnvelope(val hosts: List<LocalHost> = emptyList())
+
+@Serializable
+internal data class HostEnvelope(val host: LocalHost)
 
 @Serializable
 internal data class TerminalsEnvelope(val terminals: List<LocalTerminal> = emptyList())
@@ -164,6 +169,25 @@ suspend fun ApiClient.listLocalHosts(): List<LocalHost> = get<HostsEnvelope>("/a
 
 /** Unpairs a host (the server deletes its terminals too). */
 suspend fun ApiClient.deleteLocalHost(id: String) = delete("/api/local/hosts/$id")
+
+/** `PATCH /api/local/hosts/:id`: the fields a person changes. */
+@Serializable
+data class LocalHostBody(
+    val name: String? = null,
+    /** Agent sessions the machine runs at once (1–50); automation agents past it queue. */
+    val maxConcurrentAgents: Int? = null,
+) {
+    fun toJson(): JsonObject =
+        buildJsonObject {
+            name?.let { put("name", it) }
+            maxConcurrentAgents?.let { put("maxConcurrentAgents", it) }
+        }
+}
+
+suspend fun ApiClient.updateLocalHost(
+    id: String,
+    body: LocalHostBody,
+): LocalHost = patch<HostEnvelope>("/api/local/hosts/$id", body.toJson()).host
 
 // endregion
 

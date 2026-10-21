@@ -159,7 +159,7 @@ back via `local_terminal_id`). The pipeline, in `services/local-run-service.ts`:
    (`local_hosts.max_concurrent_agents`, default 3, set on the Machines page or with
    `PATCH /api/local/hosts/:id`), the machines' answer to a repo's concurrency limit. An
    agent terminal that an automation, Job, Task or ticket starts while the host already
-   runs that many agents parks in `pending` / `capacity` ("Waiting for a slot") and starts,
+   runs that many agents parks in `pending` / `capacity` ("Queued") and starts,
    oldest first, as agents finish, when the limit is raised, and on the daemon's hello —
    the host row is locked for the check-and-claim (`claimAgentSlot`), so two spawns racing
    for the last slot can't both take it. A session a person opens by hand always starts

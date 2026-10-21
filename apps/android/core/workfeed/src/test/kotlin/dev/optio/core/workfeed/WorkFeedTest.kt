@@ -174,7 +174,7 @@ class WorkFeedTest {
         assertEquals(WorkStatus.DONE to "", WorkFeed.taskStatus(null))
 
         assertEquals("host offline", WorkFeed.terminalStatus(TerminalRow(state = "pending", pendingReason = "host_offline")).second)
-        assertEquals("waiting for a slot", WorkFeed.terminalStatus(TerminalRow(state = "pending", pendingReason = "capacity")).second)
+        assertEquals("queued", WorkFeed.terminalStatus(TerminalRow(state = "pending", pendingReason = "capacity")).second)
         assertEquals(WorkStatus.QUEUED to "pending", WorkFeed.terminalStatus(TerminalRow(state = "pending", pendingReason = "hold")))
         assertEquals(WorkStatus.WAITING, WorkFeed.terminalStatus(TerminalRow(state = "running", attentionState = "idle")).first)
         assertEquals(WorkStatus.DONE, WorkFeed.terminalStatus(TerminalRow(state = "exited")).first)

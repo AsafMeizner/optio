@@ -3854,7 +3854,8 @@ public struct LocalHost: Codable, Hashable, Sendable {
     /// automations, Jobs and Tasks start past this wait in `pending` /
     /// `capacity` and start as others finish; a session a person opens by hand
     /// always starts, but counts. Shells and plain commands don't count.
-    public let maxConcurrentAgents: Double
+    /// Absent from servers before 0.19 (treat as 3).
+    public let maxConcurrentAgents: Double?
     /// Whether the connected daemon can hand Optio a fresh Claude OAuth token
     /// from the machine's own Claude Code login (Keychain / credentials file).
     /// Live (from the daemon's hello), so false whenever the host is offline.
@@ -3911,7 +3912,7 @@ public struct LocalHost: Codable, Hashable, Sendable {
         daemonVersion: String? = nil,
         dirs: [LocalHostDir],
         agentLimits: LocalHostAgentLimits? = nil,
-        maxConcurrentAgents: Double,
+        maxConcurrentAgents: Double? = nil,
         claudeCredentials: Bool? = nil,
         manageDirs: Bool? = nil,
         modelProviders: Bool? = nil,

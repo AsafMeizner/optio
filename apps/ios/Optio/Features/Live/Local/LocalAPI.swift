@@ -140,6 +140,15 @@ extension APIClient {
         try await delete("/api/local/hosts/\(id)")
     }
 
+    private struct HostEnvelope: Decodable { let host: LocalHost }
+    private struct UpdateLocalHostBody: Encodable { var maxConcurrentAgents: Int }
+
+    /// The machine's agent limit (`PATCH /api/local/hosts/:id`): how many agent
+    /// sessions it runs at once; automation agents past it queue.
+    func updateLocalHost(_ id: String, maxConcurrentAgents: Int) async throws -> LocalHost {
+        try await patch("/api/local/hosts/\(id)", body: UpdateLocalHostBody(maxConcurrentAgents: maxConcurrentAgents), as: HostEnvelope.self).host
+    }
+
     func listLocalTerminals(hostId: String? = nil, state: String? = nil) async throws -> [LocalTerminal] {
         try await get("/api/local/terminals", query: ["hostId": hostId, "state": state], as: TerminalsEnvelope.self).terminals
     }
@@ -256,7 +265,7 @@ enum LocalPresentation {
 
     static func stateLabel(_ t: LocalTerminal) -> String {
         if t.state == .pending, t.pendingReason == .hostOffline { return "Host offline" }
-        if t.state == .pending, t.pendingReason == .capacity { return "Waiting for a slot" }
+        if t.state == .pending, t.pendingReason == .capacity { return "Queued" }
         if t.state == .pending, t.pendingReason == .hold { return "Held" }
         switch t.state {
         case .pending: return "Pending"

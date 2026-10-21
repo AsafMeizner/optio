@@ -207,7 +207,7 @@ export function EmbeddedLocalSession({
         )}
         {terminal.state === "pending" && terminal.pendingReason === "capacity" && (
           <span className="text-text-muted truncate">
-            — waiting for a free agent slot on {host?.name ?? "the machine"}
+            — queued for a free agent slot on {host?.name ?? "the machine"}
           </span>
         )}
         <span className="hidden sm:inline-flex items-center gap-1 text-text-muted min-w-0">
