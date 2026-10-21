@@ -24,8 +24,10 @@ export interface AgentCommandOptions {
   /** Reasoning effort: Claude Code `--effort`, Codex `-c model_reasoning_effort="…"`. */
   effort?: string;
   /**
-   * Claude Code's `--permission-mode`; `auto` when unset. Codex takes only
-   * `bypassPermissions` (`--yolo`); otherwise it keeps its own config.
+   * Permission checks; `bypassPermissions` when unset. Claude Code:
+   * `--dangerously-skip-permissions`, else `--permission-mode auto|default`.
+   * Codex: `--dangerously-bypass-approvals-and-sandbox` (`--yolo`), a
+   * workspace-write sandbox for `auto`, its own config for `default`.
    */
   permissionMode?: LocalAgentPermissionMode;
   /**
@@ -53,10 +55,12 @@ export interface AgentCommandOptions {
  * "exit when done" automation shape. Claude Code still fires hooks in `-p`
  * mode, so the session id is captured and the run can be resumed later.
  *
- * Claude Code starts in auto mode unless told otherwise: `-p` would
- * otherwise start in Manual, where every edit and command is denied because
- * nobody can answer the prompt, and a fresh install's first interactive
- * session would stop at each one.
+ * Every agent skips its permission checks unless the spawn says otherwise
+ * (`claude --dangerously-skip-permissions`, `codex --yolo`): the work was
+ * started from Optio to run on its own, and a headless `claude -p` without a
+ * flag would start in Manual, where every edit and command is denied because
+ * nobody can answer the prompt. `auto` and `default` are opt-ins to Claude's
+ * classifier / Codex's workspace-write sandbox, or to asking first.
  */
 export function buildAgentCommand(
   agent: LocalAgentKind,
@@ -114,10 +118,7 @@ function agentCli(
   switch (agent) {
     case "claude-code": {
       let base = `claude --settings ${shellQuote(hookSettingsPath)}`;
-      const permission = LOCAL_AGENT_PERMISSION_MODES.includes(opts.permissionMode!)
-        ? opts.permissionMode!
-        : "auto";
-      base += claudePermissionFlag(permission, opts.claudeCaps);
+      base += claudePermissionFlag(permissionMode(opts), opts.claudeCaps);
       if (model) base += ` --model ${model}`;
       // An effort this `claude` doesn't list (an older release without
       // xhigh / max) would stop it from starting: leave it to its default.
@@ -130,12 +131,18 @@ function agentCli(
       return base + (p ? ` ${p}` : "");
     }
     case "codex": {
-      // `--yolo` is Codex's alias for this flag; the long name is the one its
-      // --help documents, so it's the one older releases are sure to take.
+      // `--yolo` is Codex's alias for the bypass flag; the long name is the
+      // one its --help documents, so it's the one older releases are sure to
+      // take. `auto` keeps Codex in its workspace-write sandbox (as a config
+      // override: `--full-auto` is gone from recent releases and `--sandbox`
+      // can't follow `exec resume`); `default` leaves its config alone.
+      const codexPermission = permissionMode(opts);
       let flags =
-        opts.permissionMode === "bypassPermissions"
+        codexPermission === "bypassPermissions"
           ? " --dangerously-bypass-approvals-and-sandbox"
-          : "";
+          : codexPermission === "auto"
+            ? ` -c ${shellQuote('sandbox_mode="workspace-write"')}`
+            : "";
       if (model) flags += ` -m ${model}`;
       if (effort) flags += ` -c ${shellQuote(`model_reasoning_effort="${effort}"`)}`;
       for (const override of codexConfig) flags += ` -c ${shellQuote(override)}`;
@@ -162,6 +169,13 @@ function agentCli(
       return `opencode${m}` + (p ? ` --prompt ${p}` : "");
     }
   }
+}
+
+/** The spawn's permission mode; an unset or unknown one skips every check. */
+function permissionMode(opts: AgentCommandOptions): LocalAgentPermissionMode {
+  return LOCAL_AGENT_PERMISSION_MODES.includes(opts.permissionMode!)
+    ? opts.permissionMode!
+    : "bypassPermissions";
 }
 
 /**

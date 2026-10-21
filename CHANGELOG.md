@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Agents on your machine skip permission checks by default**, the way agents in pods always have: Claude Code starts with `--dangerously-skip-permissions` and Codex with `--yolo`, whether a person, a trigger, or Ask Optio started the session. The work form's Permissions field (runs on a machine only) still opts into Auto (Claude's classifier; Codex's workspace-write sandbox, new) or Ask first / Codex's own settings. Daemons on the previous release keep their old `auto` default until updated.
+
+### Fixed
+
+- Codex runs in pods passed `--full-auto`, which recent Codex releases (0.162+) reject; pods now run `codex exec --dangerously-bypass-approvals-and-sandbox` (the pod is the sandbox). They also no longer hang on "Reading additional input from stdin": the run's stdin stays open for messages, so Codex is started with none.
+
 ## [0.19.0] - 2026-10-21
 
 ### Added

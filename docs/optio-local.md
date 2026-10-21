@@ -597,22 +597,24 @@ single quoted argv element, never interpolated into shell syntax; a prompt that 
 `cli/src/local/agent-command.ts` builds each agent's command line; every value in it is a
 single shell-quoted argv element.
 
-- **Permissions (Claude Code).** Agents start with `--permission-mode auto` unless the
-  spawn asks for another mode: Claude's classifier approves routine actions (edits and
-  commands in the working directory) and blocks risky ones. Without a flag, a headless
-  `claude -p` starts in Manual mode, where every action that needs approval is denied
-  because nobody can answer the prompt, and a fresh install's first interactive session
-  stops at each one. The spec's `permissionMode` picks `bypassPermissions` ("Skip all
-  checks": `--dangerously-skip-permissions`) or `default` ("Ask first"); it is the
-  `claudePermissionMode` catalog field, shown only for runs on a machine (pods always skip
-  checks). Claude Code falls back to Manual on its own when auto mode isn't available to
-  the account or model.
-- **Permissions (Codex).** Codex keeps the machine's own approval and sandbox config unless
-  the spec's `permissionMode` is `bypassPermissions` ("Skip all checks", the
-  `codexPermissionMode` catalog field): then it runs with
-  `--dangerously-bypass-approvals-and-sandbox` (`--yolo` is Codex's alias for it), for new,
-  headless (`codex exec`) and resumed sessions alike. The other modes mean nothing to Codex.
-  A pod runs `codex exec --full-auto`.
+- **Permissions.** Agents skip their permission checks unless the spawn asks for another
+  mode — the same as in a pod, and what work started from Optio (by a person, a trigger,
+  or Ask Optio) needs to run on its own. The spec's `permissionMode` (the
+  `claudePermissionMode` / `codexPermissionMode` catalog field, shown only for runs on a
+  machine) is `bypassPermissions` by default ("Skip all checks"), `auto`, or `default`.
+  - **Claude Code**: `bypassPermissions` is `--dangerously-skip-permissions`; `auto` is
+    `--permission-mode auto`, where Claude's classifier approves routine actions (edits and
+    commands in the working directory) and blocks risky ones; `default` ("Ask first") passes
+    `--permission-mode default`. Without a flag, a headless `claude -p` starts in Manual
+    mode, where every action that needs approval is denied because nobody can answer the
+    prompt. Claude Code falls back to Manual on its own when auto mode isn't available to
+    the account or model.
+  - **Codex**: `bypassPermissions` is `--dangerously-bypass-approvals-and-sandbox` (`--yolo`
+    is Codex's alias for it); `auto` keeps Codex in its workspace-write sandbox
+    (`-c sandbox_mode="workspace-write"`: `--full-auto` is gone from recent Codex releases);
+    `default` ("Codex's own settings") keeps the machine's own approval and sandbox config.
+    The flag goes on new, headless (`codex exec`) and resumed sessions alike. A pod runs
+    `codex exec --dangerously-bypass-approvals-and-sandbox` (the pod is the sandbox).
 - **Effort.** The spec's `effort` becomes Claude Code's `--effort` and Codex's
   `-c model_reasoning_effort="…"`. The New work form offers it for runs on a machine as
   well as in pods.

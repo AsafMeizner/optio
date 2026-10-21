@@ -1818,14 +1818,14 @@ data class LocalHostAgentModels(
 }
 
 /**
- * How a local agent handles permission prompts. For Claude Code, its
- * `--permission-mode`: `auto` (the daemon's default) lets Claude's classifier
- * approve routine actions and block risky ones, so an unattended run doesn't
- * stall on a prompt; `bypassPermissions` skips every check
- * (`--dangerously-skip-permissions`); `default` asks first (a headless run
- * can't ask, so those actions are denied). For Codex, only
- * `bypassPermissions` means anything: `--yolo` (no approvals, no sandbox);
- * otherwise Codex keeps the machine's own approval and sandbox config.
+ * How a local agent handles permission prompts. `bypassPermissions` (the
+ * daemon's default) skips every check: Claude Code's
+ * `--dangerously-skip-permissions`, Codex's `--yolo` (no approvals, no
+ * sandbox). `auto` lets Claude's classifier approve routine actions and block
+ * risky ones (`--permission-mode auto`), or keeps Codex in its
+ * workspace-write sandbox.
+ * `default` asks first in Claude Code (a headless run can't ask, so those
+ * actions are denied) and keeps the machine's own Codex config.
  */
 @Serializable(with = LocalAgentPermissionMode.Companion::class)
 enum class LocalAgentPermissionMode(override val raw: String) : RawEnum {
@@ -2001,9 +2001,8 @@ sealed interface LocalTerminalSpec {
          */
         val effort: String? = null,
         /**
-         * Claude Code: its `--permission-mode` (the daemon's default is `auto`).
-         * Codex: `bypassPermissions` runs it with `--yolo`; anything else keeps
-         * the machine's own config.
+         * Permission checks; the daemon skips them (`bypassPermissions`) when
+         * unset. See `LocalAgentPermissionMode`.
          */
         val permissionMode: LocalAgentPermissionMode? = null,
         /**

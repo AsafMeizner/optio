@@ -75,7 +75,10 @@ export function buildPooledAgentCommand(
       return [
         `echo "[optio] Running ${label} (Codex)..."`,
         ...EXPORT_CODEX_HOME,
-        `codex exec --full-auto${codexModelFlags(env)}${appServerFlag} "$OPTIO_PROMPT" --json`,
+        // The pod is the sandbox; `--full-auto` is gone from recent Codex
+        // releases. Codex reads a non-TTY stdin to EOF before its first model
+        // call, and the run's stdin stays open for messages: give it none.
+        `codex exec --dangerously-bypass-approvals-and-sandbox${codexModelFlags(env)}${appServerFlag} "$OPTIO_PROMPT" --json </dev/null`,
       ];
     }
     case "copilot": {

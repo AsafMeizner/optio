@@ -159,7 +159,7 @@ describe("buildAgentCommand", () => {
       const env = { OPTIO_PROMPT: "Build feature" };
       const cmds = buildAgentCommand("codex", env);
       expect(cmds.some((c) => c.includes("codex exec"))).toBe(true);
-      expect(cmds.some((c) => c.includes("--full-auto"))).toBe(true);
+      expect(cmds.some((c) => c.includes("--dangerously-bypass-approvals-and-sandbox"))).toBe(true);
       expect(cmds.some((c) => c.includes("--json"))).toBe(true);
     });
 
@@ -380,7 +380,7 @@ describe("hostile prompt/argument shell-quoting regression", () => {
       expect(result.status).toBe(0);
 
       const argv = fs.readFileSync(argsFile, "utf8").split("\0").slice(0, -1);
-      // codex exec --full-auto "$OPTIO_PROMPT" ... — the prompt is one argv
+      // codex exec --dangerously-bypass-approvals-and-sandbox "$OPTIO_PROMPT" ... — the prompt is one argv
       // element, delivered byte-for-byte with nothing expanded or executed
       expect(argv).toContain(HOSTILE);
       const received = argv[argv.indexOf(HOSTILE)];

@@ -126,11 +126,10 @@ describe("AgentOptionsPicker on a machine", () => {
     const effort = screen.getByRole("combobox", { name: "Effort Level" });
     expect(effort).toHaveValue("");
     expect(within(effort).getByRole("option", { name: "Default" })).toBeInTheDocument();
+    // Checks are skipped unless the form says otherwise, the way pods always do.
     const permissions = screen.getByRole("combobox", { name: "Permissions" });
-    expect(permissions).toHaveValue("auto");
-    expect(within(permissions).getByRole("option", { name: "Skip all checks" })).toHaveValue(
-      "bypassPermissions",
-    );
+    expect(permissions).toHaveValue("bypassPermissions");
+    expect(within(permissions).getByRole("option", { name: "Auto" })).toHaveValue("auto");
     expect(screen.queryByRole("combobox", { name: "Context Window" })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "Extended Thinking" })).not.toBeInTheDocument();
   });

@@ -9,7 +9,7 @@ import type { AgentAdapter, AgentResultParser } from "./types.js";
 import { firstMatch, parseAllLines } from "./types.js";
 
 /**
- * Codex CLI (codex exec --full-auto --json) outputs NDJSON events.
+ * Codex CLI (codex exec --dangerously-bypass-approvals-and-sandbox --json) outputs NDJSON events.
  * Each line is a JSON object. Known event shapes:
  *
  * - { type: "message", role: "assistant"|"system", content: "..." }

@@ -100,11 +100,13 @@ export const OPENAI_CATALOG: ProviderCatalog = {
       ],
     },
     {
-      // A pod runs `codex exec --full-auto`; on your own machine Codex keeps
-      // its own approval and sandbox config unless this says to skip them.
+      // A pod always skips Codex's approvals and sandbox (the pod is the
+      // sandbox); on your own machine the daemon does too unless this says
+      // otherwise.
       key: "codexPermissionMode",
       label: "Permissions",
       kind: "select",
+      default: "bypassPermissions",
       runsOn: ["local"],
       localParam: "permissionMode",
       choices: [
@@ -114,8 +116,19 @@ export const OPENAI_CATALOG: ProviderCatalog = {
           description:
             "--yolo: no approval prompts and no sandbox; every command runs as you on this machine",
         },
+        {
+          value: "auto",
+          label: "Auto",
+          description:
+            "Keeps Codex's workspace-write sandbox: edits the working directory freely, nothing outside it",
+        },
+        {
+          value: "default",
+          label: "Codex's own settings",
+          description: "Keeps the approval and sandbox config of this machine's Codex",
+        },
       ],
-      helpText: "Default keeps Codex's own approval and sandbox settings on this machine.",
+      helpText: "Skip all checks runs everything Codex tries; Auto keeps its sandbox.",
     },
   ],
   liveRefreshSupported: true,

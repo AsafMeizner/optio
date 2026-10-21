@@ -108,13 +108,13 @@ describe("buildPooledAgentCommand", () => {
     const env = agentOptionsEnv("codex", { copilotModel: "gpt-5.6-sol", copilotEffort: "high" });
     const lines = buildPooledAgentCommand("codex", env, opts);
     expect(lines.at(-1)).toBe(
-      `codex exec --full-auto -m 'gpt-5.6-sol' -c 'model_reasoning_effort="high"' "$OPTIO_PROMPT" --json`,
+      `codex exec --dangerously-bypass-approvals-and-sandbox -m 'gpt-5.6-sol' -c 'model_reasoning_effort="high"' "$OPTIO_PROMPT" --json </dev/null`,
     );
     // The run's own CODEX_HOME (its MCP servers) is exported just before Codex starts.
     expect(lines.at(-2)).toContain('export CODEX_HOME="$OPTIO_CODEX_HOME"');
     // Nothing set: Codex's own defaults, as before.
     expect(buildPooledAgentCommand("codex", {}, opts).at(-1)).toBe(
-      `codex exec --full-auto "$OPTIO_PROMPT" --json`,
+      `codex exec --dangerously-bypass-approvals-and-sandbox "$OPTIO_PROMPT" --json </dev/null`,
     );
   });
 

@@ -130,7 +130,9 @@ case "${OPTIO_AGENT_TYPE}" in
     echo "[optio] Running OpenAI Codex..."
     # The run's own CODEX_HOME carries its MCP servers (utils/codex-config.ts).
     if [ -n "${OPTIO_CODEX_HOME:-}" ]; then export CODEX_HOME="$OPTIO_CODEX_HOME"; fi
-    codex exec --full-auto "${OPTIO_PROMPT}" --json
+    # The pod is the sandbox; --full-auto is gone from recent Codex releases.
+    # Codex reads a non-TTY stdin to EOF before its first model call.
+    codex exec --dangerously-bypass-approvals-and-sandbox "${OPTIO_PROMPT}" --json </dev/null
     ;;
   copilot)
     echo "[optio] Running GitHub Copilot..."

@@ -100,23 +100,23 @@ export const ANTHROPIC_CATALOG: ProviderCatalog = {
     },
     {
       // Pods always skip permission checks (the pod is the sandbox); on your
-      // own machine the daemon passes `--permission-mode`.
+      // own machine the daemon skips them too unless this says otherwise.
       key: "claudePermissionMode",
       label: "Permissions",
       kind: "select",
-      default: "auto",
+      default: "bypassPermissions",
       runsOn: ["local"],
       localParam: "permissionMode",
       choices: [
         {
-          value: "auto",
-          label: "Auto",
-          description: "Claude's classifier approves routine actions and blocks risky ones",
-        },
-        {
           value: "bypassPermissions",
           label: "Skip all checks",
           description: "--dangerously-skip-permissions: nothing is asked or blocked",
+        },
+        {
+          value: "auto",
+          label: "Auto",
+          description: "Claude's classifier approves routine actions and blocks risky ones",
         },
         {
           value: "default",
@@ -125,7 +125,7 @@ export const ANTHROPIC_CATALOG: ProviderCatalog = {
         },
       ],
       helpText:
-        "Auto keeps the agent moving without prompts and still blocks risky actions; Skip all checks runs everything it tries.",
+        "Skip all checks runs everything the agent tries; Auto keeps it moving without prompts and still blocks risky actions.",
     },
   ],
   liveRefreshSupported: true,

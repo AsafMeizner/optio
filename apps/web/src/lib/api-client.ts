@@ -2202,7 +2202,7 @@ export const api = {
           model?: string;
           /** Claude Code `--effort` / Codex reasoning effort. */
           effort?: string;
-          /** Claude Code's `--permission-mode` (the daemon's default is auto); Codex: bypassPermissions = `--yolo`. */
+          /** Permission checks; the daemon skips them (bypassPermissions) when unset. */
           permissionMode?: "auto" | "bypassPermissions" | "default";
           baseBranch?: string;
         };

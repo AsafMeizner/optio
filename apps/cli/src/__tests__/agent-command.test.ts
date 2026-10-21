@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import { buildAgentCommand } from "../local/agent-command.js";
 
 const SETTINGS = "/home/u/.config/optio/local/claude-hooks.json";
-// Claude Code starts in auto mode unless the spawn says otherwise.
-const CLAUDE = `claude --settings '${SETTINGS}' --permission-mode auto`;
+// Every agent skips its permission checks unless the spawn says otherwise.
+const CLAUDE = `claude --settings '${SETTINGS}' --dangerously-skip-permissions`;
+const CODEX = "codex --dangerously-bypass-approvals-and-sandbox";
+const CODEX_EXEC = "codex exec --dangerously-bypass-approvals-and-sandbox";
 
 describe("buildAgentCommand", () => {
   it("claude-code includes --settings, auto mode and the single-quoted prompt", () => {
@@ -17,7 +19,7 @@ describe("buildAgentCommand", () => {
   });
 
   it("quotes prompts containing single quotes with the '\\'' escape", () => {
-    expect(buildAgentCommand("codex", "don't break", SETTINGS)).toBe(`codex 'don'\\''t break'`);
+    expect(buildAgentCommand("codex", "don't break", SETTINGS)).toBe(`${CODEX} 'don'\\''t break'`);
   });
 
   it("keeps a dash-leading prompt positional instead of letting it parse as a flag", () => {
@@ -27,25 +29,25 @@ describe("buildAgentCommand", () => {
       }),
     ).toBe(`${CLAUDE} -p ' --dangerously-skip-permissions do it'`);
     expect(buildAgentCommand("codex", "-h", SETTINGS, { mode: "headless" })).toBe(
-      `codex exec ' -h'`,
+      `${CODEX_EXEC} ' -h'`,
     );
   });
 
   it("neutralizes shell metacharacters in prompts", () => {
     expect(buildAgentCommand("codex", "$(rm -rf /); `id`", SETTINGS)).toBe(
-      "codex '$(rm -rf /); `id`'",
+      `${CODEX} '$(rm -rf /); \`id\`'`,
     );
   });
 
   it("maps each agent to the right binary and prompt flag", () => {
-    expect(buildAgentCommand("codex", "p", SETTINGS)).toBe(`codex 'p'`);
+    expect(buildAgentCommand("codex", "p", SETTINGS)).toBe(`${CODEX} 'p'`);
     expect(buildAgentCommand("cursor", "p", SETTINGS)).toBe(`cursor-agent 'p'`);
     expect(buildAgentCommand("gemini", "p", SETTINGS)).toBe(`gemini -i 'p'`);
     expect(buildAgentCommand("opencode", "p", SETTINGS)).toBe(`opencode --prompt 'p'`);
   });
 
   it("omits the prompt flag entirely when no prompt is given", () => {
-    expect(buildAgentCommand("codex", undefined, SETTINGS)).toBe("codex");
+    expect(buildAgentCommand("codex", undefined, SETTINGS)).toBe(CODEX);
     expect(buildAgentCommand("cursor", undefined, SETTINGS)).toBe("cursor-agent");
     expect(buildAgentCommand("gemini", undefined, SETTINGS)).toBe("gemini");
     expect(buildAgentCommand("opencode", undefined, SETTINGS)).toBe("opencode");
@@ -56,7 +58,7 @@ describe("buildAgentCommand session modes", () => {
   it("headless mode uses each CLI's one-shot entry point", () => {
     const o = { mode: "headless" as const };
     expect(buildAgentCommand("claude-code", "p", SETTINGS, o)).toBe(`${CLAUDE} -p 'p'`);
-    expect(buildAgentCommand("codex", "p", SETTINGS, o)).toBe(`codex exec 'p'`);
+    expect(buildAgentCommand("codex", "p", SETTINGS, o)).toBe(`${CODEX_EXEC} 'p'`);
     expect(buildAgentCommand("cursor", "p", SETTINGS, o)).toBe(`cursor-agent -p 'p'`);
     expect(buildAgentCommand("gemini", "p", SETTINGS, o)).toBe(`gemini -p 'p'`);
     expect(buildAgentCommand("opencode", "p", SETTINGS, o)).toBe(`opencode run 'p'`);
@@ -73,7 +75,7 @@ describe("buildAgentCommand session modes", () => {
       buildAgentCommand("claude-code", undefined, SETTINGS, { resumeSessionId: "abc-123" }),
     ).toBe(`${CLAUDE} --resume 'abc-123'`);
     expect(buildAgentCommand("codex", undefined, SETTINGS, { resumeSessionId: "x'y" })).toBe(
-      `codex resume 'x'\\''y'`,
+      `codex resume --dangerously-bypass-approvals-and-sandbox 'x'\\''y'`,
     );
   });
 
@@ -88,14 +90,14 @@ describe("buildAgentCommand session modes", () => {
     // A headless local task resuming after review feedback must still exit when done.
     expect(
       buildAgentCommand("codex", "fix CI", SETTINGS, { mode: "headless", resumeSessionId: "s1" }),
-    ).toBe(`codex exec resume 's1' 'fix CI'`);
+    ).toBe(`codex exec resume --dangerously-bypass-approvals-and-sandbox 's1' 'fix CI'`);
   });
 
   it("passes a model override as a quoted flag per CLI", () => {
     const o = { model: "opus" };
     expect(buildAgentCommand("claude-code", "p", SETTINGS, o)).toBe(`${CLAUDE} --model 'opus' 'p'`);
     expect(buildAgentCommand("codex", "p", SETTINGS, { ...o, mode: "headless" })).toBe(
-      `codex exec -m 'opus' 'p'`,
+      `${CODEX_EXEC} -m 'opus' 'p'`,
     );
     expect(buildAgentCommand("cursor", "p", SETTINGS, o)).toBe(`cursor-agent --model 'opus' 'p'`);
     expect(buildAgentCommand("gemini", "p", SETTINGS, o)).toBe(`gemini -m 'opus' -i 'p'`);
@@ -110,22 +112,22 @@ describe("buildAgentCommand session modes", () => {
 });
 
 describe("buildAgentCommand permissions and effort", () => {
-  it("launches Claude Code in auto mode by default, headless too", () => {
+  it("launches Claude Code with --dangerously-skip-permissions by default, headless too", () => {
     expect(buildAgentCommand("claude-code", "p", SETTINGS, { mode: "headless" })).toBe(
       `${CLAUDE} -p 'p'`,
     );
   });
 
-  it("skips every check with --dangerously-skip-permissions, or asks first", () => {
-    expect(
-      buildAgentCommand("claude-code", "p", SETTINGS, { permissionMode: "bypassPermissions" }),
-    ).toBe(`claude --settings '${SETTINGS}' --dangerously-skip-permissions 'p'`);
+  it("runs Claude's classifier in auto mode, or asks first, when told to", () => {
+    expect(buildAgentCommand("claude-code", "p", SETTINGS, { permissionMode: "auto" })).toBe(
+      `claude --settings '${SETTINGS}' --permission-mode auto 'p'`,
+    );
     expect(buildAgentCommand("claude-code", "p", SETTINGS, { permissionMode: "default" })).toBe(
       `claude --settings '${SETTINGS}' --permission-mode default 'p'`,
     );
   });
 
-  it("treats an unknown permission mode as auto", () => {
+  it("treats an unknown permission mode as skipping checks", () => {
     expect(
       buildAgentCommand("claude-code", "p", SETTINGS, { permissionMode: "yolo" as never }),
     ).toBe(`${CLAUDE} 'p'`);
@@ -138,7 +140,11 @@ describe("buildAgentCommand permissions and effort", () => {
     };
     // Auto mode isn't there: start in its own default rather than refuse to start.
     expect(
-      buildAgentCommand("claude-code", "p", SETTINGS, { claudeCaps: old, effort: "high" }),
+      buildAgentCommand("claude-code", "p", SETTINGS, {
+        claudeCaps: old,
+        effort: "high",
+        permissionMode: "auto",
+      }),
     ).toBe(`claude --settings '${SETTINGS}' 'p'`);
     // Skipping checks is the long-standing flag and always passes.
     expect(
@@ -151,8 +157,9 @@ describe("buildAgentCommand permissions and effort", () => {
     expect(
       buildAgentCommand("claude-code", "p", SETTINGS, {
         claudeCaps: { permissionModes: null, effort: true },
+        permissionMode: "auto",
       }),
-    ).toBe(`${CLAUDE} 'p'`);
+    ).toBe(`claude --settings '${SETTINGS}' --permission-mode auto 'p'`);
   });
 
   it("passes the effort to Claude Code and Codex", () => {
@@ -161,27 +168,32 @@ describe("buildAgentCommand permissions and effort", () => {
     );
     expect(
       buildAgentCommand("codex", "p", SETTINGS, { effort: "xhigh", model: "gpt-5.6-sol" }),
-    ).toBe(`codex -m 'gpt-5.6-sol' -c 'model_reasoning_effort="xhigh"' 'p'`);
+    ).toBe(`${CODEX} -m 'gpt-5.6-sol' -c 'model_reasoning_effort="xhigh"' 'p'`);
     expect(buildAgentCommand("codex", "p", SETTINGS, { effort: "low", mode: "headless" })).toBe(
-      `codex exec -c 'model_reasoning_effort="low"' 'p'`,
+      `${CODEX_EXEC} -c 'model_reasoning_effort="low"' 'p'`,
     );
     expect(
       buildAgentCommand("codex", undefined, SETTINGS, { effort: "max", resumeSessionId: "s" }),
-    ).toBe(`codex resume -c 'model_reasoning_effort="max"' 's'`);
+    ).toBe(
+      `codex resume --dangerously-bypass-approvals-and-sandbox -c 'model_reasoning_effort="max"' 's'`,
+    );
   });
 
   it("drops an effort that isn't a plain word", () => {
     expect(buildAgentCommand("codex", "p", SETTINGS, { effort: 'high" foo="bar' })).toBe(
-      `codex 'p'`,
+      `${CODEX} 'p'`,
     );
     expect(buildAgentCommand("claude-code", "p", SETTINGS, { effort: "$(id)" })).toBe(
       `${CLAUDE} 'p'`,
     );
   });
 
-  it("skips Codex's approvals and sandbox (--yolo) only when told to", () => {
+  it("skips Codex's approvals and sandbox (--yolo) unless told otherwise", () => {
     const yolo = { permissionMode: "bypassPermissions" as const };
     expect(buildAgentCommand("codex", "p", SETTINGS, yolo)).toBe(
+      `codex --dangerously-bypass-approvals-and-sandbox 'p'`,
+    );
+    expect(buildAgentCommand("codex", "p", SETTINGS)).toBe(
       `codex --dangerously-bypass-approvals-and-sandbox 'p'`,
     );
     expect(buildAgentCommand("codex", "p", SETTINGS, { ...yolo, mode: "headless" })).toBe(
@@ -195,8 +207,10 @@ describe("buildAgentCommand permissions and effort", () => {
         resumeSessionId: "s",
       }),
     ).toBe(`codex resume --dangerously-bypass-approvals-and-sandbox -m 'gpt-5.6-sol' 's'`);
-    // Claude's other modes mean nothing to Codex: its own config applies.
-    expect(buildAgentCommand("codex", "p", SETTINGS, { permissionMode: "auto" })).toBe(`codex 'p'`);
+    // auto keeps Codex's workspace-write sandbox; default leaves its own config alone.
+    expect(buildAgentCommand("codex", "p", SETTINGS, { permissionMode: "auto" })).toBe(
+      `codex -c 'sandbox_mode="workspace-write"' 'p'`,
+    );
     expect(buildAgentCommand("codex", "p", SETTINGS, { permissionMode: "default" })).toBe(
       `codex 'p'`,
     );

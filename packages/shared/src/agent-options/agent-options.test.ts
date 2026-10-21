@@ -379,7 +379,7 @@ describe("optionRunsOn / optionChoicesFor", () => {
     // Pods always skip permission checks: the choice is a machine's only.
     expect(optionRunsOn(field("claudePermissionMode"), "pod")).toBe(false);
     expect(optionRunsOn(field("copilotEffort"), "pod")).toBe(true);
-    // Codex's skip-all-checks is a machine's choice too; pods run --full-auto.
+    // Codex's skip-all-checks is a machine's choice too; pods always skip.
     expect(optionRunsOn(field("codexPermissionMode"), "local")).toBe(true);
     expect(optionRunsOn(field("codexPermissionMode"), "pod")).toBe(false);
   });

@@ -6,7 +6,7 @@ import { buildAgentCommand } from "../local/agent-command.js";
 import { listAwsProfiles } from "../local/aws-profiles.js";
 
 const SETTINGS = "/home/u/.config/optio/local/claude-hooks.json";
-const CLAUDE = `claude --settings '${SETTINGS}' --permission-mode auto`;
+const CLAUDE = `claude --settings '${SETTINGS}' --dangerously-skip-permissions`;
 
 describe("buildAgentCommand with a model provider", () => {
   it("runs Claude Code on Bedrock with the machine's AWS profile, dropping exported keys", () => {
@@ -39,7 +39,7 @@ describe("buildAgentCommand with a model provider", () => {
       }),
     ).toBe(
       "env AWS_REGION='us-west-2' AWS_DEFAULT_REGION='us-west-2' " +
-        `codex -m 'openai.gpt-5.4' -c 'model_provider="amazon-bedrock"' 'go'`,
+        `codex --dangerously-bypass-approvals-and-sandbox -m 'openai.gpt-5.4' -c 'model_provider="amazon-bedrock"' 'go'`,
     );
     expect(
       buildAgentCommand("codex", undefined, SETTINGS, {
@@ -47,7 +47,9 @@ describe("buildAgentCommand with a model provider", () => {
         resumeSessionId: "abc",
         provider: { region: "us-west-2" },
       }),
-    ).toContain(`codex exec resume -c 'model_provider="amazon-bedrock"' 'abc'`);
+    ).toContain(
+      `codex exec resume --dangerously-bypass-approvals-and-sandbox -c 'model_provider="amazon-bedrock"' 'abc'`,
+    );
   });
 
   it("ignores a provider for agents it can't serve", () => {

@@ -1627,7 +1627,10 @@ export function buildAgentCommand(
       return [
         `echo "[optio] Running OpenAI Codex${appServerFlag ? " (app-server)" : ""}..."`,
         ...EXPORT_CODEX_HOME,
-        `codex exec --full-auto${codexModelFlags(env)} "$OPTIO_PROMPT"${appServerFlag} --json`,
+        // The pod is the sandbox; `--full-auto` is gone from recent Codex
+        // releases. Codex reads a non-TTY stdin to EOF before its first model
+        // call, and the run's stdin stays open for messages: give it none.
+        `codex exec --dangerously-bypass-approvals-and-sandbox${codexModelFlags(env)} "$OPTIO_PROMPT"${appServerFlag} --json </dev/null`,
       ];
     }
     case "copilot": {
