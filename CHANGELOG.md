@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - Codex runs in pods passed `--full-auto`, which recent Codex releases (0.162+) reject; pods now run `codex exec --dangerously-bypass-approvals-and-sandbox` (the pod is the sandbox). They also no longer hang on "Reading additional input from stdin": the run's stdin stays open for messages, so Codex is started with none.
 
 ## [0.19.0] - 2026-10-21
@@ -23,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Machines have an **agent limit** (default 3, on the Machines page): agent sessions that automations, Jobs, Tasks and tickets start past it queue ("Queued") and start as agents finish, oldest first, the way a repo's concurrency limit queues pod tasks. A session you open by hand always starts but counts; shells and plain commands never count. The limit is set on the Machines page on the web, and on a machine's page in the iOS and Android apps (`PATCH /api/local/hosts/:id`).
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - iOS: swiping through a Codex session's terminal scrolls again. Wheel reports carried the bottom-right cell as the pointer, which Codex ignores (it only scrolls over its transcript); Claude Code scrolled regardless.
 
@@ -37,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - Session trash buttons stop running sessions and delete them in one click, without a confirmation popup or a separate Stop step. Deletion waits for the session to exit before removing its record.
 - Sidebar session actions appear in the order **Trash · Side by side · Pin**, with Pin at the right edge.
 - Creating a task while another server queues or starts it no longer returns an error or resets the task to queued.
@@ -45,11 +51,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - PR and ticket badges in work sessions, cards, and the session sidebar can expand to show every link with **+N more**, then collapse again with **Show less**. The controls support keyboard navigation and do not trigger the surrounding card or session link.
 
 ## [0.17.1] - 2026-10-13
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Switching between Work sessions keeps the session sidebar and layout mounted while the next session loads, preserving search, scroll position, and sidebar width instead of flashing the normal navigation.
 - Session sidebar rows keep their initial recency order while the sidebar is open, so typing and live updates do not move work out from under the pointer. Pinning, new sessions, and the Live / Finished sections continue to update.
@@ -66,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tasks and Local sessions share **`/work/:id`**, with the full task context, PR/CI status, conversation and terminal in one workspace. Task links follow the current attempt, previous attempts remain selectable, and legacy links preserve split state when redirected.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Watch updates for one user are serialized across API instances so a delayed quiet update cannot overwrite a newer running state or recreate its end timer.
 - Local tasks are excluded from the pod stall detector, preserving running work instead of showing a false execution failure.
@@ -104,6 +116,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - A Helm release runs its agent pods in its own namespace: the chart sets `OPTIO_NAMESPACE` from the pod's namespace (downward API), and the Kubernetes runtime and the cluster and assistant routes read it (default `optio`), so a second release in another namespace no longer tries to create pods in the first one's. (#671)
 - A task, Job run or PR review log view whose socket dropped (its API pod restarted or was replaced) fetches the rows it missed when it reconnects, instead of showing a gap until a reload. (#672)
 - A persistent agent's turn is created and held before its pod is made, so an API server that dies mid pod creation no longer leaves the agent in provisioning for minutes: the turn's lease lapses, the turn is halted, and the agent wakes again with its messages still pending. (#673)
@@ -127,6 +141,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - Standalone Jobs and persistent agents now honor the existing `agent.nodeSelector` and `agent.tolerations` Helm settings, matching repository workloads. Invalid placement JSON fails provisioning with the variable name. (#659)
 - The expired Claude OAuth token banner links to Settings → Integrations, identifies Deployment secrets as the place to replace `CLAUDE_CODE_OAUTH_TOKEN`, and recommends `claude setup-token` for a long-lived replacement. (#662)
 - The Settings page gave two elements the `model-providers` id (the Access section wrapped the Model providers card, which already carries it, in a second one), which failed the Playwright model-providers spec.
@@ -145,6 +161,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - **iOS: the New work form is at parity with the web's.** It creates through `POST /api/work` like the web, so the row and its trigger are written together and a rejected trigger leaves nothing behind; it checks an event trigger before submit (a kind must be picked; review requests, mentions and assignments need your username; a Slack channel id) and points at the gap in its sentence; recurring work can name each run with the trigger's `{{param}}`s; an automatic name ("Job 12") is bumped and retried on a clash; the Terminal example (a plain shell on your machine) and command runs (a terminal that runs and exits, in a pod or on a machine) are offered; a persistent agent can have a repo and a pod session needs Claude Code, as on the web; a Pylon / Alertmanager / Datadog trigger's URL and secret are shown once, with copy buttons, when it is created; and Cancel asks before discarding a filled-in form.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Clicking a session no longer moves it in the sessions list.** Lists order sessions by when you last typed into them, but the server counted every byte the browser's terminal sent as typing — including the focus report a click produces when a program such as Claude Code has focus reporting on, mouse reports, and the emulator's own answers to the program's queries — so opening or clicking a session jumped it to the top. Only keystrokes count now (`isTerminalTyping` in `@optio/shared`).
 - **OpenCode runs again (#585).** `opencode run` waits for stdin to close before it starts, and the pod exec that launches an agent hands it a pipe that never closes, so every OpenCode Task hung before its first model call; every launch path (the Repo Task worker, the pooled Job / agent command, the image entrypoint) now closes stdin. OpenCode 1.x writes one JSON line per part (`text`, `tool_use`, `step_finish`, each with a `sessionID`), none of which the log parser knew, so a finished run had no session, no text or tool entries and no cost, and was recorded as having produced no output; the parser and the adapter read those shapes (captured from 1.14.20). A Job or persistent agent on OpenCode could not start at all: the pooled pod looked up the literal secret name "ANTHROPIC_API_KEY or OPENAI_API_KEY" and ignored `opencodeBaseUrl`; it now takes any one provider key, or none with a custom base URL, and forwards the base URL to the run.
@@ -171,11 +189,15 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - The Redis Cluster pub/sub integration test and `pnpm --filter @optio/api redis:smoke` judge pub/sub by the message arriving. Both looped until `PUBLISH` counted a subscriber, but in a cluster that reply counts only the subscribers on the node that took the command, so it is 0 for a delivered message more often than not, and the test timed out in CI.
 
 ## [0.12.1] - 2026-10-06
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Tasks and scheduled Tasks created without an explicit branch start from the repo's configured default branch instead of `main`, so a repo whose default branch is `master` no longer crash-loops its pod on a missing `origin/main`. The New work form sends a blank branch as "the repo's default". A failed exec into a pod now reports why (for example `exec into pod "…" failed: Unexpected server response: 500`) instead of `[object Object]`, and every worker records a readable message for failures that are not Error objects. (#643)
 - Settings → Code review lists the same live models as the agent and repo pickers, keeps a saved model the list does not offer selectable, and the API accepts a review model the live list offers, such as the newest Claude id, for the workspace default and for a repo. (#644)
@@ -206,6 +228,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - iOS session usage pills match the agent runtime. Codex sessions use their machine’s Codex limits, and shells and other agents no longer show Claude usage.
 - The session sidebar's resize target stays inside the sidebar, so it no longer intercepts mouse input or text selection at the terminal's first character.
 
@@ -227,6 +251,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - Local and pod terminals fill their panes without an extra black inset around the screen; shared-screen scaling uses the full available width.
 - Equal-sized terminal viewers recognize the same grid when header and status-strip heights fall on fractional pixels, avoiding a false “Sized for another device” banner.
 
@@ -246,6 +272,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - **Settings with a place for everything.** Section navigation for deployment and workspace settings keeps unsaved forms mounted. Prompt, run and dependency dialogs use native modal focus handling, Escape dismissal and consistent surfaces.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Release service images report their release version instead of `dev`, so version checks work after deployment.
 
@@ -274,6 +302,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - **The terminal no longer adds an unnecessary scrollbar.** Session pages stay within the available screen, and the terminal shows its scrollbar only when there is history to scroll. Chat and terminal history keep their own scrolling.
 - **iOS chat reaches the actual bottom.** The down arrow scrolls through the trailing space and dismisses when the view reaches the end, including after expanding a turn's work steps.
 - **iOS Overview counts have room to breathe.** Summary cards use consistent padding and continuous corners, with fewer columns for larger accessibility text.
@@ -281,6 +311,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 ## [0.10.1] - 2026-10-06
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **New work starts with the trigger again.** The web, iOS, and Android forms return to When → Where → Who → What → Then → Name, so the prompt follows the trigger, location, and runtime. The web review summary follows the same order. The refreshed styling and optional examples are retained.
 
@@ -295,6 +327,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - **Apple Watch: a session appears once across paired servers.** When two servers report the same session on a machine, the Watch list now combines it into one entry (#642).
 
 ## [0.9.1] - 2026-10-05
@@ -306,6 +340,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - The New work and Edit work forms fill the same centred column as every other page instead of a narrower, left-aligned measure.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **iOS: a reply from Chat reaches Codex.** A message sent from the Chat view of a Codex session on your machine landed in Codex's composer with a newline instead of being sent, so you had to switch to Terminal and press Enter. The app now sends the text and its Enter a beat apart, as the server already does for the web.
 - **iOS: the keyboard's Send key sends.** Return in the Chat reply box inserted a newline; the key now reads Send and sends the message.
@@ -326,6 +362,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - A trigger's secret (webhook, Pylon) is never returned after creation: every trigger list and detail redacts `config.secret` and reports `hasSecret` instead. The Jobs page no longer prints raw trigger config.
 - A connection's repo assignments picked in the form are saved (they were silently dropped).
 
@@ -343,6 +381,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - **New look.** Optio has a mark, Peek, and app icons to match, across the web app, the site, iOS and Android.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Codex sessions on your machine have their conversation again.** Codex 0.160 moved its TUI behind a machine-wide app-server daemon that holds every session file open, and changed what it writes in them, so the daemon never found a Codex session: no thread id, an empty Chat view, nothing to resume or backfill. The daemon now matches a Codex to its session by where and when it started, and reads the new session format. Restart `optio local up`.
 - **A finished Codex session no longer says "The agent is working".** Codex's TUI keeps repainting after it answers, so the quiet-terminal heuristic never fired and a done session stayed "working", with the Chat reply box warning that your message would queue. The session file marks every turn, and the daemon now takes those as the signal, the way it takes Claude Code's hooks: "needs you" within seconds of a reply, "working" when you send the next message.
@@ -393,6 +433,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - **Max effort now reaches pod runs.** Optio passed effort to pods through Claude Code's `effortLevel` setting, which only persists up to Extra high, so Max was silently dropped. Pods now also get `CLAUDE_CODE_EFFORT_LEVEL`, which takes every level.
 - **No more "Extended thinking" toggle.** Claude Code always thinks (its default; adaptive thinking on current models, steered by effort), and turning it off made any run with an effort level fail. The toggle is gone from the New work form, repo settings, and the iOS and Android apps; a saved value is ignored.
 - **PRs an agent only mentions are no longer adopted.** A task used to take the last PR link in its agent's output for its own repo, so `gh pr view 812` or "like #812" could make an unrelated PR the task's, and on your machine the first PR link the session printed won. Optio now adopts a PR only from the result of the agent's own PR-creating call (or a PR on the task's branch), checks it with GitHub / GitLab / CodeCommit (right repo, open or merged, new or on the task's branch), and still shows other links as links.
@@ -405,6 +447,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - **Linear triggers can skip your own tickets.** A Linear trigger's new **Only tickets from someone else** option ignores issues you created and changes you made yourself, like filing a ticket assigned to you or assigning one to yourself. A ticket someone else creates for you, or assigns to you, still starts the work. It's in the New work form, the Machines automations editor, and the iOS and Android forms, and needs your Linear name, handle or user id.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Scrolling back in a session.** Opening a long-running Claude Code session (after a reload, switching sessions, another device, or a reconnect) could leave the wheel, a trackpad or a finger drag scrolling nothing. A viewer got only the last 512 KB of the session's output, and Claude Code turns on its fullscreen mode and mouse reporting once, at startup. A viewer now gets the terminal as it stands, rebuilt from the daemon's model of the screen, with the program's modes. Restart `optio local up` to pick this up. Also:
   - On a phone or tablet in the web app, a finger drag now scrolls Claude Code.
@@ -428,6 +472,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - **iOS Live Activity and widgets** read cleanly at any width and text size. Status words, timers, counts, and chip values always show in full; only titles and reasons shorten. A widget lists as many sessions as fit.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Copying from a session in the web UI.** With Claude Code in fullscreen mode, a drag selects in Claude Code rather than in the terminal, and Claude Code copies the selection with an escape sequence (OSC 52) that the web terminal ignored. Now a drag followed by ⌘C copies it (in Chrome it's on the clipboard as soon as you let go), and ⌥-drag selects in the terminal itself. The same goes for `/copy` and for tmux and vim copying. Pod sessions get the same fix.
 - The iOS app no longer puts text back on the clipboard when you open a session that copied something earlier, and a program in a session can no longer read your phone's clipboard.
@@ -459,6 +505,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - **Killing a session** leaves it in Finished. Its last hook or shutdown output used to put it back under Working, and an automation's session landed in Needs you on exit. The run behind a killed session now ends cleanly: an interactive run completes (closing it is how it ends), and a headless run stops without a retry. Before, the kill's non-zero exit failed the run, which could retry.
 - The same PR no longer shows as two badges (a bare `#607` and its URL, or the PR a review-request automation started for), and a PR URL ending a line no longer picks up digits from the next one (`#612` showing up again as `#61219`).
 - Codex runs no longer pick up the repo's Copilot model and effort, which share its settings columns.
@@ -478,6 +526,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - Model aliases follow the live model list: "opus", "sonnet", and "fable" mean the newest model of that family the configured key can see, and each family lists newest first, so "(latest)" is right in every model picker.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - "My machine" in the New work form dead-ended in an empty Machine list and a "Pick a directory…" placeholder when no machine was paired (the Interactive chat and Terminal examples picked it anyway); it now shows how to pair one and picks the machine up when it connects.
 - The Optio agent's model could only be saved as opus, sonnet, or haiku — picking Fable failed to save; any Claude model id is accepted now.
@@ -514,6 +564,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - Opening a Local session from Work (or any other list page) stuck on "connecting…" until a reload: those pages carried the build-time API URL (#612).
 - **Issues** names the repos and ticket providers it couldn't read, such as a stale `GITHUB_TOKEN`, instead of showing an empty list (#611).
 - GitHub, Slack, and Linear webhooks were rejected with 401 when auth was enabled (#618).
@@ -547,6 +599,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - Agent prompt arguments are shell-quoted everywhere they reach a shell; PR-open task state is cleaned safely (#555, #558).
 - Scraped PR URLs are verified against the git platform before a task enters `pr_opened` (#561); in-pod agents are terminated on cancel and post-cancel PR adoption is guarded (#564).
 - Runs fail on terminal Claude API errors instead of being marked Done (#563); cost accumulates across resumes and survives bare retries (#573).
@@ -566,6 +620,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - **Claude Fable 5 and GitHub Copilot** added as supported agent vendors (#542).
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Git token resolution in repo pods is now more resilient against transient credential lookup failures (#525).
 - `scope='global'` secrets now correctly enforce `workspace_id IS NULL` in the database, preventing a constraint mismatch that could cause secret lookups to fail (#509).
@@ -594,6 +650,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - **README leads with differentiation** — self-hosted, BYO-K8s, multi-vendor — to better orient first-time readers (#519).
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Sessions: stop echoing the agent's final line in the chat view (#516).
 - Auth: `/me` now returns the enriched user object with the caller's workspace role attached (#508).
@@ -635,6 +693,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
+
 - Reconciler: guard PR-reactive actions (auto-merge, complete-on-merge, review launch) to coding tasks only so external PR reviews don't trip them (#480).
 - Reviews: stop writing external PR URLs to `pr_review` task rows (#481).
 - Secrets: downgrade `scope='user'` to `'global'` when auth is disabled.
@@ -648,6 +708,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 ## [0.3.1] - 2026-04-20
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Ticket sync: fall back to the configured GitHub App (or `GITHUB_TOKEN` PAT) when a GitHub ticket provider has no inline token or provider-specific secret. Previously sync hard-failed with `"GitHub provider requires token, owner, and repo in config"` even when a GitHub App was fully configured (#458).
 
@@ -663,6 +725,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - **Shared auth banner, state badge, and metadata card** across task pages for a consistent UX.
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Reconciler: clear stale `finishedAt` when retrying a standalone run.
 - Reconciler: use unique jobIds for executor enqueues to prevent BullMQ dedup collisions.
@@ -713,6 +777,8 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 - "N tasks failed today" dashboard banner
 
 ### Fixed
+
+- Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Classify agent auth failures as run failures rather than global failures
 - Escalate repo tasks to `needs_attention` when the agent completes without opening a PR

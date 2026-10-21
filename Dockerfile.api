@@ -1,3 +1,17 @@
+# ---- MCP bridge build stage ----
+# The same bundle the agent images bake in (images/base.Dockerfile): the
+# controller MCP (/opt/optio/controller-mcp.js) and the REST bridge
+# (/opt/optio/mcp-bridge.js). An Ask Optio turn that runs in this pod
+# (OPTIO_ASSISTANT_PLACEMENT=api-pod) gets the same .mcp.json as a turn in an
+# agent pod, so the scripts it names have to be here too.
+FROM node:22-slim@sha256:80fdb3f57c815e1b638d221f30a826823467c4a56c8f6a8d7aa091cd9b1675ea AS bridge
+RUN corepack enable && corepack prepare pnpm@10 --activate
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/mcp-bridge/ packages/mcp-bridge/
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @optio/mcp-bridge \
+    && pnpm --filter @optio/mcp-bridge build
+
 # ---- Dependencies stage ----
 FROM node:22-slim@sha256:80fdb3f57c815e1b638d221f30a826823467c4a56c8f6a8d7aa091cd9b1675ea AS deps
 
@@ -17,8 +31,8 @@ COPY packages/shared/package.json packages/shared/tsconfig.json packages/shared/
 COPY packages/container-runtime/package.json packages/container-runtime/tsconfig.json packages/container-runtime/
 COPY packages/agent-adapters/package.json packages/agent-adapters/tsconfig.json packages/agent-adapters/
 COPY packages/ticket-providers/package.json packages/ticket-providers/tsconfig.json packages/ticket-providers/
-# mcp-bridge is only built into the agent images (images/base.Dockerfile); its
-# package.json is here so the frozen lockfile still matches the workspace graph.
+# mcp-bridge is built in the bridge stage above; its package.json is here so
+# the frozen lockfile still matches the workspace graph.
 COPY packages/mcp-bridge/package.json packages/mcp-bridge/
 
 # Install production dependencies (--ignore-scripts avoids husky prepare hook)
@@ -56,6 +70,11 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.112 @openai/codex
 # images): the assistant's run homes, setup files and harness config. The
 # chart mounts an emptyDir here (the root filesystem is read-only).
 RUN mkdir -p /home/agent && chown node:node /home/agent
+
+# The MCP scripts an agent's .mcp.json names, at the path the agent images use.
+RUN mkdir -p /opt/optio
+COPY --from=bridge --chmod=0755 /app/packages/mcp-bridge/dist/mcp-bridge.js /opt/optio/mcp-bridge.js
+COPY --from=bridge --chmod=0755 /app/packages/mcp-bridge/dist/controller-mcp.js /opt/optio/controller-mcp.js
 
 WORKDIR /app
 

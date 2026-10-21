@@ -26,7 +26,7 @@ By default a turn runs **in the API pod itself**, as a child process of the API
 (`OPTIO_ASSISTANT_PLACEMENT=api-pod`; Helm `optio.assistant.placement`): the
 assistant is a short turn that only talks to Optio's own controller MCP, so an agent
 pod per conversation was a pod's worth of memory and scheduling for nothing. The API
-image carries Claude Code and Codex for it, and the chart mounts an agent home
+image carries Claude Code and Codex for it (and the same MCP bridge bundle as the agent images at `/opt/optio`, so the controller MCP loads), and the chart mounts an agent home
 (`/home/agent`, an emptyDir) where the turn's run home, setup files and harness
 config land as they would in a pod. The process runtime
 (`packages/container-runtime/src/process.ts`) speaks the same run protocol as the
