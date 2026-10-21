@@ -303,6 +303,10 @@ export async function listControllerWork(
 }
 
 export async function listControllerRepos(p: ControllerPrincipal, limit: number, offset: number) {
+  // A principal with no workspace (auth disabled: the Ask Optio session and
+  // PAT clients carry none) sees every repo, the way `GET /api/repos` and
+  // `getRepoByUrl` treat a missing workspace — a repo row always has one,
+  // so the tenant filter would otherwise list nothing to create work in.
   const rows = await db
     .select({
       id: repos.id,
@@ -311,7 +315,7 @@ export async function listControllerRepos(p: ControllerPrincipal, limit: number,
       defaultBranch: repos.defaultBranch,
     })
     .from(repos)
-    .where(tenant(repos.workspaceId, p.actor.workspaceId))
+    .where(p.actor.workspaceId ? eq(repos.workspaceId, p.actor.workspaceId) : undefined)
     .orderBy(repos.fullName, repos.id)
     .limit(limit + 1)
     .offset(offset);

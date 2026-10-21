@@ -15,6 +15,7 @@ import {
   taskMessages,
 } from "../db/schema.js";
 import {
+  insertRepo,
   insertTask,
   insertWorkspace,
   insertWorkflow,
@@ -390,6 +391,23 @@ describe("controller MCP against Postgres and Redis", () => {
     expect(
       (await controller.listControllerWork(local, { limit: 100, offset: 0 })).rows.map((r) => r.id),
     ).toEqual([legacy.id]);
+  });
+
+  it("list_repos scopes to the principal's workspace, and a principal without one sees every repo", async () => {
+    const { ws, other, p } = await world();
+    const mine = await insertRepo({ workspaceId: ws.id, fullName: "acme/mine" });
+    await insertRepo({ workspaceId: other.id, fullName: "acme/theirs" });
+    expect((await controller.listControllerRepos(p, 10, 0)).repos.map((r) => r.id)).toEqual([
+      mine.id,
+    ]);
+    // Auth disabled: the Ask Optio session's principal has no workspace, yet
+    // every repo row carries one — list them all, as GET /api/repos does.
+    const local: ControllerPrincipal = {
+      ...p,
+      actor: { userId: null, workspaceId: null, isAdmin: false },
+    };
+    const names = (await controller.listControllerRepos(local, 10, 0)).repos.map((r) => r.name);
+    expect(names).toEqual(expect.arrayContaining(["acme/mine", "acme/theirs"]));
   });
 
   it("read-only clients cannot discover or invoke writes, and tools return protocol errors cleanly", async () => {

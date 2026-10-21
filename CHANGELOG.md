@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Codex runs in pods passed `--full-auto`, which recent Codex releases (0.162+) reject; pods now run `codex exec --dangerously-bypass-approvals-and-sandbox` (the pod is the sandbox). They also no longer hang on "Reading additional input from stdin": the run's stdin stays open for messages, so Codex is started with none.
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - iOS: swiping through a Codex session's terminal scrolls again. Wheel reports carried the bottom-right cell as the pointer, which Codex ignores (it only scrolls over its transcript); Claude Code scrolled regardless.
@@ -41,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Session trash buttons stop running sessions and delete them in one click, without a confirmation popup or a separate Stop step. Deletion waits for the session to exit before removing its record.
@@ -51,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - PR and ticket badges in work sessions, cards, and the session sidebar can expand to show every link with **+N more**, then collapse again with **Show less**. The controls support keyboard navigation and do not trigger the surrounding card or session link.
@@ -59,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Switching between Work sessions keeps the session sidebar and layout mounted while the next session loads, preserving search, scroll position, and sidebar width instead of flashing the normal navigation.
@@ -77,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Watch updates for one user are serialized across API instances so a delayed quiet update cannot overwrite a newer running state or recreate its end timer.
@@ -116,6 +122,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - A Helm release runs its agent pods in its own namespace: the chart sets `OPTIO_NAMESPACE` from the pod's namespace (downward API), and the Kubernetes runtime and the cluster and assistant routes read it (default `optio`), so a second release in another namespace no longer tries to create pods in the first one's. (#671)
@@ -141,6 +148,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Standalone Jobs and persistent agents now honor the existing `agent.nodeSelector` and `agent.tolerations` Helm settings, matching repository workloads. Invalid placement JSON fails provisioning with the variable name. (#659)
@@ -162,6 +170,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Clicking a session no longer moves it in the sessions list.** Lists order sessions by when you last typed into them, but the server counted every byte the browser's terminal sent as typing — including the focus report a click produces when a program such as Claude Code has focus reporting on, mouse reports, and the emulator's own answers to the program's queries — so opening or clicking a session jumped it to the top. Only keystrokes count now (`isTerminalTyping` in `@optio/shared`).
@@ -189,6 +198,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - The Redis Cluster pub/sub integration test and `pnpm --filter @optio/api redis:smoke` judge pub/sub by the message arriving. Both looped until `PUBLISH` counted a subscriber, but in a cluster that reply counts only the subscribers on the node that took the command, so it is 0 for a delivered message more often than not, and the test timed out in CI.
@@ -197,6 +207,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Tasks and scheduled Tasks created without an explicit branch start from the repo's configured default branch instead of `main`, so a repo whose default branch is `master` no longer crash-loops its pod on a missing `origin/main`. The New work form sends a blank branch as "the repo's default". A failed exec into a pod now reports why (for example `exec into pod "…" failed: Unexpected server response: 500`) instead of `[object Object]`, and every worker records a readable message for failures that are not Error objects. (#643)
@@ -228,6 +239,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - iOS session usage pills match the agent runtime. Codex sessions use their machine’s Codex limits, and shells and other agents no longer show Claude usage.
@@ -251,6 +263,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Local and pod terminals fill their panes without an extra black inset around the screen; shared-screen scaling uses the full available width.
@@ -273,6 +286,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Release service images report their release version instead of `dev`, so version checks work after deployment.
@@ -302,6 +316,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **The terminal no longer adds an unnecessary scrollbar.** Session pages stay within the available screen, and the terminal shows its scrollbar only when there is history to scroll. Chat and terminal history keep their own scrolling.
@@ -312,6 +327,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **New work starts with the trigger again.** The web, iOS, and Android forms return to When → Where → Who → What → Then → Name, so the prompt follows the trigger, location, and runtime. The web review summary follows the same order. The refreshed styling and optional examples are retained.
@@ -327,6 +343,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Apple Watch: a session appears once across paired servers.** When two servers report the same session on a machine, the Watch list now combines it into one entry (#642).
@@ -341,6 +358,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **iOS: a reply from Chat reaches Codex.** A message sent from the Chat view of a Codex session on your machine landed in Codex's composer with a newline instead of being sent, so you had to switch to Terminal and press Enter. The app now sends the text and its Enter a beat apart, as the server already does for the web.
@@ -362,6 +380,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - A trigger's secret (webhook, Pylon) is never returned after creation: every trigger list and detail redacts `config.secret` and reports `hasSecret` instead. The Jobs page no longer prints raw trigger config.
@@ -382,6 +401,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Codex sessions on your machine have their conversation again.** Codex 0.160 moved its TUI behind a machine-wide app-server daemon that holds every session file open, and changed what it writes in them, so the daemon never found a Codex session: no thread id, an empty Chat view, nothing to resume or backfill. The daemon now matches a Codex to its session by where and when it started, and reads the new session format. Restart `optio local up`.
@@ -433,6 +453,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Max effort now reaches pod runs.** Optio passed effort to pods through Claude Code's `effortLevel` setting, which only persists up to Extra high, so Max was silently dropped. Pods now also get `CLAUDE_CODE_EFFORT_LEVEL`, which takes every level.
@@ -448,6 +469,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Scrolling back in a session.** Opening a long-running Claude Code session (after a reload, switching sessions, another device, or a reconnect) could leave the wheel, a trackpad or a finger drag scrolling nothing. A viewer got only the last 512 KB of the session's output, and Claude Code turns on its fullscreen mode and mouse reporting once, at startup. A viewer now gets the terminal as it stands, rebuilt from the daemon's model of the screen, with the program's modes. Restart `optio local up` to pick this up. Also:
@@ -473,6 +495,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Copying from a session in the web UI.** With Claude Code in fullscreen mode, a drag selects in Claude Code rather than in the terminal, and Claude Code copies the selection with an escape sequence (OSC 52) that the web terminal ignored. Now a drag followed by ⌘C copies it (in Chrome it's on the clipboard as soon as you let go), and ⌥-drag selects in the terminal itself. The same goes for `/copy` and for tmux and vim copying. Pod sessions get the same fix.
@@ -505,6 +528,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - **Killing a session** leaves it in Finished. Its last hook or shutdown output used to put it back under Working, and an automation's session landed in Needs you on exit. The run behind a killed session now ends cleanly: an interactive run completes (closing it is how it ends), and a headless run stops without a retry. Before, the kill's non-zero exit failed the run, which could retry.
@@ -527,6 +551,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - "My machine" in the New work form dead-ended in an empty Machine list and a "Pick a directory…" placeholder when no machine was paired (the Interactive chat and Terminal examples picked it anyway); it now shows how to pair one and picks the machine up when it connects.
@@ -564,6 +589,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Opening a Local session from Work (or any other list page) stuck on "connecting…" until a reload: those pages carried the build-time API URL (#612).
@@ -599,6 +625,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Agent prompt arguments are shell-quoted everywhere they reach a shell; PR-open task state is cleaned safely (#555, #558).
@@ -621,6 +648,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Git token resolution in repo pods is now more resilient against transient credential lookup failures (#525).
@@ -651,6 +679,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Sessions: stop echoing the agent's final line in the chat view (#516).
@@ -693,6 +722,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Reconciler: guard PR-reactive actions (auto-merge, complete-on-merge, review launch) to coding tasks only so external PR reviews don't trip them (#480).
@@ -709,6 +739,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Ticket sync: fall back to the configured GitHub App (or `GITHUB_TOKEN` PAT) when a GitHub ticket provider has no inline token or provider-specific secret. Previously sync hard-failed with `"GitHub provider requires token, owner, and repo in config"` even when a GitHub App was fully configured (#458).
@@ -726,6 +757,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Reconciler: clear stale `finishedAt` when retrying a standalone run.
@@ -778,6 +810,7 @@ This version was prepared but not tagged; its changes are included in v0.17.0.
 
 ### Fixed
 
+- Ask Optio's `list_repos` controller tool returned nothing on a deployment with auth disabled: the assistant's session carries no workspace while every repo row does. A principal without a workspace now sees every repo, as `GET /api/repos` does.
 - Ask Optio turns in the API pod had no controller MCP tools: the `.mcp.json` named `/opt/optio/controller-mcp.js`, which only the agent images carried. The API image now bakes in the same MCP bridge bundle.
 
 - Classify agent auth failures as run failures rather than global failures
