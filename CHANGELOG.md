@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ask Optio runs in the API pod** by default: a turn is a child process of the API (the API image now carries Claude Code and Codex) instead of a pooled agent pod per conversation. `OPTIO_ASSISTANT_PLACEMENT=agent-pod` (Helm `optio.assistant.placement`) keeps the separate pod; a turn with a repo, another harness, or past `OPTIO_ASSISTANT_IN_POD_MAX` (default 3) running turns goes to an agent pod anyway.
 - Machines have an **agent limit** (default 3, on the Machines page): agent sessions that automations, Jobs, Tasks and tickets start past it wait ("Waiting for a slot") and start as agents finish, oldest first, the way a repo's concurrency limit queues pod tasks. A session you open by hand always starts but counts; shells and plain commands never count. `PATCH /api/local/hosts/:id` sets it.
 
 ### Fixed

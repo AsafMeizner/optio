@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+// A `claude` for the e2e tier's API-pod assistant: reads the stream-json
+// turn from stdin to EOF (the real CLI with --input-format stream-json
+// does the same), then plays the fake runtime's tape for the prompt it
+// found, so the harness service sees exactly what a pod's agent prints.
+import { readFileSync } from "node:fs";
+const tape = await import(
+  new URL("../../../../../../packages/container-runtime/src/fake-tape.mjs", import.meta.url).href
+);
+const stdin = readFileSync(0, "utf8");
+let prompt = "";
+for (const line of stdin.split("\n")) {
+  if (!line.trim()) continue;
+  try {
+    const msg = JSON.parse(line);
+    const content = msg?.message?.content;
+    if (typeof content === "string") prompt = content;
+    else if (Array.isArray(content)) prompt = content.map((c) => c?.text ?? "").join("");
+  } catch {
+    // not JSON: ignore
+  }
+}
+const plan = tape.planAgentRun({ script: process.argv.join(" "), prompt });
+if (plan.kind === "silent") process.exit(0);
+process.stdout.write(JSON.stringify(plan.init) + "\n");
+for (const l of plan.lines) process.stdout.write((l.raw ?? JSON.stringify(l.event)) + "\n");
+process.exit(plan.exitCode);

@@ -78,14 +78,14 @@ describe("EXPORT_CODEX_HOME", () => {
       const files = [
         { path: `${home.setupDir}/codex/config.toml`, content: 'command = "x"\n', sensitive: true },
       ];
-      // The pod maps /opt/optio/ to /home/agent/optio/; here that prefix is
-      // rewritten to the temp dir so the test needs no /home/agent.
-      const script = WRITE_SETUP_FILES.join("\n").replace("/home/agent/optio/", `${dir}/optio/`);
-      execFileSync("bash", ["-c", script], {
+      // The pod maps /opt/optio/ to the agent home's optio/; here the agent
+      // home is the temp dir (OPTIO_AGENT_HOME_DIR) so the test needs no /home/agent.
+      execFileSync("bash", ["-c", WRITE_SETUP_FILES.join("\n")], {
         cwd: dir,
         encoding: "utf8",
         env: {
           PATH: process.env.PATH ?? "",
+          OPTIO_AGENT_HOME_DIR: dir,
           OPTIO_SETUP_FILES: Buffer.from(JSON.stringify(files)).toString("base64"),
         },
       });

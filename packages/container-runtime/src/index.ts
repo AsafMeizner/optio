@@ -45,6 +45,8 @@ export {
   ALLOWED_HOST_PATH_PREFIXES,
 } from "./kubernetes.js";
 export { FakeContainerRuntime } from "./fake.js";
+export { ProcessContainerRuntime, PROCESS_HANDLE } from "./process.js";
+export type { ProcessRuntimeOptions } from "./process.js";
 
 import type { ContainerRuntime } from "./types.js";
 import { DockerContainerRuntime, type DockerRuntimeOptions } from "./docker.js";

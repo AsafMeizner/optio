@@ -20,8 +20,33 @@ Changing the harness applies on the next request. Each request launches a harnes
 turn with the saved conversation; it does not migrate a provider's native session
 or automatically replay an interrupted request.
 
-The pod starts on the first message. The optional legacy dedicated Optio pod is
-not used. Pod startup, harness credentials and provider errors appear in the
+## Where a turn runs
+
+By default a turn runs **in the API pod itself**, as a child process of the API
+(`OPTIO_ASSISTANT_PLACEMENT=api-pod`; Helm `optio.assistant.placement`): the
+assistant is a short turn that only talks to Optio's own controller MCP, so an agent
+pod per conversation was a pod's worth of memory and scheduling for nothing. The API
+image carries Claude Code and Codex for it, and the chart mounts an agent home
+(`/home/agent`, an emptyDir) where the turn's run home, setup files and harness
+config land as they would in a pod. The process runtime
+(`packages/container-runtime/src/process.ts`) speaks the same run protocol as the
+pod runtimes — the same run-directory files, start / attach / stdin / kill — with
+no detached supervisor: the agent is the API's child, in its own process group,
+and an API restart ends its turn (the next message starts a new one). The API pod
+runs up to `OPTIO_ASSISTANT_IN_POD_MAX` turns at once (default 3).
+
+`agent-pod` keeps the pooled agent pod per conversation: for a deployment that
+wants the assistant isolated from the API (its own CPU and memory, and nothing of
+the API's filesystem or service-account token within reach of a prompt-injected
+harness). A turn goes to an agent pod regardless when the session has a repo
+(checkouts live in pods), when its harness is not in the API image (Copilot,
+Gemini, OpenCode, Cursor), or when the pod already runs its in-pod maximum; the
+API log says which (`Assistant turn runs in an agent pod`, with the reason).
+`services/assistant-placement.ts` holds the rule; the test tiers' fake runtime
+defaults to `agent-pod` so a machine's real `claude` never runs under a test.
+
+The optional legacy dedicated Optio pod (`optio.enabled`) is not used by either
+placement. Pod startup, harness credentials and provider errors appear in the
 conversation. The controller grants expire with their turn and remain restricted
 to its owner and workspace; no user API token is forwarded into the pod.
 

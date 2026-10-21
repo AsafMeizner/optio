@@ -58,8 +58,16 @@ export const OPTIO_OPENCODE_CONFIG = "OPTIO_OPENCODE_CONFIG";
 /** The run's Copilot MCP config file, passed as `--additional-mcp-config`. */
 export const OPTIO_COPILOT_MCP_CONFIG = "OPTIO_COPILOT_MCP_CONFIG";
 
+/**
+ * The agent's home: `/home/agent` in every agent pod, and in the API pod
+ * too for the work that runs there (the assistant, `OPTIO_ASSISTANT_PLACEMENT`;
+ * the API image has it). `OPTIO_AGENT_HOME_DIR` moves it for the test tiers
+ * on machines without one; it never changes a pod's paths in production.
+ */
+export const AGENT_HOME_DIR =
+  process.env.OPTIO_AGENT_HOME_DIR?.replace(/\/+$/, "") || "/home/agent";
 /** Where run homes live in the pod. */
-export const RUN_HOMES_DIR = "/home/agent/optio/runs";
+export const RUN_HOMES_DIR = `${AGENT_HOME_DIR}/optio/runs`;
 /** The setup-file prefix that lands in `RUN_HOMES_DIR` (`WRITE_SETUP_FILES`). */
 const RUN_HOMES_SETUP_DIR = "/opt/optio/runs";
 

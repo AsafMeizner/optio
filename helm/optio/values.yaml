@@ -111,12 +111,23 @@ web:
       memory: 512Mi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optio Operations Assistant Pod
-# A single always-on pod running the Optio conversational assistant.
-# It makes API calls on behalf of users — no repo checkout needed.
+# Ask Optio (the assistant)
 # ──────────────────────────────────────────────────────────────────────────────
 optio:
-  # Off by default: nothing in Optio needs it. Set true to run it.
+  assistant:
+    # Where an Ask Optio turn runs:
+    #   api-pod    (default) as a child process of the API, in the API pod —
+    #              no agent pod per conversation. The API image carries Claude
+    #              Code and Codex for it; an assistant on another harness, or
+    #              one with a repo, runs in an agent pod regardless.
+    #   agent-pod  a pooled agent pod per conversation (the assistant isolated
+    #              from the API: its own resources, nothing of the API's
+    #              filesystem or service account within its reach).
+    placement: api-pod
+    # Turns the API pod runs at once; the rest go to agent pods.
+    inPodMax: 3
+  # The legacy dedicated assistant pod (below). Off by default: nothing in
+  # Optio uses it. Set true to run it.
   enabled: false
   image:
     repository: ghcr.io/jonwiggins/optio-optio

@@ -35,7 +35,7 @@ import {
   startRunPrelude,
   superviseAgent,
 } from "@optio/container-runtime";
-import { runHome } from "./harness-config.js";
+import { AGENT_HOME_DIR, runHome } from "./harness-config.js";
 
 // The run protocol's script fragments (docs/plans/scale-out.md §1) live with
 // the runtimes that run them (packages/container-runtime/src/run-protocol.ts)
@@ -132,7 +132,7 @@ export const WRITE_SETUP_FILES: readonly string[] = [
   `for f in json.load(sys.stdin):`,
   `    p = f['path']`,
   `    if p.startswith('/opt/optio/'):`,
-  `        p = '/home/agent/optio/' + p[len('/opt/optio/'):]`,
+  `        p = os.environ.get('OPTIO_AGENT_HOME_DIR', '/home/agent').rstrip('/') + '/optio/' + p[len('/opt/optio/'):]`,
   `    elif not p.startswith('/'):`,
   `        p = os.path.join(here, p)`,
   `    os.makedirs(os.path.dirname(p), exist_ok=True)`,
@@ -191,6 +191,41 @@ export const RUN_WORK_SETUP_COMMANDS: readonly string[] = [
   `  bash -c "\$OPTIO_WORK_SETUP_COMMANDS" || { echo "[optio] ERROR: setup commands failed"; exit 1; }`,
   `fi`,
 ];
+
+/**
+ * The start script of a run in the API pod itself (the process runtime,
+ * `OPTIO_ASSISTANT_PLACEMENT=api-pod`): the run's env, its setup files and
+ * setup commands, then the agent in the foreground — no pod readiness wait,
+ * no lock, no supervisor (the process runtime is the supervisor). The home
+ * is the agent home the API image provides (`AGENT_HOME_DIR`), so the setup
+ * files and run homes land where every other run's do.
+ */
+export function buildProcessStartScript(input: {
+  env: Record<string, string>;
+  runId: string;
+  workDir: string;
+  agentCommand: string[];
+  label?: string;
+}): string {
+  const home = runHome(input.runId);
+  return [
+    "set -e",
+    `export OPTIO_AGENT_HOME_DIR=${shellQuote(AGENT_HOME_DIR)}`,
+    `export HOME=${shellQuote(AGENT_HOME_DIR)}`,
+    ...buildEnvExports(input.env),
+    `mkdir -p ${shellQuote(AGENT_HOME_DIR)} ${shellQuote(home.podDir)} ${shellQuote(input.workDir)}`,
+    `cd ${shellQuote(input.workDir)}`,
+    // Everything the script prints is the run's output here (a pod's start
+    // exec keeps its setup lines apart): the setup's "wrote …" lines go to
+    // stderr, so stdout is the agent's alone.
+    "exec 8>&1 1>&2",
+    ...WRITE_SETUP_FILES,
+    ...RUN_WORK_SETUP_COMMANDS,
+    ...(input.label ? [`echo "[optio] ${input.label} runs in the API pod"`] : []),
+    "exec 1>&8 8>&-",
+    ...input.agentCommand,
+  ].join("\n");
+}
 
 /** Where a pooled pod keeps the checkout of a persistent agent's repo. */
 export const POOLED_CHECKOUT_DIR = "/workspace/repo";
