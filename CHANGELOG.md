@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-21
+
 ### Added
 
 - **Ask Optio runs in the API pod** by default: a turn is a child process of the API (the API image now carries Claude Code and Codex) instead of a pooled agent pod per conversation. `OPTIO_ASSISTANT_PLACEMENT=agent-pod` (Helm `optio.assistant.placement`) keeps the separate pod; a turn with a repo, another harness, or past `OPTIO_ASSISTANT_IN_POD_MAX` (default 3) running turns goes to an agent pod anyway.
