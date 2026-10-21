@@ -95,6 +95,13 @@ export interface LocalHost {
   /** Agent subscription limits read from the machine; null until reported. */
   agentLimits: LocalHostAgentLimits | null;
   /**
+   * How many agent terminals may run on the machine at once. Agents that
+   * automations, Jobs and Tasks start past this wait in `pending` /
+   * `capacity` and start as others finish; a session a person opens by hand
+   * always starts, but counts. Shells and plain commands don't count.
+   */
+  maxConcurrentAgents: number;
+  /**
    * Whether the connected daemon can hand Optio a fresh Claude OAuth token
    * from the machine's own Claude Code login (Keychain / credentials file).
    * Live (from the daemon's hello), so false whenever the host is offline.
@@ -128,7 +135,12 @@ export interface LocalHost {
 export type LocalTerminalState = "pending" | "launching" | "running" | "exited" | "error";
 
 /** Why a terminal is sitting in `pending`. */
-export type LocalTerminalPendingReason = "hold" | "host_offline";
+/**
+ * Why a terminal is still `pending`: held for a person to start, parked
+ * while its host is offline, or waiting for a free agent slot on the host
+ * (`LocalHost.maxConcurrentAgents`).
+ */
+export type LocalTerminalPendingReason = "hold" | "host_offline" | "capacity";
 
 export type LocalAttentionState = "working" | "needs_you" | "idle";
 
@@ -670,6 +682,11 @@ export type LocalStreamClientMessage =
 
 /** A screen touched this recently is in use: it keeps the terminal's grid. */
 export const LOCAL_VIEW_IN_USE_MS = 60_000;
+
+/** Default `LocalHost.maxConcurrentAgents` for a newly paired machine. */
+export const LOCAL_DEFAULT_MAX_CONCURRENT_AGENTS = 3;
+/** The most a machine can be set to run at once. */
+export const LOCAL_MAX_CONCURRENT_AGENTS_CAP = 50;
 
 /** Content-free nudge published on the shared /ws/events stream. */
 export interface LocalChangedEvent {

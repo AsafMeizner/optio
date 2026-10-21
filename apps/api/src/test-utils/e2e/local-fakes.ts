@@ -76,17 +76,22 @@ export class FakeDaemon {
     const idx = this.inbox.findIndex(match);
     if (idx >= 0) return this.inbox.splice(idx, 1)[0];
     return new Promise<Json>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`fake daemon: timed out waiting for message`)),
-        timeoutMs,
-      );
-      this.waiters.push({
+      const waiter = {
         match,
-        resolve: (m) => {
+        resolve: (m: Json) => {
           clearTimeout(timer);
           resolve(m);
         },
-      });
+      };
+      // A timed-out waiter leaves the queue: it must not swallow the message
+      // a later `next` is waiting for (a test asserting "no spawn yet" would
+      // otherwise eat the spawn it then waits for).
+      const timer = setTimeout(() => {
+        const idx = this.waiters.indexOf(waiter);
+        if (idx >= 0) this.waiters.splice(idx, 1);
+        reject(new Error(`fake daemon: timed out waiting for message`));
+      }, timeoutMs);
+      this.waiters.push(waiter);
     });
   }
 

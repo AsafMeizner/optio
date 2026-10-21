@@ -1853,6 +1853,13 @@ data class LocalHost(
     /** Agent subscription limits read from the machine; null until reported. */
     val agentLimits: LocalHostAgentLimits? = null,
     /**
+     * How many agent terminals may run on the machine at once. Agents that
+     * automations, Jobs and Tasks start past this wait in `pending` /
+     * `capacity` and start as others finish; a session a person opens by hand
+     * always starts, but counts. Shells and plain commands don't count.
+     */
+    val maxConcurrentAgents: Double,
+    /**
      * Whether the connected daemon can hand Optio a fresh Claude OAuth token
      * from the machine's own Claude Code login (Keychain / credentials file).
      * Live (from the daemon's hello), so false whenever the host is offline.
@@ -1896,11 +1903,16 @@ enum class LocalTerminalState(override val raw: String) : RawEnum {
     companion object : RawEnumSerializer<LocalTerminalState>("dev.optio.core.model.LocalTerminalState", entries, UNKNOWN)
 }
 
-/** Why a terminal is sitting in `pending`. */
+/**
+ * Why a terminal is still `pending`: held for a person to start, parked
+ * while its host is offline, or waiting for a free agent slot on the host
+ * (`LocalHost.maxConcurrentAgents`).
+ */
 @Serializable(with = LocalTerminalPendingReason.Companion::class)
 enum class LocalTerminalPendingReason(override val raw: String) : RawEnum {
     HOLD("hold"),
     HOST_OFFLINE("host_offline"),
+    CAPACITY("capacity"),
     /** Fallback for raw values this client does not know about yet. */
     UNKNOWN("__unknown__");
 

@@ -883,6 +883,13 @@
       "when": 1792288950000,
       "tag": "1792288950_session_message_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
+      "when": 1792400000000,
+      "tag": "1792400000_local_host_max_concurrent_agents",
+      "breakpoints": true
     }
   ]
 }

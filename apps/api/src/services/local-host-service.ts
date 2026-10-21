@@ -286,6 +286,20 @@ export async function setHostDirs(id: string, dirs: LocalHostDir[]): Promise<Loc
  * the daemon already reconnected, to this instance or another, and its new
  * connection holds it (the closing one released its own first).
  */
+/** Settings a person changes on the Machines page. */
+export interface UpdateHostInput {
+  name?: string;
+  maxConcurrentAgents?: number;
+}
+
+export async function updateHost(id: string, input: UpdateHostInput): Promise<LocalHostRow | null> {
+  const set: Partial<typeof localHosts.$inferInsert> = { updatedAt: new Date() };
+  if (input.name !== undefined) set.name = input.name;
+  if (input.maxConcurrentAgents !== undefined) set.maxConcurrentAgents = input.maxConcurrentAgents;
+  const [row] = await db.update(localHosts).set(set).where(eq(localHosts.id, id)).returning();
+  return row ? await getHost(row.id) : null;
+}
+
 export async function markHostOffline(id: string): Promise<void> {
   const [row] = await db
     .update(localHosts)

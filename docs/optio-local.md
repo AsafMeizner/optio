@@ -155,7 +155,16 @@ back via `local_terminal_id`). The pipeline, in `services/local-run-service.ts`:
    `optio/task-<id>` off `<base>`, push, open a PR, print its URL"; a resume (CI failure /
    review feedback) carries the resume prompt and, for Claude Code, `-p --resume <session>`.
    Host offline → the terminal parks and the run stays `queued` until the daemon's next
-   hello flushes it.
+   hello flushes it. **Machine full** → the same: every host has an agent limit
+   (`local_hosts.max_concurrent_agents`, default 3, set on the Machines page or with
+   `PATCH /api/local/hosts/:id`), the machines' answer to a repo's concurrency limit. An
+   agent terminal that an automation, Job, Task or ticket starts while the host already
+   runs that many agents parks in `pending` / `capacity` ("Waiting for a slot") and starts,
+   oldest first, as agents finish, when the limit is raised, and on the daemon's hello —
+   the host row is locked for the check-and-claim (`claimAgentSlot`), so two spawns racing
+   for the last slot can't both take it. A session a person opens by hand always starts
+   (their machine, their call) but counts toward the limit; shells and plain commands never
+   count. The sweeper restarts waiters whose flush was lost with an instance.
 3. Daemon frames drive the run (`syncLinkedRun`, called from every terminal update):
    `launching`/`running` → Job `running` (Task `provisioning` → `running`); `usage` → live
    cost / tokens / model on the run; `session` → `tasks.session_id` (resume handle); a
@@ -517,6 +526,9 @@ them; a viewer, a REST call or a worker that wants it may be on another.
   `{host}` (see "Identity" under Host)
 - `GET /api/local/hosts` / `DELETE /api/local/hosts/:id` — each host carries the live
   `claudeCredentials` and `manageDirs` of its connected daemon (false while offline)
+- `PATCH /api/local/hosts/:id` — `{name?, maxConcurrentAgents?}` (1–50): how many agent
+  terminals the machine runs at once; automation agents past it wait in `pending` /
+  `capacity`. Raising it starts waiting terminals at once → `{host}`
 - `POST /api/local/hosts/:id/dirs` `{path}` / `DELETE /api/local/hosts/:id/dirs?path=` —
   add / remove an allowlisted directory through the machine's daemon (see Host above) →
   `{host, path}` with `path` as the machine resolved it; 400 with the daemon's reason (no

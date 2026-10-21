@@ -43,9 +43,11 @@ export function localStateLabel(terminal: any): string {
   const style = STATE_STYLES[terminal.state] ?? STATE_STYLES.pending;
   return terminal.state === "pending" && terminal.pendingReason === "host_offline"
     ? "Host offline"
-    : terminal.state === "pending" && terminal.pendingReason === "hold"
-      ? "Held"
-      : style.label;
+    : terminal.state === "pending" && terminal.pendingReason === "capacity"
+      ? "Waiting for a slot"
+      : terminal.state === "pending" && terminal.pendingReason === "hold"
+        ? "Held"
+        : style.label;
 }
 
 /**
@@ -108,10 +110,15 @@ function baseStatusDescriptor(terminal: any): {
         label:
           terminal.pendingReason === "host_offline"
             ? "Waiting for host"
-            : terminal.pendingReason === "hold"
-              ? "Held"
-              : "Pending",
-        detail: null,
+            : terminal.pendingReason === "capacity"
+              ? "Waiting for a slot"
+              : terminal.pendingReason === "hold"
+                ? "Held"
+                : "Pending",
+        detail:
+          terminal.pendingReason === "capacity"
+            ? "starts when another agent on the machine finishes"
+            : null,
       };
     case "launching":
       return { dot, label: "Launching", detail: null };
@@ -315,8 +322,9 @@ export function TerminalCard({
   };
 
   // A terminal parked on an offline host spawns itself when the daemon
-  // reconnects — Start would only 409 with "Host is offline".
-  const canStart = terminal.state === "pending" && terminal.pendingReason !== "host_offline";
+  // reconnects, one waiting for an agent slot when another agent finishes —
+  // Start would only 409.
+  const canStart = terminal.state === "pending" && terminal.pendingReason === "hold";
   const canKill = terminal.state === "running" || terminal.state === "launching";
   const canDelete =
     terminal.state === "exited" || terminal.state === "error" || terminal.state === "pending";

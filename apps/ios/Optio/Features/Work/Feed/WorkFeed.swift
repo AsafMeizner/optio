@@ -474,7 +474,9 @@ enum WorkFeed {
     static func terminalStatus(_ t: TerminalRow) -> (WorkStatus, String) {
         if t.state == "error" { return (.failed, "error") }
         if t.state == "exited" { return (.done, "exited") }
-        if t.state == "pending" { return (.queued, t.pendingReason == "host_offline" ? "host offline" : "pending") }
+        if t.state == "pending" {
+            return (.queued, t.pendingReason == "host_offline" ? "host offline" : t.pendingReason == "capacity" ? "waiting for a slot" : "pending")
+        }
         if t.attentionState == "needs_you" { return (.needsYou, "needs you") }
         if t.attentionState == "idle" { return (.waiting, "idle") }
         return (.running, "working")

@@ -177,7 +177,14 @@ function terminalStatus(t: LocalTerminalRow): [WorkStatus, string] {
   if (t.state === "error") return ["failed", "error"];
   if (t.state === "exited") return ["done", "exited"];
   if (t.state === "pending") {
-    return ["queued", t.pendingReason === "host_offline" ? "host offline" : "pending"];
+    return [
+      "queued",
+      t.pendingReason === "host_offline"
+        ? "host offline"
+        : t.pendingReason === "capacity"
+          ? "waiting for a slot"
+          : "pending",
+    ];
   }
   if (t.attentionState === "needs_you") return ["needs_you", "needs you"];
   if (t.attentionState === "idle") return ["waiting", "idle"];

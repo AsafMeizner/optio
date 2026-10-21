@@ -256,6 +256,7 @@ enum LocalPresentation {
 
     static func stateLabel(_ t: LocalTerminal) -> String {
         if t.state == .pending, t.pendingReason == .hostOffline { return "Host offline" }
+        if t.state == .pending, t.pendingReason == .capacity { return "Waiting for a slot" }
         if t.state == .pending, t.pendingReason == .hold { return "Held" }
         switch t.state {
         case .pending: return "Pending"
@@ -325,7 +326,10 @@ enum LocalPresentation {
         return [WorkLink(url: ticketUrl, kind: .issue, provider: provider, label: label)] + scanned
     }
 
-    static func canStart(_ t: LocalTerminal) -> Bool { t.state == .pending && t.pendingReason != .hostOffline }
+    /// Only a held terminal needs a person to start it: one parked on an offline
+    /// host starts when it reconnects, one waiting for an agent slot when another
+    /// agent on the machine finishes.
+    static func canStart(_ t: LocalTerminal) -> Bool { t.state == .pending && t.pendingReason == .hold }
     static func canKill(_ t: LocalTerminal) -> Bool { t.state == .running || t.state == .launching }
     static func canDelete(_ t: LocalTerminal) -> Bool { t.state == .exited || t.state == .error || t.state == .pending }
     static func isDead(_ t: LocalTerminal) -> Bool { t.state == .exited || t.state == .error }

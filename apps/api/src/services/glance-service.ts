@@ -176,7 +176,11 @@ export function terminalStatusLabel(row: {
   if (row.state === "error") return "error";
   if (row.state === "exited") return "exited";
   if (row.state === "pending")
-    return row.pendingReason === "host_offline" ? "host offline" : "pending";
+    return row.pendingReason === "host_offline"
+      ? "host offline"
+      : row.pendingReason === "capacity"
+        ? "waiting for a slot"
+        : "pending";
   if (row.attentionState === "needs_you") return "needs you";
   if (row.attentionState === "idle") return "idle";
   return "working";

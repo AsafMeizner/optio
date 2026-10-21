@@ -37,6 +37,12 @@ export const LocalHostSchema = z
       })
       .nullable()
       .describe("Agent subscription limits the daemon read off the machine"),
+    maxConcurrentAgents: z
+      .number()
+      .int()
+      .describe(
+        "Agent terminals the machine runs at once; automation spawns past it wait in pending/capacity",
+      ),
     claudeCredentials: z
       .boolean()
       .optional()

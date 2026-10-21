@@ -20,7 +20,13 @@ struct TerminalRowView: View {
         if terminal.state == .error { return ("Error", .warning) }
         if terminal.state == .exited, let code = terminal.exitCode, code != 0 { return ("exit \(Int(code))", .warning) }
         if terminal.state == .exited { return ("Finished", nil) }
-        if terminal.state == .pending { return (terminal.pendingReason == .hostOffline ? "Host offline" : "Held", nil) }
+        if terminal.state == .pending {
+            switch terminal.pendingReason {
+            case .hostOffline: return ("Host offline", nil)
+            case .capacity: return ("Waiting for a slot", nil)
+            default: return ("Held", nil)
+            }
+        }
         return (LocalPresentation.activityDescription(terminal), nil)
     }
 

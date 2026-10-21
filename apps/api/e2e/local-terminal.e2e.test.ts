@@ -702,6 +702,147 @@ describe("optio local e2e", () => {
   });
 });
 
+describe("optio local e2e: a machine's agent limit", () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const fn of cleanups.splice(0)) fn();
+  });
+
+  it("queues automation agents past the limit, lets a person's own through, and starts the next on exit", async () => {
+    const hostId = await registerHost("e2e-agent-limit");
+    const daemon = new FakeDaemon(wsBase);
+    cleanups.push(() => daemon.close());
+    await daemon.connect(hostId, DIRS);
+
+    // Default is 3; this machine takes one agent at a time.
+    const patched = await api<HostBody>(`/api/local/hosts/${hostId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ maxConcurrentAgents: 1 }),
+    });
+    expect(patched.status).toBe(200);
+    expect(patched.body.host.maxConcurrentAgents).toBe(1);
+
+    const { body: bp } = await api<{ blueprint: { id: string } }>("/api/local/blueprints", {
+      method: "POST",
+      body: JSON.stringify({
+        name: `e2e-limit-${Date.now()}`,
+        hostId,
+        dir: "/tmp/e2e-repo",
+        agent: "claude-code",
+        sessionMode: "headless",
+        commandTemplate: "Tidy {{what}}",
+      }),
+    });
+    const spawnFromBlueprint = async (what: string) => {
+      const res = await api<TerminalBody>(`/api/local/blueprints/${bp.blueprint.id}/spawn`, {
+        method: "POST",
+        body: JSON.stringify({ params: { what } }),
+      });
+      expect(res.status).toBe(201);
+      return res.body.terminal;
+    };
+
+    // The first automation agent takes the slot.
+    const first = await spawnFromBlueprint("one");
+    expect(first.state).toBe("launching");
+    const spawn1 = await daemon.next((m) => m.type === "spawn" && m.terminalId === first.id);
+    expect((spawn1.spec as Json).kind).toBe("agent");
+    daemon.send({ type: "started", terminalId: first.id });
+    await waitFor(async () => ((await getTerminal(first.id)).state === "running" ? true : null));
+
+    // The second waits: pending/capacity, and the daemon is never asked.
+    const second = await spawnFromBlueprint("two");
+    expect(second.state).toBe("pending");
+    expect(second.pendingReason).toBe("capacity");
+    await expect(
+      daemon.next((m) => m.type === "spawn" && m.terminalId === second.id, 1_000),
+    ).rejects.toThrow(/timed out/);
+    // Start can't jump the queue either.
+    const start = await api<{ error: string }>(`/api/local/terminals/${second.id}/start`, {
+      method: "POST",
+      body: "{}",
+    });
+    expect(start.status).toBe(409);
+    expect(start.body.error).toMatch(/as many agents as it allows/);
+
+    // A session a person opens by hand always starts (and a shell never counts).
+    const manual = await api<TerminalBody>("/api/local/terminals", {
+      method: "POST",
+      body: JSON.stringify({
+        hostId,
+        dir: "/tmp/e2e-repo",
+        spec: { kind: "agent", agent: "claude-code", prompt: "Hi" },
+      }),
+    });
+    expect(manual.body.terminal.state).toBe("launching");
+    await daemon.next((m) => m.type === "spawn" && m.terminalId === manual.body.terminal.id);
+    daemon.send({ type: "started", terminalId: manual.body.terminal.id });
+    const shell = await api<TerminalBody>("/api/local/terminals", {
+      method: "POST",
+      body: JSON.stringify({ hostId, dir: "/tmp/e2e-repo", spec: { kind: "shell" } }),
+    });
+    expect(shell.body.terminal.state).toBe("launching");
+    await daemon.next((m) => m.type === "spawn" && m.terminalId === shell.body.terminal.id);
+
+    // Two agents live on a one-agent machine: the waiter stays put until both end.
+    daemon.send({ type: "exit", terminalId: first.id, exitCode: 0 });
+    await waitFor(async () => ((await getTerminal(first.id)).state === "exited" ? true : null));
+    await expect(
+      daemon.next((m) => m.type === "spawn" && m.terminalId === second.id, 1_000),
+    ).rejects.toThrow(/timed out/);
+    expect((await getTerminal(second.id)).pendingReason).toBe("capacity");
+
+    daemon.send({ type: "exit", terminalId: manual.body.terminal.id, exitCode: 0 });
+    const spawn2 = await daemon.next((m) => m.type === "spawn" && m.terminalId === second.id);
+    expect((spawn2.spec as Json).kind).toBe("agent");
+    await waitFor(async () => ((await getTerminal(second.id)).state === "launching" ? true : null));
+  });
+
+  it("starts waiting agents when the limit is raised", async () => {
+    const hostId = await registerHost("e2e-agent-limit-raise");
+    const daemon = new FakeDaemon(wsBase);
+    cleanups.push(() => daemon.close());
+    await daemon.connect(hostId, DIRS);
+    await api(`/api/local/hosts/${hostId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ maxConcurrentAgents: 1 }),
+    });
+    const { body: bp } = await api<{ blueprint: { id: string } }>("/api/local/blueprints", {
+      method: "POST",
+      body: JSON.stringify({
+        name: `e2e-limit-raise-${Date.now()}`,
+        hostId,
+        dir: "/tmp/e2e-repo",
+        agent: "claude-code",
+        sessionMode: "headless",
+        commandTemplate: "Tidy {{what}}",
+      }),
+    });
+    const ids: string[] = [];
+    for (const what of ["one", "two", "three"]) {
+      const res = await api<TerminalBody>(`/api/local/blueprints/${bp.blueprint.id}/spawn`, {
+        method: "POST",
+        body: JSON.stringify({ params: { what } }),
+      });
+      ids.push(res.body.terminal.id);
+    }
+    await daemon.next((m) => m.type === "spawn" && m.terminalId === ids[0]);
+    expect((await getTerminal(ids[1]!)).pendingReason).toBe("capacity");
+    expect((await getTerminal(ids[2]!)).pendingReason).toBe("capacity");
+
+    // Room for one more: the oldest waiter starts, the other keeps waiting.
+    await api(`/api/local/hosts/${hostId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ maxConcurrentAgents: 2 }),
+    });
+    await daemon.next((m) => m.type === "spawn" && m.terminalId === ids[1]);
+    await expect(
+      daemon.next((m) => m.type === "spawn" && m.terminalId === ids[2], 1_000),
+    ).rejects.toThrow(/timed out/);
+    expect((await getTerminal(ids[2]!)).pendingReason).toBe("capacity");
+  });
+});
+
 describe("optio local e2e: machine identity, resume, and backfill", () => {
   const cleanups: Array<() => void> = [];
   afterEach(() => {

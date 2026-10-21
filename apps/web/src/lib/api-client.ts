@@ -2105,6 +2105,11 @@ export const api = {
   listLocalHosts: () => request<{ hosts: any[] }>("/api/local/hosts"),
 
   deleteLocalHost: (id: string) => request<{}>(`/api/local/hosts/${id}`, { method: "DELETE" }),
+  updateLocalHost: (id: string, body: { name?: string; maxConcurrentAgents?: number }) =>
+    request<{ host: any }>(`/api/local/hosts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
 
   /**
    * Add a directory (absolute, or under ~) to a machine's allowlist — its

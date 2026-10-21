@@ -36,6 +36,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { db } from "../db/client.js";
 import {
+  localHosts,
   localTerminalSnapshots,
   localTerminalTranscripts,
   localTerminals,
@@ -136,6 +137,15 @@ async function notifyChanged(row: LocalTerminalRow): Promise<void> {
   import("./glance-service.js")
     .then(({ onLocalTerminalChanged }) => onLocalTerminalChanged(row))
     .catch((err) => logger.warn({ err, terminalId: row.id }, "local: glance hook failed"));
+  // An agent that ended frees a slot: start the next one waiting for it.
+  // Not awaited — the frame that ended this one must not wait on the spawn
+  // of another, and a flush that spawns notifies again (recursion ends when
+  // nothing is waiting or the host is full).
+  if (isDeadState(row.state) && isAgentTerminal(row)) {
+    flushCapacityTerminals(row.hostId).catch((err) =>
+      logger.warn({ err, hostId: row.hostId }, "local: capacity flush failed"),
+    );
+  }
 }
 
 /** True while a "Later" window is open on the terminal. */
@@ -396,11 +406,11 @@ async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null>
       endedAt: new Date(),
     });
   }
-  const claimed = await transitionTerminal(row.id, ["pending"], {
-    state: "launching",
-    pendingReason: null,
-  });
+  const claimed = waitsForSlot(row)
+    ? await claimAgentSlot(row)
+    : await transitionTerminal(row.id, ["pending"], { state: "launching", pendingReason: null });
   if (!claimed) return getTerminal(row.id);
+  if (claimed.state === "pending") return claimed;
   // To the daemon wherever it is connected (acknowledged by its owner).
   const delivery = await relay.deliverToHost(row.hostId, {
     type: "spawn",
@@ -422,12 +432,118 @@ async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null>
   });
 }
 
+/**
+ * Whether a terminal takes one of the host's agent slots
+ * (`local_hosts.max_concurrent_agents`): an agent CLI, not a shell or a
+ * plain command.
+ */
+export function isAgentTerminal(row: Pick<LocalTerminalRow, "spec">): boolean {
+  return (row.spec as unknown as LocalTerminalSpec).kind === "agent";
+}
+
+/**
+ * Whether a terminal waits for a free slot when the host is full. Agents
+ * that automations, Jobs, Tasks and tickets start do; a session a person
+ * opens by hand always starts (they asked for it, on their own machine) —
+ * it still counts toward the limit for everything that waits.
+ */
+export function waitsForSlot(row: Pick<LocalTerminalRow, "spec" | "spawnedBy">): boolean {
+  return isAgentTerminal(row) && row.spawnedBy !== "manual";
+}
+
+/** Live agent terminals on a host: what the limit counts. */
+export async function countLiveAgents(hostId: string): Promise<number> {
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(localTerminals)
+    .where(
+      and(
+        eq(localTerminals.hostId, hostId),
+        inArray(localTerminals.state, ["launching", "running"]),
+        sql`${localTerminals.spec}->>'kind' = 'agent'`,
+      ),
+    );
+  return count;
+}
+
+/**
+ * Claim the terminal (pending → launching) only if the host has a free
+ * agent slot; otherwise park it in pending/capacity. The host row is locked
+ * for the check-and-claim, so two spawns racing for the last slot can't
+ * both take it (the "per-repo" limit for machines). Returns null on a lost
+ * CAS (someone else already moved the row).
+ */
+async function claimAgentSlot(row: LocalTerminalRow): Promise<LocalTerminalRow | null> {
+  const now = new Date();
+  const updated = await db.transaction(async (tx) => {
+    const [host] = await tx
+      .select({ max: localHosts.maxConcurrentAgents })
+      .from(localHosts)
+      .where(eq(localHosts.id, row.hostId))
+      .for("update");
+    if (!host) return null;
+    const [{ live }] = await tx
+      .select({ live: sql<number>`count(*)::int` })
+      .from(localTerminals)
+      .where(
+        and(
+          eq(localTerminals.hostId, row.hostId),
+          inArray(localTerminals.state, ["launching", "running"]),
+          sql`${localTerminals.spec}->>'kind' = 'agent'`,
+        ),
+      );
+    const set =
+      live >= host.max
+        ? { state: "pending" as const, pendingReason: "capacity" as const, updatedAt: now }
+        : { state: "launching" as const, pendingReason: null, updatedAt: now };
+    const [next] = await tx
+      .update(localTerminals)
+      .set(set)
+      .where(and(eq(localTerminals.id, row.id), eq(localTerminals.state, "pending")))
+      .returning();
+    return next ?? null;
+  });
+  if (updated) await notifyChanged(updated);
+  return updated;
+}
+
+/**
+ * Start terminals waiting for a slot on the host, oldest first, until the
+ * host is full again. Called when an agent terminal ends, when the limit is
+ * raised, and on the daemon's hello (with the offline-parked ones).
+ */
+export async function flushCapacityTerminals(hostId: string): Promise<number> {
+  const waiting = await db
+    .select()
+    .from(localTerminals)
+    .where(
+      and(
+        eq(localTerminals.hostId, hostId),
+        eq(localTerminals.state, "pending"),
+        eq(localTerminals.pendingReason, "capacity"),
+      ),
+    )
+    .orderBy(asc(localTerminals.createdAt));
+  let started = 0;
+  for (const row of waiting) {
+    const next = await trySpawn(row);
+    // Still waiting: the host is full (or offline) — the rest would be too.
+    if (next?.state === "pending") break;
+    started++;
+  }
+  return started;
+}
+
 /** Start a pending (held or parked) terminal. */
 export async function startTerminal(row: LocalTerminalRow): Promise<LocalTerminalRow> {
   if (row.state !== "pending") throw new Error(`Terminal is ${row.state}, not pending`);
   const updated = await trySpawn(row);
   if (!updated || updated.state === "pending") {
-    throw new Error("Host is offline — the terminal will stay pending until it reconnects");
+    throw new Error(
+      updated?.pendingReason === "capacity"
+        ? "The machine is running as many agents as it allows — the terminal starts when one finishes"
+        : "Host is offline — the terminal will stay pending until it reconnects",
+    );
   }
   return updated;
 }
@@ -1380,7 +1496,11 @@ export async function reconcileHello(
   if (opts.flushParked ?? true) await flushParkedTerminals(hostId);
 }
 
-/** Re-spawn terminals parked in pending/host_offline now that the host is online. */
+/**
+ * Re-spawn terminals parked in pending/host_offline now that the host is
+ * online, then whatever is waiting for an agent slot (oldest first, as far
+ * as the limit allows).
+ */
 export async function flushParkedTerminals(hostId: string): Promise<void> {
   const parked = await db
     .select()
@@ -1391,10 +1511,12 @@ export async function flushParkedTerminals(hostId: string): Promise<void> {
         eq(localTerminals.state, "pending"),
         eq(localTerminals.pendingReason, "host_offline"),
       ),
-    );
+    )
+    .orderBy(asc(localTerminals.createdAt));
   for (const row of parked) {
     await trySpawn(row);
   }
+  await flushCapacityTerminals(hostId);
 }
 
 export async function handleHostDisconnect(hostId: string): Promise<void> {
@@ -1419,16 +1541,19 @@ const PARKED_FLUSH_MIN_AGE_MS = 10_000;
  */
 export async function flushParkedForOnlineHosts(): Promise<number> {
   const cutoff = new Date(Date.now() - PARKED_FLUSH_MIN_AGE_MS);
+  // Capacity waiters too: the flush that should have started one can be
+  // lost with the instance that ran it.
   const parked = await db
     .select()
     .from(localTerminals)
     .where(
       and(
         eq(localTerminals.state, "pending"),
-        eq(localTerminals.pendingReason, "host_offline"),
+        inArray(localTerminals.pendingReason, ["host_offline", "capacity"]),
         lt(localTerminals.updatedAt, cutoff),
       ),
-    );
+    )
+    .orderBy(asc(localTerminals.createdAt));
   let started = 0;
   const online = new Map<string, boolean>();
   for (const row of parked) {

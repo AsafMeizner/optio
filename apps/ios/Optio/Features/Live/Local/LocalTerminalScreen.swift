@@ -213,6 +213,7 @@ struct LocalTerminalScreen: View {
         if let host = hosts.first(where: { $0.id == t.hostId }) { facts.append(Text(host.name)) }
         if t.state == .exited, let code = t.exitCode { facts.append(Text("exit \(Int(code))")) }
         if t.state == .pending, t.pendingReason == .hostOffline { facts.append(Text("starts when the host reconnects")) }
+        if t.state == .pending, t.pendingReason == .capacity { facts.append(Text("starts when another agent on the machine finishes")) }
         if let cost = Cost.formatIfNonZero(t.costUsd) { facts.append(Text(cost)) }
         let showToggle = LocalSessionViewRule.canShowChat(t, hasTranscript: hasTranscript) && view != nil
         return SessionIdentityHeader(

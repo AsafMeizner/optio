@@ -38,6 +38,7 @@ import { AutomationsSection } from "@/components/local/automations-section";
 import { likelySameComputer, mergeTargets } from "@/components/local/host-merge";
 import { PairMachineGuide } from "@/components/local/pair-machine";
 import { AddDirForm, HostDirList, dirsLockedReason } from "@/components/local/host-dirs";
+import { HostConcurrency } from "@/components/local/host-concurrency";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/ui/input";
 
@@ -353,6 +354,7 @@ function MachineSection({
             <HostDirAdder host={host} onAdded={onHostChanged} />
           </div>
         )}
+        <HostConcurrency host={host} onChanged={onHostChanged} />
         {!online && likelySameComputer(host, hosts) && (
           <MergeInto source={host} hosts={hosts} onMerged={onMerged} />
         )}

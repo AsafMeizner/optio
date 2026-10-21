@@ -3850,6 +3850,11 @@ public struct LocalHost: Codable, Hashable, Sendable {
     public let dirs: [LocalHostDir]
     /// Agent subscription limits read from the machine; null until reported.
     public let agentLimits: LocalHostAgentLimits?
+    /// How many agent terminals may run on the machine at once. Agents that
+    /// automations, Jobs and Tasks start past this wait in `pending` /
+    /// `capacity` and start as others finish; a session a person opens by hand
+    /// always starts, but counts. Shells and plain commands don't count.
+    public let maxConcurrentAgents: Double
     /// Whether the connected daemon can hand Optio a fresh Claude OAuth token
     /// from the machine's own Claude Code login (Keychain / credentials file).
     /// Live (from the daemon's hello), so false whenever the host is offline.
@@ -3883,6 +3888,7 @@ public struct LocalHost: Codable, Hashable, Sendable {
         case daemonVersion = "daemonVersion"
         case dirs = "dirs"
         case agentLimits = "agentLimits"
+        case maxConcurrentAgents = "maxConcurrentAgents"
         case claudeCredentials = "claudeCredentials"
         case manageDirs = "manageDirs"
         case modelProviders = "modelProviders"
@@ -3905,6 +3911,7 @@ public struct LocalHost: Codable, Hashable, Sendable {
         daemonVersion: String? = nil,
         dirs: [LocalHostDir],
         agentLimits: LocalHostAgentLimits? = nil,
+        maxConcurrentAgents: Double,
         claudeCredentials: Bool? = nil,
         manageDirs: Bool? = nil,
         modelProviders: Bool? = nil,
@@ -3925,6 +3932,7 @@ public struct LocalHost: Codable, Hashable, Sendable {
         self.daemonVersion = daemonVersion
         self.dirs = dirs
         self.agentLimits = agentLimits
+        self.maxConcurrentAgents = maxConcurrentAgents
         self.claudeCredentials = claudeCredentials
         self.manageDirs = manageDirs
         self.modelProviders = modelProviders
@@ -3954,14 +3962,17 @@ public enum LocalTerminalState: String, Codable, Hashable, Sendable, CaseIterabl
     }
 }
 
-/// Why a terminal is sitting in `pending`.
+/// Why a terminal is still `pending`: held for a person to start, parked
+/// while its host is offline, or waiting for a free agent slot on the host
+/// (`LocalHost.maxConcurrentAgents`).
 public enum LocalTerminalPendingReason: String, Codable, Hashable, Sendable, CaseIterable {
     case hold = "hold"
     case hostOffline = "host_offline"
+    case capacity = "capacity"
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [LocalTerminalPendingReason] = [.hold, .hostOffline]
+    public static let allCases: [LocalTerminalPendingReason] = [.hold, .hostOffline, .capacity]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)

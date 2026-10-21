@@ -456,7 +456,11 @@ object WorkFeed {
     fun terminalStatus(t: TerminalRow): Pair<WorkStatus, String> = when {
         t.state == "error" -> WorkStatus.FAILED to "error"
         t.state == "exited" -> WorkStatus.DONE to "exited"
-        t.state == "pending" -> WorkStatus.QUEUED to if (t.pendingReason == "host_offline") "host offline" else "pending"
+        t.state == "pending" -> WorkStatus.QUEUED to when (t.pendingReason) {
+            "host_offline" -> "host offline"
+            "capacity" -> "waiting for a slot"
+            else -> "pending"
+        }
         t.attentionState == "needs_you" -> WorkStatus.NEEDS_YOU to "needs you"
         t.attentionState == "idle" -> WorkStatus.WAITING to "idle"
         else -> WorkStatus.RUNNING to "working"

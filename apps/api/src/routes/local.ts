@@ -12,7 +12,11 @@ import { z } from "zod";
 import { db } from "../db/client.js";
 import { repos } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { parseRepoUrl, type LocalTerminalSpec } from "@optio/shared";
+import {
+  LOCAL_MAX_CONCURRENT_AGENTS_CAP,
+  parseRepoUrl,
+  type LocalTerminalSpec,
+} from "@optio/shared";
 import { logger } from "../logger.js";
 import { requireRole } from "../plugins/auth.js";
 import { ErrorResponseSchema, EmptyResponseSchema } from "../schemas/common.js";
@@ -227,6 +231,49 @@ export async function localRoutes(rawApp: FastifyInstance) {
         ...req.body,
       });
       reply.send({ host });
+    },
+  );
+
+  app.patch(
+    "/api/local/hosts/:id",
+    {
+      ...member,
+      schema: {
+        operationId: "updateLocalHost",
+        summary: "Change a machine's settings",
+        description:
+          "`maxConcurrentAgents`: how many agent terminals the machine runs at " +
+          "once. Agents that automations, Jobs and Tasks start past it wait in " +
+          "`pending` / `capacity` and start as others finish; a session you open " +
+          "by hand always starts. Raising it starts waiting terminals at once.",
+        tags: ["Local"],
+        params: z.object({ id: z.string().uuid() }),
+        body: z
+          .object({
+            name: z.string().min(1).max(100).optional(),
+            maxConcurrentAgents: z
+              .number()
+              .int()
+              .min(1)
+              .max(LOCAL_MAX_CONCURRENT_AGENTS_CAP)
+              .optional(),
+          })
+          .strict(),
+        response: { 200: HostResponse, 404: ErrorResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      const host = await hostService.getHost(req.params.id);
+      if (!host || !hostService.canAccessHost(host, req.user?.id)) {
+        return reply.status(404).send({ error: "Host not found" });
+      }
+      const updated = await hostService.updateHost(host.id, req.body);
+      if (!updated) return reply.status(404).send({ error: "Host not found" });
+      // A higher limit has room for terminals waiting on the old one.
+      if (req.body.maxConcurrentAgents && req.body.maxConcurrentAgents > host.maxConcurrentAgents) {
+        await terminalService.flushCapacityTerminals(host.id);
+      }
+      reply.send({ host: withLiveCapabilities(updated) });
     },
   );
 

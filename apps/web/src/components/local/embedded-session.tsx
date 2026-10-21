@@ -133,6 +133,11 @@ export function EmbeddedLocalSession({
       if (next.state === "pending" && next.pendingReason === "host_offline") {
         const name = hosts.find((h) => h.id === next.hostId)?.name ?? "The machine";
         toast.info(`${name} is offline — the chat starts when it reconnects`);
+      } else if (next.state === "pending" && next.pendingReason === "capacity") {
+        const name = hosts.find((h) => h.id === next.hostId)?.name ?? "The machine";
+        toast.info(
+          `${name} is running as many agents as it allows — the chat starts when one finishes`,
+        );
       } else {
         toast.success(
           res.reused
@@ -198,6 +203,11 @@ export function EmbeddedLocalSession({
         {terminal.state === "pending" && terminal.pendingReason === "host_offline" && (
           <span className="text-text-muted truncate">
             — starts when {host?.name ?? "the machine"} reconnects
+          </span>
+        )}
+        {terminal.state === "pending" && terminal.pendingReason === "capacity" && (
+          <span className="text-text-muted truncate">
+            — waiting for a free agent slot on {host?.name ?? "the machine"}
           </span>
         )}
         <span className="hidden sm:inline-flex items-center gap-1 text-text-muted min-w-0">

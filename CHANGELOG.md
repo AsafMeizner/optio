@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Machines have an **agent limit** (default 3, on the Machines page): agent sessions that automations, Jobs, Tasks and tickets start past it wait ("Waiting for a slot") and start as agents finish, oldest first, the way a repo's concurrency limit queues pod tasks. A session you open by hand always starts but counts; shells and plain commands never count. `PATCH /api/local/hosts/:id` sets it.
+
+### Fixed
+
+- iOS: swiping through a Codex session's terminal scrolls again. Wheel reports carried the bottom-right cell as the pointer, which Codex ignores (it only scrolls over its transcript); Claude Code scrolled regardless.
+
 ## [0.18.2] - 2026-10-20
 
 ### Changed

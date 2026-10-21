@@ -242,6 +242,10 @@ export function TerminalPane({
         toast.info(
           `${host?.name ?? "The machine"} is offline — the chat starts when it reconnects`,
         );
+      } else if (next.state === "pending" && next.pendingReason === "capacity") {
+        toast.info(
+          `${host?.name ?? "The machine"} is running as many agents as it allows — the chat starts when one finishes`,
+        );
       } else {
         toast.success(
           res.reused ? "Opening the chat already resumed" : "Resuming session in a new terminal",
@@ -349,9 +353,9 @@ export function TerminalPane({
     );
   }
 
-  // Parked-on-offline-host terminals spawn themselves on reconnect; Start
-  // would only 409.
-  const canStart = terminal.state === "pending" && terminal.pendingReason !== "host_offline";
+  // Parked-on-offline-host terminals spawn themselves on reconnect, and ones
+  // waiting for an agent slot when another agent finishes; Start would only 409.
+  const canStart = terminal.state === "pending" && terminal.pendingReason === "hold";
   const canKill = terminal.state === "running" || terminal.state === "launching";
   const isDead = terminal.state === "exited" || terminal.state === "error";
   // A run whose agent reported its own session id can be picked up as a chat.

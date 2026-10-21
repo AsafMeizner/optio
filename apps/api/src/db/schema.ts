@@ -2122,6 +2122,9 @@ export const localHosts = pgTable(
     // `HostCapabilities`), so every API instance can answer for a daemon
     // connected to another. Meaningful only while the host's lease is live.
     capabilities: jsonb("capabilities").$type<Record<string, boolean> | null>(),
+    // Agent terminals that may run on the machine at once; automation spawns
+    // past it park in pending/capacity (local-terminal-service).
+    maxConcurrentAgents: integer("max_concurrent_agents").notNull().default(3),
     state: localHostStateEnum("state").notNull().default("offline"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -2163,7 +2166,7 @@ export const localTerminals = pgTable(
     command: text("command"),
     spec: jsonb("spec").$type<Record<string, unknown>>().notNull(),
     state: localTerminalStateEnum("state").notNull().default("pending"),
-    pendingReason: text("pending_reason").$type<"hold" | "host_offline">(),
+    pendingReason: text("pending_reason").$type<"hold" | "host_offline" | "capacity">(),
     exitCode: integer("exit_code"),
     errorMessage: text("error_message"),
     attentionState: localAttentionStateEnum("attention_state").notNull().default("idle"),
