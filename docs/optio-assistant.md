@@ -42,8 +42,9 @@ harness). A turn goes to an agent pod regardless when the session has a repo
 (checkouts live in pods), when its harness is not in the API image (Copilot,
 Gemini, OpenCode, Cursor), or when the pod already runs its in-pod maximum; the
 API log says which (`Assistant turn runs in an agent pod`, with the reason).
-`services/assistant-placement.ts` holds the rule; the test tiers' fake runtime
-defaults to `agent-pod` so a machine's real `claude` never runs under a test.
+`services/assistant-placement.ts` holds the rule. Unset, the placement is `api-pod`
+inside Kubernetes only (the chart sets it explicitly): an API on a developer's
+machine, or a test, never runs that machine's real `claude` as its child unless told to.
 
 The optional legacy dedicated Optio pod (`optio.enabled`) is not used by either
 placement. Pod startup, harness credentials and provider errors appear in the

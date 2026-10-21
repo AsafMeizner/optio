@@ -14,8 +14,9 @@
  * Codex; a Copilot / Gemini / OpenCode / Cursor assistant runs in a pod),
  * the session has a repo (checkouts live in pods), or as many turns as the
  * pod allows are already running (`OPTIO_ASSISTANT_IN_POD_MAX`, default 3).
- * The fake runtime of the test tiers defaults to `agent-pod`: a machine's
- * real `claude` must never run under a test unless the test asks for it.
+ * Unset, it is `api-pod` only inside Kubernetes: an API on a developer's
+ * machine, or a test, must never run that machine's real `claude` as its
+ * child unless told to.
  */
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
@@ -32,10 +33,16 @@ export const HARNESS_BINARIES: Record<string, string> = {
   cursor: "cursor-agent",
 };
 
+/**
+ * Unset, the placement is `api-pod` inside Kubernetes (the chart sets it
+ * explicitly anyway) and `agent-pod` anywhere else: an API on a developer's
+ * machine, or a test, must never pick up the `claude` on that machine's
+ * PATH and run it as its own child.
+ */
 export function assistantPlacement(env: NodeJS.ProcessEnv = process.env): AssistantPlacement {
   const raw = env.OPTIO_ASSISTANT_PLACEMENT?.trim();
   if (raw === "api-pod" || raw === "agent-pod") return raw;
-  return env.OPTIO_RUNTIME === "fake" ? "agent-pod" : "api-pod";
+  return env.KUBERNETES_SERVICE_HOST && env.OPTIO_RUNTIME !== "fake" ? "api-pod" : "agent-pod";
 }
 
 /** How many assistant turns the API pod runs at once before the rest go to agent pods. */

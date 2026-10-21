@@ -29,14 +29,17 @@ function pathWith(...bins: string[]): string {
 }
 
 describe("assistant placement", () => {
-  it("defaults to the API pod, except under the fake runtime", () => {
-    expect(assistantPlacement({})).toBe("api-pod");
-    expect(assistantPlacement({ OPTIO_RUNTIME: "fake" })).toBe("agent-pod");
+  it("defaults to the API pod inside Kubernetes only", () => {
+    expect(assistantPlacement({ KUBERNETES_SERVICE_HOST: "10.0.0.1" })).toBe("api-pod");
+    expect(assistantPlacement({})).toBe("agent-pod");
+    expect(assistantPlacement({ KUBERNETES_SERVICE_HOST: "10.0.0.1", OPTIO_RUNTIME: "fake" })).toBe(
+      "agent-pod",
+    );
     expect(
       assistantPlacement({ OPTIO_RUNTIME: "fake", OPTIO_ASSISTANT_PLACEMENT: "api-pod" }),
     ).toBe("api-pod");
     expect(assistantPlacement({ OPTIO_ASSISTANT_PLACEMENT: "agent-pod" })).toBe("agent-pod");
-    expect(assistantPlacement({ OPTIO_ASSISTANT_PLACEMENT: "garbage" })).toBe("api-pod");
+    expect(assistantPlacement({ OPTIO_ASSISTANT_PLACEMENT: "garbage" })).toBe("agent-pod");
   });
 
   it("reads the in-pod turn limit with a sane default", () => {
@@ -54,7 +57,7 @@ describe("assistant placement", () => {
   });
 
   it("places a turn: API pod when it can, an agent pod and why when it can't", () => {
-    const env = { PATH: pathWith("claude") };
+    const env = { PATH: pathWith("claude"), KUBERNETES_SERVICE_HOST: "10.0.0.1" };
     const base = { runtime: "claude-code", assistant: true, repoUrl: null, liveInPod: 0 };
     expect(placeAssistantTurn(base, env)).toEqual({ where: "api-pod" });
     expect(placeAssistantTurn({ ...base, assistant: false }, env)).toEqual({
