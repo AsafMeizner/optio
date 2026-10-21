@@ -96,10 +96,15 @@ final class ScrollableTerminalView: TerminalView {
         }
     }
 
+    /// The cell in points, from the font — the same arithmetic SwiftTerm lays the
+    /// grid out with. Not `cellSizeInPixels`: it scales by the window's
+    /// `contentScaleFactor`, which is 1 under a SwiftUI host, so dividing by the
+    /// display scale made every report land at the bottom-right cell (col 53,
+    /// row 30 on a phone). Claude Code scrolls on any wheel report; Codex only
+    /// scrolls when the pointer is over its transcript, so its drags went dead.
     private func cellSize() -> CGSize? {
-        guard let px = cellSizeInPixels(source: getTerminal()) else { return nil }
-        let scale = max(traitCollection.displayScale, 1)
-        return CGSize(width: CGFloat(px.width) / scale, height: CGFloat(px.height) / scale)
+        let cell = LocalTerminalHostView.cellSize(for: font, scale: max(traitCollection.displayScale, 1))
+        return cell.width > 0 && cell.height > 0 ? cell : nil
     }
 
     // A short deceleration so a flick keeps scrolling a little, like the native view.

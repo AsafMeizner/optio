@@ -18,15 +18,24 @@ final class TerminalScrollUITests: XCTestCase {
         app.launchEnvironment["OPTIO_DEV_OPEN_URL"] = "optio://local/\(terminal)"
         app.launch()
         sleep(6)
-        // The dev deep link is best-effort; if we did not land on the terminal, walk there.
-        if !app.staticTexts["connected"].waitForExistence(timeout: 4), let title = env["OPTIO_UITEST_TERMINAL_TITLE"] {
-            app.tabBars.buttons["Live"].tap()
+        // A first launch asks for notification permission; the alert would eat the first drag.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.buttons["Allow"]
+        if allow.waitForExistence(timeout: 2) { allow.tap() }
+        // The dev deep link is best-effort; if we did not land on the session, walk there
+        // through Work › All (a Local session row shows its title).
+        let title = env["OPTIO_UITEST_TERMINAL_TITLE"]
+        if let title, !app.staticTexts[title].waitForExistence(timeout: 4) {
+            app.tabBars.buttons["Work"].tap()
             let row = app.staticTexts[title].firstMatch
-            XCTAssertTrue(row.waitForExistence(timeout: 8), "terminal row \(title) not found on Live")
+            XCTAssertTrue(row.waitForExistence(timeout: 8), "session row \(title) not found under Work")
             row.tap()
-            XCTAssertTrue(app.staticTexts["connected"].waitForExistence(timeout: 10), "terminal did not connect")
-            sleep(2)
+            XCTAssertTrue(app.staticTexts[title].waitForExistence(timeout: 10), "session screen did not open")
         }
+        // An agent session opens on its Chat face; the drag under test is on the Terminal face.
+        let terminalFace = app.segmentedControls.buttons["Terminal"]
+        if terminalFace.waitForExistence(timeout: 2) { terminalFace.tap() }
+        sleep(3)
         save(app.screenshot(), "before")
         let mid = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
         let lower = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
