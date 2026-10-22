@@ -64,7 +64,11 @@ RUN npm install -g tsx
 # same Claude Code pin as the agent images (images/base.Dockerfile) and Codex.
 # An assistant on another harness runs in an agent pod instead.
 # TODO(#566): bump back to latest once upstream Bun ships a fix and claude-code adopts it.
-RUN npm install -g @anthropic-ai/claude-code@2.1.112 @openai/codex
+# The API launches Codex with `codex exec --dangerously-bypass-approvals-and-
+# sandbox` (task-worker.ts, pooled-agent-command.ts; `--full-auto` is gone
+# from 0.162+): fail the build if the Codex this image gets no longer takes it.
+RUN npm install -g @anthropic-ai/claude-code@2.1.112 @openai/codex \
+    && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox
 
 # The agent home every run writes under (/home/agent, as in the agent
 # images): the assistant's run homes, setup files and harness config. The

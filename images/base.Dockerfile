@@ -74,8 +74,12 @@ RUN corepack enable && corepack prepare pnpm@10 --activate
 # TODO(#566): bump back to latest once upstream Bun ships a fix and claude-code adopts it.
 RUN npm install -g @anthropic-ai/claude-code@2.1.112
 
-# OpenAI Codex CLI
-RUN npm install -g @openai/codex
+# OpenAI Codex CLI. The entrypoint runs `codex exec
+# --dangerously-bypass-approvals-and-sandbox` (the pod is the sandbox; the
+# older `--full-auto` is gone from 0.162+): fail the build, not every run, if
+# the Codex this image gets no longer takes it.
+RUN npm install -g @openai/codex \
+    && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox
 
 # GitHub Copilot CLI (pinned + best-effort — package may be temporarily unavailable)
 RUN npm install -g @github/copilot@1.0.20 || echo "WARN: @github/copilot install failed; copilot agent will not be available in this image"

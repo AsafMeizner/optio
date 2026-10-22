@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # By hand, for a push whose event GitHub dropped (v0.19.1, 2026-10-22).
+  workflow_dispatch:
 
 jobs:
   format:
