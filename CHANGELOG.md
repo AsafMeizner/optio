@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-22
+
 ### Added
 
 - **A queued session on a machine can jump the line.** A session waiting for a free agent slot (the machine's "Agents at once" limit) now opens on a Queued panel with its place in line instead of a terminal stuck on "Connecting", and offers **Move to front** (the next to start when an agent finishes) and **Start now** (starts at once, past the limit) — on the web, iOS and Android, and as `POST /api/local/terminals/:id/front` and `POST /api/local/terminals/:id/start` with `{ "now": true }`. Terminals carry `queuePosition` while queued.
