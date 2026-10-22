@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-10-22
+
 ### Changed
 
 - The Work list and a session page load behind skeletons shaped like what is coming — row placeholders with their attribute pills and status chips, and a session header over the dark screen — instead of a "Loading work…" line in the corner.
