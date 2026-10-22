@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ComponentProps } from "react";
-import { Loader2 } from "lucide-react";
+import { SessionSkeleton } from "@/components/skeleton";
 import { api } from "@/lib/api-client";
 import { TerminalPane } from "./terminal-pane";
 import { TaskWorkspace } from "@/components/tasks/task-workspace";
@@ -24,13 +24,7 @@ export function LocalWorkPane(props: ComponentProps<typeof TerminalPane>) {
     };
   }, [props.terminalId]);
 
-  if (link?.terminalId !== props.terminalId)
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-text-muted">
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-        Loading session…
-      </div>
-    );
+  if (link?.terminalId !== props.terminalId) return <SessionSkeleton label="Loading session" />;
   const { onTitle, ...pane } = props;
   return link.taskId ? (
     <TaskWorkspace key={link.taskId} id={link.taskId} localPane={pane} onTitle={onTitle} />

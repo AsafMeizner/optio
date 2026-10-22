@@ -17,6 +17,7 @@ import {
 } from "@/components/local/split-state";
 import { TaskWorkspace } from "@/components/tasks/task-workspace";
 import { PodWorkDetail } from "./pod-work-detail";
+import { SessionSkeleton } from "@/components/skeleton";
 import { useWorkSession } from "./session-context";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
@@ -112,7 +113,7 @@ export function WorkDetail({ id }: { id: string }) {
         </button>
       </div>
     );
-  if (!resolved) return <div className="p-6 text-sm text-text-muted">Loading work…</div>;
+  if (!resolved) return <SessionSkeleton />;
   if (resolved.kind === "pod") return <PodWorkDetail id={id} />;
   return <Workspace id={id} resolved={resolved} />;
 }

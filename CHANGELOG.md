@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Work list and a session page load behind skeletons shaped like what is coming — row placeholders with their attribute pills and status chips, and a session header over the dark screen — instead of a "Loading work…" line in the corner.
+
 ### Fixed
 
 - A session's PR / ticket badges no longer repeat: the Linear or Jira ticket a session was started for showed as a generic badge next to the agent's own Linear badge for the same issue, and a bare `#1234` sat next to a `repo#1234` PR badge. Badges match by what they name (a Linear / Jira URL goes by its key whatever brand it was stored with), a bare ref gives way to any branded badge of its number, and the API folds the ticket into the session's links so the web, iOS and Android all show one badge per ticket.

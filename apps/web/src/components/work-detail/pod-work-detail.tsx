@@ -48,6 +48,7 @@ const SessionTerminal = dynamic(
   },
 );
 import { SessionRecoveryStatus } from "@/components/session-recovery-status";
+import { SessionSkeleton } from "@/components/skeleton";
 import { SessionShareButton } from "@/components/session-share-button";
 import { SessionChat } from "@/components/session-chat";
 import { SplitPane } from "@/components/split-pane";
@@ -134,14 +135,7 @@ export function PodWorkDetail({ id }: { id: string }) {
     sendToAgentRef.current = handler;
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-text-muted">
-        <Loader2 className="w-5 h-5 animate-spin mr-2" />
-        Loading session...
-      </div>
-    );
-  }
+  if (loading) return <SessionSkeleton label="Loading session" />;
 
   if (!session) {
     return (

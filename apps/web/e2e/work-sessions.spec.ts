@@ -334,7 +334,7 @@ test("switching sessions preserves the rail while work resolves and restores nor
     });
     await rail.locator(`[data-terminal-id="${ids[1]}"]`).click();
     await expect(page).toHaveURL(`/work/${ids[1]}`);
-    await expect(page.getByText("Loading work…")).toBeVisible();
+    await expect(page.getByRole("status", { name: "Loading work" })).toBeVisible();
     await expect(rail).toBeVisible();
     await expect(page.getByRole("complementary", { name: "Sidebar", exact: true })).toHaveCount(0);
     await expect(search).toHaveValue("Stable rail");

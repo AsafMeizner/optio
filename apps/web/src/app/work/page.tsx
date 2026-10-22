@@ -29,6 +29,7 @@ import { OwnerSegments } from "@/components/ui/owner-segments";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { SearchField } from "@/components/ui/search-field";
 import { WorkRowView } from "@/components/work-row";
+import { WorkListSkeleton } from "@/components/skeleton";
 import { countByOwner, inOwnerFilter, parseOwnerFilter, type OwnerFilter } from "@/lib/owner";
 import { countWork, inView, sessionScreenTarget, type WorkView } from "@/lib/work-feed";
 
@@ -384,11 +385,7 @@ function WorkList() {
       )}
 
       {loading && rows.length === 0 ? (
-        <div className="space-y-2">
-          {[...Array(5)].map((_, i) => (
-            <div key={i} className="h-14 skeleton-shimmer rounded-lg" />
-          ))}
-        </div>
+        <WorkListSkeleton />
       ) : error && rows.length === 0 ? null : visible.length === 0 ? (
         <EmptyState
           icon={Terminal}
