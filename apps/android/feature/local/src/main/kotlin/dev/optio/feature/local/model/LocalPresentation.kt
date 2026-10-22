@@ -131,8 +131,21 @@ object LocalPresentation {
         }
     }
 
-    /** Parked-on-offline-host terminals spawn themselves on reconnect; Start would only 409. */
-    fun canStart(t: LocalTerminal): Boolean = t.state == LocalTerminalState.PENDING && t.pendingReason != LocalTerminalPendingReason.HOST_OFFLINE
+    /**
+     * Only a held terminal needs a person to start it: one parked on an offline host starts
+     * when it reconnects, one queued for an agent slot when another agent finishes (Start
+     * would only 409 — a queued one takes [isQueued]'s "Start now" instead).
+     */
+    fun canStart(t: LocalTerminal): Boolean = t.state == LocalTerminalState.PENDING && t.pendingReason == LocalTerminalPendingReason.HOLD
+
+    /** Waiting for a free agent slot on its machine: can move to the front of the queue or start now, past the limit. */
+    fun isQueued(t: LocalTerminal): Boolean = t.state == LocalTerminalState.PENDING && t.pendingReason == LocalTerminalPendingReason.CAPACITY
+
+    /** "next in line" / "#3 in line", from the server's queue position. */
+    fun queuePlace(t: LocalTerminal): String {
+        val n = t.queuePosition?.toInt() ?: return "in line"
+        return if (n == 1) "next in line" else "#$n in line"
+    }
 
     fun canKill(t: LocalTerminal): Boolean = t.state == LocalTerminalState.RUNNING || t.state == LocalTerminalState.LAUNCHING
 

@@ -159,12 +159,18 @@ back via `local_terminal_id`). The pipeline, in `services/local-run-service.ts`:
    (`local_hosts.max_concurrent_agents`, default 3, set on the Machines page or with
    `PATCH /api/local/hosts/:id`), the machines' answer to a repo's concurrency limit. An
    agent terminal that an automation, Job, Task or ticket starts while the host already
-   runs that many agents parks in `pending` / `capacity` ("Queued") and starts,
-   oldest first, as agents finish, when the limit is raised, and on the daemon's hello —
-   the host row is locked for the check-and-claim (`claimAgentSlot`), so two spawns racing
-   for the last slot can't both take it. A session a person opens by hand always starts
-   (their machine, their call) but counts toward the limit; shells and plain commands never
-   count. The sweeper restarts waiters whose flush was lost with an instance.
+   runs that many agents parks in `pending` / `capacity` ("Queued", with its place in the
+   machine's line — `queuePosition`, 1 = next) and starts, in queue order
+   (`local_terminals.queue_priority`, then oldest first), as agents finish, when the limit
+   is raised, and on the daemon's hello — the host row is locked for the check-and-claim
+   (`claimAgentSlot`), so two spawns racing for the last slot can't both take it. Like a
+   queued Repo Task, a queued session can jump the line: **Move to front**
+   (`POST /api/local/terminals/:id/front`) makes it the next to start, and **Start now**
+   (`POST /api/local/terminals/:id/start` with `{ now: true }`) starts it at once, past the
+   limit — the limit holds back automations, never a person. A session a person opens by
+   hand always starts (their machine, their call) but counts toward the limit; shells and
+   plain commands never count. The sweeper restarts waiters whose flush was lost with an
+   instance.
 3. Daemon frames drive the run (`syncLinkedRun`, called from every terminal update):
    `launching`/`running` → Job `running` (Task `provisioning` → `running`); `usage` → live
    cost / tokens / model on the run; `session` → `tasks.session_id` (resume handle); a

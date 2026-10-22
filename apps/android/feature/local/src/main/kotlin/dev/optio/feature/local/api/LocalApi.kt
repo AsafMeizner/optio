@@ -95,6 +95,9 @@ data class CreateLocalTerminalBody(
 internal data class KillBody(val signal: String? = null)
 
 @Serializable
+internal data class StartBody(val now: Boolean? = null)
+
+@Serializable
 internal data class InputBody(val data: String)
 
 @Serializable
@@ -203,8 +206,20 @@ suspend fun ApiClient.getLocalTerminal(id: String): LocalTerminal = get<Terminal
 suspend fun ApiClient.createLocalTerminal(body: CreateLocalTerminalBody): LocalTerminal =
     post<TerminalEnvelope>("/api/local/terminals", body).terminal
 
-/** Starts a `pending` (held) terminal. */
-suspend fun ApiClient.startLocalTerminal(id: String): LocalTerminal = post<TerminalEnvelope>("/api/local/terminals/$id/start").terminal
+/** Starts a `pending` (held) terminal; [now] starts a queued one right away, past the machine's agent limit. */
+suspend fun ApiClient.startLocalTerminal(
+    id: String,
+    now: Boolean = false,
+): LocalTerminal =
+    if (now) {
+        post<TerminalEnvelope>("/api/local/terminals/$id/start", StartBody(now = true)).terminal
+    } else {
+        post<TerminalEnvelope>("/api/local/terminals/$id/start").terminal
+    }
+
+/** A queued terminal becomes the next to start on its machine (starts at once if a slot is free). */
+suspend fun ApiClient.moveLocalTerminalToFront(id: String): LocalTerminal =
+    post<TerminalEnvelope>("/api/local/terminals/$id/front", JsonObject(emptyMap())).terminal
 
 /** SIGTERM by default; `SIGKILL` for "Force kill". */
 suspend fun ApiClient.killLocalTerminal(

@@ -2221,8 +2221,18 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  startLocalTerminal: (id: string) =>
-    request<{ terminal: any }>(`/api/local/terminals/${id}/start`, { method: "POST" }),
+  /** `now`: start a terminal queued for an agent slot right away, past the machine's limit. */
+  startLocalTerminal: (id: string, opts: { now?: boolean } = {}) =>
+    request<{ terminal: any }>(`/api/local/terminals/${id}/start`, {
+      method: "POST",
+      body: JSON.stringify(opts.now ? { now: true } : {}),
+    }),
+  /** A queued terminal becomes the next to start on its machine. */
+  moveLocalTerminalToFront: (id: string) =>
+    request<{ terminal: any }>(`/api/local/terminals/${id}/front`, {
+      method: "POST",
+      body: "{}",
+    }),
   pinLocalTerminal: (id: string) =>
     request<{ terminal: any }>(`/api/local/terminals/${id}/pin`, { method: "POST" }),
   unpinLocalTerminal: (id: string) =>

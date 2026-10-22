@@ -43,6 +43,7 @@ import { useRailStore } from "./rail-store";
 import { useBellStore } from "./bell-store";
 import { ensureNotificationPermission } from "./attention-watcher";
 import { type ConnState } from "./conn-state";
+import { QueueActions, isQueued, queuePlace } from "./queue-actions";
 import { TitleEditor } from "./title-editor";
 import { LocalSessionIcon } from "./session-icon";
 import { SessionLimitsPills, SessionUsageChip } from "./usage-chips";
@@ -378,6 +379,8 @@ export function TerminalPane({
   // The face shown while it ran — what a session you watched end stays on.
   if (!isDead) viewRef.current = view;
   const parked = terminal.state === "pending" && terminal.pendingReason === "host_offline";
+  // Waiting for a free agent slot on its machine: no PTY to stream yet.
+  const queued = isQueued(terminal);
   // The likeliest reason a machine never comes back: it's online under a new name.
   const onlineElsewhere = hosts.find((h) => h.id !== terminal.hostId && h.state === "online");
   const compact = chrome.paneCount > 1;
@@ -456,6 +459,7 @@ export function TerminalPane({
           <span>Start</span>
         </Button>
       )}
+      {queued && <QueueActions terminal={terminal} host={host} onChanged={setTerminal} compact />}
       {canResume && (
         <Button
           size="sm"
@@ -767,7 +771,7 @@ export function TerminalPane({
         kind="local"
         id={terminal.id}
         stream={
-          view === "screen" && !isDead && !parked
+          view === "screen" && !isDead && !parked && !queued
             ? { state: conn, message: connectionMessage }
             : undefined
         }
@@ -801,6 +805,31 @@ export function TerminalPane({
                 compact={compact}
               />
             )}
+          </div>
+        ) : queued ? (
+          <div
+            className="flex-1 min-h-0 bg-[#09090b] flex flex-col items-center justify-center gap-2 px-6 text-center"
+            data-testid="local-session-queued"
+          >
+            <Laptop className="w-6 h-6 text-text-muted/60" />
+            <p className="text-sm text-text">
+              Queued on {host?.name ?? "its machine"} — {queuePlace(terminal)}
+            </p>
+            <p className="text-xs text-text-muted max-w-sm">
+              {host?.name ?? "The machine"} is running as many agents as it allows
+              {host?.maxConcurrentAgents ? ` (${host.maxConcurrentAgents} at once)` : ""}. This
+              session starts when one finishes, in queue order — or jump the line.
+            </p>
+            <QueueActions
+              terminal={terminal}
+              host={host}
+              onChanged={setTerminal}
+              className="mt-2"
+              buttonClassName="h-9 px-3"
+            />
+            <Link href="/machines" className="text-xs text-text-muted hover:text-text">
+              Change the machine&apos;s limit on Machines
+            </Link>
           </div>
         ) : parked ? (
           <div className="flex-1 min-h-0 bg-[#09090b] flex flex-col items-center justify-center gap-2 px-6 text-center">

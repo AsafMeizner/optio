@@ -50,6 +50,11 @@ struct KillLocalTerminalBody: Encodable {
     var signal: String?
 }
 
+struct StartLocalTerminalBody: Encodable {
+    /// Start a terminal queued for an agent slot right away, past the machine's limit.
+    var now: Bool?
+}
+
 struct LocalTerminalInputBody: Encodable {
     var data: String
 }
@@ -161,8 +166,14 @@ extension APIClient {
         try await post("/api/local/terminals", body: body, as: TerminalEnvelope.self).terminal
     }
 
-    func startLocalTerminal(_ id: String) async throws -> LocalTerminal {
-        try await post("/api/local/terminals/\(id)/start", as: TerminalEnvelope.self).terminal
+    /// `now`: start a queued terminal right away, past the machine's agent limit.
+    func startLocalTerminal(_ id: String, now: Bool = false) async throws -> LocalTerminal {
+        try await post("/api/local/terminals/\(id)/start", body: StartLocalTerminalBody(now: now ? true : nil), as: TerminalEnvelope.self).terminal
+    }
+
+    /// A queued terminal becomes the next to start on its machine.
+    func moveLocalTerminalToFront(_ id: String) async throws -> LocalTerminal {
+        try await post("/api/local/terminals/\(id)/front", body: Empty(), as: TerminalEnvelope.self).terminal
     }
 
     func killLocalTerminal(_ id: String, signal: String? = nil) async throws {
@@ -339,6 +350,14 @@ enum LocalPresentation {
     /// host starts when it reconnects, one waiting for an agent slot when another
     /// agent on the machine finishes.
     static func canStart(_ t: LocalTerminal) -> Bool { t.state == .pending && t.pendingReason == .hold }
+    /// Waiting for a free agent slot on its machine: can move to the front of
+    /// the queue or start now, past the machine's limit.
+    static func isQueued(_ t: LocalTerminal) -> Bool { t.state == .pending && t.pendingReason == .capacity }
+    /// "next in line" / "#3 in line" from the server's queue position.
+    static func queuePlace(_ t: LocalTerminal) -> String {
+        guard let n = t.queuePosition else { return "in line" }
+        return n == 1 ? "next in line" : "#\(Int(n)) in line"
+    }
     static func canKill(_ t: LocalTerminal) -> Bool { t.state == .running || t.state == .launching }
     static func canDelete(_ t: LocalTerminal) -> Bool { t.state == .exited || t.state == .error || t.state == .pending }
     static func isDead(_ t: LocalTerminal) -> Bool { t.state == .exited || t.state == .error }

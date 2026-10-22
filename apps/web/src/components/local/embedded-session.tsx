@@ -12,6 +12,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { ConfirmPopover } from "@/components/ui/confirm-popover";
 import { useLocalHosts } from "@/hooks/use-local-hosts";
 import { StatusDot, attentionLabel, dirTail, localStateLabel } from "./terminal-card";
+import { QueueActions, isQueued, queuePlace } from "./queue-actions";
 import { collectWorkLinks, WorkLinkBadges } from "./work-links";
 import { SessionUsageChip } from "./usage-chips";
 import type { ConnState } from "./conn-state";
@@ -205,9 +206,9 @@ export function EmbeddedLocalSession({
             — starts when {host?.name ?? "the machine"} reconnects
           </span>
         )}
-        {terminal.state === "pending" && terminal.pendingReason === "capacity" && (
+        {isQueued(terminal) && (
           <span className="text-text-muted truncate">
-            — queued for a free agent slot on {host?.name ?? "the machine"}
+            — {queuePlace(terminal)} for a free agent slot on {host?.name ?? "the machine"}
           </span>
         )}
         <span className="hidden sm:inline-flex items-center gap-1 text-text-muted min-w-0">
@@ -235,6 +236,14 @@ export function EmbeddedLocalSession({
           <SessionUsageChip usage={terminal.usage} collapsible className="hidden sm:inline-flex" />
           {canShowChat(terminal, hasTranscript) && view && (
             <SessionViewToggle view={view} onChange={setViewChoice} />
+          )}
+          {isQueued(terminal) && (
+            <QueueActions
+              terminal={terminal}
+              host={host}
+              onChanged={setTerminal}
+              buttonClassName="h-7 px-2 rounded-md"
+            />
           )}
           {canResume && (
             <button

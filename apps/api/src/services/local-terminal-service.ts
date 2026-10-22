@@ -373,7 +373,14 @@ export async function createTerminal(input: CreateTerminalInput): Promise<LocalT
  * flush on a daemon hello — can never both send a spawn for the same row.
  * Returns the current row when someone else already claimed it.
  */
-async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null> {
+/**
+ * Start the terminal on its host if it can start now. `now` starts an agent
+ * terminal past the machine's limit (someone chose "Start now").
+ */
+async function trySpawn(
+  row: LocalTerminalRow,
+  opts: { now?: boolean } = {},
+): Promise<LocalTerminalRow | null> {
   const budgetHold = row.taskId
     ? await runBudgetHold("task", row.taskId)
     : row.workflowRunId
@@ -406,9 +413,10 @@ async function trySpawn(row: LocalTerminalRow): Promise<LocalTerminalRow | null>
       endedAt: new Date(),
     });
   }
-  const claimed = waitsForSlot(row)
-    ? await claimAgentSlot(row)
-    : await transitionTerminal(row.id, ["pending"], { state: "launching", pendingReason: null });
+  const claimed =
+    waitsForSlot(row) && !opts.now
+      ? await claimAgentSlot(row)
+      : await transitionTerminal(row.id, ["pending"], { state: "launching", pendingReason: null });
   if (!claimed) return getTerminal(row.id);
   if (claimed.state === "pending") return claimed;
   // To the daemon wherever it is connected (acknowledged by its owner).
@@ -507,23 +515,29 @@ async function claimAgentSlot(row: LocalTerminalRow): Promise<LocalTerminalRow |
   return updated;
 }
 
+/** The order a host's waiting agents start in: moved-to-front first, then oldest. */
+const QUEUE_ORDER = [asc(localTerminals.queuePriority), asc(localTerminals.createdAt)];
+
+function capacityWaiters(hostId: string) {
+  return and(
+    eq(localTerminals.hostId, hostId),
+    eq(localTerminals.state, "pending"),
+    eq(localTerminals.pendingReason, "capacity"),
+  );
+}
+
 /**
- * Start terminals waiting for a slot on the host, oldest first, until the
+ * Start terminals waiting for a slot on the host, in queue order, until the
  * host is full again. Called when an agent terminal ends, when the limit is
- * raised, and on the daemon's hello (with the offline-parked ones).
+ * raised, when a waiter moves to the front, and on the daemon's hello (with
+ * the offline-parked ones).
  */
 export async function flushCapacityTerminals(hostId: string): Promise<number> {
   const waiting = await db
     .select()
     .from(localTerminals)
-    .where(
-      and(
-        eq(localTerminals.hostId, hostId),
-        eq(localTerminals.state, "pending"),
-        eq(localTerminals.pendingReason, "capacity"),
-      ),
-    )
-    .orderBy(asc(localTerminals.createdAt));
+    .where(capacityWaiters(hostId))
+    .orderBy(...QUEUE_ORDER);
   let started = 0;
   for (const row of waiting) {
     const next = await trySpawn(row);
@@ -534,10 +548,17 @@ export async function flushCapacityTerminals(hostId: string): Promise<number> {
   return started;
 }
 
-/** Start a pending (held or parked) terminal. */
-export async function startTerminal(row: LocalTerminalRow): Promise<LocalTerminalRow> {
+/**
+ * Start a pending (held or parked) terminal. `now` starts a queued agent
+ * terminal past the machine's limit: the limit admits automation agents, it
+ * never stops one a person starts by hand.
+ */
+export async function startTerminal(
+  row: LocalTerminalRow,
+  opts: { now?: boolean } = {},
+): Promise<LocalTerminalRow> {
   if (row.state !== "pending") throw new Error(`Terminal is ${row.state}, not pending`);
-  const updated = await trySpawn(row);
+  const updated = await trySpawn(row, opts);
   if (!updated || updated.state === "pending") {
     throw new Error(
       updated?.pendingReason === "capacity"
@@ -546,6 +567,32 @@ export async function startTerminal(row: LocalTerminalRow): Promise<LocalTermina
     );
   }
   return updated;
+}
+
+/**
+ * Move a queued agent terminal to the front of its machine's queue: it is
+ * the next one to start when a slot frees (and starts right away if one is
+ * free). Its priority goes below every other waiter's on the host.
+ */
+export async function moveToFront(row: LocalTerminalRow): Promise<LocalTerminalRow> {
+  if (row.state !== "pending" || row.pendingReason !== "capacity") {
+    throw new Error("Only a terminal queued for an agent slot can move to the front");
+  }
+  const [{ min }] = await db
+    .select({ min: sql<number | null>`min(${localTerminals.queuePriority})` })
+    .from(localTerminals)
+    .where(capacityWaiters(row.hostId));
+  const priority = Math.min(row.queuePriority, min ?? row.queuePriority) - 1;
+  await db
+    .update(localTerminals)
+    .set({ queuePriority: priority, updatedAt: new Date() })
+    .where(eq(localTerminals.id, row.id));
+  await publishLocalChanged({ terminalId: row.id, hostId: row.hostId, userId: row.userId }).catch(
+    (err) => logger.warn({ err }, "local: failed to publish change event"),
+  );
+  // A slot may be free (its flush lost with an API instance): start it then.
+  await flushCapacityTerminals(row.hostId);
+  return (await getTerminal(row.id)) ?? row;
 }
 
 /**
@@ -596,12 +643,20 @@ export async function killTerminal(row: LocalTerminalRow, signal?: string): Prom
 /**
  * Rows as the API returns them: each with the type of the trigger that
  * started it (`github`, `schedule`, …), so its badge can say where it came
- * from (one lookup for the whole list), and one link per PR / ticket — rows
- * stored before links were deduped still carry a PR twice.
+ * from (one lookup for the whole list), one link per PR / ticket — rows
+ * stored before links were deduped still carry a PR twice — and, for one
+ * queued for an agent slot, its place in its machine's queue (1 = next).
  */
 export async function presentTerminals<
-  T extends { triggerId: string | null; links: WorkLink[] | null },
->(rows: T[]): Promise<Array<T & { triggerType: string | null }>> {
+  T extends {
+    id: string;
+    hostId: string;
+    state: string;
+    pendingReason: string | null;
+    triggerId: string | null;
+    links: WorkLink[] | null;
+  },
+>(rows: T[]): Promise<Array<T & { triggerType: string | null; queuePosition: number | null }>> {
   const ids = [...new Set(rows.map((r) => r.triggerId).filter((id): id is string => !!id))];
   const types = new Map<string, string>();
   if (ids.length > 0) {
@@ -611,11 +666,42 @@ export async function presentTerminals<
       .where(inArray(workflowTriggers.id, ids));
     for (const t of found) types.set(t.id, t.type);
   }
+  const positions = await queuePositions(
+    rows.filter((r) => r.state === "pending" && r.pendingReason === "capacity"),
+  );
   return rows.map((r) => ({
     ...r,
     links: r.links ? dedupeWorkLinks(r.links) : r.links,
     triggerType: r.triggerId ? (types.get(r.triggerId) ?? null) : null,
+    queuePosition: positions.get(r.id) ?? null,
   }));
+}
+
+/** Each queued terminal's place in its host's queue (1 = the next to start). */
+async function queuePositions(
+  queued: Array<{ id: string; hostId: string }>,
+): Promise<Map<string, number>> {
+  const positions = new Map<string, number>();
+  const hostIds = [...new Set(queued.map((r) => r.hostId))];
+  if (hostIds.length === 0) return positions;
+  const waiting = await db
+    .select({ id: localTerminals.id, hostId: localTerminals.hostId })
+    .from(localTerminals)
+    .where(
+      and(
+        inArray(localTerminals.hostId, hostIds),
+        eq(localTerminals.state, "pending"),
+        eq(localTerminals.pendingReason, "capacity"),
+      ),
+    )
+    .orderBy(...QUEUE_ORDER);
+  const counts = new Map<string, number>();
+  for (const w of waiting) {
+    const n = (counts.get(w.hostId) ?? 0) + 1;
+    counts.set(w.hostId, n);
+    positions.set(w.id, n);
+  }
+  return positions;
 }
 
 export async function getTerminal(id: string): Promise<LocalTerminalRow | null> {
@@ -1553,7 +1639,7 @@ export async function flushParkedForOnlineHosts(): Promise<number> {
         lt(localTerminals.updatedAt, cutoff),
       ),
     )
-    .orderBy(asc(localTerminals.createdAt));
+    .orderBy(...QUEUE_ORDER);
   let started = 0;
   const online = new Map<string, boolean>();
   for (const row of parked) {

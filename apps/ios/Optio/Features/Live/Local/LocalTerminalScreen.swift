@@ -101,6 +101,12 @@ struct LocalTerminalScreen: View {
                     if LocalPresentation.canStart(terminal) {
                         Button { Task { await start() } } label: { Label("Start", systemImage: "play.fill") }
                     }
+                    if LocalPresentation.isQueued(terminal) {
+                        Button { Task { await start(now: true) } } label: { Label("Start now", systemImage: "play.fill") }
+                        if terminal.queuePosition != 1 {
+                            Button { Task { await moveToFront() } } label: { Label("Move to front", systemImage: "chevron.up.2") }
+                        }
+                    }
                     if LocalPresentation.canKill(terminal) {
                         Button(role: .destructive) { confirmKill = true } label: { Label("Kill", systemImage: "xmark.circle") }
                     }
@@ -213,7 +219,7 @@ struct LocalTerminalScreen: View {
         if let host = hosts.first(where: { $0.id == t.hostId }) { facts.append(Text(host.name)) }
         if t.state == .exited, let code = t.exitCode { facts.append(Text("exit \(Int(code))")) }
         if t.state == .pending, t.pendingReason == .hostOffline { facts.append(Text("starts when the host reconnects")) }
-        if t.state == .pending, t.pendingReason == .capacity { facts.append(Text("queued for a free agent slot")) }
+        if LocalPresentation.isQueued(t) { facts.append(Text("\(LocalPresentation.queuePlace(t)) for a free agent slot")) }
         if let cost = Cost.formatIfNonZero(t.costUsd) { facts.append(Text(cost)) }
         let showToggle = LocalSessionViewRule.canShowChat(t, hasTranscript: hasTranscript) && view != nil
         return SessionIdentityHeader(
@@ -275,9 +281,15 @@ struct LocalTerminalScreen: View {
         }
     }
 
-    private func start() async {
+    private func start(now: Bool = false) async {
         busy = true
-        do { terminal = try await api.startLocalTerminal(terminalId) } catch { actionError = error.localizedDescription }
+        do { terminal = try await api.startLocalTerminal(terminalId, now: now) } catch { actionError = error.localizedDescription }
+        busy = false
+    }
+
+    private func moveToFront() async {
+        busy = true
+        do { terminal = try await api.moveLocalTerminalToFront(terminalId) } catch { actionError = error.localizedDescription }
         busy = false
     }
 

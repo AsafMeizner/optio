@@ -111,12 +111,17 @@ class LocalApiTest {
             server.post("/api/local/terminals/:id/resume") { FakeResponse.json(terminal, 201) }
             server.post("/api/local/terminals/:id/snooze") { FakeResponse.json(terminal) }
             server.delete("/api/local/terminals/:id/snooze") { FakeResponse.json(terminal) }
+            server.post("/api/local/terminals/:id/front") { FakeResponse.json(terminal) }
             server.post("/api/local/terminals/:id/input") { FakeResponse.json("{}") }
             server.patch("/api/local/terminals/:id") { FakeResponse.json(terminal) }
             server.delete("/api/local/terminals/:id") { FakeResponse.json("{}") }
 
             api.startLocalTerminal("t1")
             assertEquals("", server.lastRequest("POST", "/api/local/terminals/t1/start")!!.body)
+            api.startLocalTerminal("t1", now = true)
+            assertEquals("""{"now":true}""", server.lastRequest("POST", "/api/local/terminals/t1/start")!!.body)
+            api.moveLocalTerminalToFront("t1")
+            assertEquals("{}", server.lastRequest("POST", "/api/local/terminals/t1/front")!!.body)
             api.killLocalTerminal("t1")
             assertEquals("{}", server.lastRequest("POST", "/api/local/terminals/t1/kill")!!.body)
             api.killLocalTerminal("t1", "SIGKILL")

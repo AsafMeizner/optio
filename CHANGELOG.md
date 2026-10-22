@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A queued session on a machine can jump the line.** A session waiting for a free agent slot (the machine's "Agents at once" limit) now opens on a Queued panel with its place in line instead of a terminal stuck on "Connecting", and offers **Move to front** (the next to start when an agent finishes) and **Start now** (starts at once, past the limit) — on the web, iOS and Android, and as `POST /api/local/terminals/:id/front` and `POST /api/local/terminals/:id/start` with `{ "now": true }`. Terminals carry `queuePosition` while queued.
+
 ### Changed
 
 - **Agents on your machine skip permission checks by default**, the way agents in pods always have: Claude Code starts with `--dangerously-skip-permissions` and Codex with `--yolo`, whether a person, a trigger, or Ask Optio started the session. The work form's Permissions field (runs on a machine only) still opts into Auto (Claude's classifier; Codex's workspace-write sandbox, new) or Ask first / Codex's own settings. Daemons on the previous release keep their old `auto` default until updated.

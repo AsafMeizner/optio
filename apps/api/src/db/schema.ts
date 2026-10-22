@@ -2167,6 +2167,9 @@ export const localTerminals = pgTable(
     spec: jsonb("spec").$type<Record<string, unknown>>().notNull(),
     state: localTerminalStateEnum("state").notNull().default("pending"),
     pendingReason: text("pending_reason").$type<"hold" | "host_offline" | "capacity">(),
+    // Order among the agents waiting for a slot on the host (pending/capacity):
+    // lower starts first, ties by creation. "Move to front" goes below them all.
+    queuePriority: integer("queue_priority").notNull().default(100),
     exitCode: integer("exit_code"),
     errorMessage: text("error_message"),
     attentionState: localAttentionStateEnum("attention_state").notNull().default("idle"),

@@ -265,11 +265,12 @@ internal fun ScreenFace(
     onReconnect: () -> Unit,
     modifier: Modifier = Modifier,
     onStart: () -> Unit = {},
+    onStartNow: () -> Unit = {},
     dark: Boolean = optioIsDark(),
 ) {
     val background = TerminalTheme.background(dark)
     if (terminal.state == LocalTerminalState.PENDING) {
-        PendingScreen(terminal, canType, onStart, modifier.background(background))
+        PendingScreen(terminal, canType, onStart, onStartNow, modifier.background(background))
         return
     }
     val showPreview =
@@ -334,28 +335,46 @@ internal fun ScreenFace(
 
 /**
  * A terminal that hasn't started has no screen yet (the stream only attaches to a launching or
- * running one): say why, and offer Start when it's held.
+ * running one): say why, and offer Start when it's held or Start now when it's queued for an
+ * agent slot on its machine (the menu has Move to front).
  */
 @Composable
 private fun PendingScreen(
     terminal: LocalTerminal,
     canStart: Boolean,
     onStart: () -> Unit,
+    onStartNow: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val offline = terminal.pendingReason == LocalTerminalPendingReason.HOST_OFFLINE
+    val queued = LocalPresentation.isQueued(terminal)
     Box(modifier.fillMaxSize().testTag("pending-screen"), contentAlignment = Alignment.Center) {
         EmptyState(
-            title = if (offline) "Waiting for the host" else "Not started yet",
+            title =
+                when {
+                    offline -> "Waiting for the host"
+                    queued -> "Queued — ${LocalPresentation.queuePlace(terminal)}"
+                    else -> "Not started yet"
+                },
             icon = if (offline) Icons.Outlined.WifiOff else Icons.Outlined.Terminal,
             message =
-                if (offline) {
-                    "It starts by itself when the machine reconnects (`optio local up`)."
-                } else {
-                    "This terminal is held: it runs when you start it."
+                when {
+                    offline -> "It starts by itself when the machine reconnects (`optio local up`)."
+                    queued -> "The machine is running as many agents as it allows. It starts when one finishes, in queue order — or start it now, past the limit."
+                    else -> "This terminal is held: it runs when you start it."
                 },
-            actionTitle = if (canStart && LocalPresentation.canStart(terminal)) "Start" else null,
-            action = if (canStart && LocalPresentation.canStart(terminal)) onStart else null,
+            actionTitle =
+                when {
+                    canStart && LocalPresentation.canStart(terminal) -> "Start"
+                    canStart && queued -> "Start now"
+                    else -> null
+                },
+            action =
+                when {
+                    canStart && LocalPresentation.canStart(terminal) -> onStart
+                    canStart && queued -> onStartNow
+                    else -> null
+                },
         )
     }
 }

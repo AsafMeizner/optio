@@ -117,7 +117,11 @@ function baseStatusDescriptor(terminal: any): {
                 : "Pending",
         detail:
           terminal.pendingReason === "capacity"
-            ? "waiting for a free agent slot on the machine"
+            ? terminal.queuePosition == null
+              ? "waiting for a free agent slot on the machine"
+              : terminal.queuePosition === 1
+                ? "next in line for an agent slot on the machine"
+                : `#${terminal.queuePosition} in line for an agent slot on the machine`
             : null,
       };
     case "launching":

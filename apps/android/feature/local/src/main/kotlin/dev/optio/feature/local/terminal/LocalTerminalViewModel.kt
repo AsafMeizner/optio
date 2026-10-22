@@ -21,6 +21,7 @@ import dev.optio.feature.local.api.getLocalTerminal
 import dev.optio.feature.local.api.getLocalTerminalTranscript
 import dev.optio.feature.local.api.killLocalTerminal
 import dev.optio.feature.local.api.listLocalHosts
+import dev.optio.feature.local.api.moveLocalTerminalToFront
 import dev.optio.feature.local.api.renameLocalTerminal
 import dev.optio.feature.local.api.resumeLocalTerminal
 import dev.optio.feature.local.api.sendLocalTerminalInput
@@ -369,6 +370,20 @@ class LocalTerminalViewModel(
         action("start the terminal") {
             applyTerminal(api.startLocalTerminal(terminalId))
             toast("Starting terminal…")
+        }
+
+    /** A queued terminal, right away, past the machine's agent limit. */
+    fun startNow() =
+        action("start the terminal now") {
+            applyTerminal(api.startLocalTerminal(terminalId, now = true))
+            toast("Starting now…")
+        }
+
+    fun moveToFront() =
+        action("move the terminal to the front") {
+            val moved = api.moveLocalTerminalToFront(terminalId)
+            applyTerminal(moved)
+            toast(if (moved.state == LocalTerminalState.PENDING) "Next in line" else "Starting — a slot was free")
         }
 
     fun kill(signal: String? = null) =

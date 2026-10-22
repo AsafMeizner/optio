@@ -728,6 +728,46 @@ export async function localRoutes(rawApp: FastifyInstance) {
       schema: {
         operationId: "startLocalTerminal",
         summary: "Start a pending (held or parked) terminal",
+        description:
+          "A terminal queued for an agent slot on its machine 409s unless `now` is set, " +
+          "which starts it right away, past the machine's limit.",
+        tags: ["Local"],
+        params: z.object({ id: z.string().uuid() }),
+        body: z
+          .object({
+            now: z
+              .boolean()
+              .optional()
+              .describe("Start a queued agent terminal now, past the machine's agent limit"),
+          })
+          .optional(),
+        response: { 200: TerminalResponse, 404: ErrorResponseSchema, 409: ErrorResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      const terminal = await terminalService.getTerminal(req.params.id);
+      if (!terminal || !terminalService.canAccessTerminal(terminal, req.user?.id)) {
+        return reply.status(404).send({ error: "Terminal not found" });
+      }
+      try {
+        const updated = await terminalService.startTerminal(terminal, { now: !!req.body?.now });
+        reply.send({ terminal: updated });
+      } catch (err) {
+        reply.status(409).send({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+  );
+
+  app.post(
+    "/api/local/terminals/:id/front",
+    {
+      ...member,
+      schema: {
+        operationId: "moveLocalTerminalToFront",
+        summary: "Move a queued terminal to the front of its machine's queue",
+        description:
+          "The terminal becomes the next to start when the machine has a free agent slot " +
+          "(and starts at once if it has one now). Only for a terminal queued for a slot.",
         tags: ["Local"],
         params: z.object({ id: z.string().uuid() }),
         response: { 200: TerminalResponse, 404: ErrorResponseSchema, 409: ErrorResponseSchema },
@@ -739,8 +779,9 @@ export async function localRoutes(rawApp: FastifyInstance) {
         return reply.status(404).send({ error: "Terminal not found" });
       }
       try {
-        const updated = await terminalService.startTerminal(terminal);
-        reply.send({ terminal: updated });
+        const moved = await terminalService.moveToFront(terminal);
+        const [shown] = await terminalService.presentTerminals([moved]);
+        reply.send({ terminal: shown });
       } catch (err) {
         reply.status(409).send({ error: err instanceof Error ? err.message : String(err) });
       }

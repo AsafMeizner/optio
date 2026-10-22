@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.KeyboardDoubleArrowUp
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.HighlightOff
@@ -172,6 +173,8 @@ fun LocalTerminalScreen(
                 onReconnect = vm::reconnect,
                 onOpenLink = navigator::openExternal,
                 onStart = vm::start,
+                onStartNow = vm::startNow,
+                onMoveToFront = vm::moveToFront,
                 onResume = vm::resume,
                 onKill = vm::kill,
                 onDelete = vm::delete,
@@ -196,6 +199,8 @@ internal class TerminalActions(
     val onReconnect: () -> Unit = {},
     val onOpenLink: (String) -> Unit = {},
     val onStart: () -> Unit = {},
+    val onStartNow: () -> Unit = {},
+    val onMoveToFront: () -> Unit = {},
     val onResume: () -> Unit = {},
     val onKill: (signal: String?) -> Unit = {},
     val onDelete: () -> Unit = {},
@@ -322,6 +327,7 @@ private fun TerminalBody(
                     onClaim = actions.onClaim,
                     onReconnect = actions.onReconnect,
                     onStart = actions.onStart,
+                    onStartNow = actions.onStartNow,
                 )
             }
         }
@@ -399,6 +405,10 @@ private fun PrimaryAction(
             IconButton(onClick = actions.onStart, modifier = Modifier.testTag("action-start")) {
                 Icon(Icons.Outlined.PlayArrow, contentDescription = "Start")
             }
+        LocalPresentation.isQueued(terminal) ->
+            IconButton(onClick = actions.onStartNow, modifier = Modifier.testTag("action-start-now")) {
+                Icon(Icons.Outlined.PlayArrow, contentDescription = "Start now")
+            }
         LocalPresentation.canResume(terminal) ->
             IconButton(onClick = actions.onResume, modifier = Modifier.testTag("action-resume")) {
                 Icon(Icons.Outlined.Replay, contentDescription = "Resume chat")
@@ -447,6 +457,12 @@ private fun TerminalMenu(
                 }
             if (canMutate) {
                 if (LocalPresentation.canStart(terminal)) item("Start", Icons.Outlined.PlayArrow, "menu-start", action = actions.onStart)()
+                if (LocalPresentation.isQueued(terminal)) {
+                    item("Start now", Icons.Outlined.PlayArrow, "menu-start-now", action = actions.onStartNow)()
+                    if (terminal.queuePosition?.toInt() != 1) {
+                        item("Move to front", Icons.Outlined.KeyboardDoubleArrowUp, "menu-move-to-front", action = actions.onMoveToFront)()
+                    }
+                }
                 if (LocalPresentation.canResume(terminal)) item("Resume chat", Icons.Outlined.Replay, "menu-resume", action = actions.onResume)()
                 if (snoozed) {
                     item("Back in the queue now", Icons.Outlined.NotificationsActive, "menu-unsnooze", action = actions.onUnsnooze)()

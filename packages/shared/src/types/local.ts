@@ -350,6 +350,13 @@ export interface LocalTerminal {
   spec: LocalTerminalSpec;
   state: LocalTerminalState;
   pendingReason: LocalTerminalPendingReason | null;
+  /**
+   * Place in the machine's queue for an agent slot (1 = the next to start)
+   * while `pendingReason` is `capacity`; null otherwise. "Move to front"
+   * (`POST /front`) makes it 1; "Start now" (`POST /start` with `now`) starts
+   * it past the machine's limit.
+   */
+  queuePosition?: number | null;
   exitCode: number | null;
   errorMessage: string | null;
   attentionState: LocalAttentionState;

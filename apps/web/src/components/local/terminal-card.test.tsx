@@ -192,3 +192,16 @@ describe("SpawnSourceBadge", () => {
     expect(screen.getByText("job")).toBeInTheDocument();
   });
 });
+
+describe("statusDescriptor for a queued terminal", () => {
+  it("tells it its place in the machine's line", () => {
+    const queued = { state: "pending", pendingReason: "capacity", attentionState: "idle" };
+    expect(statusDescriptor(queued).label).toBe("Queued");
+    expect(statusDescriptor({ ...queued, queuePosition: 1 }).detail).toBe(
+      "next in line for an agent slot on the machine",
+    );
+    expect(statusDescriptor({ ...queued, queuePosition: 3 }).detail).toBe(
+      "#3 in line for an agent slot on the machine",
+    );
+  });
+});

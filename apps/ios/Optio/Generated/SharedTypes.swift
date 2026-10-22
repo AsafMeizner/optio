@@ -4364,6 +4364,11 @@ public struct LocalTerminal: Codable, Hashable, Sendable {
     public let spec: LocalTerminalSpec
     public let state: LocalTerminalState
     public let pendingReason: LocalTerminalPendingReason?
+    /// Place in the machine's queue for an agent slot (1 = the next to start)
+    /// while `pendingReason` is `capacity`; null otherwise. "Move to front"
+    /// (`POST /front`) makes it 1; "Start now" (`POST /start` with `now`) starts
+    /// it past the machine's limit.
+    public let queuePosition: Double?
     public let exitCode: Double?
     public let errorMessage: String?
     public let attentionState: LocalAttentionState
@@ -4414,6 +4419,7 @@ public struct LocalTerminal: Codable, Hashable, Sendable {
         case spec = "spec"
         case state = "state"
         case pendingReason = "pendingReason"
+        case queuePosition = "queuePosition"
         case exitCode = "exitCode"
         case errorMessage = "errorMessage"
         case attentionState = "attentionState"
@@ -4453,6 +4459,7 @@ public struct LocalTerminal: Codable, Hashable, Sendable {
         spec: LocalTerminalSpec,
         state: LocalTerminalState,
         pendingReason: LocalTerminalPendingReason? = nil,
+        queuePosition: Double? = nil,
         exitCode: Double? = nil,
         errorMessage: String? = nil,
         attentionState: LocalAttentionState,
@@ -4490,6 +4497,7 @@ public struct LocalTerminal: Codable, Hashable, Sendable {
         self.spec = spec
         self.state = state
         self.pendingReason = pendingReason
+        self.queuePosition = queuePosition
         self.exitCode = exitCode
         self.errorMessage = errorMessage
         self.attentionState = attentionState

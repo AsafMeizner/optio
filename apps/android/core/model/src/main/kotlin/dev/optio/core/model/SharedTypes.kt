@@ -2185,6 +2185,13 @@ data class LocalTerminal(
     val spec: LocalTerminalSpec,
     val state: LocalTerminalState,
     val pendingReason: LocalTerminalPendingReason? = null,
+    /**
+     * Place in the machine's queue for an agent slot (1 = the next to start)
+     * while `pendingReason` is `capacity`; null otherwise. "Move to front"
+     * (`POST /front`) makes it 1; "Start now" (`POST /start` with `now`) starts
+     * it past the machine's limit.
+     */
+    val queuePosition: Double? = null,
     val exitCode: Double? = null,
     val errorMessage: String? = null,
     val attentionState: LocalAttentionState,

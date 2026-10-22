@@ -890,6 +890,13 @@
       "when": 1792400000000,
       "tag": "1792400000_local_host_max_concurrent_agents",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1792500000000,
+      "tag": "1792500000_local_terminal_queue_priority",
+      "breakpoints": true
     }
   ]
 }

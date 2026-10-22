@@ -174,6 +174,13 @@ export const LocalTerminalSchema = z
     spec: z.record(z.unknown()),
     state: z.enum(["pending", "launching", "running", "exited", "error"]),
     pendingReason: z.string().nullable(),
+    queuePosition: z
+      .number()
+      .nullable()
+      .optional()
+      .describe(
+        "Place in the machine's queue for an agent slot (1 = next to start); null unless queued",
+      ),
     exitCode: z.number().nullable(),
     errorMessage: z.string().nullable(),
     attentionState: z.enum(["working", "needs_you", "idle"]),

@@ -53,6 +53,7 @@ interface TerminalBody {
     pendingReason: string | null;
     attentionState: string;
     exitCode: number | null;
+    queuePosition?: number | null;
     spec: { kind: string; command?: string; resumeSessionId?: string };
   };
 }
@@ -840,6 +841,93 @@ describe("optio local e2e: a machine's agent limit", () => {
       daemon.next((m) => m.type === "spawn" && m.terminalId === ids[2], 1_000),
     ).rejects.toThrow(/timed out/);
     expect((await getTerminal(ids[2]!)).pendingReason).toBe("capacity");
+  });
+
+  it("a queued agent can move to the front of the machine's queue or start now, past the limit", async () => {
+    const hostId = await registerHost("e2e-agent-limit-queue");
+    const daemon = new FakeDaemon(wsBase);
+    cleanups.push(() => daemon.close());
+    await daemon.connect(hostId, DIRS);
+    await api(`/api/local/hosts/${hostId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ maxConcurrentAgents: 1 }),
+    });
+    const { body: bp } = await api<{ blueprint: { id: string } }>("/api/local/blueprints", {
+      method: "POST",
+      body: JSON.stringify({
+        name: `e2e-limit-queue-${Date.now()}`,
+        hostId,
+        dir: "/tmp/e2e-repo",
+        agent: "claude-code",
+        sessionMode: "headless",
+        commandTemplate: "Tidy {{what}}",
+      }),
+    });
+    const ids: string[] = [];
+    for (const what of ["one", "two", "three", "four"]) {
+      const res = await api<TerminalBody>(`/api/local/blueprints/${bp.blueprint.id}/spawn`, {
+        method: "POST",
+        body: JSON.stringify({ params: { what } }),
+      });
+      ids.push(res.body.terminal.id);
+    }
+    await daemon.next((m) => m.type === "spawn" && m.terminalId === ids[0]);
+    daemon.send({ type: "started", terminalId: ids[0] });
+
+    // The waiters know their place in line, oldest first; the running one has none.
+    const position = async (id: string) => (await getTerminal(id)).queuePosition;
+    expect(await position(ids[0]!)).toBeNull();
+    expect(await position(ids[1]!)).toBe(1);
+    expect(await position(ids[2]!)).toBe(2);
+    expect(await position(ids[3]!)).toBe(3);
+    const listed = await api<{ terminals: Array<{ id: string; queuePosition: number | null }> }>(
+      `/api/local/terminals?hostId=${hostId}`,
+    );
+    expect(listed.body.terminals.find((t) => t.id === ids[3])?.queuePosition).toBe(3);
+
+    // Move the last one to the front: it is next, the others shift back.
+    const front = await api<TerminalBody>(`/api/local/terminals/${ids[3]}/front`, {
+      method: "POST",
+      body: "{}",
+    });
+    expect(front.status).toBe(200);
+    expect(front.body.terminal.state).toBe("pending");
+    expect(front.body.terminal.queuePosition).toBe(1);
+    expect(await position(ids[1]!)).toBe(2);
+    expect(await position(ids[2]!)).toBe(3);
+    // Only a queued terminal can move.
+    const notQueued = await api<{ error: string }>(`/api/local/terminals/${ids[0]}/front`, {
+      method: "POST",
+      body: "{}",
+    });
+    expect(notQueued.status).toBe(409);
+
+    // "Start now" starts a waiter at once, past the one-agent limit.
+    const now = await api<TerminalBody>(`/api/local/terminals/${ids[2]}/start`, {
+      method: "POST",
+      body: JSON.stringify({ now: true }),
+    });
+    expect(now.status).toBe(200);
+    expect(now.body.terminal.state).toBe("launching");
+    const spawnNow = await daemon.next((m) => m.type === "spawn" && m.terminalId === ids[2]);
+    expect((spawnNow.spec as Json).kind).toBe("agent");
+    daemon.send({ type: "started", terminalId: ids[2] });
+    expect(await position(ids[3]!)).toBe(1);
+    expect(await position(ids[1]!)).toBe(2);
+
+    // Two agents live on a one-agent machine: the front of the queue starts
+    // only once both have ended, and it is the one moved there.
+    daemon.send({ type: "exit", terminalId: ids[2], exitCode: 0 });
+    await waitFor(async () => ((await getTerminal(ids[2]!)).state === "exited" ? true : null));
+    await expect(
+      daemon.next((m) => m.type === "spawn" && m.terminalId === ids[3], 1_000),
+    ).rejects.toThrow(/timed out/);
+    daemon.send({ type: "exit", terminalId: ids[0], exitCode: 0 });
+    await daemon.next((m) => m.type === "spawn" && m.terminalId === ids[3]);
+    await expect(
+      daemon.next((m) => m.type === "spawn" && m.terminalId === ids[1], 1_000),
+    ).rejects.toThrow(/timed out/);
+    expect(await position(ids[1]!)).toBe(1);
   });
 });
 
