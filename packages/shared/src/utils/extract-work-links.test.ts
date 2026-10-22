@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectWorkLinks,
   dedupeWorkLinks,
   extractHyperlinkUrls,
   extractWorkLinks,
@@ -188,5 +189,87 @@ describe("dedupeWorkLinks", () => {
     };
     expect(workLinkIdentity(a)).toBe("linear:ENG-12");
     expect(dedupeWorkLinks([a, { ...a, url: `${a.url}/fix-the-thing` }])).toHaveLength(1);
+  });
+});
+
+describe("one badge per ticket, branded over generic", () => {
+  it("folds the Linear ticket a session was started for into the agent's Linear link", () => {
+    const links = collectWorkLinks({
+      ticketUrl: "https://linear.app/acme/issue/PRO-1234",
+      ticketSource: "linear",
+      ticketExternalId: "PRO-1234",
+      links: [
+        {
+          url: "https://linear.app/acme/issue/PRO-1234/fix-the-thing",
+          kind: "issue",
+          provider: "linear",
+          label: "PRO-1234",
+        },
+      ],
+    });
+    expect(links).toHaveLength(1);
+    expect(links[0].provider).toBe("linear");
+    expect(links[0].label).toBe("PRO-1234");
+  });
+
+  it("matches a Linear or Jira URL whatever provider the link was stored with", () => {
+    const generic: WorkLink = {
+      url: "https://linear.app/acme/issue/PRO-1234",
+      kind: "issue",
+      provider: "github",
+      label: "PRO-1234",
+    };
+    expect(workLinkIdentity(generic)).toBe("linear:PRO-1234");
+    expect(workLinkIdentity({ ...generic, url: "https://acme.atlassian.net/browse/pro-9" })).toBe(
+      "jira:PRO-9",
+    );
+  });
+
+  it("drops a bare #N when a branded badge already carries that number, even from another repo", () => {
+    const upstream: WorkLink = {
+      url: "https://github.com/xtermjs/xterm.js/issues/5686",
+      kind: "issue",
+      provider: "github",
+      label: "xtermjs/xterm.js#5686",
+    };
+    const ref: WorkLink = {
+      url: "https://github.com/acme/app/issues/5686",
+      kind: "ref",
+      provider: "github",
+      label: "#5686",
+    };
+    const other: WorkLink = { ...ref, url: "https://github.com/acme/app/issues/12", label: "#12" };
+    expect(dedupeWorkLinks([upstream, ref, other])).toEqual([upstream, other]);
+  });
+
+  it("names the spawning ticket by its ref, key, or number, with its source's brand", () => {
+    expect(
+      collectWorkLinks({
+        ticketUrl: "https://github.com/acme/app/pull/607",
+        ticketSource: "github",
+        ticketExternalId: "acme/app#607",
+      }),
+    ).toEqual([
+      {
+        url: "https://github.com/acme/app/pull/607",
+        kind: "pr",
+        provider: "github",
+        label: "acme/app#607",
+      },
+    ]);
+    expect(
+      collectWorkLinks({
+        ticketUrl: "https://acme.atlassian.net/browse/PRO-9",
+        ticketSource: "jira",
+        ticketExternalId: "PRO-9",
+      })[0],
+    ).toMatchObject({ kind: "issue", provider: "jira", label: "PRO-9" });
+    expect(
+      collectWorkLinks({
+        ticketUrl: "https://github.com/acme/app/issues/12",
+        ticketSource: "github",
+        ticketExternalId: "12",
+      })[0].label,
+    ).toBe("#12");
   });
 });

@@ -859,6 +859,46 @@ describe("local terminal links", () => {
       }),
     ]);
     expect(manual.triggerType).toBeNull();
+
+    // The ticket a session was started for is among its links, once, with
+    // its source's brand — so a client that only skips an exact URL match
+    // never shows it twice next to the agent's own mention.
+    const linear = await createTerminal({
+      host,
+      userId: null,
+      workspaceId: null,
+      dir: "/home/dev/optio",
+      spec: { kind: "agent", agent: "claude-code", prompt: "Fix PRO-1234" },
+      ticket: {
+        source: "linear",
+        externalId: "PRO-1234",
+        url: "https://linear.app/acme/issue/PRO-1234",
+      },
+    });
+    await db
+      .update(localTerminals)
+      .set({
+        links: [
+          {
+            url: "https://linear.app/acme/issue/PRO-1234/fix",
+            kind: "issue",
+            provider: "linear",
+            label: "PRO-1234",
+          },
+          {
+            url: "https://github.com/acme/app/issues/7",
+            kind: "ref",
+            provider: "github",
+            label: "#7",
+          },
+        ],
+      })
+      .where(eq(localTerminals.id, linear.id));
+    const [withTicket] = await presentTerminals([(await getTerminal(linear.id))!]);
+    expect(withTicket.links.map((l) => [l.provider, l.label])).toEqual([
+      ["linear", "PRO-1234"],
+      ["github", "#7"],
+    ]);
   });
 
   it("stores sanitized usage from the owning host only", async () => {

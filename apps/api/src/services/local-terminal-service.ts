@@ -21,6 +21,7 @@ import {
   LOCAL_TRANSCRIPT_TEXT_MAX,
   MAX_WORK_LINKS,
   classifyTranscriptUserText,
+  collectWorkLinks,
   dedupeWorkLinks,
   type WorkLink,
   type LocalTranscriptEntry,
@@ -655,6 +656,9 @@ export async function presentTerminals<
     pendingReason: string | null;
     triggerId: string | null;
     links: WorkLink[] | null;
+    ticketUrl: string | null;
+    ticketSource: string | null;
+    ticketExternalId: string | null;
   },
 >(rows: T[]): Promise<Array<T & { triggerType: string | null; queuePosition: number | null }>> {
   const ids = [...new Set(rows.map((r) => r.triggerId).filter((id): id is string => !!id))];
@@ -671,7 +675,9 @@ export async function presentTerminals<
   );
   return rows.map((r) => ({
     ...r,
-    links: r.links ? dedupeWorkLinks(r.links) : r.links,
+    // The ticket it was started for is one of its links, once: a client that
+    // adds the ticket itself finds its URL already there.
+    links: r.links || r.ticketUrl ? collectWorkLinks(r) : r.links,
     triggerType: r.triggerId ? (types.get(r.triggerId) ?? null) : null,
     queuePosition: positions.get(r.id) ?? null,
   }));

@@ -205,6 +205,12 @@ export function workLinkIdentity(link: WorkLink): string {
     const sep = gl[3].toLowerCase() === "merge_requests" ? "!" : "#";
     return `gitlab:${gl[1].toLowerCase()}/${gl[2].toLowerCase()}${sep}${gl[4]}`;
   }
+  // By URL first: the ticket a session was started for may carry a generic
+  // provider while the agent's output named the same issue with its brand.
+  const linear = /^https?:\/\/linear\.app\/[\w-]+\/issue\/([A-Z][A-Z0-9]*-\d+)/i.exec(link.url);
+  if (linear) return `linear:${linear[1].toUpperCase()}`;
+  const jira = /^https?:\/\/[\w.-]+\/browse\/([A-Z][A-Z0-9]*-\d+)/i.exec(link.url);
+  if (jira) return `jira:${jira[1].toUpperCase()}`;
   if (link.provider === "linear" || link.provider === "jira") {
     return `${link.provider}:${link.label.toUpperCase()}`;
   }
@@ -213,12 +219,20 @@ export function workLinkIdentity(link: WorkLink): string {
 
 const KIND_RANK: Record<WorkLinkKind, number> = { pr: 2, issue: 1, ref: 0 };
 
+/** The number a link names (`#607` / `!45` / the last path segment); null for a key like `ENG-12`. */
+function linkNumber(link: WorkLink): string | null {
+  const m = /(\d+)\/?$/.exec(link.url);
+  return m ? m[1] : null;
+}
+
 /**
  * One link per PR / ticket, in first-seen order. When the same one turns up
  * twice (a bare `#607` and later its PR URL, the PR a session was started
  * for and the same PR printed by the agent), the most telling wins: a PR
  * over an issue over a bare ref, then the fuller label (`acme/app#607` over
- * `#607`).
+ * `#607`). A bare ref never sits next to a branded badge of its number:
+ * `#5686` after `xtermjs/xterm.js#5686` is that issue mentioned again, not
+ * one of this repo's.
  */
 export function dedupeWorkLinks(links: WorkLink[]): WorkLink[] {
   const byId = new Map<string, WorkLink>();
@@ -234,5 +248,52 @@ export function dedupeWorkLinks(links: WorkLink[]): WorkLink[] {
       byId.set(id, link);
     }
   }
-  return [...byId.values()];
+  const merged = [...byId.values()];
+  const branded = new Set(
+    merged
+      .filter((l) => l.kind !== "ref")
+      .map(linkNumber)
+      .filter((n): n is string => !!n),
+  );
+  return merged.filter((l) => l.kind !== "ref" || !branded.has(linkNumber(l) ?? ""));
+}
+
+/** The provider a ticket source's badge wears; a source without a brand reads as GitHub. */
+function ticketProvider(source: string | null | undefined): WorkLinkProvider {
+  return source === "gitlab" || source === "linear" || source === "jira" ? source : "github";
+}
+
+/**
+ * The issue or PR a session was started for, as a link: a review-request
+ * automation's "ticket" is the PR itself; an event trigger stores the full
+ * ref (`acme/app#607`) or key (`ENG-12`), a ticket sync just the number.
+ */
+export function ticketWorkLink(ticket: {
+  ticketUrl?: string | null;
+  ticketSource?: string | null;
+  ticketExternalId?: string | null;
+}): WorkLink | null {
+  if (!ticket.ticketUrl) return null;
+  const pr = /\/(pull|merge_requests)\/\d+/.test(ticket.ticketUrl);
+  const id = ticket.ticketExternalId;
+  return {
+    url: ticket.ticketUrl,
+    kind: pr ? "pr" : "issue",
+    provider: ticketProvider(ticket.ticketSource),
+    label: !id ? "ticket" : /^\d+$/.test(id) ? `#${id}` : id,
+  };
+}
+
+/**
+ * Every PR / ticket a session touches, once each: the ticket it was started
+ * for first, then what its output named, deduped (`dedupeWorkLinks`).
+ */
+export function collectWorkLinks(terminal: {
+  links?: WorkLink[] | null;
+  ticketUrl?: string | null;
+  ticketSource?: string | null;
+  ticketExternalId?: string | null;
+}): WorkLink[] {
+  const ticket = ticketWorkLink(terminal);
+  return dedupeWorkLinks(ticket ? [ticket, ...(terminal.links ?? [])] : (terminal.links ?? []));
 }

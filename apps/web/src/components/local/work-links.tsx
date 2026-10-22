@@ -4,36 +4,16 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronUp, ExternalLink, Hash } from "lucide-react";
 import { BrandIcon, BRAND_LABEL, IssueIcon, PrIcon, brandFor } from "@/components/brand-icon";
-import { dedupeWorkLinks, type WorkLink } from "@optio/shared";
+import { collectWorkLinks, type WorkLink } from "@optio/shared";
 
 /**
  * Badges for the PR / ticket links a terminal is working on. Every badge
  * opens in a new tab and swallows the click so it works inside clickable
- * cards. `ticket` (the issue or PR the terminal was spawned from) comes
- * first, and each PR / ticket shows once however often it was seen
- * (`dedupeWorkLinks`).
+ * cards. The ticket the terminal was spawned from comes first, and each PR
+ * / ticket shows once however often it was seen (`collectWorkLinks` in
+ * `@optio/shared`; the API folds the ticket in too, so every client agrees).
  */
-export function collectWorkLinks(terminal: {
-  links?: WorkLink[] | null;
-  ticketUrl?: string | null;
-  ticketSource?: string | null;
-  ticketExternalId?: string | null;
-}): WorkLink[] {
-  const scanned = terminal.links ?? [];
-  if (!terminal.ticketUrl) return dedupeWorkLinks(scanned);
-  const provider = terminal.ticketSource === "gitlab" ? "gitlab" : "github";
-  // A review-request automation's "ticket" is the PR itself.
-  const pr = /\/(pull|merge_requests)\/\d+/.test(terminal.ticketUrl);
-  // An event trigger stores the full ref ("acme/app#607"); a ticket sync just the number.
-  const id = terminal.ticketExternalId;
-  const ticket: WorkLink = {
-    url: terminal.ticketUrl,
-    kind: pr ? "pr" : "issue",
-    provider,
-    label: !id ? "ticket" : /[#!/]/.test(id) ? id : `#${id}`,
-  };
-  return dedupeWorkLinks([ticket, ...scanned]);
-}
+export { collectWorkLinks };
 
 /** Text a search box should match against for a terminal's links. */
 export function workLinksSearchText(links: WorkLink[]): string {

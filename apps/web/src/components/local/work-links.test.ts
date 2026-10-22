@@ -32,6 +32,23 @@ describe("collectWorkLinks", () => {
     ]);
   });
 
+  it("shows a Linear ticket once, as Linear, next to the agent's own mention of it", () => {
+    const links = collectWorkLinks({
+      links: [
+        {
+          url: "https://linear.app/acme/issue/PRO-1234",
+          kind: "issue",
+          provider: "linear",
+          label: "PRO-1234",
+        },
+      ],
+      ticketUrl: "https://linear.app/acme/issue/PRO-1234",
+      ticketSource: "linear",
+      ticketExternalId: "PRO-1234",
+    });
+    expect(links.map((l) => [l.provider, l.label])).toEqual([["linear", "PRO-1234"]]);
+  });
+
   it("dedupes links stored before the daemon did", () => {
     const ref = {
       ...pr,
