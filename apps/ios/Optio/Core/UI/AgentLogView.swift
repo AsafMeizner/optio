@@ -308,10 +308,7 @@ struct AgentLogRow: View {
         case .system where systemSource != nil:
             systemNote
         case .text:
-            Text(LocalizedStringKey(entry.content))
-                .font(.body)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ChatMarkdown(text: entry.content)
         case .thinking:
             Text(entry.content)
                 .font(.footnote)
