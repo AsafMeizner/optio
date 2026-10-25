@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 USER root
 
 # bun (pnpm and yarn are already provided by corepack in the base image). Its
-# installer needs unzip, which a slimmed-down base image may leave out.
+# installer needs unzip, which the minimal base image leaves out.
 RUN apt-get update && apt-get install -y --no-install-recommends unzip \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://bun.sh/install | bash \

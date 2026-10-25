@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { resolve } from "node:path";
 
 const nextConfig: NextConfig = {
   output: "standalone",
@@ -6,6 +7,9 @@ const nextConfig: NextConfig = {
   distDir: process.env.OPTIO_NEXT_DIST_DIR || ".next",
   transpilePackages: ["@optio/shared"],
   webpack: (config) => {
+    if (process.env.OPTIO_OFFLINE_FONTS === "1") {
+      config.resolve.alias["@/app/fonts"] = resolve(process.cwd(), "src/app/fonts-local.ts");
+    }
     // Resolve .js imports to .ts files in workspace packages
     config.resolve.extensionAlias = {
       ".js": [".ts", ".tsx", ".js"],
