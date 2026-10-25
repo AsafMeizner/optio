@@ -115,7 +115,7 @@ export function AuditRetentionCard({ link = false }: { link?: boolean }) {
             disabled={saving || !valid || parsed === r.days}
             onClick={() => save(parsed)}
           >
-            {saving ? "Saving…" : "Save"}
+            {saving ? "Saving…" : "Save retention"}
           </button>
           {r.source === "app" && (
             <button type="button" className={BTN_TEXT} disabled={saving} onClick={() => save(null)}>

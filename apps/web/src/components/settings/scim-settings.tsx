@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { SIGN_IN_PROVIDERS, SIGN_IN_PROVIDER_LABEL, type SignInProviderName } from "@optio/shared";
 import { toast } from "sonner";
-import { request } from "@/lib/api-client";
+import { request, type SignInConfig } from "@/lib/api-client";
 import { BTN_PRIMARY, BTN_SECONDARY, INPUT, LABEL, HELP } from "./settings-ui";
 
 interface ScimSettingsView {
@@ -21,6 +21,26 @@ export function ScimSettings() {
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The sign-in providers that are set up (Settings → Sign-in), the only ones
+  // whose sign-ins can claim provisioned accounts. Null while unknown (or
+  // unreadable): every provider is offered.
+  const [configured, setConfigured] = useState<SignInProviderName[] | null>(null);
+  useEffect(() => {
+    request<SignInConfig>("/api/auth/sign-in")
+      .then((c) =>
+        setConfigured(
+          Array.isArray(c?.providers)
+            ? c.providers.filter((p) => p.enabled).map((p) => p.provider)
+            : null,
+        ),
+      )
+      .catch(() => setConfigured(null));
+  }, []);
+  const offered = [...SIGN_IN_PROVIDERS]
+    .filter(
+      (p) => !configured || configured.includes(p) || p === provider || p === view?.signInProvider,
+    )
+    .sort((a, b) => SIGN_IN_PROVIDER_LABEL[a].localeCompare(SIGN_IN_PROVIDER_LABEL[b]));
   const load = async () => {
     const v = await request<ScimSettingsView>("/api/admin/scim");
     setView(v);
@@ -82,13 +102,11 @@ export function ScimSettings() {
               onChange={(e) => setProvider(e.target.value)}
             >
               <option value="">None — provision accounts only</option>
-              {[...SIGN_IN_PROVIDERS]
-                .sort((a, b) => SIGN_IN_PROVIDER_LABEL[a].localeCompare(SIGN_IN_PROVIDER_LABEL[b]))
-                .map((p) => (
-                  <option key={p} value={p}>
-                    {SIGN_IN_PROVIDER_LABEL[p]}
-                  </option>
-                ))}
+              {offered.map((p) => (
+                <option key={p} value={p}>
+                  {SIGN_IN_PROVIDER_LABEL[p]}
+                </option>
+              ))}
             </select>
             <p className={HELP}>
               Choose the same identity provider that provisions these users. Its sign-ins may claim

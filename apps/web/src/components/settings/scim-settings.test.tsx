@@ -51,4 +51,33 @@ describe("SCIM settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull());
   });
+
+  it("offers the sign-in providers that are set up, and the saved one", async () => {
+    request.mockImplementation(async (url: string) =>
+      url === "/api/auth/sign-in"
+        ? {
+            providers: [
+              { provider: "google", enabled: false },
+              { provider: "saml", enabled: true },
+              { provider: "oidc", enabled: false },
+            ],
+          }
+        : {
+            enabled: false,
+            signInProvider: "oidc",
+            baseUrl: "https://optio.example.test/api/scim/v2",
+            tokens: [],
+          },
+    );
+    render(<ScimSettings />);
+    await screen.findByText(/Base URL:/);
+    const select = screen.getByLabelText("Sign-in provider for provisioned accounts");
+    await waitFor(() =>
+      expect(Array.from((select as HTMLSelectElement).options).map((o) => o.value)).toEqual([
+        "",
+        "oidc",
+        "saml",
+      ]),
+    );
+  });
 });

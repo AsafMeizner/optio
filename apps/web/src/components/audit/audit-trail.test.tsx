@@ -176,7 +176,7 @@ describe("the retention card", () => {
     render(<AuditTrail />);
     const input = await screen.findByLabelText("Keep for (days)");
     fireEvent.change(input, { target: { value: "730" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save retention" }));
     await waitFor(() => expect(setAuditRetention).toHaveBeenCalledWith(730));
     expect(await screen.findByText("730 days")).toBeInTheDocument();
   });

@@ -113,7 +113,7 @@ describe("Settings → Access → Directory sync", () => {
     });
     api.update.mockResolvedValue(saved);
     render(<DirectorySyncSettings />);
-    const save = await screen.findByRole("button", { name: "Save" });
+    const save = await screen.findByRole("button", { name: "Save schedule" });
     expect(save).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Interval"), { target: { value: "60" } });
     fireEvent.click(save);

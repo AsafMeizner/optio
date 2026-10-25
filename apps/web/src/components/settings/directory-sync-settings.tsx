@@ -440,7 +440,7 @@ export function DirectorySyncSettings() {
           disabled={!dirty || busy !== null}
           className={BTN_PRIMARY}
         >
-          {busy === "save" ? "Saving…" : "Save"}
+          {busy === "save" ? "Saving…" : "Save schedule"}
         </button>
       </CardFooter>
       <ScimSettings />

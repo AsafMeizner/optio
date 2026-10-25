@@ -2066,6 +2066,15 @@ export function SignInSetupForm({
     editable.find((p) => p.provider === config.providers[0]?.provider) ??
     editable[0];
   const canEdit = config.canEdit || (config.bootstrap && setupToken.trim().length > 0);
+  // While Google is the only provider in use, the form keeps its familiar
+  // layout: Google's form, then every other provider as a row (one the app can
+  // store has Set up). The provider tabs take over once another provider is
+  // stored or enabled, or Set up was clicked.
+  const google = editable.find((p) => p.provider === "google");
+  const othersInUse = editable.some(
+    (p) => p.provider !== "google" && (p.enabled || p.source !== "none"),
+  );
+  const tabbed = tab !== null || othersInUse || !google;
 
   const replaceProvider = (view: SignInProviderView, bootstrap: boolean) => {
     setConfig((c) =>
@@ -2142,7 +2151,68 @@ export function SignInSetupForm({
         </div>
       )}
 
-      {canEdit && current ? (
+      {canEdit && google && !tabbed ? (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <ProviderIcon provider="google" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{google.displayName}</p>
+                <p className="text-[11px] text-text-muted truncate">{providerCaption(google)}</p>
+              </div>
+            </div>
+            <Status p={google} />
+          </div>
+          {google.source === "environment" && (
+            <p className={HELP}>
+              Set by the environment ({ENV_HINT.google}). Saving here stores a copy that takes
+              precedence; Remove goes back to the environment.
+            </p>
+          )}
+          <GoogleForm
+            key={`google-${google.source}-${google.updatedAt ?? ""}`}
+            view={google}
+            config={config}
+            setupToken={setupToken}
+            mode={mode}
+            onSaved={replaceProvider}
+            onRemoved={() => void load(setupToken)}
+          />
+          <ul className={LIST} aria-label="Other sign-in providers">
+            {config.providers
+              .filter((p) => p.provider !== "google")
+              .map((p) => (
+                <li
+                  key={p.provider}
+                  className="flex items-center justify-between gap-3 px-3 py-2.5"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <ProviderIcon provider={p.provider} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">{p.displayName}</p>
+                      <p className="text-[11px] text-text-muted font-mono truncate">
+                        {ENV_HINT[p.provider]}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Status p={p} />
+                    {p.configurable && (
+                      <button
+                        type="button"
+                        className={BTN_SECONDARY}
+                        onClick={() => setTab(p.provider)}
+                        aria-label={`Set up ${p.displayName}`}
+                      >
+                        Set up
+                      </button>
+                    )}
+                  </div>
+                </li>
+              ))}
+          </ul>
+        </div>
+      ) : canEdit && current ? (
         <div className="space-y-4">
           <Segmented
             value={current.provider}

@@ -438,7 +438,7 @@ describe("SignInSetupForm — Google, GitHub and GitLab beside SSO and LDAP", ()
     EMPTY_LDAP,
   ];
 
-  it("opens on Google, saves its client and allowed domains, and lists GitHub and GitLab from the environment", async () => {
+  it("opens on Google, saves its client and allowed domains, and lists the other providers", async () => {
     getSignInConfig.mockResolvedValue(adminConfig({ providers: allProviders }));
     saveSignInProvider.mockResolvedValue({
       provider: { ...EMPTY_GOOGLE, enabled: true, source: "database", clientId: "g-id" },
@@ -447,14 +447,18 @@ describe("SignInSetupForm — Google, GitHub and GitLab beside SSO and LDAP", ()
     render(<SignInSetupForm mode="settings" />);
 
     expect(await screen.findByText(EMPTY_GOOGLE.callbackUrl)).toBeInTheDocument();
-    for (const name of ["Google", "SSO (OpenID Connect)", "LDAP / Active Directory"]) {
-      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    // Google alone in use: its form and a row per other provider, no provider tabs.
+    expect(screen.queryByRole("group", { name: "Sign-in provider" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Google", { exact: true })).toHaveLength(1);
+    const others = screen.getByRole("list", { name: "Other sign-in providers" });
+    expect(within(others).getByText("GitHub")).toBeInTheDocument();
+    expect(within(others).getByText("Set by the environment")).toBeInTheDocument();
+    expect(within(others).getByText("GitLab")).toBeInTheDocument();
+    expect(within(others).getByText(/GITLAB_OAUTH_CLIENT_ID/)).toBeInTheDocument();
+    for (const name of ["SSO (OpenID Connect)", "LDAP / Active Directory"]) {
+      expect(within(others).getByRole("button", { name: `Set up ${name}` })).toBeInTheDocument();
     }
-    const envList = screen.getByRole("list", { name: "Providers set by the environment" });
-    expect(within(envList).getByText("GitHub")).toBeInTheDocument();
-    expect(within(envList).getByText("Set by the environment")).toBeInTheDocument();
-    expect(within(envList).getByText("GitLab")).toBeInTheDocument();
-    expect(within(envList).getByText(/GITLAB_OAUTH_CLIENT_ID/)).toBeInTheDocument();
+    expect(within(others).queryByRole("button", { name: /Set up Git(Hub|Lab)/ })).toBeNull();
 
     fireEvent.change(screen.getByPlaceholderText("1234-abc.apps.googleusercontent.com"), {
       target: { value: " g-id " },
@@ -478,6 +482,38 @@ describe("SignInSetupForm — Google, GitHub and GitLab beside SSO and LDAP", ()
         undefined,
       ),
     );
+  });
+
+  it("Set up opens the provider tabs on that provider", async () => {
+    getSignInConfig.mockResolvedValue(adminConfig({ providers: allProviders }));
+    render(<SignInSetupForm mode="settings" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Set up LDAP / Active Directory" }));
+    expect(
+      await screen.findByRole("form", { name: "LDAP / Active Directory settings" }),
+    ).toBeInTheDocument();
+    for (const name of ["Google", "SSO (OpenID Connect)", "LDAP / Active Directory"]) {
+      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    }
+    const envList = screen.getByRole("list", { name: "Providers set by the environment" });
+    expect(within(envList).getByText("GitHub")).toBeInTheDocument();
+  });
+
+  it("shows the provider tabs from the start once another provider is in use", async () => {
+    getSignInConfig.mockResolvedValue(
+      adminConfig({
+        providers: [
+          EMPTY_GOOGLE,
+          envOnly("github", "GitHub", false),
+          { ...EMPTY_OIDC, enabled: true, source: "database" as const, clientId: "optio" },
+        ],
+      }),
+    );
+    render(<SignInSetupForm mode="settings" />);
+    expect(
+      await screen.findByRole("form", { name: "SSO (OpenID Connect) settings" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Google" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Other sign-in providers" })).toBeNull();
   });
 
   it("first run: the setup token unlocks Google, which saves the organization and signs in", async () => {
