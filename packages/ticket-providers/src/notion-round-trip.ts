@@ -144,7 +144,10 @@ export const notionRoundTrip: TicketRoundTrip = {
   async listComments(ticketId, config, max = 50) {
     const rows: TicketCommentRecord[] = [];
     let cursor: string | null = null;
-    for (let page = 0; page < 5; page++) {
+    const cursors = new Set<string>();
+    // Notion has no descending sort: walk every page to find the newest
+    // comments, including tickets with more than 500 comments.
+    for (;;) {
       const q = new URLSearchParams({ block_id: pageId(ticketId), page_size: "100" });
       if (cursor) q.set("start_cursor", cursor);
       const res = (
@@ -168,6 +171,8 @@ export const notionRoundTrip: TicketRoundTrip = {
         });
       }
       if (!res?.has_more || !res.next_cursor) break;
+      if (cursors.has(res.next_cursor)) throw new Error("Notion repeated a comments cursor");
+      cursors.add(res.next_cursor);
       cursor = res.next_cursor;
     }
     return rows.sort((a, b) => Date.parse(a.created) - Date.parse(b.created)).slice(-max);

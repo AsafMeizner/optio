@@ -161,7 +161,7 @@ export async function resolveProviderConfig(providerConfig: {
       // A GitLab instance an admin set up is one this deployment uses.
       if (instanceHost || (await isKnownGitLabHost(host, workspaceId))) {
         (mergedConfig as { token?: string }).token = await getGitToken("gitlab", {
-          ...(instanceHost ? { host: instanceHost } : {}),
+          host: instanceHost ?? new URL(/^https?:\/\//i.test(host) ? host : `https://${host}`).host,
           userId: providerConfig.ownerUserId ?? undefined,
           ownerTeamId: providerConfig.ownerTeamId ?? null,
           workspaceId,

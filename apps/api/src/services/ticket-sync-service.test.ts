@@ -1370,6 +1370,7 @@ describe("GitLab issues without a token of their own", () => {
     });
     expect(isKnownGitLabHost).toHaveBeenCalledWith("gitlab.corp", "ws-1");
     expect(getGitToken).toHaveBeenCalledWith("gitlab", {
+      host: "gitlab.corp",
       userId: "u-1",
       ownerTeamId: null,
       workspaceId: "ws-1",
@@ -1390,6 +1391,7 @@ describe("GitLab issues without a token of their own", () => {
     });
     expect(config).toMatchObject({ token: "team-token", groupPath: "platform" });
     expect(getGitToken).toHaveBeenCalledWith("gitlab", {
+      host: "gitlab.corp",
       userId: "u-1",
       ownerTeamId: "team-1",
       workspaceId: "ws-1",
@@ -1405,6 +1407,7 @@ describe("GitLab issues without a token of their own", () => {
     ).toMatchObject({ token: "org-token" });
     expect(isKnownGitLabHost).toHaveBeenLastCalledWith("gitlab.com", null);
     expect(getGitToken).toHaveBeenLastCalledWith("gitlab", {
+      host: "gitlab.com",
       userId: undefined,
       ownerTeamId: null,
       workspaceId: null,

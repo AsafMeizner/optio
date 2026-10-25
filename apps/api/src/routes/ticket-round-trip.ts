@@ -10,7 +10,7 @@ import {
   roundTripSettings,
   type RoundTripStep,
 } from "@optio/shared";
-import { getTicketRoundTrip } from "@optio/ticket-providers";
+import { getTicketRoundTrip, gitLabRoundTripConfig } from "@optio/ticket-providers";
 import { db } from "../db/client.js";
 import { ticketProviders } from "../db/schema.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
@@ -68,7 +68,7 @@ const RoundTripResponseSchema = z.object({
 const StatusesResponseSchema = z.object({
   statuses: z.array(z.object({ name: z.string(), category: z.string().optional() })),
   /** Whose statuses: a project's, every status on the server, a repository's, a team's, … */
-  scope: z.enum(["project", "server", "repository", "team", "workspace", "database"]),
+  scope: z.enum(["project", "group", "server", "repository", "team", "workspace", "database"]),
 });
 
 const CheckBodySchema = z.object({
@@ -256,7 +256,9 @@ export async function ticketRoundTripRoutes(rawApp: FastifyInstance) {
         : roundTripSettings(row.config);
       const config = await resolveProviderConfig(row);
       try {
-        const { status, current, available } = await rt.issueStatus(issueKey, config);
+        const ticketConfig =
+          row.source === "gitlab" ? gitLabRoundTripConfig(config, req.body.issueKey) : config;
+        const { status, current, available } = await rt.issueStatus(issueKey, ticketConfig);
         const has = (list: string[], name: string) =>
           list.some((x) => x.toLowerCase() === name.toLowerCase());
         const steps = (ROUND_TRIP_STEPS as readonly RoundTripStep[])

@@ -29,7 +29,7 @@ import {
 } from "../test-utils/fake-gitlab-issues.js";
 import { LINEAR_API, startFakeLinear, type FakeLinear } from "../test-utils/fake-linear.js";
 import { NOTION_API, startFakeNotion, type FakeNotion } from "../test-utils/fake-notion.js";
-import { onTicketWorkTransition } from "./ticket-writeback.js";
+import { onTicketWorkTransition, optioCommentIds, recordWriteback } from "./ticket-writeback.js";
 import { pollTicketFollowUps } from "./ticket-follow-ups.js";
 import { resolveProviderConfig } from "./ticket-sync-service.js";
 
@@ -451,5 +451,148 @@ describe("Notion", () => {
     expect(job.data.resumePrompt).toContain(`A person commented on the Notion page ${page.id}`);
     expect(job.data.resumePrompt).toContain("wrote:\n> Use port 8081 instead");
     expect(job.data.resumePrompt).not.toContain("Written as the integration");
+  });
+});
+
+describe("round-trip guards on every added provider", () => {
+  it("GitHub installation tokens resume human instructions without reading app comments as instructions", async () => {
+    const app = await startFakeGitHubIssues({ token: "installation-token", installation: true });
+    const savedFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", fetchRoutedTo({ [GITHUB_API]: app.url }));
+    try {
+      const p = await provider(
+        "github",
+        { owner: "acme", repo: "app" },
+        { token: "installation-token" },
+        {},
+      );
+      app.addIssue(70);
+      const task = await waiting(p, "70", "https://github.com/acme/app/pull/70");
+      app.comment(70, "Another app update", app.app);
+      expect(await poll(p)).toBe(0);
+      app.comment(70, "Please keep the public interface");
+      expect(await poll(p)).toBe(1);
+      expect((await jobsOf(task.id))[0].data.resumePrompt).toContain(
+        "Please keep the public interface",
+      );
+      expect(app.callsTo("GET /installation/repositories")).toHaveLength(2);
+    } finally {
+      vi.stubGlobal("fetch", savedFetch);
+      await app.close();
+    }
+  });
+
+  it.each(["github", "gitlab", "linear", "notion"])(
+    "%s: own comments never resume, concurrent polls take a person's comment once, off writes nothing",
+    async (source) => {
+      const config =
+        source === "github"
+          ? { owner: "acme", repo: "app" }
+          : source === "gitlab"
+            ? { host: GITLAB_HOST, projectPath: "acme/app" }
+            : source === "linear"
+              ? { teamId: linear.teamId }
+              : { databaseId: notion.databaseId };
+      const secret: Record<string, string> =
+        source === "github"
+          ? { token: "ghp-1" }
+          : source === "gitlab"
+            ? { token: "glpat-1" }
+            : source === "linear"
+              ? { apiKey: "lin-1" }
+              : { apiKey: "secret-1" };
+      const key = source === "notion" ? notion.addPage().id : source === "linear" ? "ENG-50" : "50";
+      if (source === "github") gh.addIssue(50);
+      if (source === "gitlab") gl.addIssue(50);
+      if (source === "linear") linear.addIssue(key);
+      const p = await provider(source, config, secret, {});
+      const task = await waiting(p, key, "https://github.com/acme/app/pull/50");
+      expect(await poll(p)).toBe(0);
+      if (source === "github") gh.comment(50, "New instruction");
+      if (source === "gitlab") gl.note(50, "New instruction");
+      if (source === "linear") linear.comment(key, "New instruction");
+      if (source === "notion") notion.comment(key, "New instruction");
+      const resumed = await Promise.all([poll(p), poll(p)]);
+      expect(resumed.reduce((a, b) => a + b, 0)).toBe(1);
+      expect(await jobsOf(task.id)).toHaveLength(1);
+      await db.update(tasks).set({ state: TaskState.PR_OPENED }).where(eq(tasks.id, task.id));
+      expect(await poll(p)).toBe(0);
+      const fake =
+        source === "github" ? gh : source === "gitlab" ? gl : source === "linear" ? linear : notion;
+      await db
+        .update(ticketProviders)
+        .set({ config: { ...p.config, roundTrip: { enabled: false } } })
+        .where(eq(ticketProviders.id, p.id));
+      const calls = fake.calls.length;
+      await step(task.id, TaskState.FAILED);
+      expect(await poll(p)).toBe(0);
+      expect(fake.calls).toHaveLength(calls);
+    },
+  );
+
+  it("GitLab group tickets write and resume in the ticket's saved project", async () => {
+    const p = await provider(
+      "gitlab",
+      { host: GITLAB_HOST, groupPath: "acme" },
+      { token: "glpat-1" },
+      { started: "workflow::doing" },
+    );
+    const issue = gl.addIssue(60);
+    const task = await work(p, "60", {
+      metadata: {
+        ticketProviderId: p.id,
+        ticketUrl: `https://${GITLAB_HOST}/acme/app/-/issues/60`,
+      },
+      state: TaskState.PR_OPENED,
+      createdAt: new Date(Date.now() - 60_000),
+    });
+    await step(task.id, TaskState.RUNNING);
+    expect(issue.labels).toContain("workflow::doing");
+    expect(issue.notes[0].body).toContain(run(task.id));
+    gl.note(60, "Use this project's settings");
+    expect(await poll(p)).toBe(1);
+    expect((await jobsOf(task.id))[0].data.resumePrompt).toContain("Use this project's settings");
+  });
+
+  it("a comment id from another provider cannot suppress a person's comment", async () => {
+    const p = await provider(
+      "gitlab",
+      { host: GITLAB_HOST, projectPath: "acme/app" },
+      { token: "glpat-1" },
+      {},
+    );
+    const other = await provider(
+      "gitlab",
+      { host: "other.example", projectPath: "other/app" },
+      { token: "other" },
+      {},
+    );
+    const rowId = await recordWriteback({
+      taskId: null,
+      providerId: other.id,
+      ticketSource: "gitlab",
+      ticketExternalId: "61",
+      event: "skipped",
+      key: `foreign:${other.id}`,
+      status: "done",
+    });
+    await db
+      .update(ticketWritebacks)
+      .set({ commentId: "same-id", linkId: "same-link-id" })
+      .where(eq(ticketWritebacks.id, rowId!));
+    expect(await optioCommentIds("gitlab", "61", p)).toEqual(new Set());
+    expect(await optioCommentIds("gitlab", "61", other)).toEqual(
+      new Set(["same-id", "same-link-id"]),
+    );
+    // Another Optio account on the same instance still cannot answer us.
+    const sameHost = await provider(
+      "gitlab",
+      { host: "https://other.example/", projectPath: "other/app" },
+      { token: "another" },
+      {},
+    );
+    expect(await optioCommentIds("gitlab", "61", sameHost)).toEqual(
+      new Set(["same-id", "same-link-id"]),
+    );
   });
 });

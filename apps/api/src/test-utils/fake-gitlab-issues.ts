@@ -3,7 +3,7 @@ import { fetchRoutedTo, pageOf, startFakeHttp, type FakeHttp } from "./fake-http
 /**
  * An in-process GitLab for tests of the ticket round trip on GitLab Issues
  * (@optio/ticket-providers gitlab-round-trip.ts): the REST v4 calls Optio
- * makes on one project, `acme/app`, with a `PRIVATE-TOKEN`, and issues kept
+ * makes on one project, `acme/app`, with Bearer auth, and issues kept
  * in memory with their state, labels and notes (system notes too). Shaped
  * after GitLab's REST reference (issues, notes, labels, the current user);
  * a stand-in, not GitLab. (fake-gitlab.ts is the GitLab user's merge-request
@@ -82,7 +82,10 @@ export async function startFakeGitLabIssues(
     (call, reply) => {
       const { method, path, body } = call;
       if (method === "GET" && path === "/api/v4/user") return reply(200, bot);
-      if (method === "GET" && path === `${project}/labels`) {
+      if (
+        method === "GET" &&
+        (path === `${project}/labels` || path === "/api/v4/groups/acme/labels")
+      ) {
         const page = pageOf(
           labels.map((name) => ({ name })),
           call.query,
@@ -131,7 +134,7 @@ export async function startFakeGitLabIssues(
       }
       return reply(404, { message: `No fake for ${method} ${path}` });
     },
-    (headers) => headers["private-token"] === token,
+    (headers) => headers.authorization === `Bearer ${token}`,
   );
 
   return {

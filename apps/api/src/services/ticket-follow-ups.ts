@@ -37,6 +37,7 @@ import { and, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import { TaskState, parseIntEnv, roundTripSettings, roundTripSupport } from "@optio/shared";
 import {
   getTicketRoundTrip,
+  gitLabRoundTripConfig,
   parseTicketTime,
   sameTicketAccount,
   type TicketAccount,
@@ -181,6 +182,7 @@ function waitingPage(
       prUrl: tasks.prUrl,
       sessionId: tasks.sessionId,
       ticketExternalId: tasks.ticketExternalId,
+      metadata: tasks.metadata,
     })
     .from(tasks)
     .where(
@@ -287,13 +289,17 @@ async function resumeFromComments(
   task: Awaited<ReturnType<typeof waitingTasks>>[number],
 ): Promise<boolean> {
   const key = task.ticketExternalId!;
+  if (provider.source === "gitlab") {
+    const url = (task.metadata as { ticketUrl?: string } | null)?.ticketUrl;
+    config = gitLabRoundTripConfig(config, url);
+  }
   const comments = await rt.listComments(key, config);
   const { ids: taken, count } = await takenCommentIds(task.id);
   const candidates = followUpCandidates({
     comments,
     taskCreatedAt: task.createdAt,
     since,
-    optioIds: await optioCommentIds(provider.source, key),
+    optioIds: await optioCommentIds(provider.source, key, provider),
     taken,
     account,
     mode,

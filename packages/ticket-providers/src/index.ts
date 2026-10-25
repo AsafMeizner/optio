@@ -32,7 +32,7 @@ export type {
   TicketStatusOption,
 } from "./round-trip.js";
 export { githubRoundTrip } from "./github-round-trip.js";
-export { gitlabRoundTrip } from "./gitlab-round-trip.js";
+export { gitlabRoundTrip, gitLabRoundTripConfig } from "./gitlab-round-trip.js";
 export {
   jiraCommentBody,
   jiraIssueTransitions,

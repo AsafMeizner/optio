@@ -67,7 +67,7 @@ export interface TicketStatusOption {
 export interface TicketStatusList {
   statuses: TicketStatusOption[];
   /** Whose statuses these are. */
-  scope: "project" | "server" | "repository" | "team" | "workspace" | "database";
+  scope: "project" | "group" | "server" | "repository" | "team" | "workspace" | "database";
 }
 
 export interface TicketIssueStatus {
@@ -237,12 +237,12 @@ export async function serviceCall<T = unknown>(
   service: string,
   url: string,
   init: { method?: string; headers?: Record<string, string>; body?: unknown } = {},
-  opts: { guard?: boolean } = {},
+  opts: { guard?: boolean; fetch?: (url: string, init?: RequestInit) => Promise<Response> } = {},
 ): Promise<{ status: number; body: T; headers: Headers }> {
   if (opts.guard) await assertSsrfSafe(url);
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await (opts.fetch ?? fetch)(url, {
       method: init.method ?? "GET",
       headers: {
         Accept: "application/json",

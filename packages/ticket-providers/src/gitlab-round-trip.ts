@@ -1,7 +1,7 @@
 /**
  * GitLab Issues in the ticket round trip (docs/ticket-round-trip.md, the
  * GitLab section), over GitLab's REST API v4 at the provider's host
- * (`https://<host>/api/v4`, `PRIVATE-TOKEN`, the outbound URL guard first):
+ * (`https://<host>/api/v4`, Bearer auth, the outbound URL guard first):
  *
  *   comments     POST /projects/:id/issues/:iid/notes;
  *                GET  …/notes?sort=desc&order_by=created_at (system notes left out)
@@ -13,6 +13,7 @@
  *   who am I     GET /user
  */
 import type { TicketProviderConfig } from "@optio/shared";
+import { gitLabFetch } from "@optio/shared";
 import {
   atMentions,
   isNotFound,
@@ -29,14 +30,15 @@ const STATES = ["Open", "Closed"] as const;
 
 interface GitLabRoundTripConfig {
   token: string;
-  projectPath: string;
+  projectPath?: string;
+  groupPath?: string;
   host?: string;
 }
 
 function asConfig(config: TicketProviderConfig): GitLabRoundTripConfig {
   const c = config as Partial<GitLabRoundTripConfig>;
-  if (!c.token || !c.projectPath) {
-    throw new Error("GitLab provider requires token and projectPath in config");
+  if (!c.token || !(c.projectPath || c.groupPath)) {
+    throw new Error("GitLab provider requires token and projectPath or groupPath in config");
   }
   return c as GitLabRoundTripConfig;
 }
@@ -49,15 +51,51 @@ function call<T>(
   const c = asConfig(config);
   return serviceCall<T>(
     SERVICE,
-    `https://${c.host || "gitlab.com"}/api/v4${path}`,
-    { ...init, headers: { "PRIVATE-TOKEN": c.token } },
-    { guard: true },
+    `${gitLabBase(c)}/api/v4${path}`,
+    { ...init, headers: { Authorization: `Bearer ${c.token}` } },
+    { guard: true, fetch: gitLabFetch },
   );
 }
 
 function issuePath(config: TicketProviderConfig, ticketId: string): string {
   if (!/^\d+$/.test(ticketId)) throw new Error(`Not a GitLab issue number: ${ticketId}`);
-  return `/projects/${encodeURIComponent(asConfig(config).projectPath)}/issues/${ticketId}`;
+  const project = asConfig(config).projectPath;
+  if (!project) throw new Error("GitLab provider needs the ticket's projectPath for this call");
+  return `/projects/${encodeURIComponent(project)}/issues/${ticketId}`;
+}
+
+function gitLabBase(config: { host?: string }): string {
+  const host = (config.host || "gitlab.com")
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/+$/, "");
+  const url = new URL(`https://${host}`);
+  if (url.username || url.password || url.search || url.hash)
+    throw new Error("Invalid GitLab host");
+  return url.href.replace(/\/+$/, "");
+}
+
+/** A group's ticket names its project in its URL; credentials stay at the configured base. */
+export function gitLabRoundTripConfig(
+  config: TicketProviderConfig,
+  ticketUrl?: string | null,
+): TicketProviderConfig {
+  const c = asConfig(config);
+  if (c.projectPath) return config;
+  if (!ticketUrl) throw new Error("GitLab group ticket needs its saved issue URL");
+  const base = `${gitLabBase(c)}/`;
+  const url = new URL(ticketUrl);
+  if (url.username || url.password || !url.href.startsWith(base)) {
+    throw new Error("GitLab ticket URL is outside the provider's base URL");
+  }
+  const match = url.pathname
+    .slice(new URL(base).pathname.length)
+    .match(/^(.+)\/-\/issues\/\d+\/?$/);
+  if (!match) throw new Error("Invalid GitLab issue URL");
+  const projectPath = decodeURIComponent(match[1]);
+  if (!projectPath.startsWith(`${c.groupPath}/`))
+    throw new Error("GitLab ticket is outside the provider's group");
+  return { ...config, projectPath };
 }
 
 interface GitLabNote {
@@ -77,11 +115,14 @@ const stateName = (state: string) => (state === "closed" ? "Closed" : "Open");
 
 async function projectLabels(config: TicketProviderConfig): Promise<string[]> {
   const names: string[] = [];
-  const project = encodeURIComponent(asConfig(config).projectPath);
+  const c = asConfig(config);
+  const target = c.projectPath
+    ? `projects/${encodeURIComponent(c.projectPath)}`
+    : `groups/${encodeURIComponent(c.groupPath!)}`;
   for (let page = 1; page <= 5; page++) {
     const res = await call<Array<{ name: string }>>(
       config,
-      `/projects/${project}/labels?per_page=100&page=${page}`,
+      `/${target}/labels?per_page=100&page=${page}`,
     );
     names.push(...(res.body ?? []).map((l) => l.name));
     const total = Number(res.headers.get("x-total-pages") ?? "1");
@@ -180,7 +221,7 @@ export const gitlabRoundTrip: TicketRoundTrip = {
         ...STATES.map((name) => ({ name, category: "State" })),
         ...labels.map((name) => ({ name, category: "Label" })),
       ],
-      scope: "project",
+      scope: asConfig(config).projectPath ? "project" : "group",
     };
   },
 

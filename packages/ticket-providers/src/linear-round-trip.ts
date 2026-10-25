@@ -188,16 +188,24 @@ export const linearRoundTrip: TicketRoundTrip = {
         },
       },
     );
+    if (!data.attachmentCreate.success) throw new Error("Linear didn't create the attachment");
     const id = data.attachmentCreate.attachment?.id ?? null;
     if (link.previousId && id && link.previousId !== id) {
       // The link moved (run → merge request): the old attachment goes.
-      await gql(
+      const removed = await gql<{ attachmentDelete: { success: boolean } }>(
         config,
         `mutation OptioAttachmentDelete($id: String!) { attachmentDelete(id: $id) { success } }`,
         { id: link.previousId },
       ).catch((err) => {
-        if (!(err instanceof TicketServiceError)) throw err; // already gone
+        // Only an already deleted attachment is harmless. Authentication,
+        // validation and rate-limit failures must remain retryable.
+        if (err instanceof TicketServiceError && /^Linear: Entity not found\b/i.test(err.message)) {
+          return { attachmentDelete: { success: true } };
+        }
+        throw err;
       });
+      if (!removed.attachmentDelete.success)
+        throw new Error("Linear didn't remove the old attachment");
     }
     return { id };
   },

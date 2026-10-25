@@ -49,7 +49,11 @@ import {
   type Ticket,
   type TicketRoundTripSettings,
 } from "@optio/shared";
-import { getTicketRoundTrip, type CommentPart } from "@optio/ticket-providers";
+import {
+  getTicketRoundTrip,
+  gitLabRoundTripConfig,
+  type CommentPart,
+} from "@optio/ticket-providers";
 import { db } from "../db/client.js";
 import { tasks, ticketProviders, ticketWritebacks } from "../db/schema.js";
 import { logger } from "../logger.js";
@@ -605,8 +609,12 @@ export async function deliverWriteback(
       return await finish("skipped", "The round trip is off for this provider");
     }
     const { resolveProviderConfig } = await import("./ticket-sync-service.js");
-    const config = await resolveProviderConfig(provider);
+    let config = await resolveProviderConfig(provider);
     const details = (row.details ?? {}) as Record<string, unknown>;
+    if (provider.source === "gitlab") {
+      const url = (task?.metadata as { ticketUrl?: string } | null)?.ticketUrl ?? details.ticketUrl;
+      config = gitLabRoundTripConfig(config, typeof url === "string" ? url : null);
+    }
     const prUrl = (typeof details.prUrl === "string" && details.prUrl) || task?.prUrl || null;
     const ctx: Context = {
       taskId: row.taskId,
@@ -738,7 +746,7 @@ async function lastLinkId(taskId: string): Promise<string | null> {
  */
 export async function noteTicketSkipped(input: {
   provider: { id: string; source: string; config: unknown };
-  ticket: Pick<Ticket, "externalId" | "source" | "repo">;
+  ticket: Pick<Ticket, "externalId" | "source" | "repo"> & { url?: string };
   firstSync: boolean;
 }): Promise<void> {
   const { provider, ticket } = input;
@@ -754,7 +762,11 @@ export async function noteTicketSkipped(input: {
     const id = await recordWriteback({
       event: "skipped",
       key: `skip:${provider.id}:${ticket.externalId}`,
-      details: backlog ? { why, backlog: true } : { why },
+      details: {
+        why,
+        ...(backlog ? { backlog: true } : {}),
+        ...(ticket.url ? { ticketUrl: ticket.url } : {}),
+      },
       status: backlog ? "skipped" : "pending",
       taskId: null,
       providerId: provider.id,
@@ -774,10 +786,17 @@ export async function noteTicketSkipped(input: {
 export async function optioCommentIds(
   ticketSource: string,
   ticketExternalId: string,
+  provider: Pick<ProviderRow, "id" | "config">,
 ): Promise<Set<string>> {
   const rows = await db
-    .select({ commentId: ticketWritebacks.commentId, linkId: ticketWritebacks.linkId })
+    .select({
+      commentId: ticketWritebacks.commentId,
+      linkId: ticketWritebacks.linkId,
+      providerId: ticketWritebacks.providerId,
+      config: ticketProviders.config,
+    })
     .from(ticketWritebacks)
+    .leftJoin(ticketProviders, eq(ticketProviders.id, ticketWritebacks.providerId))
     .where(
       and(
         eq(ticketWritebacks.ticketSource, ticketSource),
@@ -785,5 +804,29 @@ export async function optioCommentIds(
         sql`(${ticketWritebacks.commentId} IS NOT NULL OR ${ticketWritebacks.linkId} IS NOT NULL)`,
       ),
     );
-  return new Set(rows.flatMap((r) => [r.commentId, r.linkId]).filter((x): x is string => !!x));
+  const namespace = commentNamespace(ticketSource, provider.config);
+  return new Set(
+    rows
+      .filter(
+        (r) =>
+          r.providerId === provider.id ||
+          (namespace !== null && namespace === commentNamespace(ticketSource, r.config)),
+      )
+      .flatMap((r) => [r.commentId, r.linkId])
+      .filter((x): x is string => !!x),
+  );
+}
+
+/** Numeric comment ids are local to a self-hosted instance, not the whole service. */
+function commentNamespace(source: string, config: unknown): string | null {
+  if (source !== "gitlab" && source !== "jira") return source;
+  if (!config || typeof config !== "object") return null;
+  const c = config as { host?: string; baseUrl?: string };
+  const raw = source === "gitlab" ? c.host || "gitlab.com" : c.baseUrl;
+  if (!raw) return null;
+  try {
+    return new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).href.replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
 }

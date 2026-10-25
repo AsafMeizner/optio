@@ -381,6 +381,34 @@ describe("every source's statuses and Test button", () => {
       },
     });
 
+  it("GitLab groups list group labels and test only tickets on their configured host", async () => {
+    const id = await other(
+      "gitlab",
+      { host: GITLAB_HOST, groupPath: "acme" },
+      { token: "glpat-1" },
+    );
+    const issue = gl.addIssue(90);
+    const listed = await statuses(id);
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({
+      scope: "group",
+      statuses: expect.arrayContaining([{ name: "workflow::doing", category: "Label" }]),
+    });
+    const result = await check(id, `https://${GITLAB_HOST}/acme/app/-/issues/90`, {
+      started: "workflow::doing",
+    });
+    expect(result.json()).toMatchObject({
+      ok: true,
+      status: "Open",
+      steps: [{ step: "started", status: "workflow::doing", outcome: "ready" }],
+    });
+    const before = gl.calls.length;
+    const outside = await check(id, "https://evil.example/acme/app/-/issues/90", {});
+    expect(outside.json()).toMatchObject({ ok: false });
+    expect(gl.calls).toHaveLength(before);
+    expect(issue.labels).toEqual(["optio"]);
+  });
+
   beforeAll(async () => {
     vi.stubEnv("OPTIO_OUTBOUND_ALLOWED_HOSTS", `127.0.0.1,${GITLAB_HOST}`);
     [gh, gl, linear, notion] = await Promise.all([

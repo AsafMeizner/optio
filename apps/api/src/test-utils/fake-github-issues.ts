@@ -53,10 +53,14 @@ export interface FakeGitHubIssues extends FakeHttp {
 }
 
 export async function startFakeGitHubIssues(
-  opts: { token?: string; labels?: string[] } = {},
+  opts: { token?: string; labels?: string[]; installation?: boolean } = {},
 ): Promise<FakeGitHubIssues> {
   const token = opts.token ?? "fake-github-token";
-  const bot: FakeGitHubUser = { id: 9001, login: "optio-bot", type: "User" };
+  const bot: FakeGitHubUser = {
+    id: 9001,
+    login: "optio-bot",
+    type: opts.installation ? "Bot" : "User",
+  };
   const person: FakeGitHubUser = { id: 1001, login: "ada", type: "User" };
   const app: FakeGitHubUser = { id: 5001, login: "ci-helper[bot]", type: "Bot" };
   const labels = opts.labels ?? ["bug", "in progress", "in review", "optio"];
@@ -98,7 +102,12 @@ export async function startFakeGitHubIssues(
   const http = await startFakeHttp(
     (call, reply) => {
       const { method, path, body } = call;
-      if (method === "GET" && path === "/user") return reply(200, bot);
+      if (method === "GET" && path === "/user")
+        return opts.installation
+          ? reply(403, { message: "Resource not accessible by integration" })
+          : reply(200, bot);
+      if (method === "GET" && path === "/installation/repositories" && opts.installation)
+        return reply(200, { total_count: 1, repositories: [{ full_name: "acme/app" }] });
       if (method === "GET" && path === `${repo}/labels`) {
         const page = pageOf(
           labels.map((name) => ({ name })),

@@ -22,6 +22,7 @@ import {
   markdownCommentBody,
   sameName,
   serviceCall,
+  TicketServiceError,
   type TicketCommentRecord,
   type TicketRoundTrip,
 } from "./round-trip.js";
@@ -124,9 +125,18 @@ export const githubRoundTrip: TicketRoundTrip = {
   },
 
   async whoAmI(config) {
-    const me = (await call<{ id: number; login: string; name?: string | null }>(config, "/user"))
-      .body;
-    return { accountId: String(me.id), name: me.login, displayName: me.name || me.login };
+    try {
+      const me = (await call<{ id: number; login: string; name?: string | null }>(config, "/user"))
+        .body;
+      return { accountId: String(me.id), name: me.login, displayName: me.name || me.login };
+    } catch (err) {
+      if (!(err instanceof TicketServiceError) || err.status !== 403) throw err;
+      // Installation tokens have no /user. Verify that this is one rather
+      // than proceeding after an identity failure. Their comments always
+      // have a Bot author, excluded by listComments' bot flag (plus saved ids).
+      await call(config, "/installation/repositories?per_page=1");
+      return { displayName: "GitHub App installation" };
+    }
   },
 
   async listComments(ticketId, config, max = 50) {
