@@ -240,6 +240,7 @@ enum RunFormatting {
         ("gemini", "Google Gemini"),
         ("openclaw", "OpenClaw"),
         ("cursor", "Cursor"),
+        ("pi", "Pi"),
     ]
 
     static func agentLabel(_ type: String?) -> String {

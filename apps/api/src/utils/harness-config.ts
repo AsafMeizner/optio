@@ -42,7 +42,7 @@
  * (Cursor's) are merged into the repo's own file when it has one and kept
  * out of git by the setup-file writer.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { shellQuote } from "@optio/shared";
 import type { CodexMcpServer } from "./codex-config.js";
 
@@ -147,6 +147,24 @@ export function cursorMcpJson(servers: Servers): string {
   const mcpServers: Record<string, unknown> = {};
   for (const [name, s] of Object.entries(servers)) {
     mcpServers[name] = withEnv({ command: s.command, args: s.args }, s.env);
+  }
+  return JSON.stringify({ mcpServers }, null, 2);
+}
+
+/** Pi rejects punctuation/spaces and treats hyphens and underscores as the same name. */
+export function piMcpJson(servers: Servers): string {
+  const mcpServers: Record<string, unknown> = {};
+  const canonical = (name: string) => name.replace(/-/g, "_");
+  const bases = Object.keys(servers).map((name) => canonical(name.replace(/[^A-Za-z0-9_-]/g, "_")));
+  const seen = new Set<string>();
+  for (const [original, server] of Object.entries(servers)) {
+    let name = original.replace(/[^A-Za-z0-9_-]/g, "_") || "server";
+    if (name !== original || bases.filter((base) => base === canonical(name)).length > 1) {
+      name += `_${createHash("sha256").update(original).digest("hex").slice(0, 12)}`;
+    }
+    while (seen.has(canonical(name))) name += "_";
+    seen.add(canonical(name));
+    mcpServers[name] = withEnv({ command: server.command, args: server.args }, server.env);
   }
   return JSON.stringify({ mcpServers }, null, 2);
 }

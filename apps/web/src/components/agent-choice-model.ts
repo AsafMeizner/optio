@@ -19,6 +19,7 @@ export const RUNTIMES: Array<{ value: string; label: string }> = [
   { value: "copilot", label: "GitHub Copilot" },
   { value: "gemini", label: "Google Gemini" },
   { value: "cursor", label: "Cursor" },
+  { value: "pi", label: "Pi" },
   { value: "opencode", label: "OpenCode" },
   { value: "openclaw", label: "OpenClaw" },
 ];
@@ -49,7 +50,7 @@ export function optionKeysFor(runtime: string, podOnly = false): string[] {
  * copilotModel / copilotEffort columns, so a repo's values there are
  * Copilot's — Codex runs on its own defaults.
  */
-export const NO_REPO_SETTINGS = new Set(["codex"]);
+export const NO_REPO_SETTINGS = new Set(["codex", "pi"]);
 
 /** The repo's configured values for this runtime's options, to seed the picker. */
 export function optionsFromRepo(
@@ -123,7 +124,11 @@ export function repoAgentPatch(
   const patch: Record<string, string | boolean | null | undefined> = {
     defaultAgentType: runtime,
   };
-  const keys = new Set(RUNTIMES.flatMap((r) => optionKeysFor(r.value, true)));
+  const keys = new Set(
+    RUNTIMES.filter((r) => !NO_REPO_SETTINGS.has(r.value)).flatMap((r) =>
+      optionKeysFor(r.value, true),
+    ),
+  );
   for (const k of keys) {
     const v = values[k];
     if (typeof v === "boolean") patch[k] = v;

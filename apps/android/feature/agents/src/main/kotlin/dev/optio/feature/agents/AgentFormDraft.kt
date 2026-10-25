@@ -123,7 +123,7 @@ data class AgentFormDraft(
 
 /** Constants of the agent form (iOS `AgentFormSheet` statics). */
 object AgentDefaults {
-    val RUNTIMES: List<String> = listOf("claude-code", "codex", "copilot", "gemini", "opencode", "cursor")
+    val RUNTIMES: List<String> = listOf("claude-code", "codex", "copilot", "gemini", "opencode", "cursor", "pi")
 
     val LIFECYCLES: List<String> = listOf("sticky", "always-on", "on-demand")
 

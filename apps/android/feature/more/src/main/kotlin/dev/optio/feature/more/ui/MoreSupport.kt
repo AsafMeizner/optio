@@ -388,6 +388,7 @@ object MoreAgentTypes {
         "gemini" to "Google Gemini",
         "opencode" to "OpenCode",
         "cursor" to "Cursor",
+        "pi" to "Pi",
     )
 
     fun label(value: String): String = all.firstOrNull { it.first == value }?.second ?: value

@@ -176,6 +176,13 @@ case "${OPTIO_AGENT_TYPE}" in
     fi
     gemini ${GEMINI_FLAGS} -p "${OPTIO_PROMPT}"
     ;;
+  pi)
+    export PI_CODING_AGENT_DIR="${OPTIO_PI_HOME:?Pi run home is required}"
+    PI_ARGS=(--print --mode json --no-approve --no-extensions --extension builtin:mcp)
+    if [ -n "${OPTIO_PI_MODEL:-}" ]; then PI_ARGS+=(--model "$OPTIO_PI_MODEL"); fi
+    if [ -n "${OPTIO_PI_THINKING:-}" ]; then PI_ARGS+=(--thinking "$OPTIO_PI_THINKING"); fi
+    pi "${PI_ARGS[@]}" -- "$OPTIO_PROMPT" </dev/null
+    ;;
   cursor)
     echo "[optio] Running Cursor..."
     CURSOR_FLAGS="--print --trust --force --approve-mcps --output-format stream-json"

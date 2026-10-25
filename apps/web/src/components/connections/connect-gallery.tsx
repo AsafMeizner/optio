@@ -100,9 +100,7 @@ export function defaultConnectionName(
 }
 
 type Step =
-  | { kind: "pick" }
-  | { kind: "provider"; provider: ConnectionProvider }
-  | { kind: "secret" };
+  { kind: "pick" } | { kind: "provider"; provider: ConnectionProvider } | { kind: "secret" };
 
 export function ConnectGallery({
   open,

@@ -5,6 +5,7 @@ export { CopilotAdapter } from "./copilot.js";
 export { OpenCodeAdapter, OPENCODE_PLACEHOLDER_KEY, OPENCODE_PROVIDER_KEYS } from "./opencode.js";
 export { GeminiAdapter } from "./gemini.js";
 export { OpenClawAdapter } from "./openclaw.js";
+export { PiAdapter, PI_PROVIDER_KEYS } from "./pi.js";
 export { CursorAdapter } from "./cursor.js";
 
 import type { AgentAdapter } from "./types.js";
@@ -14,6 +15,7 @@ import { CopilotAdapter } from "./copilot.js";
 import { OpenCodeAdapter } from "./opencode.js";
 import { GeminiAdapter } from "./gemini.js";
 import { OpenClawAdapter } from "./openclaw.js";
+import { PiAdapter } from "./pi.js";
 import { CursorAdapter } from "./cursor.js";
 
 const adapters: Record<string, AgentAdapter> = {
@@ -23,6 +25,7 @@ const adapters: Record<string, AgentAdapter> = {
   gemini: new GeminiAdapter(),
   opencode: new OpenCodeAdapter(),
   cursor: new CursorAdapter(),
+  pi: new PiAdapter(),
 };
 
 // OpenClaw is experimental — only register when explicitly enabled

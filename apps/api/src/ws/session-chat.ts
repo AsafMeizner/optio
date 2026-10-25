@@ -138,13 +138,7 @@ export async function sessionChatWs(app: FastifyInstance) {
                 ? ev.timestamp.toISOString()
                 : (ev.timestamp as unknown as string),
             type: (ev.logType ?? "text") as
-              | "text"
-              | "tool_use"
-              | "tool_result"
-              | "thinking"
-              | "system"
-              | "error"
-              | "info",
+              "text" | "tool_use" | "tool_result" | "thinking" | "system" | "error" | "info",
             content: ev.content,
             metadata: ev.metadata ?? undefined,
           },

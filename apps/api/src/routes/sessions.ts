@@ -303,6 +303,42 @@ export async function sessionRoutes(rawApp: FastifyInstance) {
     },
   );
 
+  app.patch(
+    "/api/sessions/:id",
+    {
+      preHandler: requireRole("member"),
+      schema: {
+        operationId: "renameSession",
+        summary: "Rename an interactive session",
+        tags: ["Sessions"],
+        params: IdParamsSchema,
+        body: z.object({ title: z.string().trim().min(1).max(200) }),
+        response: { 200: SessionResponseSchema, 404: ErrorResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+      const session = await sessionService.getSession(id);
+      if (
+        !session ||
+        !(await canJoinSession("pod", session, req.user)) ||
+        (req.user?.id && session.userId && session.userId !== req.user.id)
+      ) {
+        return reply.status(404).send({ error: "Session not found" });
+      }
+      const updated = await sessionService.renameSession(id, req.body.title);
+      logAction({
+        workspaceId: req.user?.workspaceId ?? null,
+        userId: req.user?.id,
+        action: "session.rename",
+        params: { sessionId: id },
+        result: { id },
+        success: true,
+      }).catch(() => {});
+      return reply.send({ session: updated });
+    },
+  );
+
   app.post(
     "/api/sessions/:id/end",
     {

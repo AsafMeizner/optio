@@ -106,8 +106,7 @@ export function groupTranscript(entries: LocalTranscriptEntry[]): TranscriptItem
  * message, one folded line, and the answer.
  */
 export type TranscriptBlock =
-  | { kind: "item"; item: TranscriptItem }
-  | { kind: "steps"; items: TranscriptItem[] };
+  { kind: "item"; item: TranscriptItem } | { kind: "steps"; items: TranscriptItem[] };
 
 function opensTurn(item: TranscriptItem): boolean {
   return item.kind === "entry" && (item.entry.role === "user" || item.entry.role === "system");

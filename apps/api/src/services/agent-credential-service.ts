@@ -141,6 +141,18 @@ const SPECS: Record<string, CredentialSpec[]> = {
       hint: "A GitHub token for an account with Copilot.",
     },
   ],
+  pi: [
+    ANTHROPIC_KEY,
+    OPENAI_KEY,
+    {
+      secretName: "GEMINI_API_KEY",
+      method: "api-key",
+      label: "Gemini API key",
+      input: "token",
+      verifiable: true,
+      addable: true,
+    },
+  ],
   cursor: [
     {
       secretName: "CURSOR_API_KEY",
@@ -321,21 +333,19 @@ export async function listAgentCredentials(
         p.agents.includes(agentType as ModelProviderAgent) &&
         (!p.ownerUserId || p.ownerUserId === viewer.userId),
     )
-    .map(
-      (p): AgentCredential => ({
-        id: `provider:${p.id}`,
-        kind: "provider",
-        method: "bedrock",
-        label: `Amazon Bedrock · ${p.name}`,
-        secretName: null,
-        providerId: p.id,
-        owner: p.ownerUserId ? "me" : "workspace",
-        ownerUserId: p.ownerUserId ?? null,
-        ownerName: null,
-        default: false,
-        updatedAt: null,
-      }),
-    );
+    .map((p): AgentCredential => ({
+      id: `provider:${p.id}`,
+      kind: "provider",
+      method: "bedrock",
+      label: `Amazon Bedrock · ${p.name}`,
+      secretName: null,
+      providerId: p.id,
+      owner: p.ownerUserId ? "me" : "workspace",
+      ownerUserId: p.ownerUserId ?? null,
+      ownerName: null,
+      default: false,
+      updatedAt: null,
+    }));
 
   return {
     credentials: [...org.map(toCredential), ...mine.map(toCredential), ...providers],

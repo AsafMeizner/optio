@@ -42,8 +42,7 @@ type Definition = definitions.WorkDefinition;
 type Agent = typeof persistentAgents.$inferSelect;
 
 export type WorkRow =
-  | { table: "work_definitions"; row: Definition }
-  | { table: "persistent_agents"; row: Agent };
+  { table: "work_definitions"; row: Definition } | { table: "persistent_agents"; row: Agent };
 
 type ManifestWorkKind = "standalone" | "repo-blueprint" | "persistent-agent";
 

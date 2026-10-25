@@ -4,6 +4,7 @@ import { GEMINI_CATALOG } from "./gemini.js";
 import { COPILOT_CATALOG } from "./copilot.js";
 import { OPENCODE_CATALOG } from "./opencode.js";
 import { OPENCLAW_CATALOG } from "./openclaw.js";
+import { PI_CATALOG } from "./pi.js";
 import { CURSOR_CATALOG } from "./cursor.js";
 import type {
   AgentProviderId,
@@ -29,6 +30,7 @@ export { GEMINI_CATALOG } from "./gemini.js";
 export { COPILOT_CATALOG } from "./copilot.js";
 export { OPENCODE_CATALOG } from "./opencode.js";
 export { OPENCLAW_CATALOG } from "./openclaw.js";
+export { PI_CATALOG } from "./pi.js";
 export { CURSOR_CATALOG } from "./cursor.js";
 
 /** All providers, keyed by id. */
@@ -40,6 +42,7 @@ export const PROVIDER_CATALOGS: Record<AgentProviderId, ProviderCatalog> = {
   opencode: OPENCODE_CATALOG,
   openclaw: OPENCLAW_CATALOG,
   cursor: CURSOR_CATALOG,
+  pi: PI_CATALOG,
 };
 
 export const ALL_PROVIDER_IDS: readonly AgentProviderId[] = [
@@ -50,6 +53,7 @@ export const ALL_PROVIDER_IDS: readonly AgentProviderId[] = [
   "opencode",
   "openclaw",
   "cursor",
+  "pi",
 ];
 
 /**
@@ -58,13 +62,7 @@ export const ALL_PROVIDER_IDS: readonly AgentProviderId[] = [
  * `providerForAgentType()`.
  */
 export type AgentType =
-  | "claude-code"
-  | "codex"
-  | "copilot"
-  | "opencode"
-  | "gemini"
-  | "openclaw"
-  | "cursor";
+  "claude-code" | "codex" | "copilot" | "opencode" | "gemini" | "openclaw" | "cursor" | "pi";
 
 export const AGENT_TYPES: readonly AgentType[] = [
   "claude-code",
@@ -74,6 +72,7 @@ export const AGENT_TYPES: readonly AgentType[] = [
   "gemini",
   "openclaw",
   "cursor",
+  "pi",
 ];
 
 /**
@@ -94,6 +93,8 @@ export function providerForAgentType(agentType: AgentType | string): AgentProvid
       return "opencode";
     case "openclaw":
       return "openclaw";
+    case "pi":
+      return "pi";
     case "cursor":
       return "cursor";
     default:

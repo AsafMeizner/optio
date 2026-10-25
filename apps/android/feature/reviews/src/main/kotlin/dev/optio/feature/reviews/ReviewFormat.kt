@@ -109,6 +109,7 @@ internal object ReviewFormat {
         "gemini" to "Google Gemini",
         "openclaw" to "OpenClaw",
         "cursor" to "Cursor",
+        "pi" to "Pi",
     )
 
     /** An Inbox row's trailing text for the Optio task working on it (iOS `IssueRowView`). */

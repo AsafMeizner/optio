@@ -349,6 +349,7 @@ enum WorkForm {
         Runtime(value: "copilot", label: "GitHub Copilot"),
         Runtime(value: "gemini", label: "Google Gemini"),
         Runtime(value: "cursor", label: "Cursor"),
+        Runtime(value: "pi", label: "Pi"),
         Runtime(value: "opencode", label: "OpenCode"),
         Runtime(value: "openclaw", label: "OpenClaw"),
     ]
@@ -373,6 +374,7 @@ enum WorkForm {
         case "opencode": return "opencode"
         case "openclaw": return "openclaw"
         case "cursor": return "cursor"
+        case "pi": return "pi"
         default: return "anthropic"
         }
     }
@@ -386,6 +388,7 @@ enum WorkForm {
         case "opencode": return "opencodeModel"
         case "openclaw": return "openclawModel"
         case "cursor": return "cursorModel"
+        case "pi": return "piModel"
         default: return "claudeModel"
         }
     }

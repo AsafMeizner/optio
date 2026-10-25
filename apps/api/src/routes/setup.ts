@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { parseRepoUrl } from "@optio/shared";
 import { checkRuntimeHealth } from "../services/container-service.js";
 import { listSecrets, retrieveSecret } from "../services/secret-service.js";
 import { isSubscriptionAvailable } from "../services/auth-service.js";
@@ -344,8 +345,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
         const cc = new CC({ region, credentials });
         const list = await cc.send(new ListRepositoriesCommand({}));
         const names = (list.repositories ?? []).map((r) => r.repositoryName).filter(Boolean) as
-          | string[]
-          | [];
+          string[] | [];
         const details = await Promise.all(
           names.slice(0, 50).map((name) =>
             cc
@@ -676,11 +676,11 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       const { repoUrl, token } = req.body;
 
       try {
-        const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-        if (!match) {
+        const parsed = parseRepoUrl(repoUrl);
+        if (!parsed || parsed.host !== "github.com") {
           return reply.send({ valid: false, error: "Could not parse GitHub repo from URL" });
         }
-        const [, owner, repo] = match;
+        const { owner, repo } = parsed;
         const headers: Record<string, string> = { "User-Agent": "Optio" };
         let repoToken: string | null = token ?? null;
         if (!repoToken) repoToken = await retrieveSecret("GITHUB_TOKEN").catch(() => null);

@@ -130,7 +130,14 @@ function WorkList() {
               ? r.status === "waiting" && r.source !== "persistent-agent"
               : r.status === statusFilter)) &&
         (!needle ||
-          [r.name, r.where.detail, r.who, r.statusLabel, r.note]
+          [
+            r.name,
+            r.where.detail,
+            r.who,
+            r.statusLabel,
+            r.note,
+            ...(r.links ?? []).flatMap((link) => [link.label, link.url]),
+          ]
             .filter(Boolean)
             .some((s) => String(s).toLowerCase().includes(needle))),
     );

@@ -20,6 +20,7 @@ interface ChatEventWire {
 
 interface UseSessionLogsOpts {
   onCostUpdate?: (costUsd: number) => void;
+  readOnly?: boolean;
 }
 
 const HISTORICAL_LIMIT = 5000;
@@ -72,7 +73,9 @@ export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {})
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     setStatus("connecting");
 
-    const ws = new WebSocket(`${getWsBaseUrl()}/ws/sessions/${sessionId}/chat`);
+    const ws = opts.readOnly
+      ? null
+      : new WebSocket(`${getWsBaseUrl()}/ws/sessions/${sessionId}/chat`);
     wsRef.current = ws;
 
     const appendLive = (entry: LogEntry) => {
@@ -95,120 +98,124 @@ export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {})
       });
     };
 
-    ws.onopen = () => setStatus("ready");
-    ws.onclose = (event) => {
-      if (disposed) return;
-      setStatus("disconnected");
-      if (event.code !== 4403 && event.code !== 4401)
-        reconnectTimer = setTimeout(() => setConnectionAttempt((n) => n + 1), 2000);
-    };
-    ws.onerror = () => setStatus("error");
+    if (ws) {
+      ws.onopen = () => setStatus("ready");
+      ws.onclose = (event) => {
+        if (disposed) return;
+        setStatus("disconnected");
+        if (event.code !== 4403 && event.code !== 4401)
+          reconnectTimer = setTimeout(() => setConnectionAttempt((n) => n + 1), 2000);
+      };
+      ws.onerror = () => setStatus("error");
 
-    ws.onmessage = (raw) => {
-      let msg: any;
-      try {
-        msg = JSON.parse(raw.data);
-      } catch {
-        return;
-      }
-      switch (msg.type) {
-        case "history":
-          if (Array.isArray(msg.frames) && msg.frames.length === 0) {
-            pendingLive.length = 0;
-            setLogs([]);
-            setUserMessages([]);
-            setApprovals([]);
-          }
-          break;
-        case "action_proposal":
-          setApprovals((prev) => [
-            ...prev.filter((a) => a.id !== msg.actionId),
-            {
-              id: msg.actionId,
-              description: msg.description,
-              items: msg.items,
-              work: msg.work,
-              decision: null,
-            },
-          ]);
-          break;
-        case "action_decision":
-        case "action_expired":
-          setApprovals((prev) => prev.filter((action) => action.id !== msg.actionId));
-          break;
-        case "action_result":
-          appendLive({
-            content: msg.summary,
-            stream: "stdout",
-            timestamp: new Date().toISOString(),
-            logType: msg.success ? "text" : "error",
-          });
-          break;
-        case "queue":
-          if (Array.isArray(msg.messages)) setQueuedMessages(msg.messages);
-          break;
-        case "status":
-          if (typeof msg.runtime === "string") {
-            queueSupported.current = true;
-            setCanQueue(true);
-          }
-          setStatus(
-            msg.status === "waiting_for_approval"
-              ? "ready"
-              : msg.status === "executing"
-                ? "thinking"
-                : (msg.status as SessionStatus),
-          );
-          if (msg.model || msg.runtime) setModelState(msg.model ?? msg.runtime);
-          if (typeof msg.costUsd === "number") {
-            setCostUsd(msg.costUsd);
-            onCostUpdateRef.current?.(msg.costUsd);
-          }
-          break;
-        case "chat_event": {
-          const ev = msg.event as ChatEventWire;
-          const entry: LogEntry = {
-            content: ev.content,
-            stream: "stdout",
-            timestamp: ev.timestamp,
-            logType: ev.type,
-            metadata: ev.metadata,
-          };
-          // The WebSocket replays history with `catchUp: true` on connect.
-          // We rely on REST for the canonical history load and ignore the
-          // catch-up frames so they don't double up after dedup.
-          if (msg.catchUp) return;
-          appendLive(entry);
-          break;
+      ws.onmessage = (raw) => {
+        let msg: any;
+        try {
+          msg = JSON.parse(raw.data);
+        } catch {
+          return;
         }
-        case "user_message":
-          if (!ownRequests.current.has(msg.requestId))
-            setUserMessages((prev) => [
-              ...prev,
+        switch (msg.type) {
+          case "history":
+            if (Array.isArray(msg.frames) && msg.frames.length === 0) {
+              pendingLive.length = 0;
+              setLogs([]);
+              setUserMessages([]);
+              setApprovals([]);
+            }
+            break;
+          case "action_proposal":
+            setApprovals((prev) => [
+              ...prev.filter((a) => a.id !== msg.actionId),
               {
-                text: msg.content,
-                requestId: msg.requestId,
-                timestamp: new Date().toISOString(),
-                status: "sent",
+                id: msg.actionId,
+                description: msg.description,
+                items: msg.items,
+                work: msg.work,
+                decision: null,
               },
             ]);
-          break;
-        case "cost_update":
-          if (typeof msg.costUsd === "number") {
-            setCostUsd(msg.costUsd);
-            onCostUpdateRef.current?.(msg.costUsd);
+            break;
+          case "action_decision":
+          case "action_expired":
+            setApprovals((prev) => prev.filter((action) => action.id !== msg.actionId));
+            break;
+          case "action_result":
+            appendLive({
+              content: msg.summary,
+              stream: "stdout",
+              timestamp: new Date().toISOString(),
+              logType: msg.success ? "text" : "error",
+            });
+            break;
+          case "queue":
+            if (Array.isArray(msg.messages)) setQueuedMessages(msg.messages);
+            break;
+          case "status":
+            if (typeof msg.runtime === "string") {
+              queueSupported.current = true;
+              setCanQueue(true);
+            }
+            setStatus(
+              msg.status === "waiting_for_approval"
+                ? "ready"
+                : msg.status === "executing"
+                  ? "thinking"
+                  : (msg.status as SessionStatus),
+            );
+            if (msg.model || msg.runtime) setModelState(msg.model ?? msg.runtime);
+            if (typeof msg.costUsd === "number") {
+              setCostUsd(msg.costUsd);
+              onCostUpdateRef.current?.(msg.costUsd);
+            }
+            break;
+          case "chat_event": {
+            const ev = msg.event as ChatEventWire;
+            const entry: LogEntry = {
+              content: ev.content,
+              stream: "stdout",
+              timestamp: ev.timestamp,
+              logType: ev.type,
+              metadata: ev.metadata,
+            };
+            // The WebSocket replays history with `catchUp: true` on connect.
+            // We rely on REST for the canonical history load and ignore the
+            // catch-up frames so they don't double up after dedup.
+            if (msg.catchUp) return;
+            appendLive(entry);
+            break;
           }
-          break;
-        case "error":
-          appendLive({
-            content: msg.message ?? "Unknown error",
-            stream: "stderr",
-            timestamp: new Date().toISOString(),
-            logType: "error",
-          });
-          break;
-      }
-    };
+          case "user_message":
+            if (!ownRequests.current.has(msg.requestId))
+              setUserMessages((prev) => [
+                ...prev,
+                {
+                  text: msg.content,
+                  requestId: msg.requestId,
+                  timestamp: new Date().toISOString(),
+                  status: "sent",
+                },
+              ]);
+            break;
+          case "cost_update":
+            if (typeof msg.costUsd === "number") {
+              setCostUsd(msg.costUsd);
+              onCostUpdateRef.current?.(msg.costUsd);
+            }
+            break;
+          case "error":
+            appendLive({
+              content: msg.message ?? "Unknown error",
+              stream: "stderr",
+              timestamp: new Date().toISOString(),
+              logType: "error",
+            });
+            break;
+        }
+      };
+    } else {
+      setStatus("idle");
+    }
 
     api
       .getSessionChat(sessionId, { limit: HISTORICAL_LIMIT })
@@ -264,10 +271,10 @@ export function useSessionLogs(sessionId: string, opts: UseSessionLogsOpts = {})
     return () => {
       disposed = true;
       clearTimeout(reconnectTimer);
-      ws.close();
+      ws?.close();
       wsRef.current = null;
     };
-  }, [sessionId, connectionAttempt]);
+  }, [sessionId, connectionAttempt, opts.readOnly]);
 
   const sendMessage = useCallback((text: string) => {
     const trimmed = text.trim();

@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js package managers (pnpm and yarn are already provided by corepack in the base image)
+# Node.js package managers (pnpm and yarn are provided by Corepack in the base image)
 RUN curl -fsSL https://bun.sh/install | bash \
     && mv /root/.bun/bin/bun /usr/local/bin/ \
     && rm -rf /root/.bun

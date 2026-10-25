@@ -44,6 +44,7 @@ import {
   carriesEnv,
   copilotMcpConfigJson,
   cursorMcpJson,
+  piMcpJson,
   geminiSettingsJson,
   OPTIO_COPILOT_MCP_CONFIG,
   OPTIO_GEMINI_HOME,
@@ -445,6 +446,19 @@ export async function buildAgentEnvironment(
     log.info({ injected, total: installed.length }, "Injecting marketplace skills");
   }
 
+  if (agentType === "pi") {
+    if (!env.OPTIO_PI_HOME) Object.assign(env, harnessMcpFiles("pi", {}, setupFiles, input.runId));
+    const piSetupDir = setupFiles
+      .find((f) => f.path.endsWith("/pi/mcp.json"))!
+      .path.slice(0, -"mcp.json".length);
+    for (const file of setupFiles) {
+      // User-level paths load without granting trust to repository config.
+      if (file.path.startsWith(".claude/skills/"))
+        file.path = `${piSetupDir}skills/${file.path.slice(".claude/skills/".length)}`;
+      if (file.path.startsWith(".claude/commands/"))
+        file.path = `${piSetupDir}prompts/${file.path.slice(".claude/commands/".length)}`;
+    }
+  }
   if (input.settings?.setupCommands) env.OPTIO_WORK_SETUP_COMMANDS = input.settings.setupCommands;
   // The exec scripts decode this (`WRITE_SETUP_FILES` in utils/pod-env.ts).
   if (setupFiles.length > 0) {
@@ -518,6 +532,16 @@ function harnessMcpFiles(
     case "copilot": {
       setupFiles.push(own(`${home.setupDir}/copilot/mcp-config.json`, copilotMcpConfigJson(mcp)));
       env[OPTIO_COPILOT_MCP_CONFIG] = `${home.podDir}/copilot/mcp-config.json`;
+      env[OPTIO_RUN_HOME] = home.podDir;
+      break;
+    }
+    case "pi": {
+      setupFiles.push({
+        path: `${home.setupDir}/pi/mcp.json`,
+        content: piMcpJson(mcp),
+        sensitive: true,
+      });
+      env.OPTIO_PI_HOME = `${home.podDir}/pi`;
       env[OPTIO_RUN_HOME] = home.podDir;
       break;
     }

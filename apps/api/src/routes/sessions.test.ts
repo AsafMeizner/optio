@@ -9,6 +9,7 @@ const mockListSessions = vi.fn();
 const mockGetSession = vi.fn();
 const mockCreateSession = vi.fn();
 const mockEndSession = vi.fn();
+const mockRenameSession = vi.fn();
 const mockGetSessionPrs = vi.fn();
 const mockAddSessionPr = vi.fn();
 const mockGetActiveSessionCount = vi.fn();
@@ -23,6 +24,7 @@ vi.mock("../services/interactive-session-service.js", () => ({
   listSessions: (...args: unknown[]) => mockListSessions(...args),
   getSession: (...args: unknown[]) => mockGetSession(...args),
   createSession: (...args: unknown[]) => mockCreateSession(...args),
+  renameSession: (...args: unknown[]) => mockRenameSession(...args),
   endSession: (...args: unknown[]) => mockEndSession(...args),
   getSessionPrs: (...args: unknown[]) => mockGetSessionPrs(...args),
   addSessionPr: (...args: unknown[]) => mockAddSessionPr(...args),
@@ -430,4 +432,65 @@ describe("GET /api/sessions/stats", () => {
     expect(mockGetSessionStats).toHaveBeenCalledTimes(1);
     expect(mockGetSession).not.toHaveBeenCalled();
   });
+});
+
+describe("PATCH /api/sessions/:id", () => {
+  it("lets the owner rename a session", async () => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue({ ...mockSession, userId: "user-1", workspaceId: "ws-1" });
+    mockRenameSession.mockResolvedValue({ ...mockSession, title: "New title" });
+    const app = await buildTestApp();
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/sessions/${mockSession.id}`,
+      payload: { title: " New title " },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(mockRenameSession).toHaveBeenCalledWith(mockSession.id, "New title");
+    await app.close();
+  });
+  it("does not let another member rename a session they can read", async () => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue({
+      ...mockSession,
+      userId: "someone-else",
+      workspaceId: "ws-1",
+    });
+    const app = await buildTestApp();
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/sessions/${mockSession.id}`,
+      payload: { title: "Hijacked" },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(mockRenameSession).not.toHaveBeenCalled();
+    await app.close();
+  });
+  it("rejects empty titles", async () => {
+    vi.clearAllMocks();
+    const app = await buildTestApp();
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/sessions/${mockSession.id}`,
+      payload: { title: "   " },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(mockRenameSession).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+it("rejects session renames from a viewer", async () => {
+  vi.clearAllMocks();
+  const app = await buildRouteTestApp(sessionRoutes, {
+    user: { id: "user-1", workspaceId: "ws-1", workspaceRole: "viewer" },
+  });
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/sessions/${mockSession.id}`,
+    payload: { title: "Forbidden" },
+  });
+  expect(res.statusCode).toBe(403);
+  expect(mockRenameSession).not.toHaveBeenCalled();
+  await app.close();
 });

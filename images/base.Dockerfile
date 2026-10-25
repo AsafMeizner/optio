@@ -2,8 +2,10 @@
 # @optio/mcp-bridge is a stdio MCP server that proxies one token-authenticated
 # REST API for the agent. It is bundled to one file and baked in at
 # /opt/optio/mcp-bridge.js (launched as `node /opt/optio/mcp-bridge.js`).
-FROM node:22-slim AS bridge
-RUN corepack enable && corepack prepare pnpm@10 --activate
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS node-runtime
+
+FROM node-runtime AS bridge
+RUN npm install -g pnpm@10.34.8
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/mcp-bridge/ packages/mcp-bridge/
@@ -51,16 +53,22 @@ RUN ARCH_RAW=$(dpkg --print-architecture) \
     && /tmp/aws/install \
     && rm -rf /tmp/awscliv2.zip /tmp/aws
 
-# Node.js 22 (needed for Claude Code)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
+# Node.js 26.12.1, including the October 2026 security fixes.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # Verify Node ships OpenSSL >= 3.5 for post-quantum TLS (X25519MLKEM768)
 RUN node -e 'const [maj,min] = process.versions.openssl.split(".").map(Number); if (maj < 3 || (maj === 3 && min < 5)) { console.error("OpenSSL " + process.versions.openssl + " too old; need >= 3.5"); process.exit(1); }'
 
-# pnpm (installed globally before switching to non-root user)
-RUN corepack enable && corepack prepare pnpm@10 --activate
+# Corepack is no longer bundled with Node. Keep project-aware pnpm/Yarn
+# selection for repositories that declare their own packageManager.
+RUN npm install -g corepack@0.36.0 \
+    && corepack enable \
+    && corepack prepare pnpm@10.34.8 --activate
 
 # Claude Code
 # PINNED to work around a Bun regression, NOT for feature reasons.
@@ -80,6 +88,11 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.112
 # the Codex this image gets no longer takes it.
 RUN npm install -g @openai/codex \
     && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox
+
+# Pi: native JSONL + MCP protocol used by the Pi adapter.
+ARG PI_VERSION=1.4.0
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION} \
+    && pi --version
 
 # GitHub Copilot CLI (pinned + best-effort — package may be temporarily unavailable)
 RUN npm install -g @github/copilot@1.0.20 || echo "WARN: @github/copilot install failed; copilot agent will not be available in this image"

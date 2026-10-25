@@ -1,4 +1,5 @@
 import { shellQuote } from "@optio/shared";
+import { piCommand } from "../utils/pi-command.js";
 import { EXPORT_CODEX_HOME } from "../utils/codex-config.js";
 import {
   copilotMcpConfigFlag,
@@ -113,6 +114,8 @@ export function buildPooledAgentCommand(
         `gemini${modelFlag}${approvalFlag} -p "$OPTIO_PROMPT" --output-format stream-json`,
       ];
     }
+    case "pi":
+      return piCommand(env);
     case "cursor": {
       const modelFlag = env.OPTIO_CURSOR_MODEL ? ` --model ${q(env.OPTIO_CURSOR_MODEL)}` : "";
       // --approve-mcps: the run's MCP servers load without an approval prompt.

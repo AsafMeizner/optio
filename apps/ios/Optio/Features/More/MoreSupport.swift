@@ -200,6 +200,7 @@ enum MoreAgentTypes {
         ("gemini", "Google Gemini"),
         ("opencode", "OpenCode"),
         ("cursor", "Cursor"),
+        ("pi", "Pi"),
     ]
 
     static func label(_ value: String) -> String {

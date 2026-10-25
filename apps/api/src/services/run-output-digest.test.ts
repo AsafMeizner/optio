@@ -113,3 +113,17 @@ describe("RunOutputDigest", () => {
     });
   });
 });
+
+it("Pi retains a nonzero process exit and fails incomplete JSON output", () => {
+  const lines = [
+    JSON.stringify({
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "stop" },
+    }),
+    JSON.stringify({ type: "agent_settled", aborted: false }),
+  ];
+  const digest = new RunOutputDigest("pi");
+  for (const line of lines) digest.push(line);
+  expect(digest.finish(9, { inferExitCode: true }).result.success).toBe(false);
+  expect(new RunOutputDigest("pi").finish(0, { inferExitCode: true }).result.success).toBe(false);
+});

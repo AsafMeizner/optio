@@ -23,12 +23,12 @@ export default function ContributingPage() {
       <h3 className="mt-6 text-lg font-semibold text-text-heading">Prerequisites</h3>
       <ul className="mt-3 list-disc pl-5 space-y-1 text-[14px] text-text-muted">
         <li>
-          <strong className="text-text-heading">Node.js 22+</strong>
+          <strong className="text-text-heading">Node.js 26.12.1</strong>
         </li>
         <li>
-          <strong className="text-text-heading">pnpm 10+</strong> (
+          <strong className="text-text-heading">pnpm 10.34.8</strong> (
           <code className="rounded bg-bg-hover px-1.5 py-0.5 text-[13px] font-mono">
-            npm install -g pnpm
+            npm install -g pnpm@10.34.8
           </code>
           )
         </li>

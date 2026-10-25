@@ -331,8 +331,7 @@ describe("a terminal whose process exited", () => {
     expect(manager.isLive("t-1")).toBe(false);
     manager.attach("t-1", "a-1");
     const scrollback = sent.find((m) => m.type === "scrollback") as
-      | { attachId: string; dataB64: string }
-      | undefined;
+      { attachId: string; dataB64: string } | undefined;
     expect(scrollback?.attachId).toBe("a-1");
     expect(Buffer.from(scrollback!.dataB64, "base64").toString()).toBe("hi\r\n");
     expect(sent.some((m) => m.type === "attach-error")).toBe(false);

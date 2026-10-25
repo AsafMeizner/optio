@@ -62,10 +62,14 @@ export class ExitCodeInference {
   private flagged = false;
 
   constructor(agentType: string) {
-    this.kind = agentType in ERROR_SIGNALS || agentType === "cursor" ? agentType : "claude-code";
+    this.kind =
+      agentType in ERROR_SIGNALS || agentType === "cursor" || agentType === "pi"
+        ? agentType
+        : "claude-code";
   }
 
   push(line: string): void {
+    if (this.kind === "pi") return;
     if (this.kind === "claude-code") {
       // The NDJSON result event is the authoritative source for Claude's
       // exit status. Raw string matching on JSON lines produces false
@@ -119,6 +123,7 @@ export class ExitCodeInference {
    * whole-output `inferExitCode` of the task and review workers).
    */
   resolve(processExitCode: number): number {
+    if (this.kind === "pi") return processExitCode;
     if (this.kind !== "claude-code" && this.kind !== "cursor") return this.flagged ? 1 : 0;
     if (this.firstResult !== null) return this.firstResult;
     if (this.flagged) return 1;

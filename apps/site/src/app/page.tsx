@@ -115,15 +115,16 @@ export default function Home() {
                 machines—with one place to follow the work.
               </p>
               <div className="landing-actions">
-                <Link href="/docs/getting-started" className="landing-button primary">
-                  Get started <span aria-hidden="true">↗</span>
-                </Link>
-                <a href={github} className="landing-button secondary">
+                <a href={github} className="landing-button primary">
                   View on GitHub <span aria-hidden="true">↗</span>
                 </a>
+                <Link href="/docs/getting-started" className="landing-button secondary">
+                  Get started <span aria-hidden="true">↗</span>
+                </Link>
               </div>
               <p className="hero-note">
-                Self-hosted <span>·</span> MIT licensed <span>·</span> Web, iOS & Android
+                <a href={github}>jonwiggins/optio</a> <span>·</span> Self-hosted <span>·</span> MIT
+                licensed <span>·</span> Web, iOS & Android
               </p>
             </div>
           </div>

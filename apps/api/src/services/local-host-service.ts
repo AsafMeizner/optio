@@ -381,8 +381,7 @@ const MAX_AGENT_MODELS = 50;
 export function sanitizeAgentModels(input: unknown): LocalHostAgentModels {
   const out: LocalHostAgentModels = {};
   const codex = (input as { codex?: unknown } | null)?.codex as
-    | { models?: unknown; fetchedAt?: unknown }
-    | undefined;
+    { models?: unknown; fetchedAt?: unknown } | undefined;
   if (!codex || typeof codex !== "object" || !Array.isArray(codex.models)) return out;
   const models: LocalAgentModel[] = [];
   const seen = new Set<string>();

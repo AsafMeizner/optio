@@ -9,6 +9,16 @@ import {
   type PodTerminalPane,
 } from "@/components/pod-terminal-panes";
 import { rememberSessionLayout, useSessionLayout } from "@/hooks/use-session-layout";
+import { TitleEditor } from "@/components/local/title-editor";
+import { useCurrentUser } from "@/hooks/use-current-user";
+import { WorkLinkBadges } from "@/components/local/work-links";
+import {
+  mergePodWorkLinks,
+  extractWorkLinks,
+  workLinkIdentity,
+  type WorkLink,
+} from "@optio/shared";
+import { usePageTitle } from "@/hooks/use-page-title";
 import { useRailStore } from "@/components/local/rail-store";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -56,6 +66,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 
 export function PodWorkDetail({ id }: { id: string }) {
   useSessionLayout("pod");
+  const { userId, canMutate, authDisabled } = useCurrentUser();
   const router = useRouter();
   const replaceLayout = (href: string) => router.replace(rememberSessionLayout(href));
   const searchParams = useSearchParams();
@@ -66,6 +77,8 @@ export function PodWorkDetail({ id }: { id: string }) {
     claudeModel: string;
     availableModels: string[];
   } | null>(null);
+  const [mentionedLinks, setMentionedLinks] = useState<WorkLink[]>([]);
+  usePageTitle(session?.title || session?.branch || "Pod session");
   const [prs, setPrs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [ending, setEnding] = useState(false);
@@ -78,7 +91,10 @@ export function PodWorkDetail({ id }: { id: string }) {
 
   const fetchSession = async () => {
     try {
-      const [sessionRes, prsRes] = await Promise.all([api.getSession(id), api.getSessionPrs(id)]);
+      const [sessionRes, prsRes] = await Promise.all([
+        api.getSession(id),
+        api.getSessionPrs(id).catch(() => ({ prs: [] })),
+      ]);
       setSession(sessionRes.session);
       if ((sessionRes as any).modelConfig) {
         setModelConfig((sessionRes as any).modelConfig);
@@ -106,13 +122,25 @@ export function PodWorkDetail({ id }: { id: string }) {
   useEffect(() => {
     if (!session || session.state !== "active") return;
     const interval = setInterval(() => {
-      api
-        .getSessionPrs(id)
-        .then((res) => setPrs(res.prs))
+      Promise.all([api.getSession(id), api.getSessionPrs(id).catch(() => ({ prs: [] }))])
+        .then(([sessionRes, prsRes]) => {
+          setSession(sessionRes.session);
+          setPrs(prsRes.prs);
+        })
         .catch(() => {});
     }, 30000);
     return () => clearInterval(interval);
   }, [session?.state, id]);
+
+  const handleLinks = useCallback((incoming: WorkLink[]) => {
+    setMentionedLinks((previous) => {
+      const next = mergePodWorkLinks(previous, incoming);
+      return JSON.stringify(next) === JSON.stringify(previous) ? previous : next;
+    });
+  }, []);
+  const handleTerminalSelection = useCallback((text: string) => {
+    sendToAgentRef.current?.(text);
+  }, []);
 
   const handleEnd = async () => {
     setEnding(true);
@@ -145,6 +173,22 @@ export function PodWorkDetail({ id }: { id: string }) {
     );
   }
 
+  const recordedLinks = extractWorkLinks(prs.map((pr) => pr.prUrl).join("\n"), {
+    wrapWidth: Infinity,
+  });
+  const links = mergePodWorkLinks(
+    mergePodWorkLinks(session.links ?? [], recordedLinks),
+    mentionedLinks,
+  );
+  const recordedIds = new Set(recordedLinks.map(workLinkIdentity));
+  const untrackedLinks = links.filter((link) => !recordedIds.has(workLinkIdentity(link)));
+  const chatProps = { sessionId: id, repoUrl: session.repoUrl, onLinks: handleLinks };
+  const terminalProps = {
+    sessionId: id,
+    repoUrl: session.repoUrl,
+    onLinks: handleLinks,
+    onSendToAgent: handleTerminalSelection,
+  };
   const isActive = session.state === "active";
   const repoName = session.repoUrl?.replace("https://github.com/", "") ?? "Unknown";
   const displayCost = liveCost > 0 ? liveCost : session.costUsd ? parseFloat(session.costUsd) : 0;
@@ -153,7 +197,19 @@ export function PodWorkDetail({ id }: { id: string }) {
     <div className="@container h-full flex flex-col">
       <DetailHeader
         compact
-        title={session.title || session.branch || `Session ${session.id.slice(0, 8)}`}
+        title={
+          canMutate && (authDisabled || !session.userId || session.userId === userId) ? (
+            <TitleEditor
+              kind="pod"
+              terminalId={id}
+              title={session.title || session.branch || `Session ${session.id.slice(0, 8)}`}
+              onSaved={(updated) => setSession((previous: any) => ({ ...previous, ...updated }))}
+              inputClassName="text-xl font-semibold"
+            />
+          ) : (
+            session.title || session.branch || `Session ${session.id.slice(0, 8)}`
+          )
+        }
         subtitle={
           <Link href="/work" className="inline-flex items-center gap-1 hover:text-primary">
             <ArrowLeft className="w-3 h-3" />
@@ -161,6 +217,16 @@ export function PodWorkDetail({ id }: { id: string }) {
           </Link>
         }
         state={session.state}
+        actions={
+          links.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {prs.map((pr: any) => (
+                <PrBadge key={pr.id} pr={pr} />
+              ))}
+              <WorkLinkBadges links={untrackedLinks} size="xs" max={6} />
+            </div>
+          ) : undefined
+        }
         metaItems={[
           <>
             <Terminal className="w-3 h-3" />
@@ -288,7 +354,7 @@ export function PodWorkDetail({ id }: { id: string }) {
       <div className="flex-1 min-h-0">
         {isActive ? (
           session.agentRuntime ? (
-            <SessionChat sessionId={id} onCostUpdate={handleCostUpdate} />
+            <SessionChat {...chatProps} onCostUpdate={handleCostUpdate} />
           ) : (
             <SplitPane
               leftLabel="Agent Chat"
@@ -297,7 +363,7 @@ export function PodWorkDetail({ id }: { id: string }) {
               left={
                 <ErrorBoundary label="Session chat">
                   <SessionChat
-                    sessionId={id}
+                    {...chatProps}
                     selectedModel={selectedModel}
                     onCostUpdate={handleCostUpdate}
                     onSendToAgent={handleSendToAgentRegister}
@@ -309,7 +375,7 @@ export function PodWorkDetail({ id }: { id: string }) {
                   <div className="flex-1 min-h-0 flex flex-col">
                     <div className="flex-1 min-h-0 basis-0" data-session-pane="pod-main">
                       <ErrorBoundary label="Terminal">
-                        <SessionTerminal sessionId={id} />
+                        <SessionTerminal {...terminalProps} />
                       </ErrorBoundary>
                     </div>
                     {terminalPanes.map((pane) => (
@@ -341,16 +407,17 @@ export function PodWorkDetail({ id }: { id: string }) {
                         </div>
                         <div className="flex-1 min-h-0">
                           <ErrorBoundary label="Terminal">
-                            <SessionTerminal sessionId={id} terminal={pane} />
+                            <SessionTerminal {...terminalProps} terminal={pane} />
                           </ErrorBoundary>
                         </div>
                       </section>
                     ))}
                   </div>
                   {/* PR cards inline below terminal when present */}
-                  {prs.length > 0 && (
+                  {(prs.length > 0 || untrackedLinks.length > 0) && (
                     <div className="shrink-0 border-t border-border bg-bg px-3 py-2">
                       <div className="flex items-center gap-2 overflow-x-auto">
+                        <WorkLinkBadges links={untrackedLinks} size="xs" max={4} />
                         {prs.map((pr: any) => (
                           <PrBadge key={pr.id} pr={pr} />
                         ))}
@@ -362,16 +429,17 @@ export function PodWorkDetail({ id }: { id: string }) {
             />
           )
         ) : (
-          <div className="h-full flex items-center justify-center text-text-muted bg-[#09090b]">
-            <div className="text-center">
-              <Terminal className="w-8 h-8 mx-auto mb-2 opacity-30" />
-              <p className="text-sm">Session ended</p>
-              {session.endedAt && (
-                <p className="text-xs mt-1">
-                  Duration: {formatDuration(session.createdAt, session.endedAt)}
-                </p>
-              )}
-              {displayCost > 0 && <p className="text-xs mt-1">Cost: ${displayCost.toFixed(4)}</p>}
+          <div className="h-full flex flex-col">
+            <div
+              role="status"
+              className="shrink-0 border-b border-border px-4 py-2 text-xs text-text-muted"
+            >
+              Session ended
+              {session.endedAt &&
+                ` · Duration: ${formatDuration(session.createdAt, session.endedAt)}`}
+            </div>
+            <div className="flex-1 min-h-0">
+              <SessionChat {...chatProps} readOnly />
             </div>
           </div>
         )}

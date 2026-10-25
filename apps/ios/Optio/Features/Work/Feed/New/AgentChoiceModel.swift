@@ -22,7 +22,7 @@ extension WorkForm {
 
     /// Runtimes a repo keeps no settings for. Codex shares Copilot's
     /// copilotModel / copilotEffort columns, so those values are Copilot's.
-    static let noRepoSettings: Set<String> = ["codex"]
+    static let noRepoSettings: Set<String> = ["codex", "pi"]
 
     /// What a repo row holds when nobody has set its agent (the DB column defaults).
     static let repoFactoryAgent = "claude-code"

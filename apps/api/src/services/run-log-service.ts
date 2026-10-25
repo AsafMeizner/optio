@@ -11,9 +11,7 @@ import { logger } from "../logger.js";
 
 /** Whose line it is. */
 export type LogOwner =
-  | { taskId: string }
-  | { prReviewRunId: string }
-  | { persistentAgentTurnId: string };
+  { taskId: string } | { prReviewRunId: string } | { persistentAgentTurnId: string };
 
 export interface LogLine {
   content: string;

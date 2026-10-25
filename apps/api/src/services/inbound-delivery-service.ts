@@ -18,13 +18,7 @@ import { logger } from "../logger.js";
 import { isStatementTimeout } from "../utils/db-errors.js";
 
 export type DeliverySource =
-  | "github"
-  | "slack"
-  | "linear"
-  | "pagerduty"
-  | "gitlab"
-  | "jira"
-  | "sentry";
+  "github" | "slack" | "linear" | "pagerduty" | "gitlab" | "jira" | "sentry";
 
 const MAX_DELIVERY_ID = 512;
 /** How long the claim's insert may take before the delivery is accepted unclaimed. */

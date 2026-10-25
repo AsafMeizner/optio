@@ -262,3 +262,21 @@ describe("useSessionLogs", () => {
     expect(result.current.logs[0].content).toBe("live after failure");
   });
 });
+
+it("loads ended-session history without opening a live socket", async () => {
+  mockGetSessionChat.mockResolvedValue({
+    events: [
+      {
+        content: "Review https://github.com/acme/app/pull/123",
+        logType: "text",
+        timestamp: "2026-10-24T12:00:00Z",
+      },
+      { content: "Fix #12", logType: "user_message", timestamp: "2026-10-24T12:00:01Z" },
+    ],
+  });
+  const { result } = renderHook(() => useSessionLogs("ended", { readOnly: true }));
+  await waitFor(() => expect(result.current.logs).toHaveLength(1));
+  expect(result.current.userMessages[0].text).toBe("Fix #12");
+  expect(FakeWebSocket.instances).toHaveLength(0);
+  expect(result.current.sendMessage("continue")).toBe(false);
+});

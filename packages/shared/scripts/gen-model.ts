@@ -413,13 +413,11 @@ export function buildModel(sourceFiles: string[], opts: ModelOptions): Model {
     // content state in apps/ios/Shared) opts out with a leading pragma comment.
     if (opts.skipFilePragma.test(sf.getFullText())) continue;
     for (const stmt of sf.statements) {
-      if (
-        !(
-          ts.isInterfaceDeclaration(stmt) ||
-          ts.isTypeAliasDeclaration(stmt) ||
-          ts.isEnumDeclaration(stmt)
-        )
-      )
+      if (!(
+        ts.isInterfaceDeclaration(stmt) ||
+        ts.isTypeAliasDeclaration(stmt) ||
+        ts.isEnumDeclaration(stmt)
+      ))
         continue;
       if (!isExported(stmt)) continue;
       const kind = classify(stmt, sf);

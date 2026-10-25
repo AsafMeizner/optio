@@ -11,8 +11,8 @@ class Recognition {
   onend: (() => void) | null = null;
   onerror: ((event: { error: string }) => void) | null = null;
   onresult:
-    | ((event: { results: Array<{ isFinal: boolean; 0: { transcript: string } }> }) => void)
-    | null = null;
+    ((event: { results: Array<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null =
+    null;
   constructor() {
     Recognition.latest = this;
   }

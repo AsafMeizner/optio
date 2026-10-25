@@ -423,6 +423,7 @@ object WorkFeed {
         "copilot" to "GitHub Copilot",
         "gemini" to "Google Gemini",
         "cursor" to "Cursor",
+        "pi" to "Pi",
         "opencode" to "OpenCode",
         "openclaw" to "OpenClaw",
     )

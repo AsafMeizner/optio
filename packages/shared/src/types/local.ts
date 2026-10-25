@@ -152,14 +152,7 @@ export type LocalAttentionState = "working" | "needs_you" | "idle";
  * `services/local-run-service.ts`).
  */
 export type LocalSpawnSource =
-  | "manual"
-  | "ticket"
-  | "trigger"
-  | "blueprint"
-  | "api"
-  | "resume"
-  | "job"
-  | "task";
+  "manual" | "ticket" | "trigger" | "blueprint" | "api" | "resume" | "job" | "task";
 
 /**
  * What happens once an agent finishes its first turn.
@@ -294,13 +287,7 @@ export type LocalTranscriptKind = "text" | "thinking" | "tool_use" | "tool_resul
  * - `other`: anything else the CLI injected as a turn
  */
 export type LocalTranscriptSource =
-  | "prompt"
-  | "task"
-  | "agent"
-  | "compact"
-  | "interrupt"
-  | "rewind"
-  | "other";
+  "prompt" | "task" | "agent" | "compact" | "interrupt" | "rewind" | "other";
 
 export const LOCAL_TRANSCRIPT_SOURCES: readonly LocalTranscriptSource[] = [
   "prompt",

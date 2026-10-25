@@ -6,6 +6,7 @@ vi.mock("../db/client.js", () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
 }));
 
@@ -20,6 +21,7 @@ vi.mock("../db/schema.js", () => ({
     id: "session_prs.id",
     sessionId: "session_prs.session_id",
     createdAt: "session_prs.created_at",
+    prUrl: "session_prs.pr_url",
   },
   sessionChatEvents: {
     id: "session_chat_events.id",
@@ -85,6 +87,7 @@ import {
 describe("interactive-session-service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db));
   });
 
   describe("createSession", () => {
@@ -410,9 +413,29 @@ describe("interactive-session-service", () => {
         }),
       });
 
+      (db.select as any) = vi
+        .fn()
+        .mockReturnValueOnce({
+          from: () => ({ where: () => ({ for: async () => [{ id: "s-1" }] }) }),
+        })
+        .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [] }) }) });
+
       const result = await addSessionPr("s-1", "https://github.com/o/r/pull/1", 1);
       expect(result).toEqual(pr);
     });
+  });
+
+  it("keeps an existing PR and its status when it is detected again", async () => {
+    const existing = { id: "pr-1", prState: "merged", prUrl: "https://github.com/o/r/pull/1" };
+    (db.select as any) = vi
+      .fn()
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ for: async () => [{ id: "s-1" }] }) }),
+      })
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [existing] }) }) });
+    const result = await addSessionPr("s-1", existing.prUrl, 1);
+    expect(result).toEqual(existing);
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   describe("updateSessionPr", () => {

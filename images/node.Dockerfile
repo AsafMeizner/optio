@@ -3,7 +3,7 @@ FROM ${BASE_IMAGE}
 
 USER root
 
-# bun (pnpm and yarn are already provided by corepack in the base image)
+# bun (pnpm and yarn are provided by Corepack in the base image)
 RUN curl -fsSL https://bun.sh/install | bash \
     && mv /root/.bun/bin/bun /usr/local/bin/ \
     && rm -rf /root/.bun

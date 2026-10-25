@@ -12,12 +12,14 @@ import { cn } from "@/lib/utils";
  */
 export function TitleEditor({
   terminalId,
+  kind = "local",
   title,
   onSaved,
   className,
   inputClassName,
 }: {
   terminalId: string;
+  kind?: "local" | "pod";
   title: string;
   onSaved?: (terminal: any) => void;
   className?: string;
@@ -25,6 +27,7 @@ export function TitleEditor({
 }) {
   const [draft, setDraft] = useState(title);
   const [editing, setEditing] = useState(false);
+  const cancelled = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const spanRef = useRef<HTMLSpanElement>(null);
   const [width, setWidth] = useState<number | null>(null);
@@ -50,14 +53,23 @@ export function TitleEditor({
 
   const save = async () => {
     setEditing(false);
+    if (cancelled.current) {
+      cancelled.current = false;
+      return;
+    }
     const next = draft.trim();
     if (!next || next === title) {
       setDraft(title);
       return;
     }
     try {
-      const res = await api.updateLocalTerminal(terminalId, { title: next });
-      onSaved?.(res.terminal);
+      if (kind === "pod") {
+        const res = await api.renameSession(terminalId, next);
+        onSaved?.(res.session);
+      } else {
+        const res = await api.updateLocalTerminal(terminalId, { title: next });
+        onSaved?.(res.terminal);
+      }
     } catch (err) {
       setDraft(title);
       toast.error(err instanceof Error ? err.message : "Failed to rename");
@@ -87,6 +99,7 @@ export function TitleEditor({
             inputRef.current?.blur();
           } else if (e.key === "Escape") {
             e.preventDefault();
+            cancelled.current = true;
             setDraft(title);
             setEditing(false);
             inputRef.current?.blur();

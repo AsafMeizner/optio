@@ -3,13 +3,7 @@ import { cn } from "@/lib/utils";
 
 type ChecksStatus = "passing" | "failing" | "pending" | "none" | string | null | undefined;
 type ReviewStatus =
-  | "approved"
-  | "changes_requested"
-  | "commented"
-  | "none"
-  | string
-  | null
-  | undefined;
+  "approved" | "changes_requested" | "commented" | "none" | string | null | undefined;
 type PrState = "open" | "merged" | "closed" | string | null | undefined;
 
 /**

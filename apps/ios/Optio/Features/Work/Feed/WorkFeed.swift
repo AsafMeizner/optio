@@ -446,6 +446,7 @@ enum WorkFeed {
         ("copilot", "GitHub Copilot"),
         ("gemini", "Google Gemini"),
         ("cursor", "Cursor"),
+        ("pi", "Pi"),
         ("opencode", "OpenCode"),
         ("openclaw", "OpenClaw"),
     ]
