@@ -54,7 +54,7 @@ export type McpStdioServer = CodexMcpServer;
 export const OPTIO_RUN_HOME = "OPTIO_RUN_HOME";
 /** The run's `GEMINI_CLI_HOME`, when its Gemini run has MCP servers. */
 export const OPTIO_GEMINI_HOME = "OPTIO_GEMINI_HOME";
-/** The run's `OPENCODE_CONFIG` file, when its OpenCode run has MCP servers. */
+/** The run's `OPENCODE_CONFIG` file: every OpenCode run's (services/opencode-run-setup.ts). */
 export const OPTIO_OPENCODE_CONFIG = "OPTIO_OPENCODE_CONFIG";
 /** The run's Copilot MCP config file, passed as `--additional-mcp-config`. */
 export const OPTIO_COPILOT_MCP_CONFIG = "OPTIO_COPILOT_MCP_CONFIG";
@@ -132,7 +132,9 @@ export function geminiSettingsJson(base: Record<string, unknown>, servers: Serve
 /**
  * OpenCode's `opencode.json` with the servers as `mcp` entries — and the
  * headless permissions (@optio/agent-adapters opencode-headless.ts), as
- * this file is merged over the global one the adapter pre-seeds.
+ * this file is merged over the global one the adapter pre-seeds. Written for
+ * a run with no servers too, so a Job run gets the permissions
+ * (services/opencode-run-setup.ts).
  */
 export function opencodeConfigJson(servers: Servers): string {
   const mcp: Record<string, unknown> = {};
@@ -145,7 +147,11 @@ export function opencodeConfigJson(servers: Servers): string {
     };
   }
   return JSON.stringify(
-    { $schema: "https://opencode.ai/config.json", permission: opencodeHeadlessPermission(), mcp },
+    {
+      $schema: "https://opencode.ai/config.json",
+      permission: opencodeHeadlessPermission(),
+      ...(Object.keys(mcp).length > 0 ? { mcp } : {}),
+    },
     null,
     2,
   );

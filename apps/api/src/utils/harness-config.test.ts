@@ -94,6 +94,13 @@ describe("renderers", () => {
     });
   });
 
+  it("OpenCode: a run with no servers gets the permissions and no `mcp` key", () => {
+    // Written for every OpenCode run (services/opencode-run-setup.ts).
+    const json = JSON.parse(opencodeConfigJson({}));
+    expect(json.permission.question).toBe("deny");
+    expect(json).not.toHaveProperty("mcp");
+  });
+
   it("Cursor: the .mcp.json shape", () => {
     expect(JSON.parse(cursorMcpJson(servers))).toEqual({
       mcpServers: {

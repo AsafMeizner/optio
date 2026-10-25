@@ -71,10 +71,16 @@ export class OpenCodeAdapter implements AgentAdapter {
     // These are injected via requiredSecrets
     const requiredSecrets: string[] = [];
 
+    // The model gateway (docs/model-gateway.md): its OpenAI-compatible
+    // endpoint, the owner's token and the catalog's model, from
+    // gatewayRuntime() — no provider key and no custom base URL beside it.
+    const gateway = input.opencodeAuthMode === "gateway";
+    if (gateway) Object.assign(env, input.modelProviderEnv ?? {});
+
     // When using a custom base URL, provider API keys are optional — the adapter
     // sets a placeholder OPENAI_API_KEY in env that will be overridden if a real
     // secret exists. Without a custom base URL, require standard provider keys.
-    if (!input.opencodeBaseUrl) {
+    if (!input.opencodeBaseUrl && !gateway) {
       requiredSecrets.push("ANTHROPIC_API_KEY", "OPENAI_API_KEY");
     }
 
@@ -90,7 +96,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     }
 
     // Custom OpenAI-compatible endpoint (e.g. vLLM, lightllm, Ollama)
-    if (input.opencodeBaseUrl) {
+    if (input.opencodeBaseUrl && !gateway) {
       env.OPENAI_BASE_URL = input.opencodeBaseUrl;
       // Local endpoints typically don't require a real API key — set a
       // placeholder that gets overridden if a real secret is configured.

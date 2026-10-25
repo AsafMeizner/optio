@@ -5,13 +5,15 @@
  * OpenCode 1.14 defaults `external_directory` (a tool touching a path outside
  * the working directory, such as a venv under /tmp) and `doom_loop` to
  * "ask"; a headless ask is rejected and the run aborts with exit 1
- * (#585, found on OpenCode 1.14.20 behind a model gateway).
+ * (upstream PR #585, found on OpenCode 1.14.20 behind LiteLLM).
  *
  * The fix, with the same keys as #585 so taking upstream's version later is
  * a straight replacement:
  *
  * - `permission` in every `opencode.json` Optio writes (the adapter's
- *   pre-seeded global file and the run's own `OPENCODE_CONFIG`): everything
+ *   pre-seeded global file in Repo Task and review pods, and the run's own
+ *   `OPENCODE_CONFIG`, which every OpenCode pod run gets: apps/api
+ *   services/opencode-run-setup.ts): everything
  *   allowed, `question` denied (asking the user is impossible), paths outside
  *   the working directory denied except OpenCode's own tool-output directory,
  *   and `sudo` / `apt` / `apt-get` / `dpkg` denied. A denied call comes back
@@ -20,7 +22,8 @@
  *   mode: approve what no rule explicitly denies), so an ask that slips
  *   through any rule is approved rather than aborting the run.
  * - A global `AGENTS.md` telling the agent the same rules, so a smaller model
- *   on the gateway doesn't spend turns on paths it can't use.
+ *   on the gateway doesn't spend turns on paths it can't use (Job runs and
+ *   other pooled pods get it from opencode-run-setup.ts).
  *
  * #585's workspace-guard plugin is left out: it blocks every absolute path a
  * bash command names (e.g. `/opt/optio/...`), which is stricter than this
