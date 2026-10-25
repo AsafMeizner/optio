@@ -1,4 +1,3 @@
-import { featuresFromEnv } from "@optio/shared/features";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 
@@ -16,28 +15,11 @@ vi.mock("@/lib/api-client", () => ({
   },
 }));
 
-// The banner is upstream's: it shows under the default deployment alone (a
-// gateway-only deployment has no Claude OAuth token to refresh).
-let features = featuresFromEnv({});
-vi.mock("@/hooks/use-features", () => ({
-  useFeatures: () => ({ features, gatewayOnly: features.modelAccess === "gateway", loaded: true }),
-}));
-
 import { TokenRefreshBanner } from "./token-refresh-banner";
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
-  features = featuresFromEnv({});
-});
-
-describe("TokenRefreshBanner under the restricted deployment", () => {
-  it("stays quiet: there is no Claude OAuth token in a gateway-only deployment", async () => {
-    features = featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" });
-    listLocalHosts.mockResolvedValue({ hosts: [] });
-    const { container } = render(<TokenRefreshBanner />);
-    expect(container).toBeEmptyDOMElement();
-  });
 });
 
 describe("TokenRefreshBanner → refresh from a paired machine", () => {

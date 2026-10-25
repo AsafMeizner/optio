@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FEATURE_SETTINGS } from "@optio/shared/features";
 
-vi.mock("next/font/local", () => ({ default: () => ({ variable: "font-local" }) }));
+// The fonts module (next/font/google, or the vendored fonts-local.ts in an offline build).
+vi.mock("@/app/fonts", () => ({
+  sora: { variable: "font-sora" },
+  ibmPlexMono: { variable: "font-ibm-mono" },
+}));
 vi.mock("@/components/layout/layout-shell", () => ({
   LayoutShell: ({ children }: { children: React.ReactNode }) => children,
 }));
