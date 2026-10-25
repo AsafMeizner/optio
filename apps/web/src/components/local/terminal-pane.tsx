@@ -161,7 +161,7 @@ export function TerminalPane({
     }
     if (perm === "denied") {
       toast.error(
-        "Notifications are blocked for this deployment — allow them in the browser's site settings",
+        "Notifications are blocked for this site — allow them in the browser's site settings",
       );
       return;
     }
