@@ -136,10 +136,9 @@ job_pods_gone() {
 }
 
 # A restore job that may still run when this script ends: the API stays
-# stopped (and the ConfigMap naming the dump stays for the job's retry).
+# stopped (and its lock and immutable Job inputs stay for recovery).
 leave_restore_running() {
   API_SCALED=""
-  BACKUP_CONFIGMAP=""
   {
     echo
     echo "The restore job $RUNNING_JOB may still be running, so the API ($API) stays stopped:"
@@ -186,6 +185,7 @@ finish() {
     kc scale "deploy/$API" --replicas="$REPLICAS" >/dev/null || echo "Couldn't scale deploy/$API back to $REPLICAS: do it by hand" >&2
     kc annotate "deploy/$API" "$REPLICAS_ANNOTATION-" >/dev/null 2>&1 || true
   fi
+  if [ -z "$RUNNING_JOB" ]; then backup_restore_unlock; fi
   rm -rf "$WORK"
   exit "$rc"
 }
@@ -346,8 +346,8 @@ after_restore_job() {
 if [ -n "$FINISH" ]; then
   [[ "$FINISH" == "$CRONJOB-restore-"* ]] || backup_die "$FINISH isn't a restore job of $CRONJOB"
   JOB="$FINISH"
+  backup_restore_lock "$JOB"
   REPLICAS="$(replicas_before_restore)"
-  BACKUP_CONFIGMAP=1
   if ! kc get job "$JOB" >/dev/null 2>&1; then
     # Deleted (stopped by hand), or long gone: the API comes back, unless
     # another restore job is still at work.
@@ -365,6 +365,9 @@ if [ -n "$FINISH" ]; then
   exit 0
 fi
 
+RESTORE_JOB="$CRONJOB-restore-$(date -u +%m%d%H%M%S)${BASHPID}${RANDOM}"
+[ "${#RESTORE_JOB}" -le 63 ] || backup_die "restore job name is longer than 63 characters (use a shorter release name)"
+backup_restore_lock "$RESTORE_JOB"
 REPLICAS="$(kc get "deploy/$API" -o jsonpath='{.spec.replicas}')"
 case "$REPLICAS" in '' | 0) REPLICAS=1 ;; esac
 echo "Restore $NAMESPACE's database from $DUMP."

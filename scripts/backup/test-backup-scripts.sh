@@ -65,6 +65,9 @@ pod_exec() {
       echo "OPTIO_BACKUP_DUMP=$4" ;;
     "cat "*)
       path="${2#/backup/}"
+      # The dump's descriptor must already be private before any bytes leave
+      # the stand-in pod, including under the caller's ordinary umask.
+      stat -Lc '%a' "/proc/$$/fd/1" >>"$FAKE/download-modes"
       if [ -e "$FAKE/slow-copy" ]; then sleep 3; fi
       cat "$FAKE/vol/$path" ;;
     "sh -c "*) path="${5#/backup/}"; cat >"$FAKE/vol/$path" ;;
@@ -90,12 +93,20 @@ case "$1 ${2:-}" in
     esac ;;
   "get serviceaccount") exit 0 ;;
   "get secret" | "get namespace") exit 1 ;;
-  "get configmap") exit 1 ;;
+  "get configmap") cat "$FAKE/restore-lock/owner" 2>/dev/null ;;
   "create configmap")
-    printf 'apiVersion: v1\nkind: ConfigMap\nmetadata: {name: %s}\ndata: %s\n' "$3" "${*:4}" ;;
-  "apply -f") cat >"$FAKE/configmap" ;;
-  "delete configmap") echo "$3" >>"$FAKE/deleted" ;;
-  "create job") echo "$3" >>"$FAKE/jobs" ;;
+    mkdir "$FAKE/restore-lock" 2>/dev/null || exit 1
+    echo "${4#--from-literal=job=}" >"$FAKE/restore-lock/owner" ;;
+  "apply -f") cat >"$FAKE/job-env" ;;
+  "delete configmap") echo "$3" >>"$FAKE/deleted"; rm -f "$FAKE/restore-lock/owner"; rmdir "$FAKE/restore-lock" ;;
+  "create job")
+    if [[ "$*" == *--dry-run=client* ]]; then echo "$3"; else echo "$3" >>"$FAKE/jobs"; fi ;;
+  "set env")
+    read -r job
+    printf '%s\n' "${@:3}" >"$FAKE/inputs-$job"
+    cp "$FAKE/inputs-$job" "$FAKE/job-env"
+    echo "$job" ;;
+  "create -f") read -r job; echo "$job" >>"$FAKE/jobs" ;;
   "delete job")
     echo "$3" >>"$FAKE/deleted-jobs"
     [ -e "$FAKE/pods-stay" ] || touch "$FAKE/pods-gone-$3" ;;
@@ -215,14 +226,14 @@ scenario
 run "$WORK/b1" scripts/backup/backup-db.sh --namespace optio-staging
 expect "backup-db: status" "$(st "$WORK/b1")" 0 || cat "$WORK/b1"
 expect "backup-db: the namespace from staging's values" "$(calls '-n optio-staging get cronjob optio-staging-backup')" 1
-grep -qE '^optio-staging-backup-now-[0-9]{10}$' "$FAKE/jobs" && pass "backup-db: a by-hand job ($(cat "$FAKE/jobs"))" || fail "backup-db: job name $(cat "$FAKE/jobs")"
+grep -qE '^optio-staging-backup-now-[0-9]+$' "$FAKE/jobs" && pass "backup-db: a by-hand job ($(cat "$FAKE/jobs"))" || fail "backup-db: job name $(cat "$FAKE/jobs")"
 expect "backup-db: last line" "$(tail -n 1 "$WORK/b1")" "OPTIO_BACKUP_DUMP=$DUMP"
 grep -qF "Restore it: scripts/backup/restore-db.sh --namespace optio-staging $DUMP" "$WORK/b1" && pass "backup-db: prints the restore command" || fail "backup-db: restore command"
 expect "backup-db: no ConfigMap for a dump" "$(calls 'create configmap')" 0
 
 scenario
 run "$WORK/b2" scripts/backup/backup-db.sh --namespace optio-x --release rel --reason pre-upgrade
-grep -qE '^rel-backup-pre-[0-9]{10}$' "$FAKE/jobs" && pass "backup-db --reason pre-upgrade: a pre job of the release's CronJob" || fail "backup-db pre: $(cat "$FAKE/jobs")"
+grep -qE '^rel-backup-pre-[0-9]+$' "$FAKE/jobs" && pass "backup-db --reason pre-upgrade: a pre job of the release's CronJob" || fail "backup-db pre: $(cat "$FAKE/jobs")"
 grep -qF "restore-db.sh --namespace optio-x --release rel $PRE" "$WORK/b2" && pass "backup-db --namespace: the restore command names it" || fail "backup-db --namespace: $(grep Restore "$WORK/b2")"
 
 scenario
@@ -302,8 +313,8 @@ scenario
 run "$WORK/r3" scripts/backup/restore-db.sh --namespace optio-staging "$DUMP" --yes
 expect "restore-db: status" "$(st "$WORK/r3")" 0 || cat "$WORK/r3"
 expect "restore-db: stop the API, the dump named, restore, start the API, check the key, clean up" \
-  "$(order 'get deploy/optio-staging-api' 'scale deploy/optio-staging-api --replicas=0' 'create configmap optio-staging-backup-restore' 'create job optio-staging-backup-restore-' 'scale deploy/optio-staging-api --replicas=2' 'rollout status deploy/optio-staging-api' 'check-encryption-key.ts --record-restore' 'delete configmap optio-staging-backup-restore')" yes
-grep -q "dump=$DUMP" "$FAKE/configmap" && pass "restore-db: the ConfigMap names the dump" || fail "restore-db: ConfigMap $(cat "$FAKE/configmap")"
+  "$(order 'create configmap optio-staging-backup-live-restore' 'get deploy/optio-staging-api' 'scale deploy/optio-staging-api --replicas=0' 'create job optio-staging-backup-restore-' 'scale deploy/optio-staging-api --replicas=2' 'rollout status deploy/optio-staging-api' 'check-encryption-key.ts --record-restore' 'delete configmap optio-staging-backup-live-restore')" yes
+grep -q "OPTIO_RESTORE_DUMP=$DUMP" "$FAKE/job-env" && pass "restore-db: the ConfigMap names the dump" || fail "restore-db: ConfigMap $(cat "$FAKE/job-env")"
 expect "restore-db: the key check records the restore and the kept database" \
   "$(calls "tsx scripts/check-encryption-key.ts --record-restore $DUMP --kept-as optio_before_20261024101700")" 1
 expect "restore-db: the API back at its replicas" "$(cat "$FAKE/replicas")" 2
@@ -315,7 +326,7 @@ run "$WORK/r4" scripts/backup/restore-db.sh --namespace optio-staging "$DUMP" --
 expect "restore-db: a failed restore → status 1" "$(st "$WORK/r4")" 1
 expect "…the API started again" "$(cat "$FAKE/replicas")" 2
 expect "…no key check" "$(calls 'check-encryption-key')" 0
-expect "…the ConfigMap removed" "$(calls 'delete configmap optio-staging-backup-restore')" 1
+expect "…the ConfigMap removed" "$(calls 'delete configmap optio-staging-backup-live-restore')" 1
 
 scenario
 touch "$FAKE/fail-key"
@@ -343,8 +354,8 @@ scenario
 run "$WORK/r7" scripts/backup/restore-db.sh --namespace optio-staging latest --into-database optio_drill
 expect "restore-db drill: status" "$(st "$WORK/r7")" 0 || cat "$WORK/r7"
 expect "restore-db drill: the API not touched" "$(calls 'scale ')" 0
-grep -qE '^optio-staging-backup-drill-[0-9]{10}$' "$FAKE/jobs" && pass "restore-db drill: a drill job" || fail "restore-db drill: $(cat "$FAKE/jobs")"
-grep -q "into=optio_drill" "$FAKE/configmap" && grep -q "dump=latest" "$FAKE/configmap" && pass "restore-db drill: the ConfigMap names the dump and the database" || fail "drill ConfigMap: $(cat "$FAKE/configmap")"
+grep -qE '^optio-staging-backup-drill-[0-9]+$' "$FAKE/jobs" && pass "restore-db drill: a drill job" || fail "restore-db drill: $(cat "$FAKE/jobs")"
+grep -q "OPTIO_RESTORE_INTO=optio_drill" "$FAKE/job-env" && grep -q "OPTIO_RESTORE_DUMP=latest" "$FAKE/job-env" && pass "restore-db drill: the ConfigMap names the dump and the database" || fail "drill ConfigMap: $(cat "$FAKE/job-env")"
 expect "restore-db drill: the key checked against the drill's database, then dropped" \
   "$(calls 'check-encryption-key.ts --database optio_drill --drop-after')" 1
 scenario
@@ -384,7 +395,7 @@ expect "restore-db --finish: status" "$(st "$WORK/t2")" 0 || cat "$WORK/t2"
 expect "restore-db --finish: the API back at the replicas it had" "$(cat "$FAKE/replicas")" 2
 expect "restore-db --finish: the key checked and the restore recorded" \
   "$(calls "check-encryption-key.ts --record-restore $DUMP --kept-as optio_before_20261024101700")" 1
-expect "restore-db --finish: the note and the ConfigMap removed" "$([ -e "$FAKE/annotation" ] && echo note) $(calls 'delete configmap optio-staging-backup-restore')" " 1"
+expect "restore-db --finish: the note and the ConfigMap removed" "$([ -e "$FAKE/annotation" ] && echo note) $(calls 'delete configmap optio-staging-backup-live-restore')" " 1"
 
 scenario
 touch "$FAKE/hang-restore"
@@ -492,7 +503,7 @@ expect "restore-db <file>: status" "$(st "$WORK/f1")" 0 || cat "$WORK/f1"
 expect "restore-db <file>: upload, checked, then stop the API and restore it by name" \
   "$(order 'create job optio-staging-backup-copy-' 'exec -i ' 'optio-backup.sh accept '"$OTHER" 'delete job optio-staging-backup-copy-' 'scale deploy/optio-staging-api --replicas=0' 'create job optio-staging-backup-restore-')" yes
 cmp -s "$FAKE/vol/$OTHER" "$WORK/copies/$OTHER" && [ -f "$FAKE/vol/$OTHER.sha256" ] && pass "restore-db <file>: the file and its .sha256 in the volume" || fail "restore-db <file>: volume $(ls -A "$FAKE/vol")"
-grep -q "dump=$OTHER" "$FAKE/configmap" && pass "restore-db <file>: the restore names it by its name" || fail "restore-db <file>: ConfigMap $(cat "$FAKE/configmap")"
+grep -q "OPTIO_RESTORE_DUMP=$OTHER" "$FAKE/job-env" && pass "restore-db <file>: the restore names it by its name" || fail "restore-db <file>: ConfigMap $(cat "$FAKE/job-env")"
 
 scenario
 touch "$FAKE/fail-accept"
@@ -521,5 +532,33 @@ run "$WORK/f6" scripts/backup/restore-db.sh --namespace optio-staging "$WORK/cop
 expect "restore-db <file> --into-database: status" "$(st "$WORK/f6")" 0 || cat "$WORK/f6"
 expect "restore-db <file> --into-database: upload, then the drill; the API not touched" \
   "$(order 'optio-backup.sh accept '"$OTHER" 'create job optio-staging-backup-drill-') $(calls 'scale ')" "yes 0"
+
+# Private files from an ordinary caller, including replacing an old readable copy.
+scenario
+mkdir -p "$WORK/private-download"
+printf 'old copy' >"$WORK/private-download/$DUMP"
+chmod 644 "$WORK/private-download/$DUMP"
+(umask 022; run "$WORK/private-mode" scripts/backup/backup-db.sh --namespace optio-staging --download "$DUMP" --to "$WORK/private-download")
+expect "download replaces readable destinations with a private dump" "$(stat -c '%a' "$WORK/private-download/$DUMP")" 600
+expect "download checksum is private" "$(stat -c '%a' "$WORK/private-download/$DUMP.sha256")" 600
+expect "download permissions are private before bytes are copied" "$(sort -u "$FAKE/download-modes" | tr '\n' ' ')" '600 '
+
+# A Pending live restore owns a lock and immutable inputs. A second live
+# restore is rejected; a drill cannot replace the first job's dump or lock.
+scenario
+touch "$FAKE/hang-restore"
+run "$WORK/overlap-a" scripts/backup/restore-db.sh --namespace optio-staging "$DUMP" --yes --timeout 2
+PENDING_JOB="$(restore_job)"
+cp "$FAKE/inputs-$PENDING_JOB" "$WORK/pending-inputs"
+run "$WORK/overlap-b" scripts/backup/restore-db.sh --namespace optio-staging "$PRE" --yes --timeout 2
+expect "a second live restore is refused while the first is Pending" "$(st "$WORK/overlap-b")" 1
+expect "the second operator never restarts the API" "$(cat "$FAKE/replicas")" 0
+expect "the lock still names the confirmed first restore" "$(cat "$FAKE/restore-lock/owner")" "$PENDING_JOB"
+run "$WORK/overlap-drill" scripts/backup/restore-db.sh --namespace optio-staging "$PRE" --into-database optio_drill
+cmp -s "$WORK/pending-inputs" "$FAKE/inputs-$PENDING_JOB" && pass "drill leaves the first restore's inputs unchanged" || fail "drill replaced restore inputs"
+expect "drill cleanup keeps the live restore lock" "$(cat "$FAKE/restore-lock/owner")" "$PENDING_JOB"
+rm "$FAKE/hang-restore"
+run "$WORK/overlap-finish" scripts/backup/restore-db.sh --namespace optio-staging --finish "$PENDING_JOB"
+expect "the original operator can finish and release its lock" "$(st "$WORK/overlap-finish") $([ -d "$FAKE/restore-lock" ] && echo locked)" '0 '
 
 exit "$FAILED"

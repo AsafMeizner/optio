@@ -49,7 +49,12 @@ different name. `--kubeconfig` and `--context` select kubectl configuration;
 
 `--to` and `--download` work with PVC backups. A temporary copy job mounts the
 volume, transfers bytes with kubectl exec, verifies checksums and exits. A
-heartbeat keeps it alive during long copies. For S3 targets, copy dumps and
+heartbeat keeps it alive during long copies.
+Downloaded dumps and checksums are created with mode `0600` inside a private
+temporary directory before being published. Newly created destination directories
+use mode `0700`, regardless of the caller's umask.
+
+For S3 targets, copy dumps and
 checksums with your S3 tools. Exit status 3 from backup-db means the namespace
 has no backup CronJob; 1 means the backup or copy failed.
 
@@ -76,6 +81,13 @@ credentials (`apps/api/scripts/check-encryption-key.ts`, run in the API pod)
 and records the restore in the action log as `database.restored`, with the
 dump's name and the kept database. `--yes` skips the confirmation for
 controlled automation.
+
+Each restore or drill Job contains its own dump and target database values;
+another invocation cannot replace a Pending Job's inputs. A live restore
+atomically acquires `<release>-backup-live-restore` before stopping the API.
+Other live restores are refused until it finishes. If the operator stops or
+times out, the lock remains with the named Job; use `--finish` for that Job
+to recover it. A drill does not acquire or delete a live restore's lock.
 
 If a restore times out or the operator stops the script while its job may
 still be changing data, the API stays stopped. Follow the printed command:

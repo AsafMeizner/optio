@@ -43,19 +43,7 @@ store for S3; pvc for a volume). */}}
       value: {{ .location | quote }}
     - name: OPTIO_BACKUP_PG_DUMP_ARGS
       value: {{ join " " (.b.pgDumpArgs | default list) | quote }}
-    # What restore-db.sh asks for (the ConfigMap exists only while it runs).
-    - name: OPTIO_RESTORE_DUMP
-      valueFrom:
-        configMapKeyRef:
-          name: {{ printf "%s-restore" .name }}
-          key: dump
-          optional: true
-    - name: OPTIO_RESTORE_INTO
-      valueFrom:
-        configMapKeyRef:
-          name: {{ printf "%s-restore" .name }}
-          key: into
-          optional: true
+    # restore-db.sh puts restore inputs directly in each created Job.
     {{- if .db }}
     # The database the API uses, from the same Secret it reads.
     - name: DATABASE_URL

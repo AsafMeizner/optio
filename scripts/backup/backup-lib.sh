@@ -8,12 +8,11 @@
 #   backup_job <kind> [dump] [into]
 #                            a Job from the CronJob, named so that it does <kind>
 #                            (now, pre, restore, drill, list); a dump to restore
-#                            and a drill's database go in the ConfigMap
-#                            <cronjob>-restore, which the job reads at start
+#                            and a drill's database are immutable Job env values
 #   backup_wait <job> <secs> waits; 0 done, 1 failed, 2 still running at the
 #                            end; JOB_LOG holds the pod's log
 #   backup_value <KEY>       the last KEY=value the job printed
-#   backup_cleanup           removes the ConfigMap and ends a copy job (call
+#   backup_cleanup           ends a copy job (call
 #                            from an EXIT trap)
 #   backup_target            pvc or s3 (or unknown), from the CronJob
 #   backup_hold [secs]       a copy job that keeps the dumps' volume mounted
@@ -66,24 +65,49 @@ backup_cronjob() {
 # A Job's name is at most 63 characters (it becomes a label).
 backup_job() {
   local kind="$1" dump="${2:-}" into="${3:-}" stamp
-  stamp="$(date -u +%m%d%H%M%S)"
+  stamp="$(date -u +%m%d%H%M%S)${BASHPID}${RANDOM}"
   JOB="$CRONJOB-$kind-$stamp"
+  if [ "$kind" = restore ] && [ -n "${RESTORE_JOB:-}" ]; then JOB="$RESTORE_JOB"; fi
   [ "${#JOB}" -le 63 ] || backup_die "the job name $JOB is longer than 63 characters (a shorter release name)"
   if [ -n "$dump" ]; then
-    kc create configmap "$CRONJOB-restore" --from-literal=dump="$dump" --from-literal=into="$into" \
-      --dry-run=client -o yaml | kc apply -f - >/dev/null
-    BACKUP_CONFIGMAP=1
+    # Render without creating, set every container's inputs locally, then
+    # create once. A later invocation cannot change a Pending job's dump.
+    kc create job "$JOB" --from="cronjob/$CRONJOB" --dry-run=client -o yaml |
+      "$KUBECTL" set env --local -f - --containers='*' \
+        "OPTIO_RESTORE_DUMP=$dump" "OPTIO_RESTORE_INTO=$into" -o yaml |
+      kc create -f - >/dev/null
+  else
+    kc create job "$JOB" --from="cronjob/$CRONJOB" >/dev/null
   fi
-  kc create job "$JOB" --from="cronjob/$CRONJOB" >/dev/null
   echo "Job $JOB started (namespace $NAMESPACE)"
 }
 
 backup_cleanup() {
-  if [ -n "${BACKUP_CONFIGMAP:-}" ]; then
-    kc delete configmap "$CRONJOB-restore" --ignore-not-found >/dev/null 2>&1 || true
-    BACKUP_CONFIGMAP=""
-  fi
   backup_release
+}
+
+# Kubernetes create is atomic across operators. Keep the lock while a restore
+# may still change the database; --finish recovers only that named restore.
+backup_restore_lock() {
+  local job="$1" owner
+  if ! kc create configmap "$CRONJOB-live-restore" --from-literal="job=$job" >/dev/null 2>&1; then
+    owner="$(kc get configmap "$CRONJOB-live-restore" -o jsonpath='{.data.job}' 2>/dev/null || true)"
+    if [ -z "${FINISH:-}" ] || [ "$owner" != "$job" ]; then
+      backup_die "a live restore is locked by ${owner:-another operator}; finish that restore before starting another"
+    fi
+  fi
+  RESTORE_LOCK_JOB="$job"
+}
+
+backup_restore_unlock() {
+  if [ -n "${RESTORE_LOCK_JOB:-}" ]; then
+    local owner
+    owner="$(kc get configmap "$CRONJOB-live-restore" -o jsonpath='{.data.job}' 2>/dev/null || true)"
+    if [ "$owner" = "$RESTORE_LOCK_JOB" ]; then
+      kc delete configmap "$CRONJOB-live-restore" --ignore-not-found >/dev/null
+    fi
+    RESTORE_LOCK_JOB=""
+  fi
 }
 
 # The newest pod of a job.
@@ -218,23 +242,30 @@ backup_release() {
 }
 
 backup_download() {
-  local want="$1" dir="$2" name part sums
+  local want="$1" dir="$2" name part sums private
   name="$(kc exec "$HOLD_POD" -c pvc -- sh "$BACKUP_POD_SCRIPT" which "$want" 2>/dev/null | tail -n 1 || true)"
   [ -n "$name" ] || backup_die "no dump $want in $NAMESPACE (scripts/backup/restore-db.sh … --list)"
-  mkdir -p "$dir"
-  part="$dir/.$name.download"
-  sums="$dir/.$name.sha256.download"
+  # A dump contains private records. Make both the new destination and a
+  # per-copy temporary directory private, even when the caller uses umask 022.
+  (umask 077; mkdir -p "$dir")
+  private="$(umask 077; mktemp -d "$dir/.optio-download.XXXXXX")"
+  part="$private/dump"
+  sums="$private/checksum"
+  (umask 077; : >"$part"; : >"$sums")
+  chmod 600 "$part" "$sums"
   echo "Copying $name out of $NAMESPACE's backup volume into $dir..."
   heartbeat_start
   if ! kc exec "$HOLD_POD" -c pvc -- cat "$BACKUP_POD_DIR/$name" >"$part"; then
     heartbeat_stop
-    rm -f "$part"
+    rm -f "$part" "$sums"
+    rmdir "$private"
     backup_die "couldn't copy $name"
   fi
   heartbeat_stop
   if kc exec "$HOLD_POD" -c pvc -- cat "$BACKUP_POD_DIR/$name.sha256" >"$sums" 2>/dev/null && [ -s "$sums" ]; then
     if [ "$(cut -d' ' -f1 <"$sums")" != "$(sha256_of "$part")" ]; then
       rm -f "$part" "$sums"
+      rmdir "$private"
       backup_die "the copy of $name doesn't match its .sha256: nothing was kept in $dir"
     fi
     mv "$sums" "$dir/$name.sha256"
@@ -244,6 +275,7 @@ backup_download() {
     echo "  $name has no .sha256 there: not compared" >&2
   fi
   mv "$part" "$dir/$name"
+  rmdir "$private"
   DOWNLOADED="$dir/$name"
 }
 
