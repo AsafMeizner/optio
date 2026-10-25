@@ -83,6 +83,17 @@ describe("renderers", () => {
     });
   });
 
+  it("OpenCode: the run's config carries the headless permissions", () => {
+    // Merged over the global file, so a run with MCP servers keeps them (#585).
+    const json = JSON.parse(opencodeConfigJson(servers));
+    expect(json.permission).toEqual({
+      "*": "allow",
+      question: "deny",
+      bash: { "sudo *": "deny", "apt *": "deny", "apt-get *": "deny", "dpkg *": "deny" },
+      external_directory: { "*": "deny", "/home/agent/.local/share/opencode/**": "allow" },
+    });
+  });
+
   it("Cursor: the .mcp.json shape", () => {
     expect(JSON.parse(cursorMcpJson(servers))).toEqual({
       mcpServers: {

@@ -22,7 +22,7 @@ import {
   shellQuote,
   describeError,
 } from "@optio/shared";
-import { getAdapter } from "@optio/agent-adapters";
+import { getAdapter, OPENCODE_AUTO_APPROVE_FLAG } from "@optio/agent-adapters";
 import { getEventParser } from "../services/event-parsers.js";
 import { checkExistingPr, type ExistingPr } from "../services/pr-detection-service.js";
 import { detectTaskPrs } from "../services/task-pr-service.js";
@@ -1659,7 +1659,8 @@ export function buildAgentCommand(
       return [
         `echo "[optio] Running OpenCode (experimental)..."`,
         ...EXPORT_OPENCODE_CONFIG,
-        `opencode run --format json${modelFlag}${agentFlag}${resumeFlag} "$OPTIO_PROMPT" </dev/null`,
+        // Approve what no rule denies, so a headless ask never aborts (#585).
+        `opencode run --format json ${OPENCODE_AUTO_APPROVE_FLAG}${modelFlag}${agentFlag}${resumeFlag} "$OPTIO_PROMPT" </dev/null`,
       ];
     }
     case "gemini": {

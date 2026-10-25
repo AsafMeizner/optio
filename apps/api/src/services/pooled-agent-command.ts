@@ -1,4 +1,5 @@
 import { shellQuote } from "@optio/shared";
+import { OPENCODE_AUTO_APPROVE_FLAG } from "@optio/agent-adapters";
 import { EXPORT_CODEX_HOME } from "../utils/codex-config.js";
 import {
   copilotMcpConfigFlag,
@@ -99,7 +100,8 @@ export function buildPooledAgentCommand(
       return [
         `echo "[optio] Running ${label} (OpenCode)..."`,
         ...EXPORT_OPENCODE_CONFIG,
-        `opencode run --format json${modelFlag}${agentFlag} "$OPTIO_PROMPT" </dev/null`,
+        // Approve what no rule denies, so a headless ask never aborts (#585).
+        `opencode run --format json ${OPENCODE_AUTO_APPROVE_FLAG}${modelFlag}${agentFlag} "$OPTIO_PROMPT" </dev/null`,
       ];
     }
     case "gemini": {

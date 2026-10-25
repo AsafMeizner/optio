@@ -44,6 +44,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { shellQuote } from "@optio/shared";
+import { opencodeHeadlessPermission } from "@optio/agent-adapters";
 import type { CodexMcpServer } from "./codex-config.js";
 
 /** An MCP server as `.mcp.json` carries it (stdio only). */
@@ -128,7 +129,11 @@ export function geminiSettingsJson(base: Record<string, unknown>, servers: Serve
   return JSON.stringify({ ...base, mcpServers }, null, 2);
 }
 
-/** OpenCode's `opencode.json` with the servers as `mcp` entries. */
+/**
+ * OpenCode's `opencode.json` with the servers as `mcp` entries — and the
+ * headless permissions (@optio/agent-adapters opencode-headless.ts), as
+ * this file is merged over the global one the adapter pre-seeds.
+ */
 export function opencodeConfigJson(servers: Servers): string {
   const mcp: Record<string, unknown> = {};
   for (const [name, s] of Object.entries(servers)) {
@@ -139,7 +144,11 @@ export function opencodeConfigJson(servers: Servers): string {
       enabled: true,
     };
   }
-  return JSON.stringify({ $schema: "https://opencode.ai/config.json", mcp }, null, 2);
+  return JSON.stringify(
+    { $schema: "https://opencode.ai/config.json", permission: opencodeHeadlessPermission(), mcp },
+    null,
+    2,
+  );
 }
 
 /** Cursor's `.cursor/mcp.json`. */

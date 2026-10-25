@@ -820,7 +820,7 @@ describe("buildAgentCommand — opencode", () => {
     const cmds = buildAgentCommand("opencode", { OPTIO_OPENCODE_MODEL: "openai/gpt-4.1" });
     const run = cmds.find((l) => l.includes("opencode run"));
     expect(run).toBe(
-      "opencode run --format json --model 'openai/gpt-4.1' \"$OPTIO_PROMPT\" </dev/null",
+      "opencode run --format json --dangerously-skip-permissions --model 'openai/gpt-4.1' \"$OPTIO_PROMPT\" </dev/null",
     );
   });
 });
