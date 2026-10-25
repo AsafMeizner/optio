@@ -24,10 +24,12 @@ describe("renderers", () => {
     // Merged over the global file, so a run with MCP servers keeps them (#585).
     const json = JSON.parse(opencodeConfigJson(servers));
     expect(json.permission).toEqual({
-      "*": "allow",
       question: "deny",
       bash: { "sudo *": "deny", "apt *": "deny", "apt-get *": "deny", "dpkg *": "deny" },
-      external_directory: { "*": "deny", "/home/agent/.local/share/opencode/**": "allow" },
+      external_directory: {
+        "*": "deny",
+        "/home/agent/.local/share/opencode/tool-output/**": "allow",
+      },
     });
     expect(Object.keys(json.mcp)).toEqual(["docs", "Support Pylon"]);
   });

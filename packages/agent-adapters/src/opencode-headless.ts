@@ -13,8 +13,8 @@
  * - `permission` in every `opencode.json` Optio writes (the adapter's
  *   pre-seeded global file in Repo Task and review pods, and the run's own
  *   `OPENCODE_CONFIG`, which every OpenCode pod run gets: apps/api
- *   services/opencode-run-setup.ts): everything
- *   allowed, `question` denied (asking the user is impossible), paths outside
+ *   services/opencode-run-setup.ts): built-in agent restrictions preserved,
+ *   `question` denied (asking the user is impossible), paths outside
  *   the working directory denied except OpenCode's own tool-output directory,
  *   and `sudo` / `apt` / `apt-get` / `dpkg` denied. A denied call comes back
  *   to the agent as a tool error, so it works around it instead of aborting.
@@ -42,12 +42,11 @@ export function opencodeHeadlessEnabled(env: NodeJS.ProcessEnv = process.env): b
 }
 
 /** OpenCode keeps long tool output here and reads it back with its own tools. */
-export const OPENCODE_TOOL_OUTPUT_DIR = "/home/agent/.local/share/opencode/**";
+export const OPENCODE_TOOL_OUTPUT_DIR = "/home/agent/.local/share/opencode/tool-output/**";
 
 /** The `permission` block of every `opencode.json` Optio writes. */
 export function opencodeHeadlessPermission(): Record<string, string | Record<string, string>> {
   return {
-    "*": "allow",
     question: "deny",
     bash: {
       "sudo *": "deny",

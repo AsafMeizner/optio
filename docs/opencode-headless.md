@@ -13,8 +13,8 @@ existed — no permission block, no global rules file, no extra flag.
 
 - Every `opencode.json` Optio writes (the adapter's pre-seeded global file in Repo Task
   and review pods, and the run's own `OPENCODE_CONFIG`, now written for every OpenCode
-  run rather than only runs with MCP servers) carries a `permission` block: everything
-  allowed, `question` denied, paths outside the working directory denied except
+  run rather than only runs with MCP servers) carries a `permission` block: built-in
+  agent restrictions preserved, `question` denied, paths outside the working directory denied except
   OpenCode's own tool-output directory, and `sudo` / `apt` / `apt-get` / `dpkg` denied.
   A denied call comes back to the agent as a tool error, so it works around it instead
   of aborting.
