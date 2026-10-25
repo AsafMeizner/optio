@@ -377,9 +377,11 @@ credentialHealth:
   # Before a run's pod is created, ask the gateway about the token the run
   # will carry, and fail the run at once when the gateway already refuses it
   # (over budget, expired, blocked, rejected), saying whose token it is and
-  # where to fix it. An unreachable gateway lets the run go on.
+  # where to fix it. An unreachable gateway lets the run go on. It applies
+  # only to runs through a model gateway. Unset, nothing is rendered and the
+  # API's default (on) applies; false turns it off, true renders it on.
   # (OPTIO_GATEWAY_PREFLIGHT)
-  gatewayPreflight: false
+  # gatewayPreflight: false
 
 # Outbound URL guard (SSRF). URLs people type that the API itself fetches —
 # outbound webhooks, Slack notifications, ticket providers, connection health
@@ -1171,12 +1173,14 @@ metrics:
 # Namespace
 # ──────────────────────────────────────────────────────────────────────────────
 namespace: optio
-# Render the Namespace object (off by default: `helm install -n optio
-# --create-namespace` makes it). When on, it is skipped if the namespace
-# already exists and this release did not create it (a package manager such
-# as Zarf makes it before installing). Don't combine it with
-# --create-namespace, which creates the namespace after rendering.
-createNamespace: false
+# Render the Namespace object (on by default, as upstream). It is skipped
+# when the namespace already exists and this release did not create it (a
+# package manager such as Zarf, Rancher or `helm --create-namespace` made
+# it). A namespace this release created stays in its manifest, so an
+# upgrade never deletes it. false: never render it; set it together with
+# `helm install --create-namespace`, which creates the namespace after
+# rendering.
+createNamespace: true
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Namespace resource quotas

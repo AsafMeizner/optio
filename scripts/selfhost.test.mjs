@@ -194,6 +194,13 @@ describe("selfhost chart", { skip: !helmAvailable }, () => {
       r.stdout,
       /kind: CronJob|kind: ServiceMonitor|name: optio-api-metrics|OPTIO_PROFILE:|name: OPTIO_PROFILE|OPTIO_GITLAB_BOT_ENABLED:|OPTIO_COMMIT_TRAILERS:/,
     );
+    // Feature lists, switches and the gateway pre-flight render nothing by default.
+    assert.doesNotMatch(
+      r.stdout,
+      /OPTIO_(RUNTIMES|GIT_PLATFORMS|TRIGGERS|TICKET_SOURCES|CONNECTION_PROVIDERS|MODEL_ACCESS|AGENT_POLICY_DEFAULTS|GATEWAY_PREFLIGHT|TEAMS_ENABLED|MERGE_CONFIRMATION|ONBOARDING|STARTER_PROMPTS|WORK_TRACEABILITY|CREDENTIAL_HEALTH_INTERVAL_MINUTES|AUDIT_RETENTION_DAYS|DIRECTORY_SYNC)\b/,
+    );
+    // The Namespace object, as upstream renders it.
+    assert.equal(r.stdout.match(/^kind: Namespace$/gm)?.length, 1);
     assert.match(r.stdout, /cpu: "1"\n\s+memory: 1Gi/);
     assert.match(r.stdout, /cpu: 500m\n\s+memory: 512Mi/);
     // Catalog annotations are chart metadata; they never enter rendered objects.
@@ -244,7 +251,9 @@ describe("selfhost chart", { skip: !helmAvailable }, () => {
     }
     const r = render(
       "--set",
-      "profile=standard",
+      "features.runtimes={claude-code,opencode}",
+      "--set",
+      "modelAccess=gateway",
       "--set",
       "tickets.commitTrailers=true",
       "--set",
@@ -253,9 +262,27 @@ describe("selfhost chart", { skip: !helmAvailable }, () => {
       "redis.connectionTestTlsAware=true",
     );
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /OPTIO_PROFILE: "standard"/);
+    assert.doesNotMatch(r.stdout, /OPTIO_PROFILE/);
+    assert.match(r.stdout, /OPTIO_RUNTIMES: "claude-code,opencode"/);
+    assert.match(r.stdout, /OPTIO_MODEL_ACCESS: "gateway"/);
+    assert.doesNotMatch(r.stdout, /OPTIO_GIT_PLATFORMS/);
     assert.match(r.stdout, /OPTIO_COMMIT_TRAILERS: "true"/);
     assert.match(r.stdout, /OPTIO_GITLAB_BOT_ENABLED: "true"/);
     assert.match(r.stdout, /nc -z -w 5 optio-redis/);
+  });
+  it("leaves the Namespace out only when asked", () => {
+    const r = render("--set", "createNamespace=false");
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /^kind: Namespace$/m);
+  });
+  it("renders the gateway pre-flight only when set, so false turns it off", () => {
+    for (const [value, rendered] of [
+      ["false", "false"],
+      ["true", "true"],
+    ]) {
+      const r = render("--set", `credentialHealth.gatewayPreflight=${value}`);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, new RegExp(`OPTIO_GATEWAY_PREFLIGHT: "${rendered}"`));
+    }
   });
 });
