@@ -3820,8 +3820,9 @@ public struct Branch: Codable, Hashable, Sendable {
 
 /// A project webhook as Optio wants it: where the platform delivers, the
 /// shared token it sends back with every delivery, and which of the
-/// platform's own event names it subscribes to (GitLab: `push`,
-/// `merge_requests`, `note`, `pipeline`, `issues`, `releases`).
+/// platform's own event names it subscribes to (GitHub: `push`,
+/// `pull_request`, `issue_comment`, …; GitLab: `push`, `merge_requests`,
+/// `note`, `pipeline`, `issues`, `releases`).
 public struct WebhookSpec: Codable, Hashable, Sendable {
     public let url: String
     public let token: String
@@ -4118,12 +4119,16 @@ public struct LocalHost: Codable, Hashable, Sendable {
     /// Whether the connected daemon can refresh agent limits on request (Codex's
     /// usage pill refresh button). Live, so false whenever the host is offline.
     public let refreshLimits: Bool?
-    /// "coder": a Coder workspace Optio started for a piece of work
-    /// (docs/coder.md); "machine" (or absent, from older servers): one a person paired.
+    /// A remote workspace's provider ("coder", "codespaces", "daytona", "e2b")
+    /// when the machine is a workspace Optio started for a piece of work
+    /// (docs/remote-workspaces.md); "machine" (or absent, from older servers):
+    /// one a person paired.
     public let origin: LocalHostOrigin?
-    /// A Coder workspace's id and name in Coder; null for a machine.
-    public let coderWorkspaceId: String?
-    public let coderWorkspaceName: String?
+    /// A remote workspace's id and name at its provider; null for a machine.
+    public let remoteWorkspaceId: String?
+    public let remoteWorkspaceName: String?
+    /// The connection that started it; null for a machine.
+    public let remoteWorkspaceConnectionId: String?
     public let state: LocalHostState
     public let lastSeenAt: String?
     public let createdAt: String
@@ -4147,8 +4152,9 @@ public struct LocalHost: Codable, Hashable, Sendable {
         case awsProfiles = "awsProfiles"
         case refreshLimits = "refreshLimits"
         case origin = "origin"
-        case coderWorkspaceId = "coderWorkspaceId"
-        case coderWorkspaceName = "coderWorkspaceName"
+        case remoteWorkspaceId = "remoteWorkspaceId"
+        case remoteWorkspaceName = "remoteWorkspaceName"
+        case remoteWorkspaceConnectionId = "remoteWorkspaceConnectionId"
         case state = "state"
         case lastSeenAt = "lastSeenAt"
         case createdAt = "createdAt"
@@ -4173,8 +4179,9 @@ public struct LocalHost: Codable, Hashable, Sendable {
         awsProfiles: [String]? = nil,
         refreshLimits: Bool? = nil,
         origin: LocalHostOrigin? = nil,
-        coderWorkspaceId: String? = nil,
-        coderWorkspaceName: String? = nil,
+        remoteWorkspaceId: String? = nil,
+        remoteWorkspaceName: String? = nil,
+        remoteWorkspaceConnectionId: String? = nil,
         state: LocalHostState,
         lastSeenAt: String? = nil,
         createdAt: String,
@@ -4197,8 +4204,9 @@ public struct LocalHost: Codable, Hashable, Sendable {
         self.awsProfiles = awsProfiles
         self.refreshLimits = refreshLimits
         self.origin = origin
-        self.coderWorkspaceId = coderWorkspaceId
-        self.coderWorkspaceName = coderWorkspaceName
+        self.remoteWorkspaceId = remoteWorkspaceId
+        self.remoteWorkspaceName = remoteWorkspaceName
+        self.remoteWorkspaceConnectionId = remoteWorkspaceConnectionId
         self.state = state
         self.lastSeenAt = lastSeenAt
         self.createdAt = createdAt
@@ -4206,13 +4214,17 @@ public struct LocalHost: Codable, Hashable, Sendable {
     }
 }
 
+/// "machine", or a remote-workspace provider (REMOTE_WORKSPACE_PROVIDERS, remote-workspaces.ts).
 public enum LocalHostOrigin: String, Codable, Hashable, Sendable, CaseIterable {
     case machine = "machine"
     case coder = "coder"
+    case codespaces = "codespaces"
+    case daytona = "daytona"
+    case e2b = "e2b"
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [LocalHostOrigin] = [.machine, .coder]
+    public static let allCases: [LocalHostOrigin] = [.machine, .coder, .codespaces, .daytona, .e2b]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -6633,8 +6645,9 @@ public struct UpdateInstalledSkillInput: Codable, Hashable, Sendable {
 // MARK: - model-provider.ts
 
 /// `bedrock`: upstream's Amazon Bedrock. `gateway`: an Anthropic- /
-/// OpenAI-compatible endpoint (LiteLLM), the one kind a gateway-only
-/// deployment offers (`offeredModelProviderKinds`).
+/// OpenAI-compatible model gateway of one of the `ModelGatewayType`s
+/// (model-gateways.ts), the one kind a gateway-only deployment offers
+/// (`offeredModelProviderKinds`).
 public enum ModelProviderKind: String, Codable, Hashable, Sendable, CaseIterable {
     case bedrock = "bedrock"
     case gateway = "gateway"
@@ -6646,6 +6659,25 @@ public enum ModelProviderKind: String, Codable, Hashable, Sendable, CaseIterable
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = ModelProviderKind(rawValue: raw) ?? .unknown
+    }
+}
+
+/// What a model gateway is (docs/model-gateway.md "Gateway types"): LiteLLM,
+/// OpenRouter, Portkey, or any OpenAI- / Anthropic-compatible endpoint
+/// (`generic`). Its features: `modelGatewayCapabilities` (model-gateways.ts).
+public enum ModelGatewayType: String, Codable, Hashable, Sendable, CaseIterable {
+    case generic = "generic"
+    case litellm = "litellm"
+    case openrouter = "openrouter"
+    case portkey = "portkey"
+    /// Fallback for raw values this client does not know about yet.
+    case unknown = "__unknown__"
+
+    public static let allCases: [ModelGatewayType] = [.generic, .litellm, .openrouter, .portkey]
+
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ModelGatewayType(rawValue: raw) ?? .unknown
     }
 }
 
@@ -6864,11 +6896,15 @@ public struct ModelProvider: Codable, Hashable, Sendable {
     public let podCredential: ModelProviderPodCredential
     /// Whether stored pod credentials exist (the values are never returned).
     public let hasPodCredentials: Bool
+    /// Gateway: what it is (model-gateways.ts), which decides the gateway
+    /// features it offers; null for Bedrock. Absent reads as `litellm`.
+    public let gatewayType: ModelGatewayType?
     /// Gateway: where it listens (`https://litellm.example.com`, no trailing slash).
     public let baseUrl: String?
     /// Gateway: how it takes the token.
     public let authHeader: ModelProviderAuthHeader
-    /// Gateway: where the catalog sync reads LiteLLM's `/model/info`; null = `baseUrl`.
+    /// Gateway: where its management API answers when that isn't `baseUrl`
+    /// (LiteLLM's `/model/info` and key routes; Portkey's control plane).
     public let syncUrl: String?
     /// Gateway: when the catalog was last synced.
     public let lastSyncedAt: String?
@@ -6894,6 +6930,7 @@ public struct ModelProvider: Codable, Hashable, Sendable {
         case localAwsProfile = "localAwsProfile"
         case podCredential = "podCredential"
         case hasPodCredentials = "hasPodCredentials"
+        case gatewayType = "gatewayType"
         case baseUrl = "baseUrl"
         case authHeader = "authHeader"
         case syncUrl = "syncUrl"
@@ -6918,6 +6955,7 @@ public struct ModelProvider: Codable, Hashable, Sendable {
         localAwsProfile: String? = nil,
         podCredential: ModelProviderPodCredential,
         hasPodCredentials: Bool,
+        gatewayType: ModelGatewayType? = nil,
         baseUrl: String? = nil,
         authHeader: ModelProviderAuthHeader,
         syncUrl: String? = nil,
@@ -6940,6 +6978,7 @@ public struct ModelProvider: Codable, Hashable, Sendable {
         self.localAwsProfile = localAwsProfile
         self.podCredential = podCredential
         self.hasPodCredentials = hasPodCredentials
+        self.gatewayType = gatewayType
         self.baseUrl = baseUrl
         self.authHeader = authHeader
         self.syncUrl = syncUrl
@@ -7031,6 +7070,8 @@ public struct CreateModelProviderInput: Codable, Hashable, Sendable {
     public let podCredential: ModelProviderPodCredential?
     /// Replaces the stored pod credentials; null clears them; absent keeps them.
     public let credentials: ModelProviderCredentials?
+    /// Gateway: what it is; `litellm` by default (`DEFAULT_MODEL_GATEWAY_TYPE`).
+    public let gatewayType: ModelGatewayType?
     /// Gateway: where it listens (required for `kind: "gateway"`).
     public let baseUrl: String?
     /// Gateway: how it takes the token; `bearer` by default.
@@ -7049,6 +7090,7 @@ public struct CreateModelProviderInput: Codable, Hashable, Sendable {
         case localAwsProfile = "localAwsProfile"
         case podCredential = "podCredential"
         case credentials = "credentials"
+        case gatewayType = "gatewayType"
         case baseUrl = "baseUrl"
         case authHeader = "authHeader"
         case syncUrl = "syncUrl"
@@ -7065,6 +7107,7 @@ public struct CreateModelProviderInput: Codable, Hashable, Sendable {
         localAwsProfile: String? = nil,
         podCredential: ModelProviderPodCredential? = nil,
         credentials: ModelProviderCredentials? = nil,
+        gatewayType: ModelGatewayType? = nil,
         baseUrl: String? = nil,
         authHeader: ModelProviderAuthHeader? = nil,
         syncUrl: String? = nil,
@@ -7079,6 +7122,7 @@ public struct CreateModelProviderInput: Codable, Hashable, Sendable {
         self.localAwsProfile = localAwsProfile
         self.podCredential = podCredential
         self.credentials = credentials
+        self.gatewayType = gatewayType
         self.baseUrl = baseUrl
         self.authHeader = authHeader
         self.syncUrl = syncUrl
@@ -7098,6 +7142,8 @@ public struct UpdateModelProviderInput: Codable, Hashable, Sendable {
     public let podCredential: ModelProviderPodCredential?
     /// Replaces the stored pod credentials; null clears them; absent keeps them.
     public let credentials: ModelProviderCredentials?
+    /// Refused while keys Optio made on the gateway are still active.
+    public let gatewayType: ModelGatewayType?
     public let baseUrl: String?
     public let authHeader: ModelProviderAuthHeader?
     public let syncUrl: String?
@@ -7112,6 +7158,7 @@ public struct UpdateModelProviderInput: Codable, Hashable, Sendable {
         case localAwsProfile = "localAwsProfile"
         case podCredential = "podCredential"
         case credentials = "credentials"
+        case gatewayType = "gatewayType"
         case baseUrl = "baseUrl"
         case authHeader = "authHeader"
         case syncUrl = "syncUrl"
@@ -7127,6 +7174,7 @@ public struct UpdateModelProviderInput: Codable, Hashable, Sendable {
         localAwsProfile: String? = nil,
         podCredential: ModelProviderPodCredential? = nil,
         credentials: ModelProviderCredentials? = nil,
+        gatewayType: ModelGatewayType? = nil,
         baseUrl: String? = nil,
         authHeader: ModelProviderAuthHeader? = nil,
         syncUrl: String? = nil,
@@ -7140,6 +7188,7 @@ public struct UpdateModelProviderInput: Codable, Hashable, Sendable {
         self.localAwsProfile = localAwsProfile
         self.podCredential = podCredential
         self.credentials = credentials
+        self.gatewayType = gatewayType
         self.baseUrl = baseUrl
         self.authHeader = authHeader
         self.syncUrl = syncUrl
@@ -7206,17 +7255,26 @@ public struct ModelProviderLaunch: Codable, Hashable, Sendable {
 
 /// What `gatewayRuntime` needs to know about a gateway.
 public struct GatewayRuntimeSource: Codable, Hashable, Sendable {
+    /// Absent = `litellm` (`DEFAULT_MODEL_GATEWAY_TYPE`).
+    public let type: ModelGatewayType?
     public let baseUrl: String
     public let authHeader: ModelProviderAuthHeader
     public let models: ModelProviderModels
 
     private enum CodingKeys: String, CodingKey {
+        case type = "type"
         case baseUrl = "baseUrl"
         case authHeader = "authHeader"
         case models = "models"
     }
 
-    public init(baseUrl: String, authHeader: ModelProviderAuthHeader, models: ModelProviderModels) {
+    public init(
+        type: ModelGatewayType? = nil,
+        baseUrl: String,
+        authHeader: ModelProviderAuthHeader,
+        models: ModelProviderModels
+    ) {
+        self.type = type
         self.baseUrl = baseUrl
         self.authHeader = authHeader
         self.models = models
@@ -9003,15 +9061,18 @@ public struct SessionChatEvent: Codable, Hashable, Sendable {
 // MARK: - sign-in.ts
 
 public enum SignInProviderName: String, Codable, Hashable, Sendable, CaseIterable {
+    case bitbucket = "bitbucket"
+    case gitea = "gitea"
     case github = "github"
     case gitlab = "gitlab"
     case google = "google"
     case ldap = "ldap"
     case oidc = "oidc"
+    case saml = "saml"
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [SignInProviderName] = [.github, .gitlab, .google, .ldap, .oidc]
+    public static let allCases: [SignInProviderName] = [.bitbucket, .gitea, .github, .gitlab, .google, .ldap, .oidc, .saml]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -9021,6 +9082,7 @@ public enum SignInProviderName: String, Codable, Hashable, Sendable, CaseIterabl
 
 public enum OidcPreset: String, Codable, Hashable, Sendable, CaseIterable {
     case adfs = "adfs"
+    case auth0 = "auth0"
     case authelia = "authelia"
     case authentik = "authentik"
     case entra = "entra"
@@ -9031,7 +9093,7 @@ public enum OidcPreset: String, Codable, Hashable, Sendable, CaseIterable {
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [OidcPreset] = [.adfs, .authelia, .authentik, .entra, .generic, .keycloak, .okta, .zitadel]
+    public static let allCases: [OidcPreset] = [.adfs, .auth0, .authelia, .authentik, .entra, .generic, .keycloak, .okta, .zitadel]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -9061,29 +9123,36 @@ public struct SignInAccessSettings: Codable, Hashable, Sendable {
     public let adminGroups: [String]?
     /// Only members of one of these groups may sign in. Empty: everyone the provider knows.
     public let requiredGroups: [String]?
-    /// Everyone who signs in joins the organization workspace (default: on for
-    /// LDAP and for OIDC set up in the app; off for the environment's OIDC).
+    /// Everyone who signs in joins the organization workspace (default off:
+    /// each person gets a workspace of their own, as without this setting).
     public let autoJoinOrganization: Bool?
     /// The workspace role people get when they auto-join (default member).
     public let defaultRole: DefaultRole?
+    /// A first sign-in whose verified email matches exactly one existing
+    /// account signs in to that account, which moves to this provider (default
+    /// off). Only for a provider whose people can't change their own email.
+    public let linkByEmail: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case adminGroups = "adminGroups"
         case requiredGroups = "requiredGroups"
         case autoJoinOrganization = "autoJoinOrganization"
         case defaultRole = "defaultRole"
+        case linkByEmail = "linkByEmail"
     }
 
     public init(
         adminGroups: [String]? = nil,
         requiredGroups: [String]? = nil,
         autoJoinOrganization: Bool? = nil,
-        defaultRole: DefaultRole? = nil
+        defaultRole: DefaultRole? = nil,
+        linkByEmail: Bool? = nil
     ) {
         self.adminGroups = adminGroups
         self.requiredGroups = requiredGroups
         self.autoJoinOrganization = autoJoinOrganization
         self.defaultRole = defaultRole
+        self.linkByEmail = linkByEmail
     }
 }
 
@@ -9122,11 +9191,15 @@ public struct OidcSettings: Codable, Hashable, Sendable {
     public let adminGroups: [String]?
     /// Only members of one of these groups may sign in. Empty: everyone the provider knows.
     public let requiredGroups: [String]?
-    /// Everyone who signs in joins the organization workspace (default: on for
-    /// LDAP and for OIDC set up in the app; off for the environment's OIDC).
+    /// Everyone who signs in joins the organization workspace (default off:
+    /// each person gets a workspace of their own, as without this setting).
     public let autoJoinOrganization: Bool?
     /// The workspace role people get when they auto-join (default member).
     public let defaultRole: DefaultRole?
+    /// A first sign-in whose verified email matches exactly one existing
+    /// account signs in to that account, which moves to this provider (default
+    /// off). Only for a provider whose people can't change their own email.
+    public let linkByEmail: Bool?
     public let preset: OidcPreset?
     /// The issuer: `<issuerUrl>/.well-known/openid-configuration` must exist.
     public let issuerUrl: String
@@ -9138,9 +9211,11 @@ public struct OidcSettings: Codable, Hashable, Sendable {
     public let emailClaim: String?
     public let nameClaim: String?
     public let usernameClaim: String?
-    /// Treat the email as verified even when the provider sends no
-    /// `email_verified` claim (most self-hosted providers don't; default true
-    /// when set up in the app, false for the environment's `OIDC_TRUST_EMAIL`).
+    /// Treat the email as verified when the provider sends no `email_verified`
+    /// claim (most self-hosted providers don't; default true when set up in the
+    /// app, false for the environment's `OIDC_TRUST_EMAIL`). An explicit
+    /// `email_verified: false` is never overridden, and it never links an
+    /// account to another by email.
     public let trustEmail: Bool?
     /// PKCE (S256) on the authorization request (default true when set up in
     /// the app; the environment's OIDC uses it with `OIDC_USE_PKCE=true`).
@@ -9157,6 +9232,7 @@ public struct OidcSettings: Codable, Hashable, Sendable {
         case requiredGroups = "requiredGroups"
         case autoJoinOrganization = "autoJoinOrganization"
         case defaultRole = "defaultRole"
+        case linkByEmail = "linkByEmail"
         case preset = "preset"
         case issuerUrl = "issuerUrl"
         case scopes = "scopes"
@@ -9176,6 +9252,7 @@ public struct OidcSettings: Codable, Hashable, Sendable {
         requiredGroups: [String]? = nil,
         autoJoinOrganization: Bool? = nil,
         defaultRole: DefaultRole? = nil,
+        linkByEmail: Bool? = nil,
         preset: OidcPreset? = nil,
         issuerUrl: String,
         scopes: String? = nil,
@@ -9193,6 +9270,7 @@ public struct OidcSettings: Codable, Hashable, Sendable {
         self.requiredGroups = requiredGroups
         self.autoJoinOrganization = autoJoinOrganization
         self.defaultRole = defaultRole
+        self.linkByEmail = linkByEmail
         self.preset = preset
         self.issuerUrl = issuerUrl
         self.scopes = scopes
@@ -9243,11 +9321,15 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
     public let adminGroups: [String]?
     /// Only members of one of these groups may sign in. Empty: everyone the provider knows.
     public let requiredGroups: [String]?
-    /// Everyone who signs in joins the organization workspace (default: on for
-    /// LDAP and for OIDC set up in the app; off for the environment's OIDC).
+    /// Everyone who signs in joins the organization workspace (default off:
+    /// each person gets a workspace of their own, as without this setting).
     public let autoJoinOrganization: Bool?
     /// The workspace role people get when they auto-join (default member).
     public let defaultRole: DefaultRole?
+    /// A first sign-in whose verified email matches exactly one existing
+    /// account signs in to that account, which moves to this provider (default
+    /// off). Only for a provider whose people can't change their own email.
+    public let linkByEmail: Bool?
     /// ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636
     public let url: String
     /// Upgrade a plain ldap:// connection with STARTTLS before binding.
@@ -9256,7 +9338,7 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
     public let insecureSkipVerify: Bool?
     /// Service account for the search bind; empty = anonymous bind. Its password is stored sealed.
     public let bindDn: String?
-    /// Where users live, e.g. OU=People,DC=corp,DC=example
+    /// Where users live, e.g. OU=People,DC=example,DC=com
     public let userBaseDn: String
     /// Filter with a {{username}} placeholder. Default matches sAMAccountName, uid or mail.
     public let userFilter: String?
@@ -9276,6 +9358,7 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
         case requiredGroups = "requiredGroups"
         case autoJoinOrganization = "autoJoinOrganization"
         case defaultRole = "defaultRole"
+        case linkByEmail = "linkByEmail"
         case url = "url"
         case startTls = "startTls"
         case caPem = "caPem"
@@ -9297,6 +9380,7 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
         requiredGroups: [String]? = nil,
         autoJoinOrganization: Bool? = nil,
         defaultRole: DefaultRole? = nil,
+        linkByEmail: Bool? = nil,
         url: String,
         startTls: Bool? = nil,
         caPem: String? = nil,
@@ -9316,6 +9400,7 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
         self.requiredGroups = requiredGroups
         self.autoJoinOrganization = autoJoinOrganization
         self.defaultRole = defaultRole
+        self.linkByEmail = linkByEmail
         self.url = url
         self.startTls = startTls
         self.caPem = caPem
@@ -9333,9 +9418,228 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
     }
 }
 
+/// SAML 2.0 (SP-initiated, HTTP-Redirect to the identity provider, HTTP-POST
+/// back to `/api/auth/saml/callback`). The identity provider is described by
+/// its metadata (a URL, re-read daily, or the XML pasted in) or by hand: its
+/// single sign-on URL, entity ID and signing certificate. The assertion must
+/// be signed with that certificate.
+public struct SamlSettings: Codable, Hashable, Sendable {
+    public enum DefaultRole: String, Codable, Hashable, Sendable, CaseIterable {
+        case member = "member"
+        case viewer = "viewer"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [DefaultRole] = [.member, .viewer]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = DefaultRole(rawValue: raw) ?? .unknown
+        }
+    }
+
+    /// Groups (as the provider names them) whose members become deployment
+    /// admins and admins of the organization workspace. Empty: only the
+    /// person who completed setup, and whoever they add.
+    public let adminGroups: [String]?
+    /// Only members of one of these groups may sign in. Empty: everyone the provider knows.
+    public let requiredGroups: [String]?
+    /// Everyone who signs in joins the organization workspace (default off:
+    /// each person gets a workspace of their own, as without this setting).
+    public let autoJoinOrganization: Bool?
+    /// The workspace role people get when they auto-join (default member).
+    public let defaultRole: DefaultRole?
+    /// A first sign-in whose verified email matches exactly one existing
+    /// account signs in to that account, which moves to this provider (default
+    /// off). Only for a provider whose people can't change their own email.
+    public let linkByEmail: Bool?
+    /// The identity provider's metadata URL (entry point, entity ID, certificates).
+    public let metadataUrl: String?
+    /// Or its metadata XML, pasted in.
+    public let metadataXml: String?
+    /// The single sign-on URL (HTTP-Redirect binding); from the metadata when empty.
+    public let entryPoint: String?
+    /// The identity provider's entity ID (the response's Issuer, checked); from the metadata when empty.
+    public let idpEntityId: String?
+    /// PEM certificate(s) the identity provider signs with; from the metadata when empty.
+    public let idpCert: String?
+    /// Optio's entity ID, the audience (default `<API origin>/api/auth/saml/metadata`).
+    public let spEntityId: String?
+    /// The NameID format to ask for (default: none, the identity provider picks).
+    public let nameIdFormat: String?
+    /// The attribute holding a stable ID (default: the NameID).
+    public let idAttribute: String?
+    /// Attribute names; empty: the common names (email, mail, the WS-Fed claim URIs, the OIDs).
+    public let emailAttribute: String?
+    public let nameAttribute: String?
+    public let usernameAttribute: String?
+    public let groupsAttribute: String?
+    /// Require the whole response to be signed too (default false: the assertion must be).
+    public let wantAuthnResponseSigned: Bool?
+    /// Require the assertion to be signed (default true).
+    public let wantAssertionsSigned: Bool?
+    /// PEM bundle of the CA behind the metadata URL's certificate.
+    public let caPem: String?
+    public let insecureSkipVerify: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case adminGroups = "adminGroups"
+        case requiredGroups = "requiredGroups"
+        case autoJoinOrganization = "autoJoinOrganization"
+        case defaultRole = "defaultRole"
+        case linkByEmail = "linkByEmail"
+        case metadataUrl = "metadataUrl"
+        case metadataXml = "metadataXml"
+        case entryPoint = "entryPoint"
+        case idpEntityId = "idpEntityId"
+        case idpCert = "idpCert"
+        case spEntityId = "spEntityId"
+        case nameIdFormat = "nameIdFormat"
+        case idAttribute = "idAttribute"
+        case emailAttribute = "emailAttribute"
+        case nameAttribute = "nameAttribute"
+        case usernameAttribute = "usernameAttribute"
+        case groupsAttribute = "groupsAttribute"
+        case wantAuthnResponseSigned = "wantAuthnResponseSigned"
+        case wantAssertionsSigned = "wantAssertionsSigned"
+        case caPem = "caPem"
+        case insecureSkipVerify = "insecureSkipVerify"
+    }
+
+    public init(
+        adminGroups: [String]? = nil,
+        requiredGroups: [String]? = nil,
+        autoJoinOrganization: Bool? = nil,
+        defaultRole: DefaultRole? = nil,
+        linkByEmail: Bool? = nil,
+        metadataUrl: String? = nil,
+        metadataXml: String? = nil,
+        entryPoint: String? = nil,
+        idpEntityId: String? = nil,
+        idpCert: String? = nil,
+        spEntityId: String? = nil,
+        nameIdFormat: String? = nil,
+        idAttribute: String? = nil,
+        emailAttribute: String? = nil,
+        nameAttribute: String? = nil,
+        usernameAttribute: String? = nil,
+        groupsAttribute: String? = nil,
+        wantAuthnResponseSigned: Bool? = nil,
+        wantAssertionsSigned: Bool? = nil,
+        caPem: String? = nil,
+        insecureSkipVerify: Bool? = nil
+    ) {
+        self.adminGroups = adminGroups
+        self.requiredGroups = requiredGroups
+        self.autoJoinOrganization = autoJoinOrganization
+        self.defaultRole = defaultRole
+        self.linkByEmail = linkByEmail
+        self.metadataUrl = metadataUrl
+        self.metadataXml = metadataXml
+        self.entryPoint = entryPoint
+        self.idpEntityId = idpEntityId
+        self.idpCert = idpCert
+        self.spEntityId = spEntityId
+        self.nameIdFormat = nameIdFormat
+        self.idAttribute = idAttribute
+        self.emailAttribute = emailAttribute
+        self.nameAttribute = nameAttribute
+        self.usernameAttribute = usernameAttribute
+        self.groupsAttribute = groupsAttribute
+        self.wantAuthnResponseSigned = wantAuthnResponseSigned
+        self.wantAssertionsSigned = wantAssertionsSigned
+        self.caPem = caPem
+        self.insecureSkipVerify = insecureSkipVerify
+    }
+}
+
+/// A self-hosted Gitea or Forgejo: an OAuth2 application on it (OpenID Connect underneath).
+public struct GiteaSettings: Codable, Hashable, Sendable {
+    public enum DefaultRole: String, Codable, Hashable, Sendable, CaseIterable {
+        case member = "member"
+        case viewer = "viewer"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [DefaultRole] = [.member, .viewer]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = DefaultRole(rawValue: raw) ?? .unknown
+        }
+    }
+
+    /// Groups (as the provider names them) whose members become deployment
+    /// admins and admins of the organization workspace. Empty: only the
+    /// person who completed setup, and whoever they add.
+    public let adminGroups: [String]?
+    /// Only members of one of these groups may sign in. Empty: everyone the provider knows.
+    public let requiredGroups: [String]?
+    /// Everyone who signs in joins the organization workspace (default off:
+    /// each person gets a workspace of their own, as without this setting).
+    public let autoJoinOrganization: Bool?
+    /// The workspace role people get when they auto-join (default member).
+    public let defaultRole: DefaultRole?
+    /// A first sign-in whose verified email matches exactly one existing
+    /// account signs in to that account, which moves to this provider (default
+    /// off). Only for a provider whose people can't change their own email.
+    public let linkByEmail: Bool?
+    /// The server's URL, e.g. https://git.example.com
+    public let baseUrl: String
+    /// Space-separated; default "openid profile email groups".
+    public let scopes: String?
+    /// PEM bundle of the CA behind the server's certificate.
+    public let caPem: String?
+    public let insecureSkipVerify: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case adminGroups = "adminGroups"
+        case requiredGroups = "requiredGroups"
+        case autoJoinOrganization = "autoJoinOrganization"
+        case defaultRole = "defaultRole"
+        case linkByEmail = "linkByEmail"
+        case baseUrl = "baseUrl"
+        case scopes = "scopes"
+        case caPem = "caPem"
+        case insecureSkipVerify = "insecureSkipVerify"
+    }
+
+    public init(
+        adminGroups: [String]? = nil,
+        requiredGroups: [String]? = nil,
+        autoJoinOrganization: Bool? = nil,
+        defaultRole: DefaultRole? = nil,
+        linkByEmail: Bool? = nil,
+        baseUrl: String,
+        scopes: String? = nil,
+        caPem: String? = nil,
+        insecureSkipVerify: Bool? = nil
+    ) {
+        self.adminGroups = adminGroups
+        self.requiredGroups = requiredGroups
+        self.autoJoinOrganization = autoJoinOrganization
+        self.defaultRole = defaultRole
+        self.linkByEmail = linkByEmail
+        self.baseUrl = baseUrl
+        self.scopes = scopes
+        self.caPem = caPem
+        self.insecureSkipVerify = insecureSkipVerify
+    }
+}
+
+/// Bitbucket Cloud (an OAuth consumer). The person's groups are the
+/// workspaces they belong to (their slugs), for required and admin groups.
+public typealias BitbucketSettings = SignInAccessSettings
+
+/// Any provider's settings beyond its client ID and secret.
+public typealias AnySignInSettings = AnyCodable
+
 public enum SignInProviderSettings: Codable, Hashable, Sendable {
     case oidc(OidcPayload)
     case ldap(LdapPayload)
+    case saml(SamlPayload)
+    case gitea(GiteaPayload)
+    case bitbucket(BitbucketPayload)
     /// Fallback for discriminator values this client does not know about yet.
     case unknown(AnyCodable)
 
@@ -9363,6 +9667,42 @@ public enum SignInProviderSettings: Codable, Hashable, Sendable {
         }
     }
 
+    public struct SamlPayload: Codable, Hashable, Sendable {
+        public let settings: SamlSettings
+
+        private enum CodingKeys: String, CodingKey {
+            case settings = "settings"
+        }
+
+        public init(settings: SamlSettings) {
+            self.settings = settings
+        }
+    }
+
+    public struct GiteaPayload: Codable, Hashable, Sendable {
+        public let settings: GiteaSettings
+
+        private enum CodingKeys: String, CodingKey {
+            case settings = "settings"
+        }
+
+        public init(settings: GiteaSettings) {
+            self.settings = settings
+        }
+    }
+
+    public struct BitbucketPayload: Codable, Hashable, Sendable {
+        public let settings: BitbucketSettings
+
+        private enum CodingKeys: String, CodingKey {
+            case settings = "settings"
+        }
+
+        public init(settings: BitbucketSettings) {
+            self.settings = settings
+        }
+    }
+
     private enum DiscriminatorKey: String, CodingKey {
         case provider
     }
@@ -9373,6 +9713,9 @@ public enum SignInProviderSettings: Codable, Hashable, Sendable {
         switch discriminator {
         case "oidc": self = .oidc(try OidcPayload(from: decoder))
         case "ldap": self = .ldap(try LdapPayload(from: decoder))
+        case "saml": self = .saml(try SamlPayload(from: decoder))
+        case "gitea": self = .gitea(try GiteaPayload(from: decoder))
+        case "bitbucket": self = .bitbucket(try BitbucketPayload(from: decoder))
         default: self = .unknown(try AnyCodable(from: decoder))
         }
     }
@@ -9386,6 +9729,18 @@ public enum SignInProviderSettings: Codable, Hashable, Sendable {
         case .ldap(let payload):
             var container = encoder.container(keyedBy: DiscriminatorKey.self)
             try container.encode("ldap", forKey: .provider)
+            try payload.encode(to: encoder)
+        case .saml(let payload):
+            var container = encoder.container(keyedBy: DiscriminatorKey.self)
+            try container.encode("saml", forKey: .provider)
+            try payload.encode(to: encoder)
+        case .gitea(let payload):
+            var container = encoder.container(keyedBy: DiscriminatorKey.self)
+            try container.encode("gitea", forKey: .provider)
+            try payload.encode(to: encoder)
+        case .bitbucket(let payload):
+            var container = encoder.container(keyedBy: DiscriminatorKey.self)
+            try container.encode("bitbucket", forKey: .provider)
             try payload.encode(to: encoder)
         case .unknown(let value):
             try value.encode(to: encoder)
@@ -9412,20 +9767,22 @@ public struct SignInProviderView: Codable, Hashable, Sendable {
 
     public let provider: SignInProviderName
     public let displayName: String
-    /// Can be edited in the app (google, oidc, ldap); the others come from the environment.
+    /// Can be edited in the app (all but GitHub and GitLab, which come from the environment).
     public let configurable: Bool
     public let enabled: Bool
     public let source: Source
-    /// The OAuth / OIDC client id (none for LDAP).
+    /// The OAuth / OIDC client id (none for LDAP and SAML).
     public let clientId: String?
     /// A client secret is stored; LDAP: a bind password is stored.
     public let hasClientSecret: Bool
     /// Email domains allowed to sign in (empty: any).
     public let allowedDomains: [String]
-    /// OIDC and LDAP settings (null for the account providers).
-    public let settings: AnyCodable
-    /// The redirect URI to register with the provider (none for LDAP).
+    /// The provider's settings (null for Google, GitHub and GitLab).
+    public let settings: AnySignInSettings?
+    /// The redirect URI to register with the provider (SAML: the ACS URL; none for LDAP).
     public let callbackUrl: String?
+    /// SAML: Optio's service-provider metadata URL, for the identity provider.
+    public let metadataUrl: String?
     public let updatedAt: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -9439,6 +9796,7 @@ public struct SignInProviderView: Codable, Hashable, Sendable {
         case allowedDomains = "allowedDomains"
         case settings = "settings"
         case callbackUrl = "callbackUrl"
+        case metadataUrl = "metadataUrl"
         case updatedAt = "updatedAt"
     }
 
@@ -9451,8 +9809,9 @@ public struct SignInProviderView: Codable, Hashable, Sendable {
         clientId: String? = nil,
         hasClientSecret: Bool,
         allowedDomains: [String],
-        settings: AnyCodable,
+        settings: AnySignInSettings? = nil,
         callbackUrl: String? = nil,
+        metadataUrl: String? = nil,
         updatedAt: String? = nil
     ) {
         self.provider = provider
@@ -9465,20 +9824,21 @@ public struct SignInProviderView: Codable, Hashable, Sendable {
         self.allowedDomains = allowedDomains
         self.settings = settings
         self.callbackUrl = callbackUrl
+        self.metadataUrl = metadataUrl
         self.updatedAt = updatedAt
     }
 }
 
 /// `PUT /api/auth/sign-in/:provider` body.
 public struct SaveSignInProviderInput: Codable, Hashable, Sendable {
-    /// OAuth / OIDC client id (ignored for LDAP).
+    /// OAuth / OIDC client id (ignored for LDAP and SAML).
     public let clientId: String?
     /// Client secret / LDAP bind password: replaces the stored one; absent keeps it.
     public let clientSecret: String?
     public let allowedDomains: [String]?
     public let enabled: Bool?
     public let displayName: String?
-    public let settings: AnyCodable?
+    public let settings: AnySignInSettings?
     /// Bootstrap only: the organization's name (the first signer-in's workspace takes it).
     public let organizationName: String?
 
@@ -9498,7 +9858,7 @@ public struct SaveSignInProviderInput: Codable, Hashable, Sendable {
         allowedDomains: [String]? = nil,
         enabled: Bool? = nil,
         displayName: String? = nil,
-        settings: AnyCodable? = nil,
+        settings: AnySignInSettings? = nil,
         organizationName: String? = nil
     ) {
         self.clientId = clientId
@@ -9557,6 +9917,43 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
             self.claimsSupported = claimsSupported
             self.groupsClaimAdvertised = groupsClaimAdvertised
             self.pkceSupported = pkceSupported
+        }
+    }
+
+    public struct Saml: Codable, Hashable, Sendable {
+        public struct Certificate: Codable, Hashable, Sendable {
+            public let subject: String
+            public let notAfter: String
+            public let fingerprint256: String
+
+            private enum CodingKeys: String, CodingKey {
+                case subject = "subject"
+                case notAfter = "notAfter"
+                case fingerprint256 = "fingerprint256"
+            }
+
+            public init(subject: String, notAfter: String, fingerprint256: String) {
+                self.subject = subject
+                self.notAfter = notAfter
+                self.fingerprint256 = fingerprint256
+            }
+        }
+
+        public let entityId: String?
+        public let entryPoint: String?
+        /// The signing certificates: subject and expiry, never the key.
+        public let certificates: [Certificate]
+
+        private enum CodingKeys: String, CodingKey {
+            case entityId = "entityId"
+            case entryPoint = "entryPoint"
+            case certificates = "certificates"
+        }
+
+        public init(entityId: String? = nil, entryPoint: String? = nil, certificates: [Certificate]) {
+            self.entityId = entityId
+            self.entryPoint = entryPoint
+            self.certificates = certificates
         }
     }
 
@@ -9627,6 +10024,8 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
     public let error: String?
     /// OIDC: what discovery found.
     public let oidc: Oidc?
+    /// SAML: what the metadata (or the settings) say about the identity provider.
+    public let saml: Saml?
     /// LDAP: what a bind and a sample search found.
     public let ldap: Ldap?
 
@@ -9634,13 +10033,21 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
         case ok = "ok"
         case error = "error"
         case oidc = "oidc"
+        case saml = "saml"
         case ldap = "ldap"
     }
 
-    public init(ok: Bool, error: String? = nil, oidc: Oidc? = nil, ldap: Ldap? = nil) {
+    public init(
+        ok: Bool,
+        error: String? = nil,
+        oidc: Oidc? = nil,
+        saml: Saml? = nil,
+        ldap: Ldap? = nil
+    ) {
         self.ok = ok
         self.error = error
         self.oidc = oidc
+        self.saml = saml
         self.ldap = ldap
     }
 }
