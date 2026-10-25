@@ -50,7 +50,15 @@ describe("repoPodNameParts", () => {
     ).toEqual({ owner: "repos", repo: "MyRepo" });
   });
 
-  it("reads a self-hosted GitLab host's subgroups", () => {
+  it("reads a named GitLab host's subgroups with any feature lists", () => {
+    vi.stubEnv("GITLAB_HOSTS", "git.example.com");
+    vi.stubEnv("OPTIO_GIT_PLATFORMS", "gitlab");
+    expect(repoPodNameParts("https://git.example.com/group/sub/my.proj.git")).toEqual({
+      owner: "sub",
+      repo: "my.proj",
+    });
+    // Every platform offered (the default): a host named in GITLAB_HOSTS.
+    vi.stubEnv("OPTIO_GIT_PLATFORMS", "");
     vi.stubEnv("GITLAB_HOSTS", "git.example.com");
     expect(repoPodNameParts("https://git.example.com/group/sub/my.proj.git")).toEqual({
       owner: "sub",
