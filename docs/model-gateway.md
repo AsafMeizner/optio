@@ -545,6 +545,5 @@ A spawn on a paired machine (Optio Local, a remote workspace) carries the
 gateway env including the person's own token — it is their token going to
 their own machine — and its Claude Code reads `claude-gateway.json`, the
 daemon's hooks settings plus `skipWebFetchPreflight: true`
-(`apps/cli/src/local/agent-command.ts`). Under the standard profile the
-gateway is the one way agents reach their models; Bedrock, Vertex and the
-Claude.ai subscription sign-in are off there.
+(`apps/cli/src/local/agent-command.ts`). With `OPTIO_MODEL_ACCESS=gateway`
+the gateway is the one way agents reach their models.

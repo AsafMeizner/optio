@@ -12,7 +12,7 @@ It has three parts:
 | Part         | What it does                                                                                                                           | Who sets it                                                                      |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | Deny rules   | Claude Code permission rules (`Read(**/.env*)`, `Bash(git push --force *)`) every agent run gets; OpenCode gets the same in its syntax | Workspace admins, team admins for their team, workspace admins per repo          |
-| Egress       | The hosts and addresses agent pods may connect to, beyond DNS and Optio                                                                | The operator, in the chart ([deploy/agent-policy.md](deploy/agent-policy.md))    |
+| Egress       | The hosts and addresses agent pods may connect to, beyond DNS and Optio                                                                | The operator, in the chart ([Egress allowlist](#egress-allowlist))               |
 | RuntimeClass | A sandbox between the agent and the node (gVisor, Kata)                                                                                | The operator for every pod; a workspace admin per repo, from the operator's list |
 
 ## Where to find it
@@ -47,9 +47,11 @@ A team or a repo only adds rules; it can't take away the workspace's.
 
 ### The built-in rules
 
-On by default under the `standard` profile and off under `full`, so `full`
-behaves as upstream until an admin turns them on. Workspace settings → Agent
-policy picks **Deployment default**, **On** or **Off**.
+Off by default, so Optio behaves as upstream until someone turns them on:
+the deployment with `OPTIO_AGENT_POLICY_DEFAULTS=true` (Helm
+`agentPolicy.builtInRules: true`), or a workspace admin under Workspace
+settings → Agent policy, which picks **Deployment default**, **On** or
+**Off**.
 
 | Rule                                                                                                                                                         | Why                                                                                                                   |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
@@ -103,7 +105,7 @@ Each level holds at most 100 rules of at most 300 characters.
   with a message saying so, rather than starting OpenCode without its rules.
   Rules for other tools (`WebFetch`, MCP tools) are Claude Code only; the run
   page lists them under "has no equivalent".
-- **Other runtimes** (under `full`) get none; the run page says so.
+- **Other runtimes** get none; the run page says so.
 - **Remote workspaces** get both files read-only: a Coder workspace from
   the template's `optio_claude_managed_settings` and
   `optio_opencode_managed_config` parameters, a Daytona, E2B or GitHub

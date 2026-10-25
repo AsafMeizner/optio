@@ -190,8 +190,8 @@ to ask about a person who isn't signing in). There:
   revocations and paused automations.
 - A site that also has the directory over LDAP can turn LDAP sign-in on
   next to OpenID Connect: the sync reads the people who signed in with LDAP.
-  Reading people who signed in with OpenID Connect from the directory, or
-  from the identity provider's admin API (SCIM), is not built yet.
+  An identity provider that speaks SCIM 2.0 can instead push its users and
+  groups to Optio ([SCIM 2.0 provisioning](#scim-20-provisioning)).
 
 ## Configuration
 
@@ -252,7 +252,7 @@ each can be turned off under Settings → Notifications → What reaches you
 | Hooks in upstream files                | `session-service.ts`, `api-key-service.ts` (refuse a disabled account), `routes/auth.ts` (sign-in), `sign-in-config-service.ts` (`completeSignIn` options; `listDeploymentAdmins({ enabledOnly })` for the last-admin checks), `notify/recipients.ts` (no email to a disabled account) |
 | Web                                    | `apps/web/src/components/settings/directory-sync-settings.tsx`, `lib/directory-sync-api.ts`; the login message in `app/login/page.tsx`                                                                                                                                                 |
 | Tables                                 | `users.disabled_at` / `disabled_reason` / `disabled_by`, `workspace_members.joined_via_groups`, `paused_automations`, `directory_sync_runs` (`1792740000_directory_sync.sql`)                                                                                                          |
-| Tests                                  | `services/directory-sync.test.ts`, `services/directory-sync.int.test.ts`, `routes/directory-sync.int.test.ts` (an in-memory directory behind the real LDAP code: `test-utils/fake-ldap.ts`); `zarf/test/scenarios.mjs` "Offboarding" against the OpenLDAP stand-in                     |
+| Tests                                  | `services/directory-sync.test.ts`, `services/directory-sync.int.test.ts`, `routes/directory-sync.int.test.ts` (an in-memory directory behind the real LDAP code: `test-utils/fake-ldap.ts`)                                                                                            |
 
 ## SCIM 2.0 provisioning
 

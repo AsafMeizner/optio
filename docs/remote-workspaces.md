@@ -283,7 +283,7 @@ connection is in the audit trail (`remote_workspace_connection.create`,
 Each is also read under its earlier name, `OPTIO_CODER_START_TIMEOUT_MS`,
 `OPTIO_CODER_IDLE_STOP_MS` and `OPTIO_CODER_WATCH_INTERVAL_MS`.
 
-Monitoring ([deploy/operations.md](deploy/operations.md), "Monitoring"):
+Monitoring ([observability.md](observability.md#prometheus-endpoint-and-dashboard)):
 `optio_remote_workspaces_starting` and
 `optio_remote_workspace_start_wait_seconds` (gauges),
 `optio_remote_workspace_start_failures_total` (counter) and

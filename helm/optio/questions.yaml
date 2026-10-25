@@ -374,7 +374,7 @@ questions:
   # ── Credential health ───────────────────────────────────────────────────
   - variable: credentialHealth.intervalMinutes
     label: Check tokens every (minutes)
-    description: How often Optio checks every GitLab, model-gateway, Jira and Coder token it holds (Settings → System health) and warns the owners 30, 7 and 1 days before one expires, e.g. 15. 0 (the default) leaves the periodic checks off; Check now still works.
+    description: How often Optio checks every GitHub, GitLab, model-gateway, Jira and remote-workspace token it holds (Settings → System health) and warns the owners 30, 7 and 1 days before one expires, e.g. 15. 0 (the default) leaves the periodic checks off; Check now still works.
     type: int
     default: 0
     min: 0

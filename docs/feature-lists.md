@@ -55,9 +55,10 @@ tickets; and custom HTTP, custom MCP, Filesystem and PostgreSQL connections.
 Explicit nonempty lists override the preset. The preset leaves both switches
 at their defaults.
 
-Image composition is separate: `images/base.Dockerfile` accepts
-`OPTIO_IMAGE_PRESET=full` (default) or `minimal`. The latter installs Claude
-Code, OpenCode and glab. `PREINSTALL_MCP_SERVERS=1` installs the pinned MCP
-servers in either image preset. Choose feature lists that match
+Image composition is separate: `images/base.Dockerfile` installs every agent
+CLI by default (`AGENT_CLIS=all`), or only those a comma list names, such as
+`AGENT_CLIS=claude-code,opencode`; glab and the GitHub and AWS tools stay.
+`PREINSTALL_MCP_SERVERS=1` installs the pinned MCP servers either way
+([air-gapped.md](air-gapped.md#image-build-arguments)). Choose feature lists that match
 the tools installed in your agent images. `OPTIO_MCP_PREINSTALLED` selects
 preinstalled MCP binaries explicitly; unset uses the normal `npx` commands.

@@ -99,7 +99,8 @@ Environment configuration uses `LDAP_URL`, `LDAP_USER_BASE_DN`,
 `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD`, `LDAP_START_TLS`, `LDAP_CA_PEM`,
 `LDAP_USER_FILTER`, `LDAP_USERNAME_ATTRIBUTE`, `LDAP_EMAIL_ATTRIBUTE`,
 `LDAP_DISPLAY_NAME_ATTRIBUTE`, `LDAP_GROUP_MODE`, `LDAP_GROUP_BASE_DN`,
-`LDAP_GROUP_FILTER` and `LDAP_USERNAME_LABEL`.
+`LDAP_GROUP_FILTER`, `LDAP_ADMIN_GROUPS`, `LDAP_REQUIRED_GROUPS` and
+`LDAP_DISPLAY_NAME`. The username field's label is set in the app.
 
 `POST /api/auth/ldap/login` takes `{ username, password }` and returns a
 one-time browser auth code; `cli: true` returns a personal access token.

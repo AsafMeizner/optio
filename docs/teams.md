@@ -136,20 +136,22 @@ groups read-only to other admins, and the change goes to the action log
 
 ### Creating a workspace
 
-Whoever creates a workspace becomes its admin. By default only a **deployment
-admin** may (`workspaces.creation: admins`): everyone else gets into the
+Whoever creates a workspace becomes its admin. By default everyone signed in
+may, as upstream (`workspaces.creation: everyone`). A deployment can let only
+a **deployment admin** create one (`admins`): everyone else then gets into the
 organization's workspace, and the ones their groups open, by signing in. A
-deployment admin can let everyone create one under Settings → Access →
-Workspaces (stored in `deployment_settings`, `services/deployment-settings.ts`),
-which wins over the deployment's own value (`OPTIO_WORKSPACE_CREATION`, chart
+deployment admin picks either under Settings → Access → Workspaces (stored in
+`deployment_settings`, `services/deployment-settings.ts`), which wins over the
+deployment's own value (`OPTIO_WORKSPACE_CREATION`, chart
 `workspaces.creation`); "Follow the deployment" removes the saved choice.
 `GET /api/deployment-settings` tells the web app whether to show **New
 workspace** (`mayCreateWorkspace`); `PUT` is a deployment admin's. Being a
-workspace's admin never reaches beyond it: the **global** secrets (the
-organization's `GITLAB_TOKEN` most runs push with, agent sign-ins) are a
-deployment admin's too, whatever workspace the request comes from (403 "Only
-a deployment admin changes organization-wide secrets"; the Organization owner
-for a secret or an agent credential is offered to deployment admins only).
+workspace's admin never reaches beyond it under `admins`: the **global**
+secrets (the organization's `GITLAB_TOKEN` most runs push with, agent
+sign-ins) are then a deployment admin's too, whatever workspace the request
+comes from (403 "Only a deployment admin changes organization-wide secrets";
+the Organization owner for a secret or an agent credential is offered to
+deployment admins only). Under `everyone`, any workspace admin writes them.
 
 The group pickers (workspace groups, admin / required groups under Settings →
 Sign-in, team mappings, the first-setup admin group) search

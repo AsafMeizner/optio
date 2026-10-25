@@ -30,9 +30,8 @@ utilityImage: { repository: registry.example.com/base/busybox, tag: "1.36" }
 
 Also mirror `agent.envoyProxy.image` when using the secret proxy,
 `backup.s3.image` for S3 backups, and any custom repository images. Configure
-`imagePullSecrets` for private image pulls. Set `caBundle.pem` or
-`caBundle.existingConfigMap` for a private CA (see the chart values for the
-expected key). Configure the container runtime's registry trust separately:
+`imagePullSecrets` for private image pulls. Set `caBundle.pem`, or
+`caBundle.configMap` with `caBundle.key`, for a private CA. Configure the container runtime's registry trust separately:
 image pulls happen before a pod can mount a CA.
 
 Choose sign-in and model providers independently. For disconnected networks,

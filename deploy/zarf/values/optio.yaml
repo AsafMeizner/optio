@@ -148,7 +148,7 @@ workspaces:
   workVisibility: teams
   creation: admins
 
-# Merge requests and commits name the Jira key, who asked and the run (docs/jira.md).
+# Merge requests and commits name the Jira key, who asked and the run (docs/ticket-round-trip.md).
 tickets:
   traceability: true
 

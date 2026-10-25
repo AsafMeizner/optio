@@ -21,7 +21,8 @@ the gateway about a run's token before the run gets a pod.
 | **Remote-workspace connection** (each enabled one)                                                       | the connection's **Test** with its stored token: Coder `/api/v2/users/me` (and, for a session token, `/api/v2/users/me/keys/<id>`), Daytona `/api-keys/current`, E2B `/v2/templates`, GitHub `/user` | whether the provider accepts it, the account, the token's expiry where the provider gives one (Coder, Daytona, GitHub's `github-authentication-token-expiration` header) |
 
 A GitHub token is sent to the GitHub of its owner's GitHub repos, and to
-`api.github.com` when the owner has none, under the `full` profile only. A
+`api.github.com` when the owner has none, unless models are reached through
+a gateway only (`OPTIO_MODEL_ACCESS=gateway`). A
 GitHub App's tokens renew themselves and aren't listed.
 
 A GitLab token is sent only to a GitLab a deployment admin named: the setup
@@ -32,7 +33,7 @@ for the organization's token), and to all of them only when the owner has no
 GitLab repo yet. A repo on a host nobody named is never asked — any workspace
 admin adds repos — so a token whose owner works only there shows **Unknown**
 ("No GitLab host to check it against"): add the host to `gitlab.hosts`.
-`gitlab.com` is never asked under the `standard` profile. A GitLab older
+`gitlab.com` is never asked with `OPTIO_MODEL_ACCESS=gateway`. A GitLab older
 than 15.5 has no `/personal_access_tokens/self`: Optio then checks only that
 the token signs in. TLS to every service trusts the chart's `caBundle` (and a
 Jira or remote-workspace connection's own CA field, `OPTIO_GATEWAY_CA_PEM` for the
@@ -138,7 +139,7 @@ that check doesn't apply; this is the gateway's.
 ## Failure messages that name this deployment's fix
 
 When a run fails anyway, its error is classified ahead of upstream's rules
-under the `standard` profile (`packages/shared/src/error-classifier-site.ts`):
+with `OPTIO_MODEL_ACCESS=gateway` (`packages/shared/src/error-classifier-site.ts`):
 
 | The error says                                                                                                                                                                                                                       | Shown as                                 | The fix it names                                                                                                                         |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
@@ -154,16 +155,17 @@ under the `standard` profile (`packages/shared/src/error-classifier-site.ts`):
 Other messages upstream answers with an earlier rule (an image that can't be
 pulled, a pod that didn't start, a secret) keep upstream's answer.
 
-Under `standard` no message sends anyone to the Claude Keychain,
-`claude setup-token`, Max subscription or "switch to API key auth". Under
-`full` the classifier is upstream's, unchanged.
+With `OPTIO_MODEL_ACCESS=gateway` no message sends anyone to the Claude
+Keychain, `claude setup-token`, Max subscription or "switch to API key
+auth". With the default model access (`any`) the classifier is upstream's,
+unchanged.
 
 ## Configuration
 
 | Chart value                         | Environment                                | Default | Means                                                                                                                      |
 | ----------------------------------- | ------------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `credentialHealth.intervalMinutes`  | `OPTIO_CREDENTIAL_HEALTH_INTERVAL_MINUTES` | `0`     | Minutes between passes (e.g. `15`); `0` or unset leaves the periodic checks and their warnings off (Check now still works) |
-| `credentialHealth.gatewayPreflight` | `OPTIO_GATEWAY_PREFLIGHT`                  | `true`  | Ask the gateway about a run's token before its pod                                                                         |
+| `credentialHealth.gatewayPreflight` | `OPTIO_GATEWAY_PREFLIGHT`                  | `true`  | Ask the gateway about a run's token before its pod; unset in the chart renders nothing, `false` turns it off               |
 
 One API instance runs each pass (the `poller:credential-health` lease), so
 several replicas check each token once. The first pass runs a minute after

@@ -332,10 +332,10 @@ audit:
 gatewayKeys:
   checkMinutes: 10
 
-# The Jira round trip and traceable commits (docs/jira.md). What Optio writes
-# on a ticket — comments with links to the run and the merge request, a remote
-# link, a status per step — and which ticket comments resume the work are each
-# Jira provider's own settings, in the app: Settings → Integrations → Tickets →
+# The ticket round trip and traceable commits (docs/ticket-round-trip.md).
+# What Optio writes on a ticket — comments with links to the run and the merge
+# request, the work's link, a status per step — and which ticket comments
+# resume the work are each ticket provider's own settings, in the app: Settings → Integrations → Tickets →
 # the provider → Round trip (whoever may change the provider). Here only the
 # deployment's side.
 tickets:
@@ -363,7 +363,7 @@ tickets:
 # token Optio holds — the organization's, each team's and each person's GitLab
 # token (expiry, scopes, revoked, Maintainer on the projects with Optio's
 # webhooks), every model-gateway token (LiteLLM /key/info: expiry, spend
-# against its budget, the reset), Jira and Coder connections — shows the
+# against its budget, the reset), Jira and remote-workspace connections — shows the
 # results on Settings → System health and My tokens, and emails the token's
 # owner 30, 7 and 1 days before it expires and when it is refused or over
 # budget (through the relay under notifications.smtp). A GitLab token is sent

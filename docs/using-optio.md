@@ -3,7 +3,7 @@
 This guide is for developers who use Optio day to day. You describe a change,
 an agent makes it on a branch of your GitLab project and opens a merge
 request, and you review it and merge it. Admins set Optio up
-([deploy/operations.md](deploy/operations.md)); this page is what you do.
+([options.md](options.md)); this page is what you do.
 
 The same guide is in the app, with the getting-started checklist below, when
 a deployment admin turns on **Settings → Access → Getting-started guide**
@@ -405,5 +405,5 @@ is one of your API keys: revoke it under Settings → Access → API keys.
 | GitLab: "I can't find you in Optio"                                          | Sign in to Optio once with the email GitLab shows, then mention it again       |
 | The task waits on "MR" for days                                              | That's you: [review and merge, or ask for changes](#waiting-for-you)           |
 
-Anything else: your Optio admins have the runbook
-([deploy/operations.md](deploy/operations.md)).
+Anything else: your Optio admins have the common failures and their fixes
+([observability.md](observability.md#common-failures)).

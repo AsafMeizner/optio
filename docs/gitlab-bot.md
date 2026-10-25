@@ -128,8 +128,8 @@ name the user explicitly (below) only if a person's account really is
 meant to be the bot. Nothing else is needed:
 
 - The **project webhooks Optio creates** already send comment (note) events
-  to `/api/webhooks/gitlab` ([zarf/README.md](../deploy/zarf/README.md) "GitLab
-  webhook"). A webhook you add by hand needs **Comments** ticked.
+  to `/api/webhooks/gitlab` ([gitlab.md](gitlab.md)). A webhook you add by
+  hand needs **Comments** ticked.
 - **`PUBLIC_URL`** makes the replies link to the run; without it they name
   the run's id.
 - The token's user must be a member of the project who may comment there
