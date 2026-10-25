@@ -112,7 +112,7 @@ describe("specFor — the draft as the five attributes", () => {
       who: { runtime: "codex", agentOptions: { copilotModel: "gpt-5.5" }, model: "gpt-5.5" },
       what: { prompt: "Fix it", runTitle: null },
       then: "exits",
-      mergeWhenReady: true,
+      mergeWhenReady: false,
       maxRetries: 1,
       priority: 7,
       dependsOn: ["t-0"],
@@ -644,6 +644,15 @@ describe("owner and pod secrets on the wire", () => {
     expect(sent()).not.toHaveProperty("podSecrets");
   });
 
+  it("a team's pod Job sends the team as its owner", async () => {
+    const TEAM = "team:11111111-2222-4333-8444-555555555555" as const;
+    await createWork(draft({ withRepo: false, prompt: "hi", owner: TEAM, podSecrets: ["A"] }), {
+      repoUrl: "",
+      autoName: "Job 3",
+    });
+    expect(sent()).toMatchObject({ owner: TEAM, podSecrets: ["A"] });
+  });
+
   it("a persistent agent carries them; a local terminal carries only the provider", async () => {
     api.createWork.mockResolvedValue(made("persistent-agent", "a-1", "/agents/a-1"));
     await createWork(
@@ -811,11 +820,28 @@ describe("Work until merged", () => {
 
   beforeEach(() => api.createWork.mockResolvedValue(made("repo-task", "t-1", "/tasks/t-1")));
 
-  it("a Task carries its own follow-through", async () => {
-    const created = await createWork(untilMerged, { repoUrl: REPO, autoName: "Task 1" });
-    expect(sent()).toMatchObject({ then: "until-merged", mergeWhenReady: true });
+  it("a Task carries its own follow-through, and merges by itself only once confirmed", async () => {
+    const created = await createWork(
+      { ...untilMerged, mergeWhenReady: true, autoMergeConfirmed: true },
+      { repoUrl: REPO, autoName: "Task 1" },
+    );
+    expect(sent()).toMatchObject({
+      then: "until-merged",
+      mergeWhenReady: true,
+      autoMergeConfirmed: true,
+    });
     expect(kindOfSpec(sent())).toBe("repo-task");
     expect(created.toast).toBe("Task 1 started — it will work the PR until it merges");
+  });
+
+  it("leaves the merge to you by default, and never claims a confirmation it didn't get", async () => {
+    await createWork(untilMerged, { repoUrl: REPO, autoName: "Task 1" });
+    expect(sent()).toMatchObject({ then: "until-merged", mergeWhenReady: false });
+    expect(sent()).not.toHaveProperty("autoMergeConfirmed");
+
+    api.createWork.mockClear();
+    await createWork({ ...untilMerged, mergeWhenReady: true }, { repoUrl: REPO, autoName: "T" });
+    expect(sent()).not.toHaveProperty("autoMergeConfirmed");
   });
 
   it("'you merge it' keeps resuming but doesn't merge", async () => {
@@ -834,6 +860,8 @@ describe("Work until merged", () => {
   it("a scheduled Task saves it, and switching back to Exit when done says so", async () => {
     const ticket = draft({
       ...untilMerged,
+      mergeWhenReady: true,
+      autoMergeConfirmed: true,
       when: "ticket",
       trigger: { type: "ticket", ticketSource: "github" },
     });
@@ -851,5 +879,51 @@ describe("Work until merged", () => {
     const saved = await updateWork(target, { ...ticket, then: "exits" }, { repoUrl: REPO });
     expect(api.updateWork.mock.calls[0][1].then).toBe("exits");
     expect(saved.href).toBe("/tasks/scheduled/c-1");
+  });
+});
+
+describe("specFor — in a remote workspace", () => {
+  const coder = {
+    connectionId: "c1",
+    source: "new" as const,
+    workspaceId: "",
+    templateId: "",
+    parameters: {},
+    name: "",
+    checkoutDir: "",
+    repoUrl: "https://gitlab.example.com/team/app",
+  };
+
+  it("is a local Task with where.remoteWorkspace; the API fills in the machine and checkout", () => {
+    const d = draft({
+      runtime: "claude-code",
+      prompt: "Fix it",
+      withRepo: true,
+      // A machine picked before stays in the draft; it doesn't travel.
+      location: {
+        runTarget: "local",
+        localHostId: "h-old",
+        localDir: "/old/dir",
+        localSessionMode: "headless",
+        remoteWorkspace: coder,
+      },
+    });
+    const spec = specFor(d, { repoUrl: coder.repoUrl, name: "Fix" });
+    expect(kindOfSpec(spec)).toBe("repo-task");
+    expect(spec.where).toEqual({
+      runTarget: "local",
+      repoUrl: coder.repoUrl,
+      repoBranch: "main",
+      localHostId: null,
+      localDir: null,
+      remoteWorkspace: {
+        connectionId: "c1",
+        workspaceId: null,
+        templateId: null,
+        parameters: { repo_url: coder.repoUrl },
+        name: null,
+        checkoutDir: null,
+      },
+    });
   });
 });

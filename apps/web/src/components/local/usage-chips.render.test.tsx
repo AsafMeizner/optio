@@ -1,3 +1,4 @@
+import { featuresFromEnv } from "@optio/shared/features";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, cleanup, fireEvent, waitFor } from "@testing-library/react";
 
@@ -6,6 +7,11 @@ vi.mock("@/lib/api-client", () => ({
   api: { getUsage: (...args: unknown[]) => getUsage(...args) },
 }));
 vi.mock("sonner", () => ({ toast: { message: vi.fn() } }));
+// Upstream's cases run under the default deployment; the restricted deployment offers no Codex.
+let features = featuresFromEnv({});
+vi.mock("@/hooks/use-features", () => ({
+  useFeatures: () => ({ features, gatewayOnly: features.modelAccess === "gateway", loaded: true }),
+}));
 
 import { SessionLimitsPills } from "./usage-chips";
 
@@ -51,6 +57,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  features = featuresFromEnv({});
 });
 
 describe("SessionLimitsPills", () => {
@@ -107,5 +114,15 @@ describe("SessionLimitsPills", () => {
       />,
     );
     expect(pills(container)).toEqual([]);
+  });
+});
+
+describe("SessionLimitsPills under the restricted deployment", () => {
+  it("never shows Codex's limits, even where a snapshot exists", async () => {
+    features = featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" });
+    const { container } = render(
+      <SessionLimitsPills terminal={{ spec: { kind: "shell" } }} host={host(recentCodex())} />,
+    );
+    await waitFor(() => expect(pills(container)).toEqual(["claude"]));
   });
 });

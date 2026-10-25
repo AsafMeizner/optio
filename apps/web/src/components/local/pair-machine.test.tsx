@@ -77,7 +77,10 @@ describe("PairMachineGuide", () => {
   it("asks to sign in when the server has auth", async () => {
     vi.stubEnv("NEXT_PUBLIC_WS_URL", "");
     (window as any).__OPTIO_CONFIG = { publicApiUrl: "https://optio.example.com" };
-    getAuthProviders.mockResolvedValue({ providers: [{ name: "github" }], authDisabled: false });
+    getAuthProviders.mockResolvedValue({
+      providers: [{ name: "oidc", displayName: "SSO", method: "redirect" }],
+      authDisabled: false,
+    });
     render(<PairMachineGuide hosts={[]} loading={false} />);
     expect(
       await screen.findByText("optio login --server https://optio.example.com"),

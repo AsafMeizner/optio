@@ -1,6 +1,7 @@
 import { shellQuote } from "@optio/shared";
 import { OPENCODE_AUTO_APPROVE_FLAG } from "@optio/agent-adapters";
 import { EXPORT_CODEX_HOME } from "../utils/codex-config.js";
+import { allowsContextSuffix, gatewayAuthSetup } from "./gateway-run-service.js";
 import {
   copilotMcpConfigFlag,
   EXPORT_GEMINI_HOME,
@@ -43,11 +44,12 @@ export function buildPooledAgentCommand(
               `if curl -sf "${env.OPTIO_API_URL}/api/auth/claude-token" > /dev/null 2>&1; then echo "[optio] Token proxy OK"; fi`,
               `unset ANTHROPIC_API_KEY 2>/dev/null || true`,
             ]
-          : [];
+          : gatewayAuthSetup(env);
 
       const flags: string[] = [];
       if (env.OPTIO_CLAUDE_MODEL) {
-        const ctx = env.OPTIO_CLAUDE_CONTEXT_WINDOW === "1m" ? "[1m]" : "";
+        const ctx =
+          env.OPTIO_CLAUDE_CONTEXT_WINDOW === "1m" && allowsContextSuffix(env) ? "[1m]" : "";
         flags.push(`--model ${q(env.OPTIO_CLAUDE_MODEL + ctx)}`);
       }
       // Effort + extended thinking, as the same settings keys the claude-code

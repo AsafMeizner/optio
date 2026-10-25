@@ -1,3 +1,4 @@
+import { featuresFromEnv } from "@optio/shared/features";
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 
@@ -14,6 +15,11 @@ vi.mock("@/lib/api-client", () => ({
   },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// Upstream's cases run under the default deployment; the restricted deployment's agent chips are at the end.
+let features = featuresFromEnv({});
+vi.mock("@/hooks/use-features", () => ({
+  useFeatures: () => ({ features, gatewayOnly: features.modelAccess === "gateway", loaded: true }),
+}));
 
 import { ConnectionEditor, changedConfig } from "./connection-editor";
 
@@ -56,7 +62,10 @@ beforeEach(() => {
   updateConnection.mockReset();
   testConnection.mockReset();
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  features = featuresFromEnv({});
+});
 
 describe("changedConfig", () => {
   it("keeps only touched fields; a blank secret is omitted, a cleared text field is null", () => {
@@ -112,5 +121,25 @@ describe("ConnectionEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test" }));
     await waitFor(() => expect(testConnection).toHaveBeenCalledWith("c1"));
     expect(await screen.findByText(/401 from Pylon/)).toBeInTheDocument();
+  });
+});
+
+describe("ConnectionEditor's agent chips by features", () => {
+  it("offers every agent under the default deployment", async () => {
+    render(<ConnectionEditor connectionId="c1" open onClose={vi.fn()} onSaved={vi.fn()} />);
+    await screen.findByLabelText("Connection name");
+    expect(screen.getByRole("button", { name: "OpenAI Codex" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "GitHub Copilot" })).toBeInTheDocument();
+  });
+
+  it("offers Claude Code and OpenCode alone under the restricted deployment", async () => {
+    features = featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" });
+    render(<ConnectionEditor connectionId="c1" open onClose={vi.fn()} onSaved={vi.fn()} />);
+    await screen.findByLabelText("Connection name");
+    expect(screen.getByRole("button", { name: "Claude Code" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "OpenCode" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "OpenAI Codex" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "GitHub Copilot" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Google Gemini" })).not.toBeInTheDocument();
   });
 });

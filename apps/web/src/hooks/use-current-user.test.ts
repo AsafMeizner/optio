@@ -41,3 +41,22 @@ describe("viewOf: who may create and change work", () => {
     expect(v.isAdmin).toBe(true);
   });
 });
+
+describe("viewOf: the person's teams", () => {
+  it("carries the team ids /api/auth/me returns", () => {
+    const v = viewOf({
+      user: { ...user("member"), teamIds: ["t1", "t2"], adminTeamIds: ["t2"] },
+      authDisabled: false,
+      loaded: true,
+    });
+    expect(v.teamIds).toEqual(["t1", "t2"]);
+    expect(v.adminTeamIds).toEqual(["t2"]);
+  });
+
+  it("is empty before load and for a user without them", () => {
+    expect(viewOf({ user: null, authDisabled: false, loaded: false }).teamIds).toEqual([]);
+    const v = viewOf({ user: user("member"), authDisabled: false, loaded: true });
+    expect(v.teamIds).toEqual([]);
+    expect(v.adminTeamIds).toEqual([]);
+  });
+});

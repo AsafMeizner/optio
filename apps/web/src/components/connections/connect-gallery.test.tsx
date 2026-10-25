@@ -1,3 +1,4 @@
+import { featuresFromEnv } from "@optio/shared/features";
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 
@@ -27,7 +28,18 @@ vi.mock("@/hooks/use-current-user", () => ({
   }),
 }));
 
-import { ConnectGallery, serviceProviders, defaultConnectionName } from "./connect-gallery";
+// Upstream's cases run under the default deployment; the restricted deployment's are at the end.
+let features = featuresFromEnv({});
+vi.mock("@/hooks/use-features", () => ({
+  useFeatures: () => ({ features, gatewayOnly: features.modelAccess === "gateway", loaded: true }),
+}));
+
+import {
+  ConnectGallery,
+  galleryOffers,
+  serviceProviders,
+  defaultConnectionName,
+} from "./connect-gallery";
 
 const provider = (slug: string, extra: Record<string, unknown> = {}) => ({
   id: `p-${slug}`,
@@ -73,7 +85,10 @@ beforeEach(() => {
   testConnection.mockReset();
   createSecret.mockReset();
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  features = featuresFromEnv({});
+});
 
 describe("serviceProviders / defaultConnectionName", () => {
   it("orders the catalog, drops the custom providers, and names the GitHub tile", () => {
@@ -87,6 +102,18 @@ describe("serviceProviders / defaultConnectionName", () => {
     );
     expect(defaultConnectionName({ slug: "aws", name: "AWS" }, "private", "")).toBe("My AWS");
     expect(defaultConnectionName({ slug: "aws", name: "AWS" }, "organization", "Jon")).toBe("AWS");
+  });
+
+  it("puts the GitLab tile next to GitHub's, in the full profile only", () => {
+    const withGitLab = [...PROVIDERS, provider("gitlab", { name: "GitLab" })];
+    expect(serviceProviders(withGitLab as never, "full").map((p) => p.slug)).toEqual([
+      "github-enhanced",
+      "gitlab",
+      "slack",
+      "pylon",
+    ]);
+    expect(galleryOffers("gitlab", "full")).toBe(true);
+    expect(galleryOffers("gitlab", "standard")).toBe(false);
   });
 });
 
@@ -150,5 +177,60 @@ describe("ConnectGallery", () => {
     await screen.findByTestId("connect-tile-pylon");
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("ConnectGallery under the restricted deployment", () => {
+  const STANDARD_CATALOG = [
+    ...PROVIDERS,
+    provider("postgres"),
+    provider("filesystem"),
+    provider("aws"),
+    provider("custom-http"),
+    provider("forge", { builtIn: false }),
+  ];
+
+  it("offers the restricted deployment's providers and a workspace's own, nothing cloud-only", () => {
+    expect(
+      serviceProviders(
+        STANDARD_CATALOG as never,
+        featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
+      ).map((p) => p.slug),
+    ).toEqual(["postgres", "filesystem", "forge"]);
+    expect(
+      galleryOffers(
+        "github-enhanced",
+        featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
+      ),
+    ).toBe(false);
+    expect(
+      galleryOffers(
+        "custom-mcp",
+        featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
+      ),
+    ).toBe(true);
+    // The default deployment keeps every tile.
+    expect(galleryOffers("github-enhanced", featuresFromEnv({}))).toBe(true);
+    expect(
+      serviceProviders(STANDARD_CATALOG as never, featuresFromEnv({})).map((p) => p.slug),
+    ).toContain("pylon");
+  });
+
+  it("renders no GitHub, Slack or Pylon tile", async () => {
+    features = featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" });
+    listConnectionProviders.mockResolvedValue({ providers: STANDARD_CATALOG });
+    render(<ConnectGallery open onClose={vi.fn()} onCreated={vi.fn()} />);
+    await screen.findByTestId("connect-tile-postgres");
+    expect(screen.queryByTestId("connect-tile-github-enhanced")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("connect-tile-slack")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("connect-tile-pylon")).not.toBeInTheDocument();
+    expect(screen.getByTestId("connect-tile-secret")).toBeInTheDocument();
+  });
+
+  it("won't open straight on a provider the restricted deployment doesn't offer", async () => {
+    features = featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" });
+    render(<ConnectGallery open onClose={vi.fn()} onCreated={vi.fn()} initialProvider="pylon" />);
+    await waitFor(() => expect(listConnectionProviders).toHaveBeenCalled());
+    expect(screen.queryByLabelText("Connection name")).not.toBeInTheDocument();
   });
 });

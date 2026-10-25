@@ -1,3 +1,4 @@
+import { featuresFromEnv } from "@optio/shared/features";
 import { describe as suite, it, expect, suite } from "vitest";
 import {
   EMPTY_DRAFT,
@@ -23,6 +24,7 @@ import {
   thenOptions,
   toggleOverride,
   whereOptions,
+  remoteWorkspaceDisabled,
   type WhenType,
   type WorkDraft,
 } from "./model";
@@ -626,6 +628,23 @@ suite("owner and pod secrets", () => {
       withSecret({ ...job, podSecrets: null }, { name: "ORG", owner: "workspace" }).podSecrets,
     ).toEqual(["ORG"]);
   });
+
+  it("a team's work is the team's in a pod, and drops what only I have, like the org's", () => {
+    const TEAM = "team:11111111-2222-4333-8444-555555555555" as const;
+    const mine = withSecret(withSecret(job, { name: "ORG", owner: "workspace" }), {
+      name: "MINE",
+      owner: "me",
+    });
+    const teams = withOwner(mine, TEAM, [], pickable);
+    expect(teams.owner).toBe(TEAM);
+    expect(teams.podSecrets).toEqual(["ORG"]);
+    expect(effectiveOwner(teams)).toBe(TEAM);
+    // On a machine it is still mine.
+    const local = normalize({ ...teams, location: { ...teams.location, runTarget: "local" } });
+    expect(effectiveOwner(local)).toBe("me");
+    // A private secret picked later makes it mine again.
+    expect(withSecret(teams, { name: "MINE", owner: "me" }).owner).toBe("me");
+  });
 });
 
 // ── Remembered agent settings ───────────────────────────────────────────────
@@ -795,12 +814,11 @@ suite("Work until merged — PR follow-through", () => {
   });
 
   it("reads as a sentence", () => {
-    expect(text({ ...base, then: "until-merged" })).toBe(
+    expect(text({ ...base, then: "until-merged", mergeWhenReady: true })).toBe(
       "Started now, a Claude Code run in an Optio pod with https://github.com/a/b that opens a PR and keeps working on it until it merges.",
     );
-    expect(text({ ...base, then: "until-merged", mergeWhenReady: false })).toMatch(
-      /keeps it green until you merge it\.$/,
-    );
+    // The default leaves the merge to you.
+    expect(text({ ...base, then: "until-merged" })).toMatch(/keeps it green until you merge it\.$/);
   });
 
   it("the Assign to Optio preset is a ticket-labeled scheduled Task worked until merged", () => {
@@ -809,6 +827,7 @@ suite("Work until merged — PR follow-through", () => {
     expect(d.when).toBe("ticket");
     expect(d.trigger.ticketLabels).toEqual(["optio"]);
     expect(d.then).toBe("until-merged");
+    expect(d.mergeWhenReady).toBe(false);
     expect(deriveKind(d)).toBe("repo-blueprint");
   });
 
@@ -819,20 +838,21 @@ suite("Work until merged — PR follow-through", () => {
     const plan = followThrough(base, { autoResume: false, autoMerge: false });
     expect(plan!.fromRepo).toBe(true);
     expect(on(plan)).toEqual(["pr", "done"]);
+    const repo = {
+      autoResume: true,
+      autoMerge: true,
+      reviewEnabled: true,
+      reviewTrigger: "on_ci_pass" as const,
+    };
     expect(
-      on(
-        followThrough(base, {
-          autoResume: true,
-          autoMerge: true,
-          reviewEnabled: true,
-          reviewTrigger: "on_ci_pass",
-        }),
-      ),
+      on(followThrough(base, { ...repo, autoMergeConfirmedAt: "2026-10-01T00:00:00Z" })),
     ).toEqual(["pr", "review", "ci", "changes", "merge", "done"]);
+    // A repo's auto-merge nobody confirmed merges nothing.
+    expect(on(followThrough(base, repo))).toEqual(["pr", "review", "ci", "changes", "done"]);
   });
 
   it("Work until merged resumes and merges whatever the repo says", () => {
-    const d = { ...base, then: "until-merged" as const };
+    const d = { ...base, then: "until-merged" as const, mergeWhenReady: true };
     const plan = followThrough(d, { autoResume: false, autoMerge: false, maxAutoResumes: 4 });
     expect(plan!.fromRepo).toBe(false);
     expect(on(plan)).toEqual(["pr", "ci", "changes", "merge", "done"]);
@@ -846,7 +866,10 @@ suite("Work until merged — PR follow-through", () => {
   });
 
   it("cautious mode holds the merge back and says why", () => {
-    const plan = followThrough({ ...base, then: "until-merged" }, { cautiousMode: true });
+    const plan = followThrough(
+      { ...base, then: "until-merged", mergeWhenReady: true },
+      { cautiousMode: true },
+    );
     const merge = plan!.steps.find((s) => s.key === "merge")!;
     expect(merge.on).toBe(false);
     expect(merge.detail).toMatch(/cautious mode/);
@@ -1150,5 +1173,138 @@ suite("agent credentials in the draft (the Signed in with row)", () => {
     expect(
       pickedCredential({ ...job, agentOptions: { credential: orgKey.id } }, [myToken]),
     ).toBeUndefined();
+  });
+});
+
+suite("A remote workspace", () => {
+  const coder = (d: WorkDraft): WorkDraft => ({
+    ...d,
+    location: {
+      ...d.location,
+      runTarget: "local",
+      localHostId: "",
+      localDir: "",
+      remoteWorkspace: {
+        connectionId: "c1",
+        source: "new",
+        workspaceId: "",
+        templateId: "",
+        parameters: {},
+        name: "",
+        checkoutDir: "",
+        repoUrl: "",
+      },
+    },
+  });
+
+  it("is for new work, and for saved work that has one", () => {
+    expect(remoteWorkspaceDisabled(EMPTY_DRAFT)).toBeUndefined();
+    expect(remoteWorkspaceDisabled(EMPTY_DRAFT, true)).toMatch(/start new work/);
+    expect(remoteWorkspaceDisabled(coder(EMPTY_DRAFT), true)).toBeUndefined();
+  });
+
+  it("stays on a trigger or a schedule — the workspace starts when the work fires", () => {
+    expect(remoteWorkspaceDisabled({ ...EMPTY_DRAFT, when: "schedule" })).toBeUndefined();
+    const next = normalize({ ...coder(EMPTY_DRAFT), when: "schedule" });
+    expect(next.location.runTarget).toBe("local");
+    expect(next.location.remoteWorkspace?.connectionId).toBe(
+      coder(EMPTY_DRAFT).location.remoteWorkspace?.connectionId,
+    );
+  });
+
+  it("can't wait for you", () => {
+    const d = coder({ ...EMPTY_DRAFT, runtime: "claude-code" });
+    expect(thenOptions(d).find((t) => t.value === "waits-for-me")?.disabled).toMatch(
+      /remote workspace/,
+    );
+    expect(enabled(thenOptions(d))).toContain("exits");
+  });
+
+  it("says it in the sentence, and asks a Task for its repo", () => {
+    const job = coder({ ...EMPTY_DRAFT, runtime: "claude-code", withRepo: false });
+    expect(text(job)).toContain("in a new remote workspace");
+    expect(missingFields(job)).not.toContain("machine");
+    const task = coder({ ...EMPTY_DRAFT, runtime: "claude-code", withRepo: true });
+    expect(missingFields(task)).toContain("repo");
+    const noConnection = coder(EMPTY_DRAFT);
+    noConnection.location.remoteWorkspace!.connectionId = "";
+    expect(missingFields(noConnection)).toContain("machine");
+  });
+});
+
+import { draftForFeatures, whenTypesFor } from "./model";
+
+suite("When answers by deployment features", () => {
+  it("keeps every When upstream", () => {
+    expect(whenTypesFor(featuresFromEnv({}))).toEqual(WHEN_TYPES);
+  });
+
+  it("offers the restricted deployment's: no GitHub, Slack, Linear or SaaS alerting", () => {
+    expect(
+      whenTypesFor(
+        featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
+      ),
+    ).toEqual([
+      "manual",
+      "schedule",
+      "webhook",
+      "ticket",
+      "gitlab",
+      "jira",
+      "sentry",
+      "alertmanager",
+    ]);
+  });
+
+  it("moves an example onto GitLab with GitLab selected and leaves it alone by default", () => {
+    const assign = PRESETS.find((p) => p.id === "assign")!.apply(EMPTY_DRAFT);
+    expect(assign.trigger.ticketSource).toBe("github");
+    expect(draftForFeatures(assign, featuresFromEnv({}))).toBe(assign);
+    const standard = draftForFeatures(
+      assign,
+      featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
+    );
+    expect(standard.trigger.ticketSource).toBe("gitlab");
+    expect(standard.event.type).toBe("gitlab");
+    expect(standard.event.config).toEqual({
+      events: ["review_requested", "mentioned"],
+      username: "",
+    });
+  });
+
+  it("moves an agent the restricted deployment doesn't offer onto Claude Code", () => {
+    const codex: WorkDraft = { ...EMPTY_DRAFT, runtime: "codex", agentOptions: { model: "x" } };
+    expect(draftForFeatures(codex, featuresFromEnv({}))).toBe(codex);
+    const standard = draftForFeatures(
+      codex,
+      featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
+    );
+    expect(standard.runtime).toBe("claude-code");
+    expect(standard.agentOptions).toEqual({});
+    const opencode: WorkDraft = { ...EMPTY_DRAFT, runtime: "opencode" };
+    expect(
+      draftForFeatures(
+        opencode,
+        featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
+      ).runtime,
+    ).toBe("opencode");
+    const terminal: WorkDraft = { ...EMPTY_DRAFT, runtime: TERMINAL };
+    expect(
+      draftForFeatures(
+        terminal,
+        featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
+      ).runtime,
+    ).toBe(TERMINAL);
+  });
+});
+
+suite("independent feature lists in fresh drafts", () => {
+  it("chooses an offered runtime and event rather than assuming Claude Code or GitLab", () => {
+    const features = featuresFromEnv({ OPTIO_RUNTIMES: "codex", OPTIO_TRIGGERS: "schedule,slack" });
+    const draft = draftForFeatures({ ...EMPTY_DRAFT, when: "github" }, features);
+    expect(draft.runtime).toBe("codex");
+    expect(draft.when).toBe("schedule");
+    expect(draft.event.type).toBe("slack");
+    expect(draft.agentOptions).toEqual({});
   });
 });

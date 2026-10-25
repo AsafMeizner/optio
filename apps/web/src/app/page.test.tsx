@@ -1,7 +1,15 @@
+import { featuresFromEnv } from "@optio/shared/features";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 
 // Stub hooks and heavy dependencies so the page renders in jsdom.
+// Upstream's Overview: the Claude.ai meters show under the default deployment.
+// (A gateway-only deployment swaps in GatewayLimitsPanel; see below.)
+let features = featuresFromEnv({});
+vi.mock("@/hooks/use-features", () => ({
+  useFeatures: () => ({ features, gatewayOnly: features.modelAccess === "gateway", loaded: true }),
+}));
+
 vi.mock("@/hooks/use-page-title", () => ({
   usePageTitle: vi.fn(),
 }));
@@ -31,6 +39,7 @@ vi.mock("@/components/dashboard", () => ({
   ),
   LimitsPanel: ({ providers }: { providers: unknown[] }) =>
     providers.length > 0 ? <div data-testid="limits" /> : null,
+  GatewayLimitsPanel: () => <div data-testid="gateway-limits" />,
   collectProviderLimits: (usage: any) => (usage?.available ? [{ key: "claude" }] : []),
   NeedsYou: ({ items }: { items: unknown[] }) =>
     items.length > 0 ? <div data-testid="needs-you" /> : null,
@@ -204,5 +213,22 @@ describe("OverviewPage — Needs you and the welcome hero", () => {
     render(<OverviewPage />);
 
     expect(screen.getByTestId("welcome-hero")).toBeInTheDocument();
+  });
+});
+
+describe("OverviewPage under the restricted deployment", () => {
+  afterEach(() => {
+    cleanup();
+    features = featuresFromEnv({});
+  });
+
+  it("meters the gateway's budgets instead of the Claude.ai windows", () => {
+    features = featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" });
+    vi.mocked(useDashboardData).mockReturnValue(
+      makeDashboardData({ usage: { available: true, authFailures: { claude: true } } }) as any,
+    );
+    render(<OverviewPage />);
+    expect(screen.getByTestId("gateway-limits")).toBeInTheDocument();
+    expect(screen.queryByTestId("limits")).not.toBeInTheDocument();
   });
 });
