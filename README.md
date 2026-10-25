@@ -108,11 +108,16 @@ For production, use the [Helm chart](helm/optio/) and [managed deployment guide]
 
 Want a workspace to explore? [Seed the example catalog](scripts/showcase/README.md). It adds clearly labeled, paused examples without running agents, contacting integrations, or replacing existing work.
 
+## Options
+
+Optional features stay off until an admin turns them on in Settings, or the deployment does through its environment or Helm values: more sign-in providers and directory sync, teams, feature allow-lists, remote workspaces, model gateways, credential health checks, ticket round trips, email and chat notifications, GitLab instances and @-mentions, merge confirmation, commit trailers and starter prompts, agent policy, backups, metrics, the getting-started guide, air-gapped installs and a Rancher form. [Options](docs/options.md) lists each one, and the audit trail, with its default, how to turn it on, and its guide.
+
 ## Explore further
 
 | Guide                                                 | What it covers                                          |
 | ----------------------------------------------------- | ------------------------------------------------------- |
 | [Using Optio](docs/using-optio.md)                    | Sign-in, your token, starting work, review and merge    |
+| [Options](docs/options.md)                            | Every optional feature, its default, how to turn it on  |
 | [Work and tasks](docs/tasks.md)                       | Repo tasks, jobs, recurring definitions, and lifecycle  |
 | [Optio Local](docs/optio-local.md)                    | Pair machines, terminals, automations, and transcripts  |
 | [Persistent agents](docs/persistent-agents.md)        | Inboxes, turn loops, agent messaging, and pod lifecycle |
