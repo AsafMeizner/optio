@@ -612,6 +612,8 @@ observability:
 # Namespace
 # ──────────────────────────────────────────────────────────────────────────────
 namespace: optio
+# Set false when Zarf, Rancher or Helm creates the namespace.
+createNamespace: true
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Namespace resource quotas

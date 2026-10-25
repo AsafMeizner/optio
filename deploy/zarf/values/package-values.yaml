@@ -1,0 +1,3 @@
+# Overrides under chart are merged over values/optio.yaml at deployment.
+# Use keys supported by helm/optio/values.yaml.
+chart: {}

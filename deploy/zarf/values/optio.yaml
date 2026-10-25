@@ -1,0 +1,95 @@
+# Values for the optional Zarf package; substitutions are declared in zarf.yaml.
+namespace: optio
+createNamespace: false
+
+api:
+  image:
+    repository: optio.local/optio-api
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ###ZARF_VAR_SERVICE_TYPE###
+    nodePort: "###ZARF_VAR_API_NODE_PORT###"
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "2", memory: 1536Mi }
+
+web:
+  image:
+    repository: optio.local/optio-web
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ###ZARF_VAR_SERVICE_TYPE###
+    nodePort: "###ZARF_VAR_WEB_NODE_PORT###"
+  publicApiUrl: "###ZARF_VAR_PUBLIC_API_URL###"
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 768Mi }
+
+agent:
+  image:
+    repository: optio.local/optio-agent-base
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+    prefix: "optio.local/optio-agent-"
+  imagePullPolicy: IfNotPresent
+  envoyProxy:
+    image:
+      repository: envoyproxy/envoy
+      tag: v1.31.10
+      pullPolicy: IfNotPresent
+  pvc:
+    storageClass: "###ZARF_VAR_STORAGE_CLASS###"
+  cache:
+    storageClass: "###ZARF_VAR_STORAGE_CLASS###"
+
+postgresql:
+  image:
+    repository: postgres
+    tag: "16.15"
+  storage:
+    storageClass: "###ZARF_VAR_STORAGE_CLASS###"
+    size: ###ZARF_VAR_POSTGRES_STORAGE_SIZE###
+  auth:
+    password: "###ZARF_VAR_POSTGRES_PASSWORD###"
+
+redis:
+  image:
+    repository: redis
+    tag: 7.4.11-alpine
+
+encryption:
+  key: "###ZARF_VAR_ENCRYPTION_KEY###"
+
+publicUrl: "###ZARF_VAR_PUBLIC_URL###"
+
+auth:
+  disabled: ###ZARF_VAR_AUTH_DISABLED###
+  setupToken: "###ZARF_VAR_SETUP_TOKEN###"
+  deploymentAdmins: ["###ZARF_VAR_DEPLOYMENT_ADMINS###"]
+  oidc:
+    issuerUrl: "###ZARF_VAR_OIDC_ISSUER_URL###"
+    clientId: "###ZARF_VAR_OIDC_CLIENT_ID###"
+    clientSecret: "###ZARF_VAR_OIDC_CLIENT_SECRET###"
+    displayName: "###ZARF_VAR_OIDC_DISPLAY_NAME###"
+    scopes: "###ZARF_VAR_OIDC_SCOPES###"
+ingress:
+  enabled: ###ZARF_VAR_INGRESS_ENABLED###
+  className: "###ZARF_VAR_INGRESS_CLASS###"
+  hosts:
+    - host: "###ZARF_VAR_INGRESS_HOST###"
+      paths:
+        - { path: /, pathType: Prefix, service: web }
+        - { path: /api, pathType: Prefix, service: api }
+        - { path: /ws, pathType: Prefix, service: api }
+  tls:
+    - secretName: "###ZARF_VAR_INGRESS_TLS_SECRET###"
+      hosts: ["###ZARF_VAR_INGRESS_HOST###"]
+
+webhook:
+  gitlabSecret: "###ZARF_VAR_GITLAB_WEBHOOK_SECRET###"
+
+outbound:
+  allowPrivate: ###ZARF_VAR_OUTBOUND_ALLOW_PRIVATE###
+  allowedHosts: ["###ZARF_VAR_OUTBOUND_ALLOWED_HOSTS###"]
