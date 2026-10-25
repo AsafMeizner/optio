@@ -104,7 +104,7 @@ cd optio
 
 Open **http://localhost:30310** and complete setup. The API listens at **http://localhost:30400**. The setup script builds the project and deploys it to local Kubernetes; see the [installation guide](https://optio.host/docs/installation/) for prerequisites and other deployment options.
 
-For production, use the [Helm chart](helm/optio/) and [managed deployment guide](docs/production-eks.md). Agent providers and infrastructure may have their own costs.
+For production, use the [Helm chart](helm/optio/) and [managed deployment guide](docs/production-eks.md). Agent providers and infrastructure may have their own costs. Optional [air-gapped installation](docs/air-gapped.md) and [backup](docs/backup.md) guides cover private registries, disconnected builds, and restore drills.
 
 Want a workspace to explore? [Seed the example catalog](scripts/showcase/README.md). It adds clearly labeled, paused examples without running agents, contacting integrations, or replacing existing work.
 
@@ -112,6 +112,7 @@ Want a workspace to explore? [Seed the example catalog](scripts/showcase/README.
 
 | Guide                                                 | What it covers                                          |
 | ----------------------------------------------------- | ------------------------------------------------------- |
+| [Using Optio](docs/using-optio.md)                    | Sign-in, your token, starting work, review and merge    |
 | [Work and tasks](docs/tasks.md)                       | Repo tasks, jobs, recurring definitions, and lifecycle  |
 | [Optio Local](docs/optio-local.md)                    | Pair machines, terminals, automations, and transcripts  |
 | [Persistent agents](docs/persistent-agents.md)        | Inboxes, turn loops, agent messaging, and pod lifecycle |
