@@ -8,7 +8,7 @@ import { api, type EnvironmentMirrors } from "@/lib/api-client";
  * The note under an MCP server form when its command or install command
  * would reach for a package registry the agent pods don't have: an `npx`,
  * `pip` or `uvx` in a pod with no internet access only works through the
- * mirror named in `agent.env` (docs/deploy/mcp.md). The answer comes from
+ * mirror named in `agent.env` (docs/air-gapped.md). The answer comes from
  * `GET /api/environment/mirrors` once per page; the match is a heuristic on
  * the typed command, no request per keystroke.
  */

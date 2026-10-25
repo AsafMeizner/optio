@@ -504,7 +504,7 @@ describe("what a run gets", () => {
   });
 
   it("OpenCode with its own OPENCODE_CONFIG_CONTENT pod secret: its provider stays, the rules are added", async () => {
-    // A model inside the network, as zarf/README.md has it: the provider is only in the secret.
+    // A model inside the network: the provider is only in the secret.
     const own = {
       provider: {
         local: {

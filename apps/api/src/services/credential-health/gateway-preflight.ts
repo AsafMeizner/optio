@@ -151,7 +151,7 @@ export async function gatewayPreflight(use: PreflightUse, now: Date = new Date()
   // wrong, deleted or blocked (a 401).
   const outcome = keyInfoOutcome(res, now);
   if (!outcome || (!outcome.invalid && !outcome.overBudget)) return;
-  // The deployment's monitoring (docs/deploy/operations.md): a refusal by what it
+  // The deployment's monitoring (docs/observability.md): a refusal by what it
   // means, as the alert reads the status: a spent budget as 429, a token
   // the gateway refuses (wrong, blocked, expired) as its 401 / 403, or 401
   // when /key/info said so with a 2xx or LiteLLM's 400 `expired_key`.

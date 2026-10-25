@@ -1,7 +1,7 @@
 /**
  * Does this deployment's encryption key (OPTIO_ENCRYPTION_KEY) open the
- * values sealed in its database? scripts/release/restore-db.sh runs it in the
- * API pod after a restore or a restore drill (docs/deploy/backup.md):
+ * values sealed in its database? scripts/backup/restore-db.sh runs it in the
+ * API pod after a restore or a restore drill (docs/backup.md):
  *
  *   tsx scripts/check-encryption-key.ts
  *       the live database (DATABASE_URL)

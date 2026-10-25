@@ -20,7 +20,7 @@ import { gitAuthTarget, recordAuthEvent } from "./auth-failure-detector.js";
 // The ticket round trip (docs/ticket-round-trip.md).
 import { noteTicketSkipped } from "./ticket-writeback.js";
 import { ticketRoundTripSweep } from "./ticket-follow-ups.js";
-// Failed syncs, for the deployment's monitoring (docs/deploy/operations.md).
+// Failed syncs, for the deployment's monitoring (docs/observability.md).
 import { recordTicketSyncFailure } from "../telemetry/site-metrics.js";
 
 /** Auto-disable a provider after this many consecutive failures. */

@@ -1,6 +1,6 @@
 /**
  * Alertmanager / Grafana Alerting as a trigger with the trigger list narrowed
- * to the minimal preset's (docs/deploy/operations.md "Monitoring"): both run
+ * to the minimal preset's (docs/feature-lists.md, docs/observability.md): both run
  * inside the network and their receiver only accepts deliveries, so the
  * preset offers them. A Job
  * made with an Alertmanager When gets its own URL and shared secret; a

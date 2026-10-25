@@ -24,7 +24,7 @@ import { enqueueWebhookEvent } from "../workers/webhook-worker.js";
 import { webhookScope } from "./webhook-scope.js";
 import type { WebhookEvent } from "./webhook-service.js";
 import { recordStateTransition } from "../telemetry/metrics.js";
-// Runs that ended, for the deployment's monitoring (docs/deploy/operations.md).
+// Runs that ended, for the deployment's monitoring (docs/observability.md).
 import { recordRunFinished } from "../telemetry/site-metrics.js";
 import { emitStateTransitionLog } from "../telemetry/logs.js";
 

@@ -2833,7 +2833,7 @@ export const api = {
   detachConfigObject: (objectId: string) =>
     request<void>(`/api/config/objects/${objectId}/detach`, { method: "POST" }),
 
-  // MCP with no internet access (docs/deploy/mcp.md, docs/controller-mcp.md)
+  // MCP with no internet access (docs/air-gapped.md, docs/controller-mcp.md)
   /** Which package mirrors the agent pods have: what an npx / pip / uvx MCP server needs. */
   getEnvironmentMirrors: () => request<EnvironmentMirrors>("/api/environment/mirrors"),
   /** The browser URL that downloads the stdio adapter for the Optio controller MCP. */

@@ -1,6 +1,6 @@
 /**
- * After a database restore (scripts/release/restore-db.sh;
- * docs/deploy/backup.md) — does this deployment's encryption key
+ * After a database restore (scripts/backup/restore-db.sh;
+ * docs/backup.md) — does this deployment's encryption key
  * (OPTIO_ENCRYPTION_KEY) open the values sealed in the restored database?
  * A dump is only good together with the key it was made with: restored under
  * another key, every token, connection and sign-in secret in it is noise, and

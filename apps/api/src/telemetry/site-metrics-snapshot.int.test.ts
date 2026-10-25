@@ -1,6 +1,6 @@
 /**
- * What the site metrics' run gauges read (docs/deploy/operations.md
- * "Monitoring"), against a real database: the runs query stays on the
+ * What the site metrics' run gauges read (docs/observability.md "Prometheus
+ * endpoint and dashboard"), against a real database: the runs query stays on the
  * (kind, state) index — every API replica runs it every 30 s over every run
  * ever made — and a queued run a repo's "Off-peak only" holds on purpose
  * doesn't make the queue look stuck.

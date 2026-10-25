@@ -4,7 +4,7 @@ import { z } from "zod";
 import { logger } from "../logger.js";
 
 /**
- * Which package mirrors the agent pods have (docs/deploy/mcp.md): the
+ * Which package mirrors the agent pods have (docs/air-gapped.md): the
  * answer behind the "needs the npm mirror" note on the MCP server forms. With
  * no internet access, an `npx`, `pip` or `uvx` command in an agent pod only
  * works when `agent.env` in the chart points the tool at an Artifactory /

@@ -1,6 +1,6 @@
 /**
  * A Prometheus endpoint for the deployment's monitoring
- * (docs/deploy/operations.md "Monitoring").
+ * (docs/observability.md "Prometheus endpoint and dashboard").
  *
  * Upstream ships its metrics over OTLP only (telemetry.ts), and a Rancher
  * cluster runs Prometheus with the operator: nothing could scrape Optio.

@@ -23,7 +23,7 @@ import {
 } from "./pr-search.js";
 import { markReviewsIncomplete } from "../auto-merge-guard.js";
 import type { GitHubFailure } from "./github.js";
-// GitLab API errors, for the deployment's monitoring (docs/deploy/operations.md).
+// GitLab API errors, for the deployment's monitoring (docs/observability.md).
 import { recordGitLabApiError } from "../../telemetry/site-metrics.js";
 
 /**

@@ -11,8 +11,8 @@ function counted(status: number, body: unknown): number | null {
   return preflightStatus(status, outcome);
 }
 
-// Optio_gateway_errors_total's `status` (docs/deploy/operations.md
-// "Monitoring"). OptioGatewayRefusing reads 401 / 403 as a token the gateway
+// Optio_gateway_errors_total's `status` (docs/observability.md "Prometheus
+// endpoint and dashboard"). OptioGatewayRefusing reads 401 / 403 as a token the gateway
 // refuses and 429 as a rate limit or a spent budget.
 describe("the status a pre-flight refusal is counted under", () => {
   it("a blocked or expired key that /key/info answers with a 2xx: 401, a dead token", () => {

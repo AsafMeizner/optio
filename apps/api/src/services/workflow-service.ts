@@ -21,7 +21,7 @@ import { type Actor } from "./ownership.js";
 import { visibleWork } from "./work-visibility.js";
 import { webhookScope } from "./webhook-scope.js";
 import { logger } from "../logger.js";
-// Runs that ended, for the deployment's monitoring (docs/deploy/operations.md).
+// Runs that ended, for the deployment's monitoring (docs/observability.md).
 import { recordRunFinished } from "../telemetry/site-metrics.js";
 import * as triggerService from "./trigger-service.js";
 import * as definitions from "./work-definition-service.js";

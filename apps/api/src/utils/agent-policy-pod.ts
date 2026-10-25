@@ -9,7 +9,7 @@ import { CLAUDE_MANAGED_SETTINGS_PATH, shellQuote } from "@optio/shared";
  * part that depends on what is already there:
  *
  * - OpenCode: the work may bring its own `OPENCODE_CONFIG_CONTENT` (a pod
- *   secret: the provider for a model inside the network, zarf/README.md; or
+ *   secret: the provider for a model inside the network; or
  *   the pod's own env). The policy's rules are merged into it rather than
  *   replacing it, so its provider, model and other keys stay. Its own
  *   `permission` goes over OpenCode's headless block (as OpenCode would merge

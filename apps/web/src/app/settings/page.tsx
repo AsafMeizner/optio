@@ -622,7 +622,7 @@ function GlobalMcpServers() {
               className={INPUT}
             />
           </Field>
-          {/* An npx / pip / uvx here needs a mirror the agent pods may not have (docs/deploy/mcp.md). */}
+          {/* An npx / pip / uvx here needs a mirror the agent pods may not have (docs/air-gapped.md). */}
           <MirrorWarning command={command} installCommand={installCmd} />
           <OwnerPicker what="MCP server" value={scope} onChange={setScope} canOrg={isAdmin} />
           <div className="flex justify-end items-center gap-3">

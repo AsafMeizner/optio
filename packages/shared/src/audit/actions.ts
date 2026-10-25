@@ -110,7 +110,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   "gitlab_bot.settings": "GitLab bot settings changed",
   // Agent policy: deny rules, RuntimeClass (docs/agent-policy.md)
   "agent_policy.update": "Agent policy changed",
-  // Database restores (docs/deploy/backup.md)
+  // Database restores (docs/backup.md)
   "database.restored": "Database restored from a dump",
 };
 

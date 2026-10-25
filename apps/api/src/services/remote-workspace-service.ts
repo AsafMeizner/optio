@@ -1076,8 +1076,8 @@ async function pairingUnderWay(host: LocalHostRow, now = Date.now()): Promise<bo
  * A machine's daemon said hello (ws/local-daemon.ts), `host` as it was just
  * before. When it is a remote workspace Optio started and this is the first
  * hello with its pairing token: the deployment's monitoring records how long the
- * start took (telemetry/site-metrics.ts, docs/deploy/operations.md
- * "Monitoring"), and a provider that handed the bundle over in something
+ * start took (telemetry/site-metrics.ts, docs/observability.md "Prometheus
+ * endpoint and dashboard"), and a provider that handed the bundle over in something
  * that outlives the start (Codespaces' secret) drops it. A reconnect,
  * another machine: nothing, not even a read. Never throws.
  */

@@ -1,8 +1,8 @@
 /**
  * Optio's own metrics for the deployment's monitoring
- * (docs/deploy/operations.md "Monitoring"), served next to upstream's
- * (metrics.ts) on the Prometheus endpoint (prometheus.ts), and over OTLP
- * when that is on.
+ * (docs/observability.md "Prometheus endpoint and dashboard"), served next
+ * to upstream's (metrics.ts) on the Prometheus endpoint (prometheus.ts), and
+ * over OTLP when that is on.
  *
  * Two kinds:
  *

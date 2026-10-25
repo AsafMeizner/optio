@@ -1,6 +1,6 @@
 /**
- * The Prometheus endpoint end to end (docs/deploy/operations.md
- * "Monitoring"): OPTIO_METRICS_PORT set and OTLP off, the API's telemetry
+ * The Prometheus endpoint end to end (docs/observability.md "Prometheus
+ * endpoint and dashboard"): OPTIO_METRICS_PORT set and OTLP off, the API's telemetry
  * starts a listener; the fork's gauges read this file's database (runs, agent
  * pods, credential health, ticket providers, remote-workspace starts, the month's
  * spend), its counters follow real code paths (a Job run failing on a

@@ -1,7 +1,8 @@
 /**
  * What the site metrics' gauges read from the database
- * (site-metrics.ts, docs/deploy/operations.md "Monitoring"). Each read is
- * its own query, so a table that fails leaves the others' values fresh;
+ * (site-metrics.ts, docs/observability.md "Prometheus endpoint and
+ * dashboard"). Each read is its own query, so a table that fails leaves the
+ * others' values fresh;
  * every query is a grouped count over an indexed column or a small table,
  * run every 30 s per API replica. The spend (the usage ledger) is the one
  * that grows: read every 5 minutes, this month only, through the ledger's

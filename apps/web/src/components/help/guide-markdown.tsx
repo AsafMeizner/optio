@@ -28,7 +28,7 @@ export function slugify(text: string): string {
 
 /**
  * Where a link in the guide goes in the app. Another doc of the repository
- * (`deploy/operations.md`) isn't served here: it stays text, named as a file
+ * (`options.md`) isn't served here: it stays text, named as a file
  * in the Optio source. Anchors stay in the page; web links open as links.
  */
 export function guideLink(

@@ -12,7 +12,7 @@
  *   set the same variable as a marker.
  * - Unset (or `0`), the catalog keeps upstream's `npx` form.
  *
- * See docs/deploy/mcp.md.
+ * See docs/air-gapped.md "Image build arguments".
  */
 
 export const PREINSTALLED_MCP_SERVERS = {
