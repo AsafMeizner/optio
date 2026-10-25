@@ -7,13 +7,13 @@
  * Optio fails one run at a time. This says so at once.
  *
  * It tries every kind of sealed value the API stores (SEALED_SOURCES): the
- * stored tokens (`secrets`) and the secrets sealed on their own rows
- * (gateways, connections, webhooks, repos, remote workspaces, sign-in, the SMTP relay),
- * each with the AAD its service seals it with. "Nothing to check" is said
- * only when none of them holds anything.
+ * stored tokens (`secrets`) and the secrets sealed on their own rows (model
+ * providers, connections, webhooks, repos, sign-in), each with the AAD its
+ * service seals it with. "Nothing to check" is said only when none of them
+ * holds anything.
  *
  * `scripts/check-encryption-key.ts` runs it in the API pod: against the live
- * database after a restore (and records the restore in the audit trail), or
+ * database after a restore (and records the restore in the action log), or
  * against a drill's database next to it (and drops that afterwards — only a
  * database a drill made, DRILL_DATABASE_MARK).
  */
@@ -25,14 +25,12 @@ import {
   authProviderConfigs,
   connections,
   modelProviders,
-  notifySmtpSettings,
-  remoteWorkspaceConnections,
   repos,
   secrets,
   webhooks,
 } from "../db/schema.js";
 import { parseSslConfig } from "../db/ssl.js";
-import { auditEvent } from "./audit.js";
+import { logAction } from "./optio-action-service.js";
 import { ALG_AES_256_GCM_V1, buildSecretAAD, decrypt } from "./secret-service.js";
 
 /** A `secrets` row as the check reads it. */
@@ -288,24 +286,6 @@ export const SEALED_SOURCES: readonly SealedSource[] = [
     (r) => `model provider ${r.name}`,
     (r) => `model_provider|${r.id}`,
   ),
-  // gateway-keys.ts adminKeyAAD
-  rowSource(
-    "gateway admin keys",
-    (db, limit) =>
-      db
-        .select({
-          id: modelProviders.id,
-          name: modelProviders.name,
-          ct: modelProviders.encryptedAdminKey,
-          iv: modelProviders.adminKeyIv,
-          tag: modelProviders.adminKeyAuthTag,
-        })
-        .from(modelProviders)
-        .where(isNotNull(modelProviders.encryptedAdminKey))
-        .limit(limit),
-    (r) => `gateway ${r.name} (admin key)`,
-    (r) => `model_provider_admin_key|${r.id}`,
-  ),
   // connection-service.ts secretConfigAAD
   rowSource(
     "connection secrets",
@@ -362,24 +342,6 @@ export const SEALED_SOURCES: readonly SealedSource[] = [
     (r) => `repo ${r.name} (Slack webhook)`,
     (r) => `repo:${r.id}:slackWebhookUrl`,
   ),
-  // remote-workspace-service.ts tokenAAD
-  rowSource(
-    "remote-workspace tokens",
-    (db, limit) =>
-      db
-        .select({
-          id: remoteWorkspaceConnections.id,
-          name: remoteWorkspaceConnections.name,
-          ct: remoteWorkspaceConnections.encryptedToken,
-          iv: remoteWorkspaceConnections.tokenIv,
-          tag: remoteWorkspaceConnections.tokenAuthTag,
-        })
-        .from(remoteWorkspaceConnections)
-        .where(isNotNull(remoteWorkspaceConnections.encryptedToken))
-        .limit(limit),
-    (r) => `remote-workspace connection ${r.name}`,
-    (r) => `coder_connection|${r.id}`,
-  ),
   // sign-in-config-service.ts secretAAD
   rowSource(
     "sign-in secrets",
@@ -396,22 +358,6 @@ export const SEALED_SOURCES: readonly SealedSource[] = [
         .limit(limit),
     (r) => `sign-in ${r.provider} secret`,
     (r) => `auth_provider|${r.provider}`,
-  ),
-  // notify/smtp-config.ts AAD
-  rowSource(
-    "SMTP relay password",
-    (db, limit) =>
-      db
-        .select({
-          ct: notifySmtpSettings.encryptedPassword,
-          iv: notifySmtpSettings.passwordIv,
-          tag: notifySmtpSettings.passwordAuthTag,
-        })
-        .from(notifySmtpSettings)
-        .where(isNotNull(notifySmtpSettings.encryptedPassword))
-        .limit(limit),
-    () => "the SMTP relay's password",
-    () => "notify_smtp|default",
   ),
 ];
 
@@ -513,15 +459,17 @@ export async function dropDrillDatabase(liveUrl: string, database: string): Prom
 }
 
 /**
- * The restore in the audit trail: deployment-wide (deployment admins read
- * it), by Optio, naming the dump and where the database as it was is kept.
- * Everything else the trail held since the dump went with the restore.
+ * The restore in the action log (`optio_actions`): with no workspace and no
+ * person (an operator's action, shown to admins only), naming the dump and
+ * where the database as it was is kept. The names go in `result`: `params`
+ * keeps only its allow-listed fields. Everything else the log held since the
+ * dump went with the restore.
  */
 export async function recordRestore(input: { dump: string; keptAs?: string | null }) {
-  await auditEvent({
+  await logAction({
     action: "database.restored",
-    userId: null,
     workspaceId: null,
-    details: { dump: input.dump, keptAs: input.keptAs ?? undefined },
+    result: { dump: input.dump, ...(input.keptAs ? { keptAs: input.keptAs } : {}) },
+    success: true,
   });
 }

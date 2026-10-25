@@ -5,25 +5,21 @@ vi.mock("../db/client.js", () => ({ db: {} }));
 vi.mock("../logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
-const auditEvent = vi.fn();
-vi.mock("./audit.js", () => ({ auditEvent: (...a: unknown[]) => auditEvent(...a) }));
+const logAction = vi.fn();
+vi.mock("./optio-action-service.js", () => ({
+  logAction: (...a: unknown[]) => logAction(...a),
+}));
 // Each case loads the modules again under its key (vi.resetModules): only the
 // crypto is real, so the schema, the ORM and the shared package stay out of it
 // (re-evaluating them every time timed out under the full suite's load).
 vi.mock("../db/schema.js", () => ({
   secrets: {},
-  workspaceMembers: {},
-  workspaces: {},
   authProviderConfigs: {},
-  remoteWorkspaceConnections: {},
   connections: {},
   modelProviders: {},
-  notifySmtpSettings: {},
   repos: {},
   webhooks: {},
 }));
-vi.mock("./ownership.js", () => ({ canSee: vi.fn(), ownerNameFor: vi.fn(), ownerNames: vi.fn() }));
-vi.mock("@optio/shared", () => ({ teamOwner: vi.fn() }));
 // A statement is its text: `sql` joins a template's parts, `sql.raw` keeps its string.
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn(),
@@ -90,7 +86,7 @@ async function rowsUnderA(): Promise<{ rows: Row[]; values: string[] }> {
   const rows = [
     seal("GITLAB_TOKEN", "global", null, null),
     seal("LITELLM_TOKEN", "user", null, null),
-    seal("TEAM_GITLAB_TOKEN", "team", "ws-1", "ws-1"),
+    seal("WS_GITLAB_TOKEN", "workspace", "ws-1", "ws-1"),
     // A global row once bound to a workspace (before the boot-time heal).
     seal("OLD_GLOBAL", "global", "ws-2", "ws-2"),
   ];
@@ -114,7 +110,7 @@ async function rowsUnderA(): Promise<{ rows: Row[]; values: string[] }> {
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  auditEvent.mockReset();
+  logAction.mockReset();
   server.answer = () => [];
   server.ran = [];
 });
@@ -141,7 +137,7 @@ describe("checkKeyOnRows", () => {
     expect(r.failed).toEqual([
       "GITLAB_TOKEN (global)",
       "LITELLM_TOKEN (user)",
-      "TEAM_GITLAB_TOKEN (team)",
+      "WS_GITLAB_TOKEN (workspace)",
       "OLD_GLOBAL (global)",
       "LEGACY (global)",
     ]);
@@ -157,7 +153,7 @@ describe("checkKeyOnRows", () => {
     expect(check.checkKeyOnRows([rows[0], damaged, rows[1]])).toEqual({
       checked: 3,
       opened: 2,
-      failed: ["TEAM_GITLAB_TOKEN (team)"],
+      failed: ["WS_GITLAB_TOKEN (workspace)"],
       verdict: "ok",
       sources: [{ source: "stored tokens", checked: 3, opened: 2 }],
     });
@@ -203,9 +199,9 @@ describe("checkKeyOnValues: the other sealed values", () => {
   it("is not 'nothing to check' when only other kinds than stored tokens hold values", async () => {
     const values = [
       await sealedUnderA(
-        "gateway admin keys",
-        "gateway LiteLLM (admin key)",
-        "model_provider_admin_key|g1",
+        "model provider credentials",
+        "model provider Bedrock",
+        "model_provider|p1",
       ),
       await sealedUnderA(
         "webhook signing secrets",
@@ -220,7 +216,7 @@ describe("checkKeyOnValues: the other sealed values", () => {
       failed: [],
       verdict: "ok",
       sources: [
-        { source: "gateway admin keys", checked: 1, opened: 1 },
+        { source: "model provider credentials", checked: 1, opened: 1 },
         { source: "webhook signing secrets", checked: 1, opened: 1 },
       ],
     });
@@ -228,18 +224,14 @@ describe("checkKeyOnValues: the other sealed values", () => {
     expect(other.check.checkKeyOnValues(values)).toMatchObject({
       opened: 0,
       verdict: "wrong-key",
-      failed: ["gateway LiteLLM (admin key)", "webhook w1"],
+      failed: ["model provider Bedrock", "webhook w1"],
     });
   });
 
   it("doesn't open a value under another binding (the AAD is part of the check)", async () => {
-    const v = await sealedUnderA(
-      "remote-workspace tokens",
-      "remote-workspace connection Org",
-      "coder_connection|c1",
-    );
+    const v = await sealedUnderA("connection secrets", "connection Reporting", "connection|c1");
     const { check } = await underKey(KEY_A);
-    const elsewhere = { ...v, aads: [Buffer.from("coder_connection|c2")] };
+    const elsewhere = { ...v, aads: [Buffer.from("connection|c2")] };
     expect(check.checkKeyOnValues([elsewhere]).verdict).toBe("wrong-key");
   });
 });
@@ -353,17 +345,25 @@ describe("database URLs", () => {
 });
 
 describe("recordRestore", () => {
-  it("writes a deployment-wide entry by Optio naming the dump and the kept database", async () => {
+  it("writes an entry with no workspace and no person, naming the dump and the kept database", async () => {
     const { check } = await underKey(KEY_A);
     await check.recordRestore({
       dump: "optio-20261024T021500Z.dump",
       keptAs: "optio_before_20261024101500",
     });
-    expect(auditEvent).toHaveBeenCalledWith({
+    expect(logAction).toHaveBeenCalledWith({
       action: "database.restored",
-      userId: null,
       workspaceId: null,
-      details: { dump: "optio-20261024T021500Z.dump", keptAs: "optio_before_20261024101500" },
+      result: { dump: "optio-20261024T021500Z.dump", keptAs: "optio_before_20261024101500" },
+      success: true,
     });
+  });
+
+  it("names only the dump when no database was kept (an in-place restore)", async () => {
+    const { check } = await underKey(KEY_A);
+    await check.recordRestore({ dump: "optio-20261024T021501Z-pre-upgrade.dump" });
+    expect(logAction).toHaveBeenCalledWith(
+      expect.objectContaining({ result: { dump: "optio-20261024T021501Z-pre-upgrade.dump" } }),
+    );
   });
 });

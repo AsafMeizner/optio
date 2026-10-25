@@ -6,15 +6,15 @@
  *   tsx scripts/check-encryption-key.ts
  *       the live database (DATABASE_URL)
  *   tsx scripts/check-encryption-key.ts --record-restore <dump> [--kept-as <db>]
- *       first "Database restored from a dump" in the audit trail, then the same
+ *       first the restore in the action log (database.restored), then the same
  *   tsx scripts/check-encryption-key.ts --database <name> [--drop-after]
  *       a drill's database on the same server; --drop-after drops it after
  *       the check — only a database a drill made (never the live one, a
  *       restore's kept one, or anyone else's)
  *
  * Prints how many sealed values the key opens — the stored tokens and the
- * secrets on gateways, connections, webhooks, repos, remote workspaces, sign-in and the
- * SMTP relay — and names the ones it doesn't (never a value). Exit status:
+ * secrets on model providers, connections, webhooks, repos and sign-in — and
+ * names the ones it doesn't (never a value). Exit status:
  * 0 it opens them, or nothing is sealed; 1 it opens none (the dump and the
  * key don't belong together; the line "It opens none" says so); 2 the check
  * couldn't run (usage, or the database can't be read), or the drill's
@@ -73,13 +73,13 @@ const where = database ?? databaseOf(live);
 
 let code = 0;
 // The restore happened whatever the key check finds, and whether it can run
-// at all: the trail names it first.
+// at all: the log names it first.
 if (restoredFrom) {
   try {
     await recordRestore({ dump: restoredFrom, keptAs });
-    console.log(`audit trail: database restored from ${restoredFrom}`);
+    console.log(`action log: database restored from ${restoredFrom}`);
   } catch (err) {
-    console.error(`Couldn't record the restore in the audit trail: ${errorText(err)}`);
+    console.error(`Couldn't record the restore in the action log: ${errorText(err)}`);
     code = 2;
   }
 }

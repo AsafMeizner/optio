@@ -6,20 +6,18 @@
  * service seals it; another key opens none and the CLI says so with exit
  * status 1; a drill's database next to the live one is checked and dropped —
  * only one a drill made, never the live one, a restore's kept one or anyone
- * else's; the restore lands in the audit trail as a deployment-wide entry a
- * workspace admin doesn't read, even when the check can't run.
+ * else's; the restore lands in the action log with no workspace and no
+ * person, even when the check can't run.
  */
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "../db/client.js";
-import { optioActions, secrets, teams, users } from "../db/schema.js";
+import { optioActions, secrets, users } from "../db/schema.js";
 import { insertWorkspace } from "../test-utils/integration/fixtures.js";
-import { notDeploymentWideAction } from "./audit.js";
-import { createConnection as createRemoteWorkspaceConnection } from "./remote-workspace-service.js";
 import { createConnection, seedBuiltInProviders } from "./connection-service.js";
 import {
   checkEncryptionKeyAt,
@@ -31,10 +29,7 @@ import {
   recordRestore,
   SEALED_SOURCES,
 } from "./database-restore-check.js";
-import { saveKeyIssuing } from "./gateway-keys.js";
 import { createModelProvider } from "./model-provider-service.js";
-import { saveSmtpSettings } from "./notify/smtp-config.js";
-import type { Actor } from "./ownership.js";
 import { createRepo, updateRepo } from "./repo-service.js";
 import { storeSecret } from "./secret-service.js";
 import { saveSignInConfig } from "./sign-in-config-service.js";
@@ -89,7 +84,7 @@ async function makeDrill(): Promise<string> {
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL,
         scope text NOT NULL DEFAULT 'global', encrypted_value bytea NOT NULL, iv bytea NOT NULL,
         auth_tag bytea NOT NULL, alg smallint NOT NULL DEFAULT 1, workspace_id uuid, user_id uuid,
-        team_id uuid, created_at timestamptz NOT NULL DEFAULT now(),
+        created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now())`),
     );
     const rows = await db.select().from(secrets);
@@ -140,22 +135,11 @@ beforeAll(async () => {
   const ws = await insertWorkspace();
   const user = await person("person");
   const boss = await person("admin");
-  const [team] = await db
-    .insert(teams)
-    .values({ workspaceId: ws.id, name: `team ${uniq()}`, slug: `team-${uniq()}` })
-    .returning();
   await storeSecret(`IT_GLOBAL_${uniq()}`, "global-value");
   await storeSecret(`IT_USER_${uniq()}`, "user-value", "user", null, user.id);
-  await storeSecret(`IT_TEAM_${uniq()}`, "team-value", "team", ws.id, null, team.id);
+  await storeSecret(`IT_WS_${uniq()}`, "workspace-value", "workspace", ws.id);
 
   // One value of every other kind, sealed by its own service.
-  const admin: Actor = {
-    userId: boss.id,
-    workspaceId: ws.id,
-    isAdmin: true,
-    teamIds: [],
-    adminTeamIds: [],
-  };
   const viewer = { workspaceId: ws.id, userId: boss.id, isAdmin: true };
   await createModelProvider(
     {
@@ -169,19 +153,6 @@ beforeAll(async () => {
     },
     viewer,
   );
-  const gateway = await createModelProvider(
-    {
-      name: "LiteLLM",
-      owner: "workspace",
-      kind: "gateway",
-      agents: ["claude-code"],
-      // Nothing answers: saving the admin key tries it, and it fails at once.
-      baseUrl: "http://127.0.0.1:9",
-      models: { "claude-code": [{ id: "qwen-internal" }] },
-    },
-    viewer,
-  );
-  await saveKeyIssuing(gateway.id, { adminKey: "sk-litellm-admin" }, viewer);
   await seedBuiltInProviders();
   await createConnection(
     {
@@ -203,30 +174,7 @@ beforeAll(async () => {
     workspaceId: ws.id,
   });
   await updateRepo(repo.id, { slackWebhookUrl: "https://chat.example.test/hooks/T1" });
-  await createRemoteWorkspaceConnection(
-    { provider: "coder", name: "Org", url: "https://coder.example.com", token: "org-token-12345" },
-    admin,
-  );
-  await saveSignInConfig(
-    "oidc",
-    {
-      clientId: "db-id",
-      clientSecret: "db-secret",
-      settings: { issuerUrl: "https://sso.example.com/realms/optio" },
-    },
-    null,
-  );
-  await saveSmtpSettings(
-    {
-      host: "mail.example.test",
-      port: 587,
-      security: "starttls",
-      username: "optio",
-      password: "smtp-pw",
-      from: "Optio <optio@example.test>",
-    },
-    null,
-  );
+  await saveSignInConfig("google", { clientId: "db-id", clientSecret: "db-secret" }, null);
 });
 
 afterAll(async () => {
@@ -341,7 +289,7 @@ describe("scripts/check-encryption-key.ts", () => {
     expect(out).not.toContain("It opens none");
   });
 
-  it("records the restore: deployment-wide, by Optio, the dump and the kept database", async () => {
+  it("records the restore: no workspace, no person, the dump and the kept database", async () => {
     const dump = `optio-20261024T0215${String(Math.floor(Math.random() * 90) + 10)}Z.dump`;
     const { code, out } = await cli([
       "--record-restore",
@@ -350,9 +298,9 @@ describe("scripts/check-encryption-key.ts", () => {
       "optio_before_20261024101500",
     ]);
     expect(code).toBe(0);
-    expect(out).toContain(`audit trail: database restored from ${dump}`);
+    expect(out).toContain(`action log: database restored from ${dump}`);
     // Recorded before the check runs: a check that fails can't skip it.
-    expect(out.indexOf("audit trail:")).toBeLessThan(out.indexOf("encryption key:"));
+    expect(out.indexOf("action log:")).toBeLessThan(out.indexOf("encryption key:"));
     const [row] = await db
       .select()
       .from(optioActions)
@@ -360,18 +308,7 @@ describe("scripts/check-encryption-key.ts", () => {
       .orderBy(desc(optioActions.createdAt))
       .limit(1);
     expect(row).toMatchObject({ workspaceId: null, userId: null, success: true });
-    expect(row.params).toMatchObject({ dump, keptAs: "optio_before_20261024101500" });
-    // A workspace admin's view leaves deployment-wide entries out.
-    const seenByWorkspaceAdmin = await db
-      .select({ id: optioActions.id })
-      .from(optioActions)
-      .where(
-        and(
-          eq(optioActions.id, row.id),
-          notDeploymentWideAction(sql`${optioActions.workspaceId}`, sql`${optioActions.action}`),
-        ),
-      );
-    expect(seenByWorkspaceAdmin).toEqual([]);
+    expect(row.result).toEqual({ dump, keptAs: "optio_before_20261024101500" });
   });
 
   it("recordRestore without a kept database (an in-place restore)", async () => {
@@ -382,6 +319,6 @@ describe("scripts/check-encryption-key.ts", () => {
       .where(eq(optioActions.action, "database.restored"))
       .orderBy(desc(optioActions.createdAt))
       .limit(1);
-    expect(row.params).toEqual({ dump: "optio-20261024T021501Z-pre-upgrade.dump" });
+    expect(row.result).toEqual({ dump: "optio-20261024T021501Z-pre-upgrade.dump" });
   });
 });
