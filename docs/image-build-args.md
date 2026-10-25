@@ -17,6 +17,10 @@ defaults to an empty value, preserving its unpinned install.
 
 On the base image, `OPENCODE_INSTALL_METHOD=npm` selects the pinned npm package
 instead of the default installer script. `PREINSTALL_MCP_SERVERS=1` installs
-pinned Filesystem and PostgreSQL MCP binaries for explicitly configured server
+pinned Filesystem MCP (`@modelcontextprotocol/server-filesystem@2.0.1`) for explicitly configured server
 commands and sets `OPTIO_MCP_PREINSTALLED=1` in the image. This option defaults
 to `0`; automatic connection command selection is outside this change.
+
+The deprecated PostgreSQL MCP server is excluded from preinstallation. Configure
+a maintained PostgreSQL server separately, using a database role with only the
+permissions it needs.

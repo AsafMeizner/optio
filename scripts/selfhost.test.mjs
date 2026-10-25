@@ -25,6 +25,7 @@ function installs(file, overrides = {}) {
   const stub = `npm() { printf 'npm %s\\n' "$*"; }
 curl() { printf 'curl %s\\n' "$*" >&2; printf ':\\n'; }
 pi() { :; }
+node() { printf 'node %s\\n' "$*"; }
 codex() { printf '%s\\n' --dangerously-bypass-approvals-and-sandbox; }
 readlink() { printf '/tmp/optio/cursor-agent\\n'; }
 mv() { :; }; rm() { :; }; mkdir() { :; }; cp() { :; }; ln() { :; }
@@ -76,7 +77,11 @@ describe("selfhost images", () => {
   it("installs the pinned MCP binaries only on request", () => {
     assert.match(
       installs("images/base.Dockerfile", { PREINSTALL_MCP_SERVERS: "1" }),
-      /@modelcontextprotocol\/server-postgres@0\.6\.2 @modelcontextprotocol\/server-filesystem@2026\.8\.31/,
+      /@modelcontextprotocol\/server-filesystem@2\.0\.1/,
+    );
+    assert.doesNotMatch(
+      installs("images/base.Dockerfile", { PREINSTALL_MCP_SERVERS: "1" }),
+      /server-postgres/,
     );
     assert.match(
       read("images/base.Dockerfile"),

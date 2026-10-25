@@ -141,8 +141,10 @@ RUN case ",${AGENT_CLIS}," in *,all,*|*,cursor,*) (curl -fsS https://cursor.com/
 
 # Optional MCP binaries for connections that must start without downloads.
 ARG PREINSTALL_MCP_SERVERS=0
+COPY scripts/check-preinstalled-mcp.mjs /opt/optio/check-preinstalled-mcp.mjs
 RUN if [ "$PREINSTALL_MCP_SERVERS" = 1 ]; then \
-    npm install -g @modelcontextprotocol/server-postgres@0.6.2 @modelcontextprotocol/server-filesystem@2026.8.31; fi
+    npm install -g @modelcontextprotocol/server-filesystem@2.0.1 \
+    && node /opt/optio/check-preinstalled-mcp.mjs; fi
 ENV OPTIO_MCP_PREINSTALLED=${PREINSTALL_MCP_SERVERS}
 
 # Python 3 (minimal — needed for setup file injection)
