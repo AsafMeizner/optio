@@ -1,3 +1,4 @@
+import { featuresFromEnv } from "@optio/shared/features";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 
@@ -9,6 +10,11 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/lib/api-client", () => ({
   api: { createSecret: vi.fn() },
+}));
+
+// The banners are upstream's: they show under the default deployment alone.
+vi.mock("@/hooks/use-features", () => ({
+  useFeatures: () => ({ features: featuresFromEnv({}), gatewayOnly: false, loaded: true }),
 }));
 
 vi.mock("@optio/shared", () => ({
@@ -115,5 +121,16 @@ describe("UsagePanel → per-token-type banners", () => {
   it("GitHub banner includes descriptive text about ticket sync and PR watching", () => {
     render(<UsagePanel usage={makeUsage({ authFailures: { claude: false, github: true } })} />);
     expect(screen.getByText(/ticket sync and PR watching are failing/i)).toBeInTheDocument();
+  });
+
+  it("a refused GitLab token shows GitLab's banner, not GitHub's", () => {
+    render(
+      <UsagePanel
+        usage={makeUsage({ authFailures: { claude: false, github: false, gitlab: true } })}
+      />,
+    );
+    expect(screen.getByText(/GitLab token invalid/i)).toBeInTheDocument();
+    expect(screen.queryByText(/GitHub token invalid/i)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Paste GitLab token here/i)).toBeInTheDocument();
   });
 });
