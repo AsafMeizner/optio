@@ -416,7 +416,8 @@ export function startTaskWorker() {
         const parsedRepo = parseRepoUrl(task.repoUrl);
         const repoName = parsedRepo
           ? `${parsedRepo.owner}/${parsedRepo.repo}`
-          : task.repoUrl.replace(/.*[/:]([^/]+\/[^/.]+).*/, "$1");
+          : // Keep a dotted project name whole (`group/my.service`, #676).
+            task.repoUrl.replace(/.*[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/, "$1");
         const isGitLab = parsedRepo?.platform === "gitlab";
         const isCodeCommit = parsedRepo?.platform === "codecommit";
         const branchName = `${TASK_BRANCH_PREFIX}${task.id}`;
