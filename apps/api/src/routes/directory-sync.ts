@@ -27,7 +27,6 @@ import {
 } from "../services/offboarding.js";
 import { envDeploymentAdmins } from "../services/sign-in-config-service.js";
 import { leaseHolder } from "../services/lease-service.js";
-import { scimRoutes } from "./scim.js";
 
 /**
  * Offboarding from the directory (docs/directory-sync.md), on Settings →
@@ -181,7 +180,6 @@ function sendError(reply: FastifyReply, err: unknown) {
 }
 
 export async function directorySyncRoutes(rawApp: FastifyInstance) {
-  await rawApp.register(scimRoutes);
   const app = rawApp.withTypeProvider<ZodTypeProvider>();
 
   app.get(
