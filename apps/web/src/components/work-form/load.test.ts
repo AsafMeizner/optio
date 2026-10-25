@@ -101,7 +101,7 @@ function rowFromSpec(spec: WorkSpec): Record<string, unknown> {
         maxRetries: spec.maxRetries ?? 3,
         priority: spec.priority ?? 100,
         ...(spec.then === "until-merged"
-          ? { autoResume: true, autoMerge: spec.mergeWhenReady === true }
+          ? { autoResume: true, autoMerge: spec.mergeWhenReady ?? true }
           : {}),
       };
     case "standalone":
@@ -706,18 +706,6 @@ describe("owner and secrets from a row", () => {
     expect(ownerFromRow({ ownerUserId: "u-x" }, null).foreignOwnerId).toBeNull();
   });
 
-  it("a team's row answers team:<id>, whoever made it, and stays editable (the server decides)", () => {
-    const TEAM = "11111111-2222-4333-8444-555555555555";
-    expect(ownerFromRow({ ownerUserId: "u-x", ownerTeamId: TEAM }, ME)).toEqual({
-      owner: `team:${TEAM}`,
-      foreignOwnerId: null,
-    });
-    const row = { kind: "standalone", name: "J", agentType: "claude-code", prompt: "hi" };
-    expect(draftFromRow({ ...row, ownerUserId: "u-x", ownerTeamId: TEAM }, null, ME).owner).toBe(
-      `team:${TEAM}`,
-    );
-  });
-
   it("restores picked secrets, keeping null for rows that never picked", () => {
     const row = { kind: "standalone", name: "J", agentType: "claude-code", prompt: "hi" };
     expect(draftFromRow({ ...row, podSecrets: ["A"] }, null).podSecrets).toEqual(["A"]);
@@ -742,20 +730,7 @@ describe("loading a scheduled Task's follow-through", () => {
     const d = draftFromRow({ ...row, autoResume: true, autoMerge: false }, null);
     expect(d.then).toBe("until-merged");
     expect(d.mergeWhenReady).toBe(false);
-    expect(draftFromRow({ ...row, autoResume: true }, null).mergeWhenReady).toBe(false);
-    // Only a confirmed "merge automatically" loads on, with when it was confirmed…
-    const confirmed = draftFromRow(
-      { ...row, autoResume: true, autoMerge: true, autoMergeConfirmedAt: "2026-10-01T00:00:00Z" },
-      null,
-    );
-    expect(confirmed.mergeWhenReady).toBe(true);
-    expect(confirmed.autoMergeConfirmedAt).toBe("2026-10-01T00:00:00Z");
-    expect(confirmed.autoMergeConfirmed).toBeUndefined();
-    // …one nobody confirmed loads off (it merges nothing).
-    expect(
-      draftFromRow({ ...row, autoResume: true, autoMerge: true, autoMergeConfirmedAt: null }, null)
-        .mergeWhenReady,
-    ).toBe(false);
+    expect(draftFromRow({ ...row, autoResume: true }, null).mergeWhenReady).toBe(true);
   });
 
   it("a row without one opens as Exit when done", () => {

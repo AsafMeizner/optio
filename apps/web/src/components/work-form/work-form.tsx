@@ -69,6 +69,7 @@ import { TriggerSelector, TriggerTypeButton, cronIsValid } from "@/components/tr
 import { useLocalHosts } from "@/hooks/use-local-hosts";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { useFeatures } from "@/hooks/use-features";
+import { useDeploymentSwitches } from "@/hooks/use-deployment-switches";
 import { GITLAB_WEBHOOK_SELF_MANAGED } from "@/components/triggers/gitlab-webhook-note";
 import { useGateway } from "@/hooks/use-gateway";
 import { gatewayChoices, gatewayFor, gatewayModelsFor, withGatewayModel } from "./gateway";
@@ -92,6 +93,7 @@ import {
   isTriggered,
   isLocal,
   remoteWorkspaceDisabled,
+  withMergeConfirmation,
   isOneShot,
   kindLock,
   missingFields,
@@ -336,7 +338,9 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
     setDraftRaw((d) => normalize(typeof patch === "function" ? patch(d) : { ...d, ...patch }));
     setPreset(null);
   }, []);
-  // "Merge it for me": ticking opens "Merge automatically?"; only accepting it turns it on.
+  // "Merge it for me": with the deployment's automatic-merge confirmation on
+  // (Settings → Access), ticking opens "Merge automatically?" and only
+  // accepting it turns it on; without it, the checkbox alone decides.
   const mergeConfirm = useAutoMergeConfirm((on, confirmed) =>
     setDraft({
       mergeWhenReady: on,
@@ -344,6 +348,12 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
       ...(on ? {} : { autoMergeConfirmedAt: null }),
     }),
   );
+  const { mergeConfirmation } = useDeploymentSwitches();
+  // With the confirmation on, "Merge it for me" stays off until someone
+  // confirms it: an example's default, or saved work nobody confirmed.
+  useEffect(() => {
+    if (mergeConfirmation) setDraftRaw((d) => withMergeConfirmation(d, true));
+  }, [mergeConfirmation, draft.mergeWhenReady]);
 
   useEffect(() => {
     api
@@ -531,7 +541,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
   // registered repo the checkout belongs to, if any).
   const policyRepo =
     repoRow ?? (effectiveRepoUrl ? repos.find((r: any) => r.repoUrl === effectiveRepoUrl) : null);
-  const prPlan = followThrough(draft, policyRepo);
+  const prPlan = followThrough(draft, policyRepo, mergeConfirmation);
   const canSubmit =
     !readOnly && !submitting && gaps.length === 0 && (!draft.withRepo || !!effectiveRepoUrl);
   // Named for what it is ("Job 12", "Terminal 12"), numbered after everything
@@ -1491,7 +1501,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
                         <span>
                           Merge it for me when it&apos;s ready
                           <span className="block text-xs text-text-muted">
-                            {draft.mergeWhenReady
+                            {mergeConfirmation && draft.mergeWhenReady
                               ? "Optio merges it by itself when CI passes and no reviewer requested changes."
                               : "Off: the agent keeps the PR green and addresses feedback, and you merge it."}
                           </span>

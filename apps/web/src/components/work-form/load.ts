@@ -191,9 +191,9 @@ export function draftFromRow(row: any, trigger: any | null, meId?: string | null
       : row.autoResume === true
         ? "until-merged"
         : "exits",
-    // Only a confirmed "merge automatically" loads on: one nobody confirmed
-    // merges nothing, and saving it on again would need the dialog anyway.
-    mergeWhenReady: row.autoMerge === true && !!row.autoMergeConfirmedAt,
+    // With the automatic-merge confirmation on, the form loads one nobody
+    // confirmed as off (withMergeConfirmation): it merges nothing.
+    mergeWhenReady: row.autoMerge !== false,
     ...(row.autoMerge === true && row.autoMergeConfirmedAt
       ? { autoMergeConfirmedAt: String(row.autoMergeConfirmedAt) }
       : {}),

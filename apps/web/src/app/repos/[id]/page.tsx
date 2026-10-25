@@ -50,6 +50,7 @@ import {
 import { ManagedBanner } from "@/components/ui/managed-banner";
 import { ManagedChip } from "@/components/ui/managed-chip";
 import { AutoMergeConfirmedNote, useAutoMergeConfirm } from "@/components/ui/auto-merge-confirm";
+import { useDeploymentSwitches } from "@/hooks/use-deployment-switches";
 
 const INPUT = inputClass();
 
@@ -92,6 +93,8 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
     setAutoMerge(on);
     setAutoMergeConfirmed(confirmed);
   });
+  // Settings → Access → Automatic merging (off by default: the checkbox alone decides).
+  const { mergeConfirmation } = useDeploymentSwitches();
   const [cautiousMode, setCautiousMode] = useState(false);
   const [defaultAgentType, setDefaultAgentType] = useState("claude-code");
   const [promptOverride, setPromptOverride] = useState("");
@@ -179,8 +182,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         setSetupCommands(r.setupCommands ?? "");
         setCustomDockerfile(r.customDockerfile ?? "");
         if (r.setupCommands || r.customDockerfile) setShowAdvanced(true);
-        // On but never confirmed merges nothing: show it off until someone confirms.
-        setAutoMerge(!!r.autoMerge && !!r.autoMergeConfirmedAt);
+        setAutoMerge(!!r.autoMerge);
         setAutoMergeConfirmed(false);
         setCautiousMode(r.cautiousMode ?? false);
         setDefaultAgentType(r.defaultAgentType ?? "claude-code");
@@ -273,6 +275,11 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
       .catch(() => {});
   }, [repo?.id, repo?.repoUrl]);
 
+  // With the automatic-merge confirmation on, an auto-merge nobody confirmed
+  // merges nothing: it shows (and saves) as off until someone confirms it.
+  const autoMergeOn =
+    autoMerge && (!mergeConfirmation || autoMergeConfirmed || !!repo?.autoMergeConfirmedAt);
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -281,8 +288,8 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         extraPackages: extraPackages || undefined,
         setupCommands: setupCommands || undefined,
         customDockerfile: customDockerfile || null,
-        autoMerge: cautiousMode ? false : autoMerge,
-        ...(!cautiousMode && autoMerge && autoMergeConfirmed ? { autoMergeConfirmed: true } : {}),
+        autoMerge: cautiousMode ? false : autoMergeOn,
+        ...(!cautiousMode && autoMergeOn && autoMergeConfirmed ? { autoMergeConfirmed: true } : {}),
         cautiousMode,
         autoResume,
         planningModeEnabled,
@@ -334,7 +341,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         memoryRequest: memoryRequest || null,
         memoryLimit: memoryLimit || null,
       });
-      if (autoMergeConfirmed && !cautiousMode && autoMerge) {
+      if (mergeConfirmation && autoMergeConfirmed && !cautiousMode && autoMergeOn) {
         // Show "Confirmed on … by …" without a reload.
         api
           .getRepo(id)
@@ -429,7 +436,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
     : [
         reviewEnabled ? "review" : null,
         autoResume ? "auto-resume" : null,
-        autoMerge ? "auto-merge" : null,
+        autoMergeOn ? "auto-merge" : null,
       ]
         .filter(Boolean)
         .join(" · ") || "opens the PR, then waits";
@@ -1139,7 +1146,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
             {/* Stage 3: Auto-merge */}
             <PipelineStage
               number={3}
-              enabled={autoMerge}
+              enabled={autoMergeOn}
               disabled={cautiousMode}
               last
               label="Auto-merge"
@@ -1147,31 +1154,36 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={autoMerge}
+                  checked={autoMergeOn}
                   onChange={(e) => autoMergeConfirm.request(e.target.checked)}
                   disabled={cautiousMode}
                   className="w-4 h-4 rounded"
                 />
                 <span className="text-sm">
-                  Merge the PR automatically when CI passes and no reviewer requested changes
+                  {mergeConfirmation
+                    ? "Merge the PR automatically when CI passes and no reviewer requested changes"
+                    : "Auto-merge PR when checks pass and review completes"}
                 </span>
               </label>
               {autoMergeConfirm.dialog}
-              {autoMerge && autoMergeConfirmed && (
+              {mergeConfirmation && autoMergeOn && autoMergeConfirmed && (
                 <p className="text-xs text-text-muted mt-1">Confirmed — save to turn it on.</p>
               )}
-              {autoMerge && !autoMergeConfirmed && (
+              {autoMergeOn && !autoMergeConfirmed && (
                 <AutoMergeConfirmedNote
                   at={repo?.autoMergeConfirmedAt}
                   by={repo?.autoMergeConfirmedByName}
                 />
               )}
-              {!autoMerge && repo?.autoMerge && !repo?.autoMergeConfirmedAt && (
-                <p className="text-xs text-amber-500 mt-1">
-                  Was on, but nobody confirmed it, so Optio doesn&apos;t merge by itself. Tick it to
-                  confirm.
-                </p>
-              )}
+              {mergeConfirmation &&
+                !autoMergeOn &&
+                repo?.autoMerge &&
+                !repo?.autoMergeConfirmedAt && (
+                  <p className="text-xs text-amber-500 mt-1">
+                    Was on, but nobody confirmed it, so Optio doesn&apos;t merge by itself. Tick it
+                    to confirm.
+                  </p>
+                )}
               {cautiousMode && (
                 <p className="text-xs text-amber-500 mt-1">
                   Disabled by Cautious Mode — PRs are opened as drafts and require manual merge.

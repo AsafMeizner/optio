@@ -158,7 +158,9 @@ export interface WorkDraft {
   /**
    * "Works until merged" only: merge the PR by itself once CI passes and no
    * reviewer requested changes (vs. keep it green and leave the merge to you).
-   * Off by default; turning it on goes through the confirmation dialog.
+   * On by default. With the deployment's automatic-merge confirmation on
+   * (Settings → Access, `withMergeConfirmation`), it stays off until a person
+   * ticks it and accepts the confirmation dialog.
    */
   mergeWhenReady: boolean;
   /** The "Merge automatically?" dialog was accepted in this edit (sent as `autoMergeConfirmed`). */
@@ -217,8 +219,9 @@ export const EMPTY_DRAFT: WorkDraft = {
   agentOptions: {},
   prompt: "",
   then: "exits",
-  // Never merges by itself unless a person ticks it and confirms (auto-merge-confirm.tsx).
-  mergeWhenReady: false,
+  // With the automatic-merge confirmation on, the form turns this off until
+  // someone confirms it (withMergeConfirmation, auto-merge-confirm.tsx).
+  mergeWhenReady: true,
   agent: { slug: "", podLifecycle: "sticky", systemPrompt: "", agentsMd: "" },
   name: "",
   runName: "",
@@ -269,7 +272,7 @@ export const PRESETS: Preset[] = [
       runtime: d.runtime || "claude-code",
       agentOptions: {},
       then: "until-merged",
-      mergeWhenReady: false,
+      mergeWhenReady: true,
     }),
   },
   {
@@ -830,8 +833,22 @@ export function prSettingsApply(d: WorkDraft): boolean {
 export interface RepoPrSettings extends SharedRepoPrSettings {
   autoResume?: boolean | null;
   autoMerge?: boolean | null;
-  /** The repo's automatic merging merges only once someone confirmed it. */
+  /**
+   * When someone confirmed the repo's automatic merging. With the deployment's
+   * automatic-merge confirmation on, it merges only once confirmed.
+   */
   autoMergeConfirmedAt?: string | null;
+}
+
+/**
+ * The draft under the deployment's automatic-merge confirmation (Settings →
+ * Access, `OPTIO_MERGE_CONFIRMATION`): when `required`, "Merge it for me" is
+ * on only once a person confirmed it — in this edit (the dialog), or when the
+ * saved work was confirmed before. Otherwise the draft is left as it is.
+ */
+export function withMergeConfirmation(d: WorkDraft, required: boolean): WorkDraft {
+  if (!required || !d.mergeWhenReady || d.autoMergeConfirmed || d.autoMergeConfirmedAt) return d;
+  return { ...d, mergeWhenReady: false };
 }
 
 /** The server's cap when a repo sets none (OPTIO_MAX_AUTO_RESUMES' default). */
@@ -850,17 +867,22 @@ export interface FollowThroughStep {
  * a task's own follow-through ("Works until merged") and its settings (review,
  * draft PRs, how often it resumes) win over the repo's, and cautious mode
  * (draft PRs) never merges. Null when the work doesn't open a PR.
+ * `mergeConfirmation`: the deployment requires the automatic-merge
+ * confirmation (Settings → Access), so a repo's auto-merge nobody confirmed
+ * merges nothing.
  */
 export function followThrough(
   d: WorkDraft,
   repo: RepoPrSettings | null | undefined,
+  mergeConfirmation = false,
 ): { fromRepo: boolean; steps: FollowThroughStep[] } | null {
   if (!prSettingsApply(d)) return null;
   const own = d.then === "until-merged";
   const s = isLocal(d) ? {} : d.settings;
   const resume = own ? true : !!repo?.autoResume;
-  // The repo's automatic merging counts only once someone confirmed it.
-  const merge = own ? d.mergeWhenReady : !!repo?.autoMerge && !!repo?.autoMergeConfirmedAt;
+  const merge = own
+    ? d.mergeWhenReady
+    : !!repo?.autoMerge && (!mergeConfirmation || !!repo?.autoMergeConfirmedAt);
   // The work's own settings (Where → Environment) win over the repo's — the
   // reconciler's own rule.
   const pr = effectivePrSettings(s, repo, DEFAULT_MAX_AUTO_RESUMES);
