@@ -2,7 +2,6 @@
 ARG NODE_SLIM_IMAGE=node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
 ARG UBUNTU_IMAGE=ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
 
-ENV
 ARG AGENT_TOOLCHAIN_IMAGE=
 
 # Replaced with a directory or image containing store/ and pnpm.tgz.
@@ -33,7 +32,8 @@ RUN --mount=type=bind,from=pnpm-offline,target=/pnpm-offline,rw \
     else pnpm install --frozen-lockfile --ignore-scripts --filter @optio/mcp-bridge; fi \
     && pnpm --filter @optio/mcp-bridge build
 
-FROM ${UBUNTU_IMAGE} DEBIAN_FRONTEND=noninteractive
+FROM ${UBUNTU_IMAGE} AS agent-toolchain
+ENV DEBIAN_FRONTEND=noninteractive
 
 ARG AGENT_CLIS=all
 ARG CLAUDE_CODE_VERSION=2.1.112
@@ -160,8 +160,10 @@ RUN case ",${AGENT_CLIS}," in *,all,*|*,cursor,*) (curl -fsS https://cursor.com/
 
 # Optional MCP binaries for connections that must start without downloads.
 ARG PREINSTALL_MCP_SERVERS=0
+COPY scripts/check-preinstalled-mcp.mjs /opt/optio/check-preinstalled-mcp.mjs
 RUN if [ "$PREINSTALL_MCP_SERVERS" = 1 ]; then \
-    npm install -g @modelcontextprotocol/server-postgres@0.6.2 @modelcontextprotocol/server-filesystem@2026.8.31; fi
+    npm install -g @modelcontextprotocol/server-filesystem@2.0.1 \
+    && node /opt/optio/check-preinstalled-mcp.mjs; fi
 ENV OPTIO_MCP_PREINSTALLED=${PREINSTALL_MCP_SERVERS}
 
 # Python 3 (minimal — needed for setup file injection)

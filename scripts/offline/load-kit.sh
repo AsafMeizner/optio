@@ -93,6 +93,14 @@ PNPM_TGZ="${tgzs[0]}"
 KIT_VERSION="$(basename "$PNPM_TGZ" .tgz)"
 KIT_VERSION="${KIT_VERSION#pnpm-offline-}"
 
+# Verify before probing tools, reading credentials, or extracting kit content.
+# Dry runs still execute tool probes, so they must pass the same integrity gate.
+if [ "$VERIFY" = 1 ]; then
+  echo "=== 1. offline/SHA256SUMS"
+  (cd "$OFF" && sha256sum -c --quiet SHA256SUMS) || die "the kit does not match offline/SHA256SUMS"
+  echo "ok"
+fi
+
 CRANE="${CRANE:-$OFF/bin/crane}"
 if [ -z "$TOOL" ]; then
   if "$CRANE" version >/dev/null 2>&1; then TOOL=crane
@@ -151,14 +159,6 @@ exists() { # <ref>
   elif [ "$INSECURE" = 1 ]; then docker manifest inspect --insecure "$1" >/dev/null 2>&1
   else docker manifest inspect "$1" >/dev/null 2>&1; fi
 }
-
-# ── 1. Checksums ──
-if [ "$VERIFY" = 1 ]; then
-  echo
-  echo "=== 1. offline/SHA256SUMS"
-  (cd "$OFF" && sha256sum -c --quiet SHA256SUMS) || die "the kit does not match offline/SHA256SUMS"
-  echo "ok"
-fi
 
 # ── 2. The kit's images ──
 echo
