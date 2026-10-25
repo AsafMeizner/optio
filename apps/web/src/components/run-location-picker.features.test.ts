@@ -104,7 +104,7 @@ describe("runLocationPayload in a remote workspace", () => {
 });
 
 describe("localAgentChoices (the deployment features)", () => {
-  it("names every local agent CLI under the default deployment, as upstream's copy did", () => {
+  it("names every local agent CLI under the default deployment", () => {
     expect(localAgentChoices(featuresFromEnv({}))).toBe(
       "Claude Code, Codex, Cursor, Gemini, or OpenCode",
     );

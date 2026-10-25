@@ -2,8 +2,8 @@ import { featuresFromEnv } from "@optio/shared/features";
 import { describe, it, expect } from "vitest";
 import { ticketSourceOptions } from "./ticket-sources";
 
-// Settings → Tickets' upstream list (app/settings/page.tsx TICKET_SOURCES).
-const UPSTREAM = [
+// Settings → Tickets' built-in list (app/settings/page.tsx TICKET_SOURCES).
+const BUILT_IN = [
   { value: "github", label: "GitHub Issues" },
   { value: "jira", label: "Jira" },
   { value: "linear", label: "Linear" },
@@ -11,9 +11,9 @@ const UPSTREAM = [
 ];
 
 describe("ticketSourceOptions", () => {
-  it("adds GitLab Issues to upstream's list under the default deployment", () => {
-    expect(ticketSourceOptions(UPSTREAM, featuresFromEnv({}))).toEqual([
-      ...UPSTREAM,
+  it("adds GitLab Issues to the built-in list under the default deployment", () => {
+    expect(ticketSourceOptions(BUILT_IN, featuresFromEnv({}))).toEqual([
+      ...BUILT_IN,
       { value: "gitlab", label: "GitLab Issues" },
     ]);
   });
@@ -21,7 +21,7 @@ describe("ticketSourceOptions", () => {
   it("offers Jira and GitLab Issues under the restricted deployment", () => {
     expect(
       ticketSourceOptions(
-        UPSTREAM,
+        BUILT_IN,
         featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
       ),
     ).toEqual([

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 
-// The sidebar is upstream's unless a deployment admin turns teams on
+// The sidebar is the default one unless a deployment admin turns teams on
 // (Settings → Access → Teams): then Teams joins the Library.
 const mocks = vi.hoisted(() => ({ teams: false }));
 
@@ -37,7 +37,7 @@ const links = () =>
     .map((a) => a.textContent?.trim());
 
 describe("SidebarNavigation", () => {
-  it("has upstream's entries, and no Teams, with teams off (the default)", () => {
+  it("has the default entries, and no Teams, with teams off (the default)", () => {
     render(<SidebarNavigation />);
     expect(links()).not.toContain("Teams");
     expect(links()).toEqual(

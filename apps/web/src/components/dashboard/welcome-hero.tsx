@@ -58,14 +58,14 @@ export function WelcomeHero({
   // A deployment without GitHub works on GitLab and reaches its models
   // through a gateway: the steps say so instead of naming GitHub.
   const { features } = useFeatures();
-  const upstream = !gitlabOnlyDeployment(features);
+  const defaultDeployment = !gitlabOnlyDeployment(features);
 
   const steps = [
     {
       num: 1,
       icon: KeyRound,
       title: "Configure secrets",
-      description: upstream
+      description: defaultDeployment
         ? "Add your Anthropic API key or connect Claude Max credentials."
         : "Add your model gateway token so agents can reach their models.",
       href: "/settings",
@@ -75,7 +75,7 @@ export function WelcomeHero({
       num: 2,
       icon: FolderGit2,
       title: "Add a repository",
-      description: upstream
+      description: defaultDeployment
         ? "Connect a GitHub repo so Optio can clone it and run agents."
         : "Add a GitLab project so Optio can clone it and run agents.",
       href: "/repos/new",
@@ -104,7 +104,7 @@ export function WelcomeHero({
             </div>
             <h1 className="text-3xl font-bold tracking-tight">Welcome to Optio</h1>
           </div>
-          {upstream ? (
+          {defaultDeployment ? (
             <p className="text-text-muted text-lg max-w-xl leading-relaxed mb-2">
               CI/CD where the build step is an AI agent. Submit tasks from the dashboard or GitHub
               Issues, and Optio handles the rest &mdash; isolated pods, code generation, and pull

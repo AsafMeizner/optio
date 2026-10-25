@@ -92,7 +92,7 @@ const AGENT_LABELS: Record<string, string> = {
 const TICKET_SOURCES = ["github", "gitlab", "linear", "jira", "notion"] as const;
 
 /**
- * The event source a new trigger starts on: GitHub upstream, GitLab where
+ * The event source a new trigger starts on: GitHub by default, GitLab where
  * the deployment feature lists offer no GitHub (the restricted deployment).
  */
 export function defaultEventSource(features: DeploymentFeatures): "github" | "gitlab" {

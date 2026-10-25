@@ -17,7 +17,7 @@ import { DEFAULT_DIGEST, MyDigest } from "./my-digest";
  * hook (the "Your chat hook" card below) — and, for a team admin, whether
  * their teams' work counts too; then the daily digest. Each switch saves at
  * once. Email shows even before a relay is set up (the choices wait for
- * it). Push has one place only: upstream's Browser Push card below
+ * it). Push has one place only: the Browser Push card below
  * (NotificationPreferences), with its own per-event switches once this
  * browser is subscribed.
  */

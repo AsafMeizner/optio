@@ -26,7 +26,7 @@ import { agentWritesChat } from "./local/session-view";
  * claude-code + opencode, GitLab, the eight triggers (Sentry and Alertmanager
  * among them: self-hostable, receive-only), Jira + GitLab tickets,
  * the four connection providers), and under the default deployment each is
- * upstream's list as it was.
+ * the built-in list as it was.
  */
 
 const STANDARD_RUNTIMES = ["claude-code", "opencode"];
@@ -42,8 +42,8 @@ const STANDARD_TRIGGERS = [
 ];
 const CLOUD_TRIGGERS = ["github", "slack", "linear", "pylon", "pagerduty", "datadog"];
 
-/** Upstream's Settings → Tickets list (app/settings/page.tsx). */
-const UPSTREAM_TICKET_OPTIONS = [
+/** The built-in Settings → Tickets list (app/settings/page.tsx). */
+const BUILT_IN_TICKET_OPTIONS = [
   { value: "github", label: "GitHub Issues" },
   { value: "linear", label: "Linear" },
   { value: "jira", label: "Jira" },
@@ -114,7 +114,7 @@ describe("restricted deployment sweep — web pick lists", () => {
     );
     expect(triggerTypes.every((t) => STANDARD_TRIGGERS.includes(t))).toBe(true);
     for (const t of CLOUD_TRIGGERS) expect(triggerTypes).not.toContain(t);
-    // The GitHub / Slack / Linear presets are upstream's alone.
+    // The GitHub / Slack / Linear presets are the default deployment's alone.
     expect(presetIds).not.toEqual(expect.arrayContaining(["pr-review"]));
     expect(presetIds).not.toContain("slack-channel");
     expect(presetIds).not.toContain("linear-triage");
@@ -156,7 +156,7 @@ describe("restricted deployment sweep — web pick lists", () => {
     ).toEqual(["gitlab", "jira"]);
     expect(
       ticketSourceOptions(
-        UPSTREAM_TICKET_OPTIONS,
+        BUILT_IN_TICKET_OPTIONS,
         featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
       ).map((o) => o.value),
     ).toEqual(["jira", "gitlab"]);
@@ -190,14 +190,14 @@ describe("restricted deployment sweep — web pick lists", () => {
     ).toBe(true);
   });
 
-  it("keeps every list upstream's under the default deployment", () => {
+  it("keeps every list as it is under the default deployment", () => {
     expect(featureFilter("runtimes", AGENT_TYPES, featuresFromEnv({}))).toEqual([...AGENT_TYPES]);
     expect(whenTypesFor(featuresFromEnv({}))).toContain("github");
     expect(ticketSourcesFor(featuresFromEnv({}))[0]).toBe("github");
     expect(defaultEventSource(featuresFromEnv({}))).toBe("github");
-    // Upstream's list in its order, plus GitLab Issues (the API always took them).
-    expect(ticketSourceOptions(UPSTREAM_TICKET_OPTIONS, featuresFromEnv({}))).toEqual([
-      ...UPSTREAM_TICKET_OPTIONS,
+    // The built-in list in its order, plus GitLab Issues (the API always took them).
+    expect(ticketSourceOptions(BUILT_IN_TICKET_OPTIONS, featuresFromEnv({}))).toEqual([
+      ...BUILT_IN_TICKET_OPTIONS,
       { value: "gitlab", label: "GitLab Issues" },
     ]);
     expect(setupTrackerSources(featuresFromEnv({}))).toEqual(["linear", "notion", "jira"]);

@@ -160,7 +160,7 @@ suite("A remote workspace", () => {
 });
 
 suite("When answers by deployment features", () => {
-  it("keeps every When upstream", () => {
+  it("keeps every When by default", () => {
     expect(whenTypesFor(featuresFromEnv({}))).toEqual(WHEN_TYPES);
   });
 

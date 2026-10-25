@@ -37,8 +37,8 @@ beforeEach(() => {
     repos: [
       {
         fullName: "platform/optio",
-        cloneUrl: "https://gitlab.corp.local/platform/optio.git",
-        htmlUrl: "https://gitlab.corp.local/platform/optio",
+        cloneUrl: "https://gitlab.example.com/platform/optio.git",
+        htmlUrl: "https://gitlab.example.com/platform/optio",
         defaultBranch: "develop",
         isPrivate: true,
         description: null,
@@ -46,7 +46,7 @@ beforeEach(() => {
       },
     ],
     platform: "gitlab",
-    host: "gitlab.corp.local",
+    host: "gitlab.example.com",
   });
   browseGitHubRepos.mockReset().mockResolvedValue({
     repos: [],
@@ -64,7 +64,7 @@ afterEach(() => {
 });
 
 describe("Add repository under the default deployment", () => {
-  it("keeps upstream's GitHub browser", async () => {
+  it("keeps the GitHub browser by default", async () => {
     render(<NewRepoPage />);
     expect(await screen.findByLabelText("Search accessible repositories")).toBeInTheDocument();
     expect(screen.queryByLabelText("Search GitLab projects")).not.toBeInTheDocument();
@@ -95,11 +95,11 @@ describe("Add repository with GitHub and GitLab offered (full profile)", () => {
     render(<NewRepoPage />);
     await screen.findByRole("group", { name: "Git platform" });
     const url = screen.getByPlaceholderText("https://github.com/owner/repo");
-    fireEvent.change(url, { target: { value: "https://gitlab.mycorp.com/group/sub/project" } });
+    fireEvent.change(url, { target: { value: "https://gitlab.example.org/group/sub/project" } });
     fireEvent.click(screen.getByRole("button", { name: /Validate/ }));
     await waitFor(() =>
       expect(validateRepo).toHaveBeenCalledWith(
-        "https://gitlab.mycorp.com/group/sub/project",
+        "https://gitlab.example.org/group/sub/project",
         undefined,
         undefined,
       ),

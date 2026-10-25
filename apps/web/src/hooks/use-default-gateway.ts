@@ -15,7 +15,7 @@ import { useGatewayStore } from "@/hooks/use-gateway";
  *   const { gateway, models } = useDefaultGateway(runtime, gatewayOnly && !props.gateway);
  *
  * Off (`enabled` false, unrestricted model access), it fetches nothing and answers
- * nothing, so upstream's pickers are untouched.
+ * nothing, so the pickers are untouched.
  */
 
 let providersOnce: Promise<ModelProvider[]> | null = null;

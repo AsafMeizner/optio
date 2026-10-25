@@ -9,7 +9,7 @@ import {
  * (docs/feature-lists.md): the features the web container's env describes,
  * so the first paint already hides what a list leaves out (`useFeatures`
  * confirms them from the API). Nothing when the env sets no feature setting:
- * the page then carries upstream's config alone, and everything is offered.
+ * the page then carries the existing config alone, and everything is offered.
  */
 export function featuresConfig(env: Record<string, string | undefined> = process.env): {
   features?: DeploymentFeatures;

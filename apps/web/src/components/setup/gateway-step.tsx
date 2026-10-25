@@ -30,7 +30,7 @@ import { AUTH_HEADER_LABELS } from "@/components/settings/model-provider-form";
 const LABEL = "block text-xs text-text-muted mb-1";
 
 /**
- * The setup wizard's "Model gateway" step, which stands in for upstream's
+ * The setup wizard's "Model gateway" step, which stands in for the
  * agent-credentials step under the restricted deployment (docs/model-gateway.md):
  * what the organization's gateway is and where it listens, how it takes the token, the
  * admin's own token — then Create makes it the organization's and the

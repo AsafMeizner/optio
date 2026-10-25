@@ -302,7 +302,7 @@ export function RunLocationPicker({
   const fromProviders = providers.length
     ? providers.join(", ")
     : "Coder, GitHub Codespaces, Daytona or E2B";
-  // Without a remote-workspace connection the picker is upstream's: a pod or my machine.
+  // Without a remote-workspace connection the picker offers a pod or my machine.
   const offerRemote = isRemote || (workspaceConnections?.length ?? 0) > 0;
   // While "My machine" is picked and none is paired, poll faster so the
   // machine being paired shows up as it connects.

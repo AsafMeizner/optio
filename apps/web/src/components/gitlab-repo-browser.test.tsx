@@ -10,8 +10,8 @@ import { GitLabRepoBrowser } from "./gitlab-repo-browser";
 
 const project = (fullName: string, extra: Record<string, unknown> = {}) => ({
   fullName,
-  cloneUrl: `https://gitlab.corp.local/${fullName}.git`,
-  htmlUrl: `https://gitlab.corp.local/${fullName}`,
+  cloneUrl: `https://gitlab.example.com/${fullName}.git`,
+  htmlUrl: `https://gitlab.example.com/${fullName}`,
   defaultBranch: "main",
   isPrivate: true,
   description: null,
@@ -30,7 +30,7 @@ describe("GitLabRepoBrowser", () => {
     browse.mockResolvedValue({
       repos: [project("platform/tools/optio", { description: "Agents" }), project("me/notes")],
       platform: "gitlab",
-      host: "gitlab.corp.local",
+      host: "gitlab.example.com",
     });
     const onPick = vi.fn();
     render(<GitLabRepoBrowser selected={null} onPick={onPick} />);
@@ -39,7 +39,7 @@ describe("GitLabRepoBrowser", () => {
     expect(onPick).toHaveBeenCalledWith(
       expect.objectContaining({
         fullName: "platform/tools/optio",
-        htmlUrl: "https://gitlab.corp.local/platform/tools/optio",
+        htmlUrl: "https://gitlab.example.com/platform/tools/optio",
       }),
     );
     expect(browse).toHaveBeenCalledWith({ q: undefined, platform: "gitlab" });
@@ -72,7 +72,7 @@ describe("GitLabRepoBrowser", () => {
     browse.mockResolvedValue({
       repos: [],
       platform: "gitlab",
-      host: "gitlab.corp.local",
+      host: "gitlab.example.com",
       error: "No GitLab token — add your own GITLAB_TOKEN under Settings",
     });
     render(<GitLabRepoBrowser selected={null} onPick={vi.fn()} />);

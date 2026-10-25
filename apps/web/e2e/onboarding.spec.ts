@@ -6,7 +6,7 @@
  * a deployment admin, and no person to keep a checklist for), so the
  * Overview's checklist is covered by the web's unit tests. The switch goes
  * back to the deployment's default afterwards, so the other specs see
- * upstream's menus.
+ * default menus.
  */
 import { expect, test, type Page } from "@playwright/test";
 

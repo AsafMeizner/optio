@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("TaskStatus", () => {
-  it("says an issue's task opened its PR, as upstream", () => {
+  it("says an issue's task opened its PR by default", () => {
     render(<TaskStatus task={{ state: "pr_opened" }} />);
     expect(screen.getByText(/PR open/)).toBeInTheDocument();
   });

@@ -36,7 +36,7 @@ export function SettingsLayout({ sections }: { sections: SettingsSection[] }) {
   useEffect(() => {
     // A deep link (/settings#integrations, or a card's id like #sign-in) is
     // followed like a click, so the cards loading above it can't push it
-    // out of view (upstream #674). Also on a later hash change.
+    // out of view (#674). Also on a later hash change.
     const follow = () => {
       let id = "";
       try {

@@ -2,7 +2,7 @@
  * Optio's bot, which people mention in GitLab and GitHub comments
  * (docs/gitlab-bot.md). The API is apps/api/src/routes/gitlab-bot.ts
  * (`/api/gitlab-bot`, `/api/github-bot`, the same shape), kept out of
- * api-client.ts so upstream's file stays as it is.
+ * api-client.ts so that file stays as it is.
  */
 import { request } from "@/lib/api-client";
 

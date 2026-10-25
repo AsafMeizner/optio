@@ -34,7 +34,7 @@ import { Button, ButtonLink } from "@/components/ui/button";
  */
 export function IssuesBrowser() {
   const router = useRouter();
-  // A repo issue with no source is the platform's: GitHub's upstream, GitLab's when selected.
+  // A repo issue with no source is the platform's: GitHub's by default, GitLab's when selected.
   const { features } = useFeatures();
   const repoSource = featureAllows("gitPlatforms", "github", features) ? "github" : "gitlab";
   const [issues, setIssues] = useState<any[]>([]);

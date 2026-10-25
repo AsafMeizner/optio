@@ -17,14 +17,14 @@ vi.mock("next/link", () => ({
 vi.mock("@/hooks/use-deployment-switches", () => ({
   useDeploymentSwitches: () => ({ teams: true, onboarding: true, loaded: true }),
 }));
-// GitLab alone through a gateway, or (`upstream`) the default deployment.
-const deployment = vi.hoisted(() => ({ upstream: false }));
+// GitLab alone through a gateway, or (`defaults`) the default deployment.
+const deployment = vi.hoisted(() => ({ defaults: false }));
 vi.mock("@/hooks/use-features", () => ({
   useFeatures: () => ({
-    features: deployment.upstream
+    features: deployment.defaults
       ? featuresFromEnv({})
       : featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
-    gatewayOnly: !deployment.upstream,
+    gatewayOnly: !deployment.defaults,
     loaded: true,
   }),
 }));
@@ -84,7 +84,7 @@ const hero = (load: () => Promise<ChecklistSources>) => (
 const staticSteps = () => screen.getByText("Get started").closest("div");
 
 beforeEach(() => {
-  deployment.upstream = false;
+  deployment.defaults = false;
   window.localStorage.clear();
   useGettingStartedStore.setState({ hidden: {} });
 });
@@ -126,7 +126,7 @@ describe("WelcomeHero and the first-run checklist", () => {
       tasks: {
         started: { id: "a", title: "A" },
         waiting: null,
-        merged: { id: "a", title: "A", prUrl: "https://gl/p/-/merge_requests/1" },
+        merged: { id: "a", title: "A", prUrl: "https://gitlab.example.com/p/-/merge_requests/1" },
       },
     });
     render(hero(async () => done));
@@ -149,8 +149,8 @@ describe("WelcomeHero and the first-run checklist", () => {
     expect(staticSteps()).not.toHaveAttribute("hidden");
   });
 
-  it("without a checklist (the guide off) by default, it is upstream's welcome", () => {
-    deployment.upstream = true;
+  it("without a checklist (the guide off) by default, it is the default welcome", () => {
+    deployment.defaults = true;
     render(<WelcomeHero repoCount={0} />);
     expect(staticSteps()).not.toHaveAttribute("hidden");
     expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();

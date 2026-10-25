@@ -186,7 +186,7 @@ describe("GettingStarted (the Overview's getting-started checklist)", () => {
       tasks: {
         started: { id: "a", title: "A" },
         waiting: null,
-        merged: { id: "a", title: "A", prUrl: "https://gl/p/-/merge_requests/1" },
+        merged: { id: "a", title: "A", prUrl: "https://gitlab.example.com/p/-/merge_requests/1" },
       },
     });
     render(<GettingStarted load={async () => done} />);
@@ -217,7 +217,7 @@ describe("GettingStarted (the Overview's getting-started checklist)", () => {
         tasks: {
           started: { id: "a", title: "A" },
           waiting: null,
-          merged: { id: "a", title: "A", prUrl: "https://gl/p/-/merge_requests/1" },
+          merged: { id: "a", title: "A", prUrl: "https://gitlab.example.com/p/-/merge_requests/1" },
         },
         channels: null,
       }),
@@ -280,7 +280,7 @@ describe("loadChecklistSources", () => {
     api.searchTasks.mockImplementation(async ({ state }: { state?: string }) => ({
       tasks:
         state === "completed"
-          ? [{ id: "m", title: "Merged", prUrl: "https://gl/p/-/merge_requests/2" }]
+          ? [{ id: "m", title: "Merged", prUrl: "https://gitlab.example.com/p/-/merge_requests/2" }]
           : state === "pr_opened"
             ? []
             : [{ id: "s", title: "Started" }],
@@ -305,7 +305,11 @@ describe("loadChecklistSources", () => {
     expect(got.tasks).toEqual({
       started: { id: "s", title: "Started", prUrl: null },
       waiting: null,
-      merged: { id: "m", title: "Merged", prUrl: "https://gl/p/-/merge_requests/2" },
+      merged: {
+        id: "m",
+        title: "Merged",
+        prUrl: "https://gitlab.example.com/p/-/merge_requests/2",
+      },
     });
   });
 

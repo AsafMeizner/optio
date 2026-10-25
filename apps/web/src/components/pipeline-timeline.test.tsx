@@ -36,7 +36,7 @@ describe("PipelineTimeline", () => {
     expect(screen.queryByText("PR")).toBeNull();
   });
 
-  it("names an open pull request's stage PR, as upstream", () => {
+  it("names an open pull request's stage PR by default", () => {
     features = featuresFromEnv({});
     const task = {
       state: "pr_opened",

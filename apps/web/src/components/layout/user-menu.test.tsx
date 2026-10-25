@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 // The account menu holds Help → Using Optio only while a deployment admin has
-// the getting-started guide on (Settings → Access): off, it is upstream's menu.
+// the getting-started guide on (Settings → Access): off, it is the default menu.
 const mocks = vi.hoisted(() => ({ onboarding: false }));
 
 vi.mock("next/link", () => ({

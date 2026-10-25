@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { featuresConfig } from "./features-config";
 
 describe("featuresConfig (the layout's window.__OPTIO_CONFIG.features)", () => {
-  it("adds nothing when the env sets no feature setting: upstream's config", () => {
+  it("adds nothing when the env sets no feature setting: the existing config", () => {
     expect(featuresConfig({})).toEqual({});
     expect(
       featuresConfig({ PUBLIC_API_URL: "https://optio.example.com", OPTIO_RUNTIMES: "" }),

@@ -29,7 +29,7 @@ describe("the code-review settings' words", () => {
     expect(words).not.toMatch(/GitHub|GitLab|merge request|pull request|IID|pipeline/i);
   });
 
-  it("keep upstream's prompt variables, plus the review depth", () => {
+  it("keep the existing prompt variables, plus the review depth", () => {
     expect(REVIEW_PROMPT_VARS.map(([name]) => name)).toEqual([
       "PR_NUMBER",
       "TASK_FILE",

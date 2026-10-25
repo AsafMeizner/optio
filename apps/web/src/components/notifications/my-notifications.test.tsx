@@ -112,7 +112,7 @@ describe("Settings → Notifications → What reaches you", () => {
     updateMyChannels.mockResolvedValue(channels());
     render(<MyNotifications />);
     await screen.findByRole("switch", { name: "Email: Merged" });
-    // Push has one set of switches on the page: upstream's NotificationPreferences.
+    // Push has one set of switches on the page: the existing NotificationPreferences.
     expect(screen.queryByRole("switch", { name: /^Push:/ })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: "Push" })).toBeNull();
     fireEvent.click(screen.getByRole("switch", { name: "Your teams' work too" }));

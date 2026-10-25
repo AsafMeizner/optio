@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("StateBadge for an open change request", () => {
-  it("reads PR by default, as upstream, and says what it waits on", () => {
+  it("reads PR by default, and says what it waits on", () => {
     render(<StateBadge state="pr_opened" />);
     const label = screen.getByText("PR");
     expect(label.closest("[title]")).toHaveAttribute("title", PR_OPEN_HINT);

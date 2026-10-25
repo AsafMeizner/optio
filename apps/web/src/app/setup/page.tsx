@@ -52,7 +52,7 @@ const STEPS = [
   { id: "signin", label: "Sign-in", icon: Shield },
   { id: "git", label: "Git Provider", icon: GitBranch },
   // The restricted deployment reaches models through its gateway alone: the
-  // "Model gateway" step stands in for upstream's agent keys there
+  // "Model gateway" step stands in for the agent keys there
   // (`steps` below; docs/model-gateway.md).
   { id: "agents", label: "Agent Keys", icon: Key },
   { id: "gateway", label: "Model gateway", icon: Key },
@@ -116,7 +116,7 @@ export default function SetupPage() {
 
   // Step 2: Git provider
   // The git step starts on the platforms the feature lists offer: GitHub
-  // upstream, GitLab otherwise.
+  // by default, GitLab otherwise.
   const offersGitHub = featureAllows("gitPlatforms", "github", features);
   const offersCodeCommit = featureAllows("gitPlatforms", "codecommit", features);
   const [githubEnabled, setGithubEnabled] = useState(offersGitHub);

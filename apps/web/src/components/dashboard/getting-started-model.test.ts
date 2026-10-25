@@ -79,7 +79,7 @@ const fresh = (over: Partial<ChecklistSources> = {}): ChecklistSources => ({
   channels: channels(),
   ...over,
 });
-const UPSTREAM_FEATURES = featuresFromEnv({});
+const DEFAULT_FEATURES = featuresFromEnv({});
 const GATEWAY_ONLY: ChecklistContext = {
   gatewayOnly: true,
   features: featuresFromEnv({ OPTIO_FEATURE_PRESET: "minimal", OPTIO_MODEL_ACCESS: "gateway" }),
@@ -87,10 +87,10 @@ const GATEWAY_ONLY: ChecklistContext = {
   isAdmin: false,
   isViewer: false,
 };
-/** Upstream's defaults: every feature, no gateway, teams off. */
-const UPSTREAM: ChecklistContext = {
+/** The defaults: every feature, no gateway, teams off. */
+const DEFAULTS: ChecklistContext = {
   gatewayOnly: false,
-  features: UPSTREAM_FEATURES,
+  features: DEFAULT_FEATURES,
   teams: false,
   isAdmin: false,
   isViewer: false,
@@ -135,7 +135,11 @@ describe("buildChecklist", () => {
         tasks: {
           started: { id: "a", title: "Fix the README" },
           waiting: null,
-          merged: { id: "a", title: "Fix the README", prUrl: "https://gl/x/-/merge_requests/1" },
+          merged: {
+            id: "a",
+            title: "Fix the README",
+            prUrl: "https://gitlab.example.com/x/-/merge_requests/1",
+          },
         },
       }),
       GATEWAY_ONLY,
@@ -156,7 +160,7 @@ describe("buildChecklist", () => {
       tasks: {
         started: { id: "a", title: "A" },
         waiting: null,
-        merged: { id: "a", title: "A", prUrl: "https://gl/x/-/merge_requests/1" },
+        merged: { id: "a", title: "A", prUrl: "https://gitlab.example.com/x/-/merge_requests/1" },
       },
     };
     // A viewer's list is complete at once; it grows when they become a member.
@@ -206,7 +210,7 @@ describe("buildChecklist", () => {
     const list = buildChecklist(fresh(), {
       ...GATEWAY_ONLY,
       gatewayOnly: false,
-      features: UPSTREAM_FEATURES,
+      features: DEFAULT_FEATURES,
     });
     expect(list.steps.find((s) => s.id === "first-review")?.title).toBe(
       "Review your first pull request",
@@ -218,7 +222,7 @@ describe("buildChecklist", () => {
 
   it("speaks of merge requests where the repos are GitLab's, whatever the feature lists", () => {
     const gitlab = buildChecklist(fresh({ repoCount: 0, repoPlatforms: ["gitlab", "gitlab"] }), {
-      ...UPSTREAM,
+      ...DEFAULTS,
       isAdmin: true,
     });
     expect(gitlab.steps.find((s) => s.id === "first-review")?.title).toBe(
@@ -226,7 +230,7 @@ describe("buildChecklist", () => {
     );
     expect(gitlab.steps.find((s) => s.id === "repo")?.detail).toContain("GitLab project");
     // A mix of platforms: the feature lists decide.
-    const mixed = buildChecklist(fresh({ repoPlatforms: ["gitlab", "github"] }), UPSTREAM);
+    const mixed = buildChecklist(fresh({ repoPlatforms: ["gitlab", "github"] }), DEFAULTS);
     expect(mixed.steps.find((s) => s.id === "first-review")?.title).toBe(
       "Review your first pull request",
     );
@@ -244,17 +248,17 @@ describe("buildChecklist", () => {
           merged: null,
         },
       }),
-      UPSTREAM,
+      DEFAULTS,
     );
     expect(waiting.steps.find((s) => s.id === "first-review")?.title).toBe(
       "Review your merge request",
     );
   });
 
-  it("upstream's defaults: no gateway step without a gateway, no team step without teams", () => {
+  it("the defaults: no gateway step without a gateway, no team step without teams", () => {
     const list = buildChecklist(
       fresh({ gateway: gateway({ gateway: null }), teams: null }),
-      UPSTREAM,
+      DEFAULTS,
     );
     expect(list.steps.map((s) => s.id)).toEqual([
       "sign-in",
@@ -264,7 +268,7 @@ describe("buildChecklist", () => {
       "notifications",
     ]);
     // A gateway read that failed is no step by default either.
-    const failed = buildChecklist(fresh({ gateway: null, teams: null }), UPSTREAM);
+    const failed = buildChecklist(fresh({ gateway: null, teams: null }), DEFAULTS);
     expect(stateOf(failed, "gateway-token")).toBeUndefined();
     // Teams off aren't a request that failed: everything done is remembered.
     const done = buildChecklist(
@@ -277,7 +281,7 @@ describe("buildChecklist", () => {
           merged: { id: "a", title: "A", prUrl: "https://github.com/o/r/pull/1" },
         },
       }),
-      UPSTREAM,
+      DEFAULTS,
     );
     expect(done.complete).toBe(true);
     expect(done.settled).toBe(true);
@@ -564,13 +568,13 @@ describe("pickMyTasks", () => {
         waiting: [],
         completed: [
           { id: "b", title: "No MR", prUrl: null },
-          { id: "a", title: "A", prUrl: "https://gl/p/-/merge_requests/3" },
+          { id: "a", title: "A", prUrl: "https://gitlab.example.com/p/-/merge_requests/3" },
         ],
       }),
     ).toEqual({
       started: { id: "c", title: "C", prUrl: null },
       waiting: null,
-      merged: { id: "a", title: "A", prUrl: "https://gl/p/-/merge_requests/3" },
+      merged: { id: "a", title: "A", prUrl: "https://gitlab.example.com/p/-/merge_requests/3" },
     });
   });
 });
