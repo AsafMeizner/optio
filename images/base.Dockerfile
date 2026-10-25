@@ -16,6 +16,9 @@ FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+ARG AGENT_CLIS=all
+ARG CLAUDE_CODE_VERSION=2.1.112
+
 # System essentials
 # tini: the pods' pid 1 (`exec tini -- sleep infinity` ends every init
 # script), so the run supervisors reparented to it are reaped (run protocol).
@@ -80,22 +83,22 @@ RUN npm install -g corepack@0.36.0 \
 # Optio ALWAYS execs the agent inside the long-lived repo pod, so it always hits this.
 # Upstream regression: https://github.com/oven-sh/bun/issues/31832 (Bun 1.3.12-1.3.14).
 # TODO(#566): bump back to latest once upstream Bun ships a fix and claude-code adopts it.
-RUN npm install -g @anthropic-ai/claude-code@2.1.112
+RUN case ",${AGENT_CLIS}," in *,all,*|*,claude-code,*) npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" ;; esac
 
 # OpenAI Codex CLI. The entrypoint runs `codex exec
 # --dangerously-bypass-approvals-and-sandbox` (the pod is the sandbox; the
 # older `--full-auto` is gone from 0.162+): fail the build, not every run, if
 # the Codex this image gets no longer takes it.
-RUN npm install -g @openai/codex \
-    && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox
+RUN case ",${AGENT_CLIS}," in *,all,*|*,codex,*) npm install -g @openai/codex \
+    && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox ;; esac
 
 # Pi: native JSONL + MCP protocol used by the Pi adapter.
 ARG PI_VERSION=1.4.0
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION} \
-    && pi --version
+RUN case ",${AGENT_CLIS}," in *,all,*|*,pi,*) npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION} \
+    && pi --version ;; esac
 
 # GitHub Copilot CLI (pinned + best-effort — package may be temporarily unavailable)
-RUN npm install -g @github/copilot@1.0.20 || echo "WARN: @github/copilot install failed; copilot agent will not be available in this image"
+RUN case ",${AGENT_CLIS}," in *,all,*|*,copilot,*) npm install -g @github/copilot@1.0.20 || echo "WARN: @github/copilot install failed; copilot agent will not be available in this image" ;; esac
 
 # OpenCode CLI (experimental).
 # PINNED to work around the same Bun regression as Claude Code above.
@@ -111,29 +114,36 @@ RUN npm install -g @github/copilot@1.0.20 || echo "WARN: @github/copilot install
 # Best-effort: opencode.ai is a single point of failure for the install
 # script, so let the build succeed even when the upstream is briefly
 # unavailable (matches the @github/copilot and openclaw fallbacks).
+ARG OPENCODE_INSTALL_METHOD=script
 ARG OPENCODE_VERSION=1.14.20
-RUN (curl -fsSL https://opencode.ai/install | VERSION="${OPENCODE_VERSION}" bash \
+RUN case ",${AGENT_CLIS}," in *,all,*|*,opencode,*) if [ "$OPENCODE_INSTALL_METHOD" = npm ]; then npm install -g "opencode-ai@${OPENCODE_VERSION}"; else (curl -fsSL https://opencode.ai/install | VERSION="${OPENCODE_VERSION}" bash \
   && mv /root/.opencode/bin/opencode /usr/local/bin/ \
   && rm -rf /root/.opencode) \
-  || echo "WARN: opencode install failed; opencode agent will not be available in this image"
+  || echo "WARN: opencode install failed; opencode agent will not be available in this image"; fi ;; esac
 
 # Google Gemini CLI
-RUN npm install -g @google/gemini-cli
+RUN case ",${AGENT_CLIS}," in *,all,*|*,gemini,*) npm install -g @google/gemini-cli ;; esac
 
 # OpenClaw CLI (experimental)
-RUN npm install -g openclaw || echo "WARN: openclaw install failed; openclaw agent will not be available in this image"
+RUN case ",${AGENT_CLIS}," in *,all,*|*,openclaw,*) npm install -g openclaw || echo "WARN: openclaw install failed; openclaw agent will not be available in this image" ;; esac
 
 # Cursor CLI (cursor-agent). The install script drops a versioned payload under
 # ~/.local/share/cursor-agent with a ~/.local/bin/cursor-agent symlink; relocate
 # it to /opt so the non-root agent user can run it. Best-effort like the other
 # non-npm installs — cursor.com is a single point of failure for the script.
-RUN (curl -fsS https://cursor.com/install | bash \
+RUN case ",${AGENT_CLIS}," in *,all,*|*,cursor,*) (curl -fsS https://cursor.com/install | bash \
   && CURSOR_BIN="$(readlink -f /root/.local/bin/cursor-agent)" \
   && mkdir -p /opt/cursor-agent \
   && cp -a "$(dirname "$CURSOR_BIN")/." /opt/cursor-agent/ \
   && ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent \
   && rm -rf /root/.local/share/cursor-agent /root/.local/bin/cursor-agent) \
-  || echo "WARN: cursor-agent install failed; cursor agent will not be available in this image"
+  || echo "WARN: cursor-agent install failed; cursor agent will not be available in this image" ;; esac
+
+# Optional MCP binaries for connections that must start without downloads.
+ARG PREINSTALL_MCP_SERVERS=0
+RUN if [ "$PREINSTALL_MCP_SERVERS" = 1 ]; then \
+    npm install -g @modelcontextprotocol/server-postgres@0.6.2 @modelcontextprotocol/server-filesystem@2026.8.31; fi
+ENV OPTIO_MCP_PREINSTALLED=${PREINSTALL_MCP_SERVERS}
 
 # Python 3 (minimal — needed for setup file injection)
 RUN apt-get update && apt-get install -y python3 \
