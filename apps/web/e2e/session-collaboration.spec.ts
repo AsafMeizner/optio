@@ -61,6 +61,7 @@ test("sharing explains control, supports revocation and keeps link tokens out of
       await page.evaluate(() => sessionStorage.getItem("optio_pending_session_share")),
     ).toBeNull();
   } finally {
+    await page.unrouteAll({ behavior: "wait" });
     await session.done();
   }
 });
