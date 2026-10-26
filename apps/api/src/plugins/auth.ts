@@ -41,6 +41,23 @@ export function requireRole(minimumRole: WorkspaceRole) {
   };
 }
 
+/**
+ * A preHandler for actions on the whole deployment rather than one
+ * workspace. Being a workspace admin isn't enough there — anyone signed in
+ * can create a workspace and be its admin — so it takes a deployment admin.
+ * A deployment that has none yet (upgraded from before the role existed, or
+ * with no `OPTIO_DEPLOYMENT_ADMINS`) keeps the workspace-admin rule until
+ * someone claims the role. Pair it with `requireRole("admin")`.
+ */
+export async function requireDeploymentAdmin(req: FastifyRequest, reply: FastifyReply) {
+  if (isAuthDisabled()) return;
+  const { isDeploymentAdmin, hasDeploymentAdmin } =
+    await import("../services/sign-in-config-service.js");
+  if (req.user && (await isDeploymentAdmin(req.user))) return;
+  if (!(await hasDeploymentAdmin())) return;
+  return reply.status(403).send({ error: "Forbidden: requires a deployment admin" });
+}
+
 const SESSION_COOKIE_NAME = "optio_session";
 const WORKSPACE_HEADER = "x-workspace-id";
 
