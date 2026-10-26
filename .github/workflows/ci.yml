@@ -8,6 +8,10 @@ on:
   # By hand, for a push whose event GitHub dropped (v0.19.1, 2026-10-22).
   workflow_dispatch:
 
+# Every job only reads the repository; nothing here needs a write token.
+permissions:
+  contents: read
+
 jobs:
   format:
     name: Format
