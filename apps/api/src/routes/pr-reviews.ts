@@ -436,6 +436,7 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
           prUrl: req.body.prUrl,
           mergeMethod: req.body.mergeMethod,
           userId: req.user?.id,
+          workspaceId: req.user?.workspaceId ?? null,
         });
         reply.send(result);
       } catch (err: unknown) {
@@ -458,7 +459,9 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       try {
-        const status = await prReviewService.getPrStatus(req.query.prUrl);
+        const status = await prReviewService.getPrStatus(req.query.prUrl, {
+          workspaceId: req.user?.workspaceId ?? null,
+        });
         reply.send(status);
       } catch (err: unknown) {
         logger.warn({ err, prUrl: req.query.prUrl }, "Failed to get PR status");

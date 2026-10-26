@@ -56,7 +56,13 @@ const CONNECT_TIMEOUT_MS = 10_000;
 /** How long an Agent may linger after its response for the body to be read. */
 const AGENT_GRACE_MS = 60_000;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-const CREDENTIAL_HEADERS = new Set(["authorization", "proxy-authorization", "cookie"]);
+const CREDENTIAL_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  // GitLab's token header (the setup wizard's GitLab checks send it).
+  "private-token",
+]);
 
 type Defaults = Pick<OutboundOptions, "fetchImpl" | "resolveHost" | "policy">;
 let defaults: Defaults = {};
