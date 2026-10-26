@@ -41,7 +41,8 @@ vi.mock("../db/schema.js", () => ({
   promptTemplates: { id: "id", name: "name", repoUrl: "repoUrl" },
 }));
 
-vi.mock("@optio/shared", () => ({
+vi.mock("@optio/shared", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@optio/shared")>()),
   DEFAULT_PROMPT_TEMPLATE: "Default template content {{TASK_FILE}}",
   DEFAULT_REVIEW_PROMPT_TEMPLATE: "Default review template",
 }));
