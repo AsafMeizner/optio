@@ -592,6 +592,7 @@ export function startTaskWorker() {
         await applyGitAccess(allEnv, {
           workspaceId: taskWorkspaceId,
           ownerUserId: runOwnerUserId,
+          repoUrl: task.repoUrl,
           runId: task.id,
         });
 

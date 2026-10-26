@@ -84,7 +84,11 @@ export async function createSession(input: {
   };
 
   const { applyGitAccess } = await import("./git-access-env.js");
-  await applyGitAccess(env, { workspaceId: input.workspaceId ?? null, ownerUserId: input.userId });
+  await applyGitAccess(env, {
+    workspaceId: input.workspaceId ?? null,
+    ownerUserId: input.userId,
+    repoUrl,
+  });
 
   const imageConfig = repoConfig
     ? { preset: (repoConfig.imagePreset ?? "base") as PresetImageId }

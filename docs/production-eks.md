@@ -147,6 +147,13 @@ isolated session is required to create a collaboration link. Preserve/commit any
 uncommitted work before ending old sessions. The old deployment-wide Git helper
 key is rejected by default. `OPTIO_ALLOW_LEGACY_GIT_CREDENTIALS=1` re-enables the old
 cross-owner credential capability and should not be used in a secure deployment.
+A pod's helper key is also bound to its one repo: with a GitHub App, the
+installation token it gets is limited to that repository (`repositories: [name]`),
+never the whole installation, and a pod on a non-GitHub repo gets none. Helper keys
+minted before that binding (no repo in the scope) are refused by the same default;
+new runs in an existing repo pod sign in with a fresh key, but a pod's own clone
+credential and older interactive sessions need the pod recreated. Pods with no repo
+keep an installation-wide token.
 Rotate credentials that may already have been exposed; isolation cannot retract
 secrets previously read by a co-resident process.
 

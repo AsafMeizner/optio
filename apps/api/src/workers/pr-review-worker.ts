@@ -421,7 +421,7 @@ export function startPrReviewWorker() {
         );
         const allEnv: Record<string, string> = { ...agentConfig.env, ...resolvedSecrets };
 
-        await applyGitAccess(allEnv, { workspaceId, runId: run.id });
+        await applyGitAccess(allEnv, { workspaceId, repoUrl: review.repoUrl, runId: run.id });
 
         if (repoConfig.extraPackages) allEnv.OPTIO_EXTRA_PACKAGES = repoConfig.extraPackages;
         if (repoConfig.setupCommands) allEnv.OPTIO_SETUP_COMMANDS = repoConfig.setupCommands;
