@@ -41,6 +41,9 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 # ---- Runtime stage ----
 FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
 
+ARG AGENT_CLIS=all
+ARG CLAUDE_CODE_VERSION=2.1.112
+
 ARG OPTIO_VERSION=dev
 ENV OPTIO_VERSION=${OPTIO_VERSION}
 
@@ -67,8 +70,13 @@ RUN npm install -g tsx
 # The API launches Codex with `codex exec --dangerously-bypass-approvals-and-
 # sandbox` (task-worker.ts, pooled-agent-command.ts; `--full-auto` is gone
 # from 0.162+): fail the build if the Codex this image gets no longer takes it.
-RUN npm install -g @anthropic-ai/claude-code@2.1.112 @openai/codex \
-    && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox
+RUN case ",${AGENT_CLIS}," in \
+      *,all,*) npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" @openai/codex \
+        && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox ;; \
+      *) case ",${AGENT_CLIS}," in *,claude-code,*) npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" ;; esac \
+         && case ",${AGENT_CLIS}," in *,codex,*) npm install -g @openai/codex \
+           && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox ;; esac ;; \
+    esac
 
 # The agent home every run writes under (/home/agent, as in the agent
 # images): the assistant's run homes, setup files and harness config. The
