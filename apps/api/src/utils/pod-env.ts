@@ -227,6 +227,19 @@ export function buildProcessStartScript(input: {
   ].join("\n");
 }
 
+export function gitBotIdentity(): { name: string; email: string } {
+  return {
+    name: "${GIT_BOT_NAME:-${GITHUB_APP_BOT_NAME:-Optio Agent}}",
+    email: "${GIT_BOT_EMAIL:-${GITHUB_APP_BOT_EMAIL:-optio-agent@noreply.github.com}}",
+  };
+}
+
+export function gitBotEnv(): Record<string, string> {
+  const name = process.env.GIT_BOT_NAME || "";
+  const email = process.env.GIT_BOT_EMAIL || "";
+  return { ...(name ? { GIT_BOT_NAME: name } : {}), ...(email ? { GIT_BOT_EMAIL: email } : {}) };
+}
+
 /** Where a pooled pod keeps the checkout of a persistent agent's repo. */
 export const POOLED_CHECKOUT_DIR = "/workspace/repo";
 
@@ -251,8 +264,8 @@ export const CHECKOUT_REPO: readonly string[] = [
   `    echo "https://oauth2:\${GITLAB_TOKEN}@$(echo "$OPTIO_REPO_URL" | sed -E 's|.*://([^/]+).*|\\1|')" >> ~/.git-credentials`,
   `  fi`,
   `fi`,
-  `git config --global user.name "\${GITHUB_APP_BOT_NAME:-Optio Agent}"`,
-  `git config --global user.email "\${GITHUB_APP_BOT_EMAIL:-optio-agent@noreply.github.com}"`,
+  `git config --global user.name "${gitBotIdentity().name}"`,
+  `git config --global user.email "${gitBotIdentity().email}"`,
   // Another repo since the last turn: start over with a fresh clone.
   `if [ -d ${POOLED_CHECKOUT_DIR}/.git ] && [ "$(git -C ${POOLED_CHECKOUT_DIR} remote get-url origin 2>/dev/null)" != "$OPTIO_REPO_URL" ]; then`,
   `  echo "[optio] The repo changed — cloning it fresh"`,

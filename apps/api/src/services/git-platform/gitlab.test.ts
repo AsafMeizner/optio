@@ -67,7 +67,7 @@ describe("GitLabPlatform", () => {
         `https://gitlab.com/api/v4/projects/${projectId}/merge_requests/7`,
         expect.objectContaining({
           headers: expect.objectContaining({
-            "PRIVATE-TOKEN": "glpat-test123",
+            Authorization: "Bearer glpat-test123",
           }),
         }),
       );

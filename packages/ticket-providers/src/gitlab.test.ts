@@ -28,6 +28,24 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("GitLabTicketProvider sign-in", () => {
+  it("sends the token as Authorization: Bearer, which takes every GitLab token kind", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "x-total-pages": "1" },
+      }),
+    );
+
+    await new GitLabTicketProvider().fetchActionableTickets(baseConfig());
+
+    const headers = new Headers(fetchSpy.mock.calls[0][1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer glpat-test-token");
+    expect(headers.get("private-token")).toBeNull();
+    fetchSpy.mockRestore();
+  });
+});
+
 describe("GitLabTicketProvider SSRF protection", () => {
   it("calls assertSsrfSafe before fetching issues", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(

@@ -40,7 +40,6 @@ import {
   retrieveSecretWithFallback,
 } from "../services/secret-service.js";
 import { getPromptTemplate } from "../services/prompt-template-service.js";
-import { isGitHubAppConfigured } from "../services/github-app-service.js";
 import { podProviderRuntime, resolveProviderForWork } from "../services/model-provider-service.js";
 import * as podPool from "../services/agent-pod-pool.js";
 import { getRuntime } from "../services/container-service.js";
@@ -93,7 +92,7 @@ import {
   EXPORT_OPENCODE_CONFIG,
   runHome,
 } from "../utils/harness-config.js";
-import { applyGitAccess } from "../services/git-access-env.js";
+import { applyGitAccess, requiredGitTokenSecret } from "../services/git-access-env.js";
 import { activityFlusher } from "../services/activity-flush.js";
 import { TASK_CLAIM_KEY, withClaimLock } from "../services/claim-lock.js";
 
@@ -557,12 +556,10 @@ export function startTaskWorker() {
         );
 
         // Resolve secrets (workspace → repo-scoped → global fallback)
-        // Only require GITHUB_TOKEN when GitHub App auth is not configured
+        // The repository platform decides which git token is required.
+        const gitToken = requiredGitTokenSecret(parsedRepo?.platform);
         const secretNames = [
-          ...new Set([
-            ...agentConfig.requiredSecrets,
-            ...(!isGitHubAppConfigured() ? ["GITHUB_TOKEN"] : []),
-          ]),
+          ...new Set([...agentConfig.requiredSecrets, ...(gitToken ? [gitToken] : [])]),
         ];
         const resolvedSecrets = await resolveSecretsForTask(
           secretNames,

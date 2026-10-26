@@ -38,6 +38,8 @@ import {
   RUN_WORK_SETUP_COMMANDS,
   superviseAgent,
   WRITE_SETUP_FILES,
+  gitBotEnv,
+  gitBotIdentity,
 } from "../utils/pod-env.js";
 import { removeRunHome, runHome } from "../utils/harness-config.js";
 import { resolveSecretsForSetup, workspaceRestrictsPodSecrets } from "./secret-service.js";
@@ -70,6 +72,18 @@ export async function repoPodEnv(
   for (const key of POD_ENV_KEYS) if (runEnv[key]) env[key] = runEnv[key];
   if (process.env.GITHUB_APP_BOT_NAME) env.GITHUB_APP_BOT_NAME = process.env.GITHUB_APP_BOT_NAME;
   if (process.env.GITHUB_APP_BOT_EMAIL) env.GITHUB_APP_BOT_EMAIL = process.env.GITHUB_APP_BOT_EMAIL;
+  Object.assign(env, gitBotEnv());
+  // A GitLab repo commits as the bot user of the organization's token (a
+  // project or group access token), unless the deployment named its own
+  // bot (GIT_BOT_*).
+  if (!process.env.GIT_BOT_NAME && !process.env.GIT_BOT_EMAIL) {
+    const { gitLabCommitIdentity } = await import("./gitlab-commit-identity.js");
+    const identity = await gitLabCommitIdentity(repoUrl, workspaceId).catch(() => null);
+    if (identity) {
+      env.GIT_BOT_NAME = identity.name;
+      env.GIT_BOT_EMAIL = identity.email;
+    }
+  }
   const setupSecrets = await resolveSecretsForSetup(repoUrl, workspaceId, {
     orgSecrets: !(await workspaceRestrictsPodSecrets(workspaceId)),
   });
@@ -908,8 +922,8 @@ function taskSetupLines(
     `  git config --local credential.helper '/usr/local/bin/optio-git-credential'`,
     `  echo "[optio] Worktree credential helper configured"`,
     `fi`,
-    `git config --local user.name "\${GITHUB_APP_BOT_NAME:-Optio Agent}"`,
-    `git config --local user.email "\${GITHUB_APP_BOT_EMAIL:-optio-agent@noreply.github.com}"`,
+    `git config --local user.name "${gitBotIdentity().name}"`,
+    `git config --local user.email "${gitBotIdentity().email}"`,
     `echo "${runToken}" > /workspace/tasks/${taskId}/.optio-run-token`,
     `export OPTIO_TASK_ID="${taskId}"`,
     ...WRITE_SETUP_FILES,

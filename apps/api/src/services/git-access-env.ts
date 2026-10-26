@@ -1,3 +1,4 @@
+import type { GitPlatformType } from "@optio/shared";
 /**
  * How a pod signs in to git — the same for every pod that clones or pushes: a
  * Repo Task, a review, a persistent agent with a repo.
@@ -10,6 +11,11 @@
 import { gitCredentialScope, gitCredentialKey } from "./git-credential-scope.js";
 import { getInstallationToken, isGitHubAppConfigured } from "./github-app-service.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
+
+export function requiredGitTokenSecret(platform: GitPlatformType | undefined): string | null {
+  if (platform === "gitlab") return "GITLAB_TOKEN";
+  return isGitHubAppConfigured() ? null : "GITHUB_TOKEN";
+}
 
 const apiInternalUrl = () =>
   process.env.OPTIO_API_INTERNAL_URL ?? `http://localhost:${process.env.API_PORT ?? "4000"}`;
