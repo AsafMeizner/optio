@@ -24,7 +24,7 @@
     "date-fns": "^4.1.0",
     "framer-motion": "^11.18.0",
     "lucide-react": "^0.513.0",
-    "next": "^15.5.16",
+    "next": "^15.5.28",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",

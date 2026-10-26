@@ -2,7 +2,7 @@
 # @optio/mcp-bridge is a stdio MCP server that proxies one token-authenticated
 # REST API for the agent. It is bundled to one file and baked in at
 # /opt/optio/mcp-bridge.js (launched as `node /opt/optio/mcp-bridge.js`).
-FROM node:22-slim AS bridge
+FROM node:22-slim@sha256:80fdb3f57c815e1b638d221f30a826823467c4a56c8f6a8d7aa091cd9b1675ea AS bridge
 RUN corepack enable && corepack prepare pnpm@10 --activate
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
