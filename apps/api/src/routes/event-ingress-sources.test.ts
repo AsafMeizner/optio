@@ -3,7 +3,7 @@
  * or signature, drops redeliveries, normalizes, and persists before acknowledging.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
 
@@ -237,10 +237,16 @@ describe("POST /api/webhooks/sentry", () => {
       "sentry",
       expect.objectContaining({ kind: "issue_created", shortId: "API-1A", project: "api" }),
     );
-    expect(mockClaim).toHaveBeenCalledWith("sentry", "issue:created:123:1700000000");
-    // The same delivery again (same timestamp) is a redelivery.
+    expect(mockClaim).toHaveBeenCalledWith(
+      "sentry",
+      `issue:created:123:${createHash("sha256").update(issueCreated).digest("hex")}`,
+    );
+    // The same delivery again is a redelivery.
     const again = await post(issueCreated, signed(issueCreated, "issue"));
     expect(again.json()).toEqual({ ok: true, duplicate: true });
+    // So is a captured delivery replayed with a fresh (unsigned) timestamp header.
+    const replay = await post(issueCreated, signed(issueCreated, "issue", "1800000000"));
+    expect(replay.json()).toEqual({ ok: true, duplicate: true });
     await flush();
     expect(mockPersist).toHaveBeenCalledTimes(1);
   });

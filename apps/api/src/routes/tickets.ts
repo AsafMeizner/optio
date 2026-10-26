@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { and, eq, gt, sql } from "drizzle-orm";
-import { Readable } from "node:stream";
+import { captureRawBody, rawBodyOf } from "../utils/webhook-signature.js";
 import { db } from "../db/client.js";
 import { ticketProviders, authEvents } from "../db/schema.js";
 import { TaskState } from "@optio/shared";
@@ -309,15 +309,8 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
       tags: ["Repos & Integrations"],
       response: { 200: WebhookOkResponseSchema, 401: ErrorResponseSchema },
     },
-    preParsing: async (req, _reply, payload) => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of payload) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
-      }
-      const rawBody = Buffer.concat(chunks);
-      (req as unknown as { rawBody: Buffer }).rawBody = rawBody;
-      return Readable.from(rawBody);
-    },
+    // Bounded by the route's bodyLimit while reading (the endpoint is public).
+    preParsing: captureRawBody,
     handler: async (req, reply) => {
       const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
 
@@ -332,7 +325,7 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
         return reply.status(401).send({ error: "Missing signature" });
       }
 
-      const rawBody = (req as unknown as { rawBody: Buffer }).rawBody;
+      const rawBody = rawBodyOf(req);
       if (!(await verifyGitHubSignature(rawBody, signature, webhookSecret))) {
         logger.warn("Webhook signature verification failed");
         return reply.status(401).send({ error: "Invalid signature" });

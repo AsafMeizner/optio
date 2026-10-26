@@ -314,14 +314,17 @@ export async function syncAllTickets(): Promise<number> {
         // agent. These spawn alongside the repo-scoped task above.
         try {
           const { fireTicketTriggers } = await import("./trigger-dispatch.js");
-          await fireTicketTriggers({
-            source: ticket.source,
-            externalId: ticket.externalId,
-            title: ticket.title,
-            body: ticket.body,
-            labels: ticket.labels,
-            url: ticket.url,
-          });
+          await fireTicketTriggers(
+            {
+              source: ticket.source,
+              externalId: ticket.externalId,
+              title: ticket.title,
+              body: ticket.body,
+              labels: ticket.labels,
+              url: ticket.url,
+            },
+            { repoUrl },
+          );
         } catch (triggerErr) {
           logger.warn(
             { err: triggerErr, ticketId: ticket.externalId },
