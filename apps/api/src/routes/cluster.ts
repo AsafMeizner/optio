@@ -7,7 +7,7 @@ import { tasks, podHealthEvents, repos } from "../db/schema.js";
 import { getRepoPodView, listRepoPodViews } from "../services/repo-pool-service.js";
 import { deletePod } from "../services/agent-pod-pool.js";
 import { eq, desc, and, inArray, sql } from "drizzle-orm";
-import { requireRole } from "../plugins/auth.js";
+import { requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { getVersionInfo, isLocalDev } from "../services/version-service.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 
@@ -589,7 +589,8 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.post(
     "/api/cluster/update",
     {
-      preHandler: [requireRole("admin")],
+      // Rolls the deployment everyone shares: a workspace admin isn't enough.
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "triggerClusterUpdate",
         summary: "Trigger a self-update",
@@ -602,6 +603,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
         response: {
           200: UpdateResponseSchema,
           400: ErrorResponseSchema,
+          403: ErrorResponseSchema,
           500: ErrorResponseSchema,
         },
       },

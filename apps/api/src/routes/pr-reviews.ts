@@ -6,10 +6,12 @@
  * kept as thin aliases that look up the pr_review by id (since pr_review
  * ids are globally unique across all Task-like resources).
  */
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { normalizeRepoUrl, parsePrUrl } from "@optio/shared";
 import { requireRole } from "../plugins/auth.js";
+import { getRepoByUrl } from "../services/repo-service.js";
 import { listLogs } from "../services/run-log-service.js";
 import * as prReviewService from "../services/pr-review-service.js";
 import { logger } from "../logger.js";
@@ -152,6 +154,40 @@ const GenericResultSchema = z
   .record(z.unknown())
   .describe("Operation result — shape depends on the endpoint");
 
+/**
+ * The review, when it is in the caller's workspace; otherwise a 404 is sent
+ * and null returned (another workspace's review is indistinguishable from a
+ * missing one). Callers `return` on null.
+ */
+async function reviewInWorkspace(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  id: string,
+  notFound = "PR review not found",
+): Promise<Awaited<ReturnType<typeof prReviewService.getPrReview>>> {
+  const review = await prReviewService.getPrReview(id);
+  const wsId = req.user?.workspaceId;
+  if (!review || (wsId && review.workspaceId !== wsId)) {
+    reply.status(404).send({ error: notFound });
+    return null;
+  }
+  return review;
+}
+
+/**
+ * Whether a PR's repository is one of the caller's workspace's repos — the
+ * rule `launchPrReview` applies. Merge and status act with the deployment's
+ * git credentials, so they reach only PRs of configured repos.
+ */
+async function prRepoInWorkspace(req: FastifyRequest, prUrl: string): Promise<boolean> {
+  const wsId = req.user?.workspaceId;
+  if (!wsId) return true;
+  const parsed = parsePrUrl(prUrl);
+  if (!parsed) return true; // the service rejects it as an invalid PR URL
+  const repoUrl = normalizeRepoUrl(`https://${parsed.host}/${parsed.owner}/${parsed.repo}`);
+  return !!(await getRepoByUrl(repoUrl, wsId));
+}
+
 export async function prReviewRoutes(rawApp: FastifyInstance) {
   const app = rawApp.withTypeProvider<ZodTypeProvider>();
 
@@ -196,7 +232,7 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
           "initial review run. Requires `member` role.",
         tags: ["Reviews & PRs"],
         body: createReviewSchema,
-        response: { 201: GenericResultSchema, 400: ErrorResponseSchema },
+        response: { 201: GenericResultSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema },
       },
     },
     async (req, reply) => {
@@ -204,6 +240,9 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
         const result = await prReviewService.launchPrReview({
           prUrl: req.body.prUrl,
           workspaceId: req.user?.workspaceId ?? undefined,
+          // An existing review of the same PR URL in another workspace is
+          // not this caller's to relaunch.
+          ...(req.user?.workspaceId ? { expectedWorkspaceId: req.user.workspaceId } : {}),
           createdBy: req.user?.id,
           origin: "manual",
         });
@@ -236,8 +275,8 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const review = await prReviewService.getPrReview(req.params.id);
-      if (!review) return reply.status(404).send({ error: "PR review not found" });
+      const review = await reviewInWorkspace(req, reply, req.params.id);
+      if (!review) return;
       reply.send({ review });
     },
   );
@@ -255,8 +294,8 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const review = await prReviewService.getPrReview(req.params.id);
-      if (!review) return reply.status(404).send({ error: "PR review not found" });
+      const review = await reviewInWorkspace(req, reply, req.params.id);
+      if (!review) return;
       const runs = await prReviewService.listPrReviewRuns(review.id);
       reply.send({ runs });
     },
@@ -285,6 +324,7 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
+      if (!(await reviewInWorkspace(req, reply, req.params.id))) return;
       try {
         const review = await prReviewService.updatePrReviewDraft(req.params.id, req.body);
         reply.send({ review });
@@ -312,6 +352,7 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
+      if (!(await reviewInWorkspace(req, reply, req.params.id))) return;
       try {
         const result = await prReviewService.submitReview(req.params.id, req.user?.id);
         reply.send(result);
@@ -332,10 +373,11 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
         summary: "Launch a fresh review run on the same PR",
         tags: ["Reviews & PRs"],
         params: IdParamsSchema,
-        response: { 201: GenericResultSchema, 400: ErrorResponseSchema },
+        response: { 201: GenericResultSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema },
       },
     },
     async (req, reply) => {
+      if (!(await reviewInWorkspace(req, reply, req.params.id))) return;
       try {
         const result = await prReviewService.reReview(req.params.id, req.user?.id);
         reply.status(201).send(result);
@@ -356,10 +398,11 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
         summary: "Cancel a PR review",
         tags: ["Reviews & PRs"],
         params: IdParamsSchema,
-        response: { 200: GenericResultSchema },
+        response: { 200: GenericResultSchema, 404: ErrorResponseSchema },
       },
     },
     async (req, reply) => {
+      if (!(await reviewInWorkspace(req, reply, req.params.id))) return;
       await prReviewService.setControlIntent(req.params.id, "cancel");
       reply.send({ ok: true });
     },
@@ -378,8 +421,8 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const review = await prReviewService.getPrReview(req.params.id);
-      if (!review) return reply.status(404).send({ error: "PR review not found" });
+      const review = await reviewInWorkspace(req, reply, req.params.id);
+      if (!review) return;
       const messages = await prReviewService.listReviewChat(review.id);
       reply.send({ messages });
     },
@@ -403,6 +446,7 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
+      if (!(await reviewInWorkspace(req, reply, req.params.id))) return;
       try {
         const result = await prReviewService.postReviewChat({
           prReviewId: req.params.id,
@@ -432,6 +476,9 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       try {
+        if (!(await prRepoInWorkspace(req, req.body.prUrl))) {
+          return reply.status(400).send({ error: "That PR's repository isn't in this workspace" });
+        }
         const result = await prReviewService.mergePr({
           prUrl: req.body.prUrl,
           mergeMethod: req.body.mergeMethod,
@@ -459,6 +506,9 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       try {
+        if (!(await prRepoInWorkspace(req, req.query.prUrl))) {
+          return reply.status(400).send({ error: "That PR's repository isn't in this workspace" });
+        }
         const status = await prReviewService.getPrStatus(req.query.prUrl, {
           workspaceId: req.user?.workspaceId ?? null,
         });
@@ -488,13 +538,19 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const review = await prReviewService.getPrReview(req.params.id);
-      if (!review) return reply.status(404).send({ error: "PR review not found" });
+      const review = await reviewInWorkspace(req, reply, req.params.id);
+      if (!review) return;
       let runId = req.query.runId;
       if (!runId) {
         const latest = await prReviewService.getLatestRun(review.id);
         if (!latest) return reply.send({ logs: [] });
         runId = latest.id;
+      } else {
+        // Only this review's own runs: a run id from another review is a 404.
+        const runs = await prReviewService.listPrReviewRuns(review.id);
+        if (!runs.some((r) => r.id === runId)) {
+          return reply.status(404).send({ error: "Run not found" });
+        }
       }
       const rows = await listLogs({ prReviewRunId: runId });
       reply.send({ logs: rows, runId });
@@ -517,8 +573,8 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const review = await prReviewService.getPrReview(req.params.id);
-      if (!review) return reply.status(404).send({ error: "No review draft found" });
+      const review = await reviewInWorkspace(req, reply, req.params.id, "No review draft found");
+      if (!review) return;
       reply.send({ draft: review });
     },
   );
