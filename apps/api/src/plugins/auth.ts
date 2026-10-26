@@ -209,11 +209,19 @@ async function authPlugin(app: FastifyInstance) {
     // Public routes — no auth needed
     if (isPublicRoute(req.url, req.method)) return;
 
-    // Setup routes (other than /status) are public only before initial setup.
-    // Once setup is complete they require authentication like any other route.
+    // Setup routes (other than /status) are public only before initial setup,
+    // and only while nobody can sign in at all (bootstrap). Once a sign-in
+    // provider exists the wizard's later steps run as a signed-in admin (they
+    // store secrets), so the probes — some of which act with the deployment's
+    // GitHub App / GITHUB_TOKEN — need a session too. "Setup complete" alone
+    // isn't enough: it means an agent key secret exists, which a deployment
+    // signed in to Bedrock, Groq, a Codex app server… may never have.
     if (req.url.startsWith("/api/setup/")) {
       const complete = await isSetupComplete();
-      if (!complete) return; // Allow without auth during initial setup
+      if (!complete) {
+        const { isBootstrapMode } = await import("../services/sign-in-config-service.js");
+        if (await isBootstrapMode()) return; // Allow without auth during initial setup
+      }
       // Fall through to normal auth check
     }
 
