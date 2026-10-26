@@ -17,13 +17,20 @@ We ask that you give us reasonable time to address the issue before disclosing i
 
 ## Current Security Posture
 
-### No Authentication (by design, for now)
+### Authentication and authorization
 
-**The Optio web UI and API have no authentication or authorization.** All endpoints are open and accessible to anyone who can reach the network.
+The web UI and API require sign-in (GitHub, Google, GitLab or generic OIDC; see
+`docs/sign-in.md`) unless `OPTIO_AUTH_DISABLED=true`, which is for local
+development only. Sessions and personal access tokens are random 256-bit values
+stored as SHA-256 hashes. Workspaces enforce admin / member / viewer roles, and
+work, secrets and connections are either the organization's or one person's
+(`docs/scope.md`). Actions on the whole deployment (global secrets, the Claude
+token, ticket providers, cluster pods and upgrades) need a deployment admin:
+anyone who can sign in can create a workspace and be its admin.
 
-This is a known limitation documented in the project roadmap. Optio is currently intended for use on **trusted networks only** — local development machines, private VPNs, or internal clusters where network-level access controls are already in place.
-
-**Do not expose Optio to the public internet without adding an authentication layer in front of it.**
+With GitHub or OIDC sign-in and no allowed domains, anyone with an account at
+that provider can sign in. Restrict sign-in (allowed domains, your IdP) or keep
+Optio on a private network.
 
 ### Encryption at Rest
 
@@ -34,6 +41,10 @@ Secrets stored in the database (e.g., API keys, tokens) are encrypted using **AE
 Agents (Claude Code, OpenAI Codex) run inside isolated Kubernetes pods with git worktrees. Each task gets its own worktree within a shared repo pod. The pods run with a dedicated ServiceAccount that has RBAC-scoped permissions limited to pod and exec operations within the Optio namespace.
 
 Claude Code runs with `--dangerously-skip-permissions`, which means the agent has full access to the filesystem and can execute arbitrary commands within the pod. This is necessary for the agent to function but means you should treat the pod environment as untrusted after agent execution.
+
+Agents read untrusted text (issues, PR diffs, web pages) and must be assumed prompt-injectable. Agent pods get no Kubernetes token, a separate service account, and GitHub App tokens limited to their repo. Enable `networkPolicy.enabled` in production so agent pods reach only the API and the internet (cloud metadata is denied by default). Keep Ask Optio on its default `agent-pod` placement: `api-pod` runs the assistant with the API's own credentials.
+
+Past reviews and their open items: `docs/security-review-2026-10.md`, `docs/audits/security-audit-2026-10-26.md`.
 
 ## Production Deployment Recommendations
 
