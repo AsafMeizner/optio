@@ -236,12 +236,16 @@ export async function saveSignInConfig(
   } else {
     await db.insert(authProviderConfigs).values({ provider, ...values });
   }
+  const { resetOAuthProviders } = await import("./oauth/index.js");
+  resetOAuthProviders();
   logger.info({ provider, actorUserId, domains: values.allowedDomains }, "Sign-in provider saved");
   return (await listSignInProviders()).find((p) => p.provider === provider)!;
 }
 
 export async function deleteSignInConfig(provider: string): Promise<void> {
   await db.delete(authProviderConfigs).where(eq(authProviderConfigs.provider, provider));
+  const { resetOAuthProviders } = await import("./oauth/index.js");
+  resetOAuthProviders();
 }
 
 // ── Who may sign in ─────────────────────────────────────────────────────────
