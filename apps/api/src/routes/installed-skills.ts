@@ -30,12 +30,21 @@ const skillNameSchema = z
     "name must be lowercase alphanumeric with -, _, or . (max 64 chars)",
   );
 
+// Both reach `git` as arguments: never one it could read as an option.
+const sourceUrlSchema = z
+  .string()
+  .min(1)
+  .refine((v) => !v.trimStart().startsWith("-"), 'sourceUrl must not start with "-"');
+const refSchema = z
+  .string()
+  .refine((v) => !v.trimStart().startsWith("-"), 'ref must not start with "-"');
+
 const createInstalledSkillSchema = z
   .object({
     name: skillNameSchema.describe("Becomes .claude/skills/<name>/ in the worktree"),
     description: z.string().optional(),
-    sourceUrl: z.string().min(1).describe("Git URL to clone (any public URL for now)"),
-    ref: z.string().optional().describe("Branch, tag, or SHA. Defaults to 'main'."),
+    sourceUrl: sourceUrlSchema.describe("Git URL to clone (any public URL for now)"),
+    ref: refSchema.optional().describe("Branch, tag, or SHA. Defaults to 'main'."),
     subpath: z
       .string()
       .optional()
@@ -59,7 +68,7 @@ const updateInstalledSkillSchema = z
   .object({
     name: skillNameSchema.optional(),
     description: z.string().nullable().optional(),
-    ref: z.string().optional(),
+    ref: refSchema.optional(),
     subpath: z.string().optional(),
     agentTypes: z.array(z.string()).nullable().optional(),
     enabled: z.boolean().optional(),

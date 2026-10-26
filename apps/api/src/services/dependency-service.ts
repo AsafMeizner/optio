@@ -17,11 +17,17 @@ export async function addDependencies(taskId: string, dependsOnIds: string[]): P
     throw new Error("A task cannot depend on itself");
   }
 
-  // Validate all dependency tasks exist
-  const depTasks = await db
-    .select({ id: tasks.id })
+  // Validate all dependency tasks exist — in the task's own workspace: a
+  // dependency shows its title and state on this task, and its completion
+  // releases it, so another workspace's task reads as not found.
+  const rows = await db
+    .select({ id: tasks.id, workspaceId: tasks.workspaceId })
     .from(tasks)
-    .where(inArray(tasks.id, dependsOnIds));
+    .where(inArray(tasks.id, [taskId, ...dependsOnIds]));
+  const workspaceOf = (row: { workspaceId?: string | null } | undefined) =>
+    row?.workspaceId ?? null;
+  const ownWorkspace = workspaceOf(rows.find((t) => t.id === taskId));
+  const depTasks = rows.filter((t) => t.id !== taskId && workspaceOf(t) === ownWorkspace);
   const foundIds = new Set(depTasks.map((t) => t.id));
   const missing = dependsOnIds.filter((id) => !foundIds.has(id));
   if (missing.length > 0) {

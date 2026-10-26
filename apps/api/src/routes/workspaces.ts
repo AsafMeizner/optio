@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import * as workspaceService from "../services/workspace-service.js";
+import { isDeploymentAdmin } from "../services/sign-in-config-service.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { WorkspaceSchema, WorkspaceMemberSchema } from "../schemas/workspace.js";
 
@@ -48,6 +49,35 @@ const updateWorkspaceSchema = z
       ),
   })
   .describe("Partial update to a workspace");
+
+/**
+ * Why `user` may not add these auto-join domains to workspace `id`, or null.
+ *
+ * Anyone signed in can create a workspace and be its admin, so a domain on
+ * the list is a claim on everyone who signs in from it: they join the
+ * workspace (and a first-timer gets it as their default). A workspace admin
+ * may add their own email's domain; any other domain needs a deployment
+ * admin. Removing domains, or keeping ones already there, is always allowed.
+ */
+async function autoJoinClaimError(
+  user: { id: string; email?: string | null },
+  id: string,
+  requested: string[],
+): Promise<string | null> {
+  const normalized = workspaceService.normalizeAutoJoinDomains(requested);
+  if ("error" in normalized) return null; // the update refuses it with a 400
+  const current = await workspaceService.getWorkspace(id);
+  const existing = new Set(current?.autoJoinDomains ?? []);
+  const added = normalized.domains.filter((d) => !existing.has(d));
+  if (added.length === 0) return null;
+  if (await isDeploymentAdmin({ id: user.id, email: user.email })) return null;
+  const own = user.email?.split("@")[1]?.trim().toLowerCase() ?? null;
+  const foreign = added.find((d) => d !== own);
+  if (!foreign) return null;
+  return own
+    ? `Only a deployment admin can let everyone from ${foreign} join — you can add your own domain (${own})`
+    : `Only a deployment admin can let everyone from ${foreign} join`;
+}
 
 const addMemberSchema = z
   .object({
@@ -173,6 +203,11 @@ export async function workspaceRoutes(rawApp: FastifyInstance) {
 
       const role = await workspaceService.getUserRole(id, req.user.id);
       if (role !== "admin") return reply.status(403).send({ error: "Admin role required" });
+
+      if (req.body.autoJoinDomains !== undefined) {
+        const claimError = await autoJoinClaimError(req.user, id, req.body.autoJoinDomains);
+        if (claimError) return reply.status(403).send({ error: claimError });
+      }
 
       let workspace;
       try {

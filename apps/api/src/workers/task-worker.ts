@@ -11,6 +11,7 @@ import {
   TaskState,
   TASK_BRANCH_PREFIX,
   renderPromptTemplate,
+  shellSafeTitle,
   renderTaskFile,
   TASK_FILE_PATH,
   DEFAULT_MAX_TURNS_CODING,
@@ -437,7 +438,7 @@ export function startTaskWorker() {
           TASK_FILE: taskFilePath,
           BRANCH_NAME: branchName,
           TASK_ID: task.id,
-          TASK_TITLE: task.title,
+          TASK_TITLE: shellSafeTitle(task.title),
           REPO_NAME: repoName,
           // The task's own follow-through wins over the repo's; cautious mode
           // (draft PRs) never merges.
@@ -621,6 +622,7 @@ export function startTaskWorker() {
         await applyGitAccess(allEnv, {
           workspaceId: taskWorkspaceId,
           ownerUserId: runOwnerUserId,
+          repoUrl: task.repoUrl,
           runId: task.id,
         });
 

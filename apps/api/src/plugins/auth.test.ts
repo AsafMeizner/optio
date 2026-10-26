@@ -33,7 +33,19 @@ vi.mock("../services/secret-service.js", () => ({
   listSecrets: (...args: unknown[]) => mockListSecrets(...args),
 }));
 
+const mockIsBootstrapMode = vi.fn();
+const mockIsDeploymentAdmin = vi.fn();
+const mockHasDeploymentAdmin = vi.fn();
+const mockIsFoundingWorkspaceAdmin = vi.fn();
+vi.mock("../services/sign-in-config-service.js", () => ({
+  isBootstrapMode: (...args: unknown[]) => mockIsBootstrapMode(...args),
+  isDeploymentAdmin: (...args: unknown[]) => mockIsDeploymentAdmin(...args),
+  hasDeploymentAdmin: (...args: unknown[]) => mockHasDeploymentAdmin(...args),
+  isFoundingWorkspaceAdmin: (...args: unknown[]) => mockIsFoundingWorkspaceAdmin(...args),
+}));
+
 import authPlugin, {
+  requireDeploymentAdmin,
   requireRole,
   isSetupComplete,
   resetSetupCompleteCache,
@@ -658,5 +670,85 @@ describe("isSetupComplete", () => {
     mockListSecrets.mockResolvedValue([]);
     expect(await isSetupComplete()).toBe(false);
     expect(mockListSecrets).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("requireDeploymentAdmin", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authDisabled = false;
+  });
+
+  async function deploymentApp(): Promise<FastifyInstance> {
+    const app = Fastify({ logger: false });
+    app.addHook("onRequest", async (req) => {
+      (req as any).user = makeUser("admin");
+    });
+    app.post(
+      "/deployment-wide",
+      { preHandler: [requireRole("admin"), requireDeploymentAdmin] },
+      async () => ({ ok: true }),
+    );
+    await app.ready();
+    return app;
+  }
+
+  it("refuses a workspace admin who isn't a deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    mockHasDeploymentAdmin.mockResolvedValue(true);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("allows a deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(true);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("accepts the founding workspace's admin while the deployment has no deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    mockHasDeploymentAdmin.mockResolvedValue(false);
+    mockIsFoundingWorkspaceAdmin.mockResolvedValue(true);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("refuses the admin of a self-made workspace while the deployment has no deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    mockHasDeploymentAdmin.mockResolvedValue(false);
+    mockIsFoundingWorkspaceAdmin.mockResolvedValue(false);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("authPlugin setup routes before setup is complete", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authDisabled = false;
+    resetSetupCompleteCache();
+    // No agent key secret: "setup incomplete" (a Bedrock-only deployment stays so).
+    mockListSecrets.mockResolvedValue([]);
+  });
+
+  async function buildSetupApp(): Promise<FastifyInstance> {
+    const app = Fastify({ logger: false });
+    await app.register(authPlugin);
+    app.post("/api/setup/repos", async () => ({ ok: true }));
+    await app.ready();
+    return app;
+  }
+
+  it("is open without a session while nobody can sign in (bootstrap)", async () => {
+    mockIsBootstrapMode.mockResolvedValue(true);
+    const res = await (await buildSetupApp()).inject({ method: "POST", url: "/api/setup/repos" });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("needs a session once a sign-in provider is configured", async () => {
+    mockIsBootstrapMode.mockResolvedValue(false);
+    const res = await (await buildSetupApp()).inject({ method: "POST", url: "/api/setup/repos" });
+    expect(res.statusCode).toBe(401);
   });
 });

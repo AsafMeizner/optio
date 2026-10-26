@@ -18,7 +18,7 @@ import { startApiServer, type ApiServerHandle } from "../src/test-utils/e2e/api-
 let server: ApiServerHandle;
 
 const WS_ID = randomUUID();
-const TOKENS = { admin: "", member: "", viewer: "" };
+const TOKENS = { admin: "", member: "", viewer: "", outsider: "" };
 
 async function seedPrincipals(): Promise<void> {
   const sql = postgres(process.env.DATABASE_URL!, { max: 1 });
@@ -30,8 +30,8 @@ async function seedPrincipals(): Promise<void> {
       TOKENS[role] = token;
       const tokenHash = createHash("sha256").update(token).digest("hex");
       await sql`
-        INSERT INTO users (id, provider, external_id, email, display_name, default_workspace_id)
-        VALUES (${userId}, 'github', ${`rbac-${role}`}, ${`${role}@rbac.e2e`}, ${`RBAC ${role}`}, ${WS_ID})`;
+        INSERT INTO users (id, provider, external_id, email, display_name, default_workspace_id, deployment_admin)
+        VALUES (${userId}, 'github', ${`rbac-${role}`}, ${`${role}@rbac.e2e`}, ${`RBAC ${role}`}, ${WS_ID}, ${role === "admin"})`;
       await sql`
         INSERT INTO workspace_members (workspace_id, user_id, role)
         VALUES (${WS_ID}, ${userId}, ${role})`;
@@ -39,6 +39,21 @@ async function seedPrincipals(): Promise<void> {
         INSERT INTO sessions (user_id, token_hash, expires_at)
         VALUES (${userId}, ${tokenHash}, NOW() + INTERVAL '1 day')`;
     }
+    // Anyone signed in can make a workspace and be its admin: that is no
+    // standing on the deployment.
+    const outsiderWs = randomUUID();
+    const outsiderId = randomUUID();
+    TOKENS.outsider = `e2e-outsider-${randomBytes(16).toString("hex")}`;
+    await sql`INSERT INTO workspaces (id, name, slug) VALUES (${outsiderWs}, 'Self-made', ${`rbac-own-${outsiderWs.slice(0, 8)}`})`;
+    await sql`
+      INSERT INTO users (id, provider, external_id, email, display_name, default_workspace_id)
+      VALUES (${outsiderId}, 'github', 'rbac-outsider', 'outsider@rbac.e2e', 'RBAC outsider', ${outsiderWs})`;
+    await sql`
+      INSERT INTO workspace_members (workspace_id, user_id, role)
+      VALUES (${outsiderWs}, ${outsiderId}, 'admin')`;
+    await sql`
+      INSERT INTO sessions (user_id, token_hash, expires_at)
+      VALUES (${outsiderId}, ${createHash("sha256").update(TOKENS.outsider).digest("hex")}, NOW() + INTERVAL '1 day')`;
   } finally {
     await sql.end();
   }
@@ -54,7 +69,7 @@ afterAll(async () => {
 });
 
 async function call(
-  role: "admin" | "member" | "viewer" | null,
+  role: keyof typeof TOKENS | null,
   method: string,
   path: string,
   body?: unknown,
@@ -144,6 +159,23 @@ describe("RBAC e2e (auth enabled)", () => {
     // proves the admin passed the role gate and reached the handler.
     const token = await call("admin", "GET", "/api/auth/claude-token");
     expect([200, 503]).toContain(token.status);
+  });
+
+  it("keeps the admin of a self-made workspace off deployment-wide state", async () => {
+    const secret = await call("outsider", "POST", "/api/secrets", {
+      name: "GITHUB_TOKEN",
+      value: "ghp_not_yours",
+    });
+    expect(secret.status).toBe(403);
+    expect((await call("outsider", "GET", "/api/auth/claude-token")).status).toBe(403);
+    expect((await call("outsider", "GET", "/api/cluster/overview")).status).toBe(403);
+    // Their own private secret is still theirs to store.
+    const own = await call("outsider", "POST", "/api/secrets", {
+      name: "MY_TOKEN",
+      value: "v",
+      scope: "user",
+    });
+    expect([200, 201]).toContain(own.status);
   });
 
   it("blocks a viewer from admin-only reads that a member can see", async () => {

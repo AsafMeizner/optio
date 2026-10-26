@@ -116,14 +116,20 @@ web:
 optio:
   assistant:
     # Where an Ask Optio turn runs:
-    #   api-pod    (default) as a child process of the API, in the API pod —
-    #              no agent pod per conversation. The API image carries Claude
-    #              Code and Codex for it; an assistant on another harness, or
-    #              one with a repo, runs in an agent pod regardless.
-    #   agent-pod  a pooled agent pod per conversation (the assistant isolated
-    #              from the API: its own resources, nothing of the API's
-    #              filesystem or service account within its reach).
-    placement: api-pod
+    #   agent-pod  (default) a pooled agent pod per conversation (the assistant
+    #              isolated from the API: its own resources, nothing of the
+    #              API's filesystem, environment or service account within
+    #              its reach).
+    #   api-pod    as a child process of the API, in the API pod — no agent pod
+    #              per conversation. SECURITY: the harness runs as the API's
+    #              own user with its permission checks skipped, so anyone who
+    #              can use Ask Optio (or text it reads) can read the API's
+    #              environment (encryption key, database URL, OAuth secrets)
+    #              and service-account token. Only for deployments whose every
+    #              member is trusted with those. An assistant on another
+    #              harness than Claude Code / Codex, or one with a repo, runs
+    #              in an agent pod regardless.
+    placement: agent-pod
     # Turns the API pod runs at once; the rest go to agent pods.
     inPodMax: 3
   # The legacy dedicated assistant pod (below). Off by default: nothing in
@@ -242,13 +248,26 @@ outbound:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Network Policy
-# Default-deny policy for agent (repo) pods. Restricts cluster-internal
-# traffic so compromised pods cannot reach PostgreSQL, Redis, or other
-# services directly. Requires a CNI plugin that supports NetworkPolicy
-# (e.g. Calico, Cilium, Weave Net). Not supported on Docker Desktop.
+# Default-deny policy for every agent pod Optio starts (repo pods, Job pods,
+# persistent-agent pods, assistant agent pods — all labeled managed-by=optio).
+# Restricts cluster-internal traffic so compromised pods cannot reach
+# PostgreSQL, Redis, or other services directly. Requires a CNI plugin that
+# supports NetworkPolicy (e.g. Calico, Cilium, Weave Net). Not supported on
+# Docker Desktop.
 # ──────────────────────────────────────────────────────────────────────────────
 networkPolicy:
   enabled: false  # Set to true when your cluster supports NetworkPolicy
+  # Destinations agent pods may not reach on ports 80/443 although the rest
+  # of the internet is open to them: by default the link-local range, where
+  # cloud instance metadata services live (169.254.169.254 on AWS / GCP /
+  # Azure, fd00:ec2::254 on AWS IPv6) and hand out the node's IAM
+  # credentials. With a non-empty list the 80/443 rules match by ipBlock; on
+  # Cilium an ipBlock does not match in-cluster pods, so an agent that needs
+  # an in-cluster service on 80/443 (a model proxy, a registry mirror) needs
+  # its own rule. Set to [] for the old port-only rules.
+  deniedEgressCidrs:
+    - 169.254.0.0/16
+    - fd00:ec2::254/128
 
 # Marketplace skills (issue #497) are synced into the database
 # (`installed_skill_files`), so every API pod serves them and no volume is

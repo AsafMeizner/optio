@@ -16,6 +16,7 @@ interface Seen {
   url: string;
   host: string | undefined;
   authorization: string | undefined;
+  privateToken?: string | string[] | undefined;
 }
 
 let server: http.Server;
@@ -39,6 +40,7 @@ beforeAll(async () => {
       url: req.url ?? "",
       host: req.headers.host,
       authorization: req.headers.authorization,
+      privateToken: req.headers["private-token"],
     });
     const path = req.url ?? "/";
     const redirectTo = (status: number, location: string) => {
@@ -199,6 +201,20 @@ describe("guardedFetch", () => {
     });
     await same.text();
     expect(seen.map((s) => s.authorization)).toEqual(["Bearer s3cret", "Bearer s3cret"]);
+  });
+
+  it("drops a GitLab PRIVATE-TOKEN on a cross-origin hop too", async () => {
+    seen.length = 0;
+    const cross = await guardedFetch(api("/cross"), {
+      resolveHost,
+      policy: LOOPBACK_OK,
+      headers: { "PRIVATE-TOKEN": "glpat-s3cret" },
+    });
+    await cross.text();
+    expect(seen.map((s) => [s.host, s.privateToken])).toEqual([
+      [`api.test:${port}`, "glpat-s3cret"],
+      [`other.test:${port}`, undefined],
+    ]);
   });
 
   it("times out", async () => {

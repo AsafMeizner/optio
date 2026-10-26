@@ -48,6 +48,7 @@ vi.mock("../plugins/auth.js", () => ({
   SESSION_COOKIE_NAME: "optio_session",
   // Pass-through guard — role enforcement is covered in plugins/auth.test.ts
   requireRole: () => async () => {},
+  requireDeploymentAdmin: async () => {},
 }));
 
 // Redis mock — in-memory store to simulate Redis setex/get/del

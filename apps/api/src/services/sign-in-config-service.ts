@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { authProviderConfigs, users, workspaces } from "../db/schema.js";
+import { authProviderConfigs, users, workspaceMembers, workspaces } from "../db/schema.js";
 import { logger } from "../logger.js";
 import { decrypt, encrypt } from "./secret-service.js";
 import { getRedisClient } from "./event-bus.js";
@@ -306,6 +306,26 @@ export async function isDeploymentAdmin(user: {
     .from(users)
     .where(eq(users.id, user.id));
   return row?.deploymentAdmin ?? false;
+}
+
+/**
+ * Whether `userId` is an admin of the deployment's first workspace — the
+ * stand-in for a deployment admin until someone holds that role. Only the
+ * founding workspace counts: anyone signed in can create a workspace and be
+ * its admin, so "an admin somewhere" proves nothing about the deployment.
+ */
+export async function isFoundingWorkspaceAdmin(userId: string): Promise<boolean> {
+  const [first] = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .orderBy(asc(workspaces.createdAt), asc(workspaces.id))
+    .limit(1);
+  if (!first) return false;
+  const [member] = await db
+    .select({ role: workspaceMembers.role })
+    .from(workspaceMembers)
+    .where(and(eq(workspaceMembers.workspaceId, first.id), eq(workspaceMembers.userId, userId)));
+  return member?.role === "admin";
 }
 
 export interface DeploymentAdmin {

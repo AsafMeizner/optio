@@ -41,6 +41,24 @@ export function requireRole(minimumRole: WorkspaceRole) {
   };
 }
 
+/**
+ * A preHandler for actions on the whole deployment rather than one
+ * workspace. Being a workspace admin isn't enough there — anyone signed in
+ * can create a workspace and be its admin — so it takes a deployment admin.
+ * A deployment that has none yet (upgraded from before the role existed, or
+ * with no `OPTIO_DEPLOYMENT_ADMINS`) accepts an admin of its founding (oldest)
+ * workspace until someone claims the role. Pair it with `requireRole("admin")`.
+ */
+export async function requireDeploymentAdmin(req: FastifyRequest, reply: FastifyReply) {
+  if (isAuthDisabled()) return;
+  const { isDeploymentAdmin, hasDeploymentAdmin, isFoundingWorkspaceAdmin } =
+    await import("../services/sign-in-config-service.js");
+  if (req.user && (await isDeploymentAdmin(req.user))) return;
+  if (req.user && !(await hasDeploymentAdmin()) && (await isFoundingWorkspaceAdmin(req.user.id)))
+    return;
+  return reply.status(403).send({ error: "Forbidden: requires a deployment admin" });
+}
+
 const SESSION_COOKIE_NAME = "optio_session";
 const WORKSPACE_HEADER = "x-workspace-id";
 
@@ -209,11 +227,19 @@ async function authPlugin(app: FastifyInstance) {
     // Public routes — no auth needed
     if (isPublicRoute(req.url, req.method)) return;
 
-    // Setup routes (other than /status) are public only before initial setup.
-    // Once setup is complete they require authentication like any other route.
+    // Setup routes (other than /status) are public only before initial setup,
+    // and only while nobody can sign in at all (bootstrap). Once a sign-in
+    // provider exists the wizard's later steps run as a signed-in admin (they
+    // store secrets), so the probes — some of which act with the deployment's
+    // GitHub App / GITHUB_TOKEN — need a session too. "Setup complete" alone
+    // isn't enough: it means an agent key secret exists, which a deployment
+    // signed in to Bedrock, Groq, a Codex app server… may never have.
     if (req.url.startsWith("/api/setup/")) {
       const complete = await isSetupComplete();
-      if (!complete) return; // Allow without auth during initial setup
+      if (!complete) {
+        const { isBootstrapMode } = await import("../services/sign-in-config-service.js");
+        if (await isBootstrapMode()) return; // Allow without auth during initial setup
+      }
       // Fall through to normal auth check
     }
 

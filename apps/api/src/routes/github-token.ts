@@ -4,6 +4,7 @@ import { z } from "zod";
 import { retrieveSecret, storeSecret } from "../services/secret-service.js";
 import { isGitHubAppConfigured } from "../services/github-app-service.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
+import { requireDeploymentAdmin } from "../plugins/auth.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
 
 const rotateTokenSchema = z
@@ -43,6 +44,8 @@ const requireAdminWhenAuthenticated = async (req: FastifyRequest, reply: Fastify
   if (req.user.workspaceRole !== "admin") {
     return reply.status(403).send({ error: "Admin role required" });
   }
+  // The token is the deployment's, not the workspace's.
+  return requireDeploymentAdmin(req, reply);
 };
 
 export async function githubTokenRoutes(rawApp: FastifyInstance) {

@@ -619,7 +619,9 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       const { token, host } = req.body;
       const gitlabHost = host ?? "gitlab.com";
       try {
-        const res = await fetch(
+        // The host is typed by the person (and this route is public until
+        // setup completes): vetted and pinned like the token check above.
+        const res = await guardedFetch(
           `https://${gitlabHost}/api/v4/projects?membership=true&order_by=last_activity_at&sort=desc&per_page=20`,
           { headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" } },
         );

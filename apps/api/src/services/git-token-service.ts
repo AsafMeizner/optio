@@ -1,5 +1,8 @@
 import type { GitPlatform, GitPlatformType, RepoIdentifier } from "@optio/shared";
 import { parseRepoUrl } from "@optio/shared";
+import { sql } from "drizzle-orm";
+import { db } from "../db/client.js";
+import { repos } from "../db/schema.js";
 import { getGitHubToken } from "./github-token-service.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
 import { getCodeCommitCredentials } from "./codecommit-credential-service.js";
@@ -59,9 +62,66 @@ export async function getGitToken(
   }
 }
 
+/** Hosts named in comma-separated env vars, lower-cased. */
+function envHosts(...names: string[]): string[] {
+  return names
+    .flatMap((name) => (process.env[name] ?? "").split(","))
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Hosts the deployment's git credentials may be sent to without a lookup:
+ * github.com, gitlab.com, and the hosts an operator listed (`GITLAB_HOSTS` /
+ * `OPTIO_GITLAB_HOSTS`; `GITHUB_HOSTS` / `OPTIO_GITHUB_HOSTS` for GitHub
+ * Enterprise).
+ */
+export function isListedGitHost(host: string): boolean {
+  const h = host.toLowerCase();
+  if (h === "github.com" || h === "gitlab.com") return true;
+  return envHosts(
+    "GITLAB_HOSTS",
+    "OPTIO_GITLAB_HOSTS",
+    "GITHUB_HOSTS",
+    "OPTIO_GITHUB_HOSTS",
+  ).includes(h);
+}
+
+/** Is some repo an admin registered in Optio hosted on `host`? */
+async function isRegisteredRepoHost(host: string): Promise<boolean> {
+  const prefix = `https://${host.toLowerCase()}/`.replace(/[\\%_]/g, (c) => `\\${c}`);
+  const rows = await db
+    .select({ id: repos.id })
+    .from(repos)
+    .where(sql`lower(${repos.repoUrl}) LIKE ${`${prefix}%`}`)
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * May the API attach the deployment's git token to API calls for this repo?
+ * The API host comes from the repo / PR URL — any host other than
+ * github.com is taken for GitHub Enterprise (`https://<host>/api/v3`), any
+ * host containing "gitlab" for GitLab — and those URLs reach here from people
+ * (ad-hoc tasks, `/api/pull-requests/status?prUrl=`) and from agents (the PR
+ * URL an agent printed). Only a listed host, or the host of a repo an admin
+ * registered, gets the token; any other would hand the server's GitHub /
+ * GitLab credential to whoever runs that host. CodeCommit is reached through
+ * the AWS SDK by region, never by the URL's host.
+ */
+export async function isTrustedGitHost(
+  ri: Pick<RepoIdentifier, "host" | "platform">,
+  isRegistered: (host: string) => Promise<boolean> = isRegisteredRepoHost,
+): Promise<boolean> {
+  if (ri.platform === "codecommit") return true;
+  if (isListedGitHost(ri.host)) return true;
+  return isRegistered(ri.host);
+}
+
 /**
  * Parse a repo URL, resolve the appropriate token, and create a GitPlatform instance.
  * This is the primary entry point for consumers that need to interact with a git platform.
+ * Throws for a host the deployment's credentials must not go to (`isTrustedGitHost`).
  */
 export async function getGitPlatformForRepo(
   repoUrl: string,
@@ -72,6 +132,13 @@ export async function getGitPlatformForRepo(
 
   // Allow callers with a repo record to skip URL-based platform detection
   if (context.platformHint) ri.platform = context.platformHint;
+
+  if (!(await isTrustedGitHost(ri))) {
+    throw new Error(
+      `Refusing to send git credentials to ${ri.host}: register a repo on that host in Optio, ` +
+        "or list the host in GITHUB_HOSTS / GITLAB_HOSTS",
+    );
+  }
 
   const token = await getGitToken(ri.platform, context);
   const platform = createGitPlatform(ri.platform, token);

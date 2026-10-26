@@ -313,6 +313,50 @@ describe("POST /api/setup/validate/copilot-token + gitlab-token null names (#621
     expect(res.statusCode).toBe(200);
     expect(res.json().user).toEqual({ login: "gl-user", name: "gl-user" });
   });
+
+  it("gitlab repo listing: never fetches an internal host (the route is public before setup)", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    for (const host of ["169.254.169.254", "localhost:8080", "10.0.0.5"]) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/setup/repos/gitlab",
+        payload: { token: "glpat-abc", host },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ repos: [], error: expect.stringMatching(/blocked/) });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("gitlab repo listing: lists a public host's projects", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => [
+          {
+            path_with_namespace: "g/r",
+            web_url: "https://gitlab.example.com/g/r",
+            http_url_to_repo: "https://gitlab.example.com/g/r.git",
+            default_branch: "main",
+            visibility: "private",
+            description: null,
+            last_activity_at: "2026-10-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/repos/gitlab",
+      payload: { token: "glpat-abc", host: "gitlab.example.com" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repos).toEqual([expect.objectContaining({ fullName: "g/r" })]);
+  });
 });
 
 describe("POST /api/setup/validate/repo", () => {
