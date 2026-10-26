@@ -32,6 +32,8 @@ export function isOtelEnabled(): boolean {
  */
 export async function initTelemetry(): Promise<void> {
   if (!isOtelEnabled()) {
+    const { startPrometheusOnly } = await import("./telemetry/prometheus.js");
+    shutdownFn = await startPrometheusOnly();
     return;
   }
 
@@ -85,10 +87,14 @@ export async function initTelemetry(): Promise<void> {
     otelLogs = logs;
   }
 
+  const { prometheusReader } = await import("./telemetry/prometheus.js");
+  const prometheus = await prometheusReader();
+
   const sdk = new NodeSDK({
     resource,
     spanProcessors: [new BatchSpanProcessor(traceExporter)] as any,
     metricReader: metricReader as any,
+    ...(prometheus ? { metricReaders: [metricReader, prometheus] as any } : {}),
     sampler: new ParentBasedSampler({
       root: new TraceIdRatioBasedSampler(samplingRatio),
     }),
@@ -135,7 +141,8 @@ export async function registerMetricCallbacks(callbacks: {
   activeTasks?: () => number;
   podCount?: (attrs: Record<string, unknown>) => number;
 }): Promise<void> {
-  if (!isOtelEnabled()) return;
+  const { prometheusEnabled } = await import("./telemetry/prometheus.js");
+  if (!isOtelEnabled() && !prometheusEnabled()) return;
   const { initMetrics } = await import("./telemetry/metrics.js");
   initMetrics(callbacks);
 }

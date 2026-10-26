@@ -218,3 +218,5 @@ This avoids duplicating all pino output through OTel while still getting trace-c
 - **Missing auth headers**: Ensure `OTEL_EXPORTER_OTLP_HEADERS` is formatted as `key=value,key=value` (no spaces around `=`).
 - **High memory usage**: Reduce `OPTIO_OTEL_SAMPLING_RATIO` to `0.1` for high-volume deployments.
 - **Spans not correlating**: Verify trace context propagation by checking for `traceparent` headers in outbound requests.
+
+For an optional Prometheus listener without an OTLP collector, plus Helm ServiceMonitor, alerts and Grafana dashboard configuration, see [Prometheus monitoring](prometheus.md). It is disabled by default and uses a separate listener with an explicit monitoring audience.

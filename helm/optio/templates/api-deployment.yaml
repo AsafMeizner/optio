@@ -72,6 +72,10 @@ spec:
               type: RuntimeDefault
           ports:
             - containerPort: {{ .Values.api.port }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
@@ -126,6 +130,10 @@ spec:
               value: {{ .Values.agent.pvc.storageClass | quote }}
             - name: OPTIO_HOME_PVC_SIZE
               value: {{ .Values.agent.pvc.size | quote }}
+            {{- if .Values.metrics.enabled }}
+            - name: OPTIO_METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
+            {{- end }}
             - name: API_PORT
               value: {{ .Values.api.port | quote }}
             - name: API_HOST

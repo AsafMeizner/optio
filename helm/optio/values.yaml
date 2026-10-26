@@ -659,3 +659,38 @@ serviceAccount:
 # ──────────────────────────────────────────────────────────────────────────────
 imagePullSecrets: []
 #  - name: my-registry-secret
+
+# Optional Prometheus listener; never exposed by the ingress.
+metrics:
+  enabled: false
+  port: 9464
+  service:
+    annotations: {}
+  # Requires a CNI that enforces Kubernetes NetworkPolicy.
+  # Set an explicit audience before enabling metrics.
+  networkPolicy:
+    enabled: true
+    namespaces: []
+    from: []
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    labels: {}
+    alertLabels: {}
+    job: ""
+    failureRatio: 0.5
+    failureMinRuns: 5
+    queueDepth: 100
+    additionalRules: []
+  grafanaDashboard:
+    enabled: false
+    namespace: ""
+    labels:
+      grafana_dashboard: "1"
+    annotations: {}
