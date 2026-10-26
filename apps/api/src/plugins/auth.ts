@@ -4,9 +4,9 @@ import { validateSession, type SessionUser } from "../services/session-service.j
 import { validateApiKey } from "../services/api-key-service.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
 import { getUserRole, ensureUserHasWorkspace } from "../services/workspace-service.js";
-import { listSecrets } from "../services/secret-service.js";
 import type { WorkspaceRole } from "@optio/shared";
 import { emitAuthFailureLog } from "../telemetry/logs.js";
+import { browserOriginAllowed } from "../utils/browser-origin.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -51,6 +51,7 @@ export function requireRole(minimumRole: WorkspaceRole) {
  */
 export async function requireDeploymentAdmin(req: FastifyRequest, reply: FastifyReply) {
   if (isAuthDisabled()) return;
+  if (!req.user) return reply.status(401).send({ error: "Authentication required" });
   const { isDeploymentAdmin, hasDeploymentAdmin, isFoundingWorkspaceAdmin } =
     await import("../services/sign-in-config-service.js");
   if (req.user && (await isDeploymentAdmin(req.user))) return;
@@ -59,7 +60,9 @@ export async function requireDeploymentAdmin(req: FastifyRequest, reply: Fastify
   return reply.status(403).send({ error: "Forbidden: requires a deployment admin" });
 }
 
-const SESSION_COOKIE_NAME = "optio_session";
+const SESSION_COOKIE_NAME = process.env.PUBLIC_URL?.startsWith("https://")
+  ? "__Host-optio_session"
+  : "optio_session";
 const WORKSPACE_HEADER = "x-workspace-id";
 
 /** HTTP methods that mutate state and therefore require at least "member". */
@@ -152,52 +155,6 @@ const PUBLIC_AUTH_ROUTES = new Set([
 ]);
 
 /**
- * Secrets whose presence indicates that initial setup has been completed.
- * Once any agent API key is configured, setup POST routes require auth.
- */
-const AGENT_KEY_SECRETS = [
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "COPILOT_GITHUB_TOKEN",
-  "GEMINI_API_KEY",
-  "CURSOR_API_KEY",
-  // Vertex-mode installs store project ids rather than API keys; count them
-  // so a Vertex-only setup still locks the /api/setup/* routes (mirrors the
-  // per-provider checks in routes/setup.ts).
-  "GOOGLE_CLOUD_PROJECT",
-  "CLAUDE_VERTEX_PROJECT_ID",
-];
-
-let _setupCompleteCache: { value: boolean; expires: number } | null = null;
-const SETUP_CACHE_TTL_MS = 60_000; // 60 seconds
-
-/**
- * Returns true when at least one agent API key secret exists, indicating
- * initial setup is complete. Result is cached for 60 seconds.
- */
-export async function isSetupComplete(): Promise<boolean> {
-  const now = Date.now();
-  if (_setupCompleteCache && now < _setupCompleteCache.expires) {
-    return _setupCompleteCache.value;
-  }
-  try {
-    const allSecrets = await listSecrets();
-    const names = allSecrets.map((s) => s.name);
-    const complete = AGENT_KEY_SECRETS.some((k) => names.includes(k));
-    _setupCompleteCache = { value: complete, expires: now + SETUP_CACHE_TTL_MS };
-    return complete;
-  } catch {
-    return false;
-  }
-}
-
-/** Reset the setup-complete cache (for testing). */
-export function resetSetupCompleteCache(): void {
-  _setupCompleteCache = null;
-}
-
-/**
  * Whether a request skips session auth. `method` matters only for the
  * inbound webhook receivers, which are public for POST alone.
  */
@@ -211,7 +168,11 @@ export function isPublicRoute(url: string, method?: string): boolean {
 function parseCookie(header: string | undefined, name: string): string | undefined {
   if (!header) return undefined;
   const match = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : undefined;
+  try {
+    return match ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseBearer(header: string | undefined): string | undefined {
@@ -221,27 +182,21 @@ function parseBearer(header: string | undefined): string | undefined {
 
 async function authPlugin(app: FastifyInstance) {
   app.addHook("preHandler", async (req: FastifyRequest, reply: FastifyReply) => {
+    // Bearer clients explicitly supply their credential; browser cookies and
+    // auth-disabled local installs need protection from forged browser POSTs.
+    if (
+      MUTATING_METHODS.has(req.method) &&
+      !parseBearer(req.headers.authorization) &&
+      !isPublicRoute(req.url, req.method) &&
+      !browserOriginAllowed(req.headers.origin)
+    ) {
+      return reply.status(403).send({ error: "Origin not allowed" });
+    }
     // Auth disabled — allow everything
     if (isAuthDisabled()) return;
 
     // Public routes — no auth needed
     if (isPublicRoute(req.url, req.method)) return;
-
-    // Setup routes (other than /status) are public only before initial setup,
-    // and only while nobody can sign in at all (bootstrap). Once a sign-in
-    // provider exists the wizard's later steps run as a signed-in admin (they
-    // store secrets), so the probes — some of which act with the deployment's
-    // GitHub App / GITHUB_TOKEN — need a session too. "Setup complete" alone
-    // isn't enough: it means an agent key secret exists, which a deployment
-    // signed in to Bedrock, Groq, a Codex app server… may never have.
-    if (req.url.startsWith("/api/setup/")) {
-      const complete = await isSetupComplete();
-      if (!complete) {
-        const { isBootstrapMode } = await import("../services/sign-in-config-service.js");
-        if (await isBootstrapMode()) return; // Allow without auth during initial setup
-      }
-      // Fall through to normal auth check
-    }
 
     // The Sign-in configuration is reachable without a session only while
     // nobody can sign in at all (no provider configured anywhere); the route

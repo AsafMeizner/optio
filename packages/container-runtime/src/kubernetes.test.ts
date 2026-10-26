@@ -22,27 +22,58 @@ const mockLogInstance = {
 };
 
 vi.mock("@kubernetes/client-node", () => ({
-  KubeConfig: vi.fn(() => ({
-    loadFromDefault: vi.fn(),
-    makeApiClient: vi.fn(() => mockCoreApi),
-  })),
+  KubeConfig: vi.fn(function () {
+    return { loadFromDefault: vi.fn(), makeApiClient: vi.fn(() => mockCoreApi) };
+  }),
   CoreV1Api: vi.fn(),
-  Exec: vi.fn(() => mockExecInstance),
-  Log: vi.fn(() => mockLogInstance),
-  V1Pod: vi.fn(() => ({})),
-  V1Namespace: vi.fn(() => ({})),
-  V1ObjectMeta: vi.fn(() => ({})),
-  V1PodSpec: vi.fn(() => ({})),
-  V1Container: vi.fn(() => ({})),
-  V1EnvVar: vi.fn(() => ({})),
-  V1ResourceRequirements: vi.fn(() => ({})),
-  V1Volume: vi.fn(() => ({})),
-  V1VolumeMount: vi.fn(() => ({})),
-  V1HostPathVolumeSource: vi.fn(() => ({})),
-  V1PersistentVolumeClaimVolumeSource: vi.fn(() => ({})),
-  V1SecurityContext: vi.fn(() => ({})),
-  V1Capabilities: vi.fn(() => ({})),
-  V1EmptyDirVolumeSource: vi.fn(() => ({})),
+  Exec: vi.fn(function () {
+    return mockExecInstance;
+  }),
+  Log: vi.fn(function () {
+    return mockLogInstance;
+  }),
+  V1Pod: vi.fn(function () {
+    return {};
+  }),
+  V1Namespace: vi.fn(function () {
+    return {};
+  }),
+  V1ObjectMeta: vi.fn(function () {
+    return {};
+  }),
+  V1PodSpec: vi.fn(function () {
+    return {};
+  }),
+  V1Container: vi.fn(function () {
+    return {};
+  }),
+  V1EnvVar: vi.fn(function () {
+    return {};
+  }),
+  V1ResourceRequirements: vi.fn(function () {
+    return {};
+  }),
+  V1Volume: vi.fn(function () {
+    return {};
+  }),
+  V1VolumeMount: vi.fn(function () {
+    return {};
+  }),
+  V1HostPathVolumeSource: vi.fn(function () {
+    return {};
+  }),
+  V1PersistentVolumeClaimVolumeSource: vi.fn(function () {
+    return {};
+  }),
+  V1SecurityContext: vi.fn(function () {
+    return {};
+  }),
+  V1Capabilities: vi.fn(function () {
+    return {};
+  }),
+  V1EmptyDirVolumeSource: vi.fn(function () {
+    return {};
+  }),
 }));
 
 import {

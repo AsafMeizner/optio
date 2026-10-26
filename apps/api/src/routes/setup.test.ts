@@ -6,6 +6,12 @@ import type { FastifyInstance } from "fastify";
 
 const mockListSecrets = vi.fn();
 const mockRetrieveSecret = vi.fn();
+const mockIsDeploymentAdmin = vi.fn().mockResolvedValue(true);
+vi.mock("../services/sign-in-config-service.js", () => ({
+  hasDeploymentAdmin: async () => true,
+  isFoundingWorkspaceAdmin: async () => false,
+  isDeploymentAdmin: (...args: unknown[]) => mockIsDeploymentAdmin(...args),
+}));
 
 vi.mock("../services/secret-service.js", () => ({
   listSecrets: (...args: unknown[]) => mockListSecrets(...args),
@@ -597,14 +603,28 @@ describe("admin guard on POST setup routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     authDisabled = false;
+    mockIsDeploymentAdmin.mockResolvedValue(true);
   });
 
   afterEach(() => {
+    mockIsDeploymentAdmin.mockResolvedValue(true);
     vi.unstubAllGlobals();
   });
 
-  it("allows POST requests when no user is set (setup not yet complete)", async () => {
-    const app = await buildTestApp(); // no user
+  it.each([
+    ["/api/setup/repos", {}],
+    ["/api/setup/validate/repo", { repoUrl: "https://github.com/org/private" }],
+  ])("rejects deployment credential fallback for a workspace admin at %s", async (url, payload) => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    const app = await buildTestApp({ workspaceRole: "admin" });
+    const res = await app.inject({ method: "POST", url: url as string, payload });
+    expect(res.statusCode).toBe(403);
+    expect(mockRetrieveSecret).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rejects POST requests when no user is set, including before agent setup", async () => {
+    const app = await buildTestApp(null);
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -619,11 +639,12 @@ describe("admin guard on POST setup routes", () => {
       payload: { token: "ghp_test" },
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json().valid).toBe(true);
+    expect(res.statusCode).toBe(401);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("allows POST requests for admin users", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
     const app = await buildTestApp({ workspaceRole: "admin" });
     vi.stubGlobal(
       "fetch",
@@ -641,6 +662,36 @@ describe("admin guard on POST setup routes", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().valid).toBe(true);
+  });
+
+  it("keeps repo discovery with an explicit token available to workspace admins", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    const app = await buildTestApp({ workspaceRole: "admin" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/repos",
+      payload: { token: "personal-token" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repos).toEqual([]);
+    expect(mockRetrieveSecret).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("blocks GitLab repository discovery against internal addresses before sending credentials", async () => {
+    const app = await buildTestApp({ workspaceRole: "admin" });
+    vi.stubGlobal("fetch", vi.fn());
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/repos/gitlab",
+      payload: { token: "private-token", host: "127.0.0.1" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repos).toEqual([]);
+    expect(res.json().error).toBeTruthy();
+    expect(fetch).not.toHaveBeenCalled();
+    await app.close();
   });
 
   it("rejects POST requests for non-admin users with 403", async () => {

@@ -896,3 +896,27 @@ describe("task PR routes", () => {
     expect(res.statusCode).toBe(409);
   });
 });
+
+describe("private task resource visibility", () => {
+  it.each(["logs", "logs/export", "events"])(
+    "hides %s from a different member",
+    async (resource) => {
+      vi.clearAllMocks();
+      mockGetTask.mockResolvedValue({
+        id: "task-private",
+        workspaceId: "ws-1",
+        ownerUserId: "someone-else",
+      });
+      const app = await buildRouteTestApp(taskRoutes, {
+        user: { id: "user-1", workspaceId: "ws-1", workspaceRole: "member" },
+      });
+      try {
+        const res = await app.inject({ method: "GET", url: `/api/tasks/task-private/${resource}` });
+        expect(res.statusCode).toBe(404);
+        expect(mockGetTaskLogs).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    },
+  );
+});

@@ -69,7 +69,7 @@ describe("optio-tool-executor", () => {
           method: "GET",
           url: "/api/repos",
           headers: expect.objectContaining({
-            cookie: "optio_session=token123",
+            authorization: "Bearer token123",
           }),
         }),
       );
@@ -317,7 +317,7 @@ describe("optio-tool-executor", () => {
       const call = injectMock(app).mock.calls[0][0];
       expect(call.method).toBe("GET");
       expect(call.url).toBe("/api/tasks/task-1");
-      expect(call.headers.cookie).toBe("optio_session=tok");
+      expect(call.headers.authorization).toBe("Bearer tok");
     });
 
     it("is reachable through executeToolCall dispatch", async () => {
@@ -375,7 +375,7 @@ describe("conversational work creation", () => {
         method: "POST",
         url: "/api/work",
         payload: spec,
-        headers: expect.objectContaining({ cookie: "optio_session=user-session" }),
+        headers: expect.objectContaining({ authorization: "Bearer user-session" }),
       }),
     );
   });

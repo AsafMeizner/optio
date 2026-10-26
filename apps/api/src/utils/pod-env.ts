@@ -198,12 +198,10 @@ export const RUN_WORK_SETUP_COMMANDS: readonly string[] = [
 ];
 
 /**
- * The start script of a run in the API pod itself (the process runtime,
- * `OPTIO_ASSISTANT_PLACEMENT=api-pod`): the run's env, its setup files and
- * setup commands, then the agent in the foreground — no pod readiness wait,
- * no lock, no supervisor (the process runtime is the supervisor). The home
- * is the agent home the API image provides (`AGENT_HOME_DIR`), so the setup
- * files and run homes land where every other run's do.
+ * A foreground start script for trusted process-runtime callers: the run's
+ * env, setup files and setup commands, then the agent — no pod readiness
+ * wait, lock or supervisor. The caller must provision AGENT_HOME_DIR. This
+ * provides no isolation and must never be used for user-controlled sessions.
  */
 export function buildProcessStartScript(input: {
   env: Record<string, string>;

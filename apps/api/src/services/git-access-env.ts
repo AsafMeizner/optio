@@ -14,9 +14,31 @@ import {
 } from "./git-credential-scope.js";
 import { getInstallationToken, isGitHubAppConfigured } from "./github-app-service.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
+import { parseRepoUrl } from "@optio/shared";
+import { isTrustedGitHost } from "./git-token-service.js";
 
 const apiInternalUrl = () =>
   process.env.OPTIO_API_INTERNAL_URL ?? `http://localhost:${process.env.API_PORT ?? "4000"}`;
+
+/** Setup-secret merges must not restore credentials for an unapproved destination. */
+export async function restrictGitCredentialsToRepo(
+  env: Record<string, string>,
+  repoUrl: string | null,
+): Promise<boolean> {
+  if (!repoUrl) return true;
+  const repo = parseRepoUrl(repoUrl);
+  if (repo && (await isTrustedGitHost(repo))) return true;
+  for (const key of [
+    "GITHUB_TOKEN",
+    "GITLAB_TOKEN",
+    "GITLAB_HOST",
+    "OPTIO_GIT_CREDENTIAL_URL",
+    "OPTIO_GIT_TASK_CREDENTIAL_URL",
+    "OPTIO_CREDENTIAL_SECRET",
+  ])
+    delete env[key];
+  return false;
+}
 
 /**
  * Add git sign-in to a pod's env, in place. A token the env already has (the
@@ -36,6 +58,7 @@ export async function applyGitAccess(
     helper?: boolean;
   },
 ): Promise<void> {
+  if (!(await restrictGitCredentialsToRepo(env, opts.repoUrl))) return;
   for (const name of ["GITHUB_TOKEN", "GITLAB_TOKEN", "GITLAB_HOST"]) {
     if (env[name]) continue;
     const value = await retrieveSecretWithFallback(

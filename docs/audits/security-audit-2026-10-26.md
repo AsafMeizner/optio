@@ -17,7 +17,7 @@ issue / PR text reaches an agent, and a prompt-injected agent inside its pod.
 | Critical | Ask Optio             | The default `api-pod` placement ran Claude Code / Codex with permissions skipped as the API's uid; a steered turn could read `/proc/<api>/environ` (encryption key, `DATABASE_URL`) and the API's service-account token. Default is now `agent-pod`; `api-pod` is opt-in.                                                                                                                                                                                                                          |
 | Critical | Deployment-wide state | Anyone signed in can create a workspace and be its admin, and `requireRole("admin")` guarded the deployment's Claude token (`GET /api/auth/claude-token`), global secrets, ticket providers, `GITHUB_TOKEN` rotation and the namespace's pods. These take a deployment admin now (founding workspace's admins until one exists).                                                                                                                                                                   |
 | High     | Skills                | A skill `sourceUrl` of `--upload-pack=<cmd>` ran a command in the API pod; a symlinked subpath copied API-pod files into the skill. Arguments end with `--`, subpaths resolve inside the clone, and git may use https/ssh/git only (`GIT_ALLOW_PROTOCOL`).                                                                                                                                                                                                                                         |
-| High     | Git tokens            | Any non-github.com host got the server's GitHub token (`/api/v3`) or `GITLAB_TOKEN` — a viewer could send it anywhere through `/api/pull-requests/status`. Tokens go only to github.com, gitlab.com, `GITHUB_HOSTS` / `GITLAB_HOSTS`, and admin-registered repo hosts.                                                                                                                                                                                                                             |
+| High     | Git tokens            | Any non-github.com host got the server's GitHub token (`/api/v3`) or `GITLAB_TOKEN` — a viewer could send it anywhere through `/api/pull-requests/status`. Tokens go only to github.com, gitlab.com, `GITHUB_HOSTS` / `GITLAB_HOSTS`. Registering a repo never authorizes a destination for deployment credentials.                                                                                                                                                                                |
 | High     | Pod git access        | Every pod's helper minted an installation-wide GitHub App token. Tokens are now limited to the pod's repo (`repositories: [name]`, verified), and the repo is in the signed helper scope.                                                                                                                                                                                                                                                                                                          |
 | High     | `/ws/events`          | Every signed-in user received every workspace's live log lines and messages. Frames are now workspace-scoped, logs and messages stay on the per-entity sockets, and catch-up honours private work.                                                                                                                                                                                                                                                                                                 |
 | High     | PR reviews            | Review routes looked reviews up by id alone (read / edit / submit / chat across workspaces); PR status and merge acted on any PR with deployment credentials. Workspace-scoped; status and merge need a repo registered in the workspace.                                                                                                                                                                                                                                                          |
@@ -34,11 +34,20 @@ issue / PR text reaches an agent, and a prompt-injected agent inside its pod.
 
 ## New settings
 
-- `GITHUB_HOSTS` — GitHub Enterprise hosts trusted with the server's GitHub token (registered repo hosts are trusted too).
+- `GITHUB_HOSTS` — GitHub Enterprise hosts trusted with the server's GitHub token (repository registration alone does not grant this trust).
 - `OPTIO_ALLOWED_ORIGINS` — extra browser origins whose cookie-authenticated WebSocket upgrades are accepted.
 - `OPTIO_ALLOW_LEGACY_GIT_CREDENTIALS=1` — accept git-helper keys minted before repo-scoped tokens. Otherwise recycle repo pods and interactive sessions after upgrading.
 - `OPTIO_SKILL_ALLOW_FILE_SOURCES=1` — allow `file://` skill sources.
 - `networkPolicy.deniedEgressCidrs` (Helm).
+
+## Follow-up integration
+
+The [follow-up audit](../security-audit-2026-10-26.md) closes the browser-bound
+OAuth exchange, unverified-email admin grant and remaining dependency findings.
+It removes API-pod agent execution entirely, even when explicitly configured,
+and adds stronger private-work visibility, SSRF transport, credential and network
+policy checks. The tested local Zod backport is verified by the CI security gate.
+The follow-up report records the still-open tenant/event/repo/webhook boundaries.
 
 ## Open — need a decision
 
@@ -49,11 +58,8 @@ issue / PR text reaches an agent, and a prompt-injected agent inside its pod.
 - **Git helper keys never expire** (scope is workspace + owner + repo); a leaked key mints tokens until the encryption key rotates.
 - **Users' own GitHub sign-in tokens** in pods reach everything the user can, not just the repo.
 - **Trigger shared secrets** are stored in plaintext jsonb; other secrets are encrypted.
-- **Login CSRF**: OAuth `state` is not bound to the browser.
-- **`OPTIO_DEPLOYMENT_ADMINS`** matches the provider's email without a verified flag (generic OIDC).
 - **Workspace admins add members without consent**; `/api/users/lookup` enumerates emails for any self-made admin.
 - **Slack interactive actions** need no Optio user mapping.
 - **Optio Local hook server** has no per-daemon secret (localhost, random port, UUID terminal ids).
 - **Prompts starting with `-`** reach Codex / OpenCode / Cursor as flags (no gain over prompt injection).
 - **Supply chain**: `curl | sh` installers without checksums in agent images; third-party actions pinned by tag; image tags default to `latest`.
-- **Dependencies left**: zod 3 (advisory is v4 code), body-parser 2.3 (not loaded), fast-uri 3.1.9 (too new), vitest 4 major (dev only).

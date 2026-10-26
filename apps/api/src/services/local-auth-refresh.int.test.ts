@@ -7,6 +7,10 @@
  * validation cache marked good. Anthropic is mocked.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import { db } from "../db/client.js";
+import { users, workspaceMembers } from "../db/schema.js";
+import { insertWorkspace } from "../test-utils/integration/fixtures.js";
 
 vi.mock("../workers/token-validation-worker.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../workers/token-validation-worker.js")>();
@@ -61,10 +65,16 @@ class FakeDaemon implements relay.RelaySocket {
   }
 }
 
-async function makeHost(claudeCredentials: boolean, answer: FakeDaemon["answer"]) {
-  const host = await registerHost({
+async function makeHost(
+  claudeCredentials: boolean,
+  answer: FakeDaemon["answer"],
+  owner: { userId: string | null; workspaceId: string | null } = {
     userId: null,
     workspaceId: null,
+  },
+) {
+  const host = await registerHost({
+    ...owner,
     hostname: `it-auth-${Math.random().toString(36).slice(2, 8)}`,
     platform: "darwin",
     arch: "arm64",
@@ -72,7 +82,7 @@ async function makeHost(claudeCredentials: boolean, answer: FakeDaemon["answer"]
     dirs: [{ path: "/home/dev/scratch" }],
   });
   const daemon = new FakeDaemon(host.id, answer);
-  relay.registerDaemon(host.id, null, daemon, { claudeCredentials });
+  relay.registerDaemon(host.id, owner.userId, daemon, { claudeCredentials });
   return { host, daemon };
 }
 
@@ -249,4 +259,44 @@ describe("across API instances (the token never crosses Redis)", () => {
       await localBus.stop();
     }
   });
+});
+
+it("only deployment admins can supply the global Claude token, including automatic refresh", async () => {
+  delete process.env.OPTIO_AUTH_DISABLED;
+  const workspace = await insertWorkspace();
+  await db.insert(users).values({
+    provider: "google",
+    externalId: `deployment-${Math.random()}`,
+    email: "deployment-admin@example.test",
+    displayName: "Deployment admin",
+    deploymentAdmin: true,
+  });
+  const [user] = await db
+    .insert(users)
+    .values({
+      provider: "google",
+      externalId: `claude-${Math.random()}`,
+      email: "workspace-admin@example.test",
+      displayName: "Workspace admin",
+    })
+    .returning();
+  await db
+    .insert(workspaceMembers)
+    .values({ workspaceId: workspace.id, userId: user.id, role: "admin" });
+  const { host, daemon } = await makeHost(true, () => ({ token: GOOD_TOKEN }), {
+    userId: user.id,
+    workspaceId: workspace.id,
+  });
+  const before = await retrieveSecret("CLAUDE_CODE_OAUTH_TOKEN").catch(() => null);
+  expect(await hostMayRefreshToken(host)).toBe(false);
+  expect(await refreshClaudeTokenFromHost(host, "manual")).toMatchObject({ ok: false });
+  expect(await autoRefreshClaudeToken("expired")).toBe(false);
+  expect(daemon.sent).toHaveLength(0);
+  expect(await retrieveSecret("CLAUDE_CODE_OAUTH_TOKEN").catch(() => null)).toBe(before);
+
+  await db.update(users).set({ deploymentAdmin: true }).where(eq(users.id, user.id));
+  expect(await hostMayRefreshToken(host)).toBe(true);
+  expect(await refreshClaudeTokenFromHost(host, "manual")).toEqual({ ok: true, hostId: host.id });
+  expect(await retrieveSecret("CLAUDE_CODE_OAUTH_TOKEN")).toBe(GOOD_TOKEN);
+  expect(daemon.sent).toHaveLength(1);
 });

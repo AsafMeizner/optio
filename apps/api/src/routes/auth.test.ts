@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Fastify from "fastify";
+import { createHash } from "node:crypto";
+const browserVerifier = "v".repeat(43);
+const browserChallenge = createHash("sha256").update(browserVerifier).digest("base64url");
 import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
 import { validatorCompiler, serializerCompiler } from "fastify-type-provider-zod";
 import rateLimit from "@fastify/rate-limit";
@@ -19,13 +22,16 @@ vi.mock("../services/session-service.js", () => ({
   createWsToken: (...args: unknown[]) => mockCreateWsToken(...args),
 }));
 
+const mockGetClaudeAuthToken = vi.fn(() => ({ available: false }));
+const mockInvalidateCredentialsCache = vi.fn();
 vi.mock("../services/auth-service.js", () => ({
-  getClaudeAuthToken: () => ({ available: false }),
+  getClaudeAuthToken: () => mockGetClaudeAuthToken(),
   getClaudeUsage: async () => ({ available: false }),
-  invalidateCredentialsCache: () => {},
+  invalidateCredentialsCache: () => mockInvalidateCredentialsCache(),
 }));
 
 let authDisabled = false;
+let deploymentAdmin = false;
 let mockOAuthProvider: any = undefined;
 vi.mock("../services/oauth/index.js", () => ({
   isAuthDisabled: () => authDisabled,
@@ -40,15 +46,17 @@ vi.mock("../services/sign-in-config-service.js", () => ({
   SIGN_IN_PROVIDERS: ["google", "github", "gitlab", "oidc"],
   completeSignIn: async () => ({ deploymentAdmin: false, bootstrapped: false }),
   domainDecision: () => "allowed",
-  isDeploymentAdmin: async () => false,
+  isDeploymentAdmin: async () => deploymentAdmin,
+  hasDeploymentAdmin: async () => true,
+  isFoundingWorkspaceAdmin: async () => false,
   resolveProviderConfig: async () => null,
 }));
 
-vi.mock("../plugins/auth.js", () => ({
+vi.mock("../plugins/auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/auth.js")>()),
   SESSION_COOKIE_NAME: "optio_session",
   // Pass-through guard — role enforcement is covered in plugins/auth.test.ts
   requireRole: () => async () => {},
-  requireDeploymentAdmin: async () => {},
 }));
 
 // Redis mock — in-memory store to simulate Redis setex/get/del
@@ -60,6 +68,11 @@ const mockRedisClient = {
   }),
   get: vi.fn(async (key: string) => {
     return redisStore.get(key) ?? null;
+  }),
+  getdel: vi.fn(async (key: string) => {
+    const value = redisStore.get(key) ?? null;
+    redisStore.delete(key);
+    return value;
   }),
   del: vi.fn(async (key: string) => {
     redisStore.delete(key);
@@ -73,6 +86,22 @@ vi.mock("../services/event-bus.js", () => ({
 
 vi.mock("../services/github-token-service.js", () => ({
   storeUserGitHubTokens: vi.fn(),
+}));
+vi.mock("../services/workspace-service.js", () => ({
+  joinWorkspacesByEmailDomain: vi.fn().mockResolvedValue(undefined),
+}));
+
+const mockGetHost = vi.fn();
+const mockRefreshClaudeToken = vi.fn();
+vi.mock("../services/local-host-service.js", () => ({
+  getHost: (...args: unknown[]) => mockGetHost(...args),
+  canAccessHost: (host: { userId: string }, userId: string) => host.userId === userId,
+}));
+vi.mock("../services/local-auth-refresh-service.js", () => ({
+  refreshClaudeTokenFromHost: (...args: unknown[]) => mockRefreshClaudeToken(...args),
+}));
+vi.mock("../services/auth-failure-detector.js", () => ({
+  getRecentAuthFailures: async () => ({ claude: false, github: false }),
 }));
 
 import { authRoutes } from "./auth.js";
@@ -118,7 +147,7 @@ describe("POST /api/auth/exchange-code", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/auth/exchange-code",
-      payload: { code: "nonexistent-code" },
+      payload: { code: "nonexistent-code", browserVerifier },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: "Invalid or expired code" });
@@ -126,31 +155,67 @@ describe("POST /api/auth/exchange-code", () => {
 
   it("exchanges a valid auth code for a session token", async () => {
     // Seed a code in Redis
-    redisStore.set("auth_code:valid-code", JSON.stringify({ token: "session-token-123" }));
+    redisStore.set(
+      "auth_code:valid-code",
+      JSON.stringify({ token: "session-token-123", browserChallenge }),
+    );
     mockValidateSession.mockResolvedValue(mockUser);
 
     const res = await app.inject({
       method: "POST",
       url: "/api/auth/exchange-code",
-      payload: { code: "valid-code" },
+      payload: { code: "valid-code", browserVerifier },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ token: "session-token-123" });
     // Code should be deleted (one-time use)
-    expect(mockRedisClient.del).toHaveBeenCalledWith("auth_code:valid-code");
+    expect(mockRedisClient.getdel).toHaveBeenCalledWith("auth_code:valid-code");
   });
 
   it("returns 400 when session is expired", async () => {
-    redisStore.set("auth_code:expired-session", JSON.stringify({ token: "expired-token" }));
+    redisStore.set(
+      "auth_code:expired-session",
+      JSON.stringify({ token: "expired-token", browserChallenge }),
+    );
     mockValidateSession.mockResolvedValue(null);
 
     const res = await app.inject({
       method: "POST",
       url: "/api/auth/exchange-code",
-      payload: { code: "expired-session" },
+      payload: { code: "expired-session", browserVerifier },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: "Session expired" });
+  });
+
+  it("rejects an exchange code from another browser without validating its session", async () => {
+    redisStore.set(
+      "auth_code:stolen",
+      JSON.stringify({ token: "attacker-session", browserChallenge }),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/auth/exchange-code",
+      payload: { code: "stolen", browserVerifier: "x".repeat(43) },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(mockValidateSession).not.toHaveBeenCalled();
+  });
+
+  it("consumes an exchange code atomically across simultaneous requests", async () => {
+    redisStore.set("auth_code:race", JSON.stringify({ token: "valid", browserChallenge }));
+    mockValidateSession.mockResolvedValue(mockUser);
+    const responses = await Promise.all(
+      [1, 2].map(() =>
+        app.inject({
+          method: "POST",
+          url: "/api/auth/exchange-code",
+          payload: { code: "race", browserVerifier },
+        }),
+      ),
+    );
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 400]);
+    expect(mockValidateSession).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -165,6 +230,46 @@ describe("Redis-backed OAuth state", () => {
     app = await buildTestApp();
   });
 
+  it("binds the browser login through the provider callback to its verifier", async () => {
+    mockOAuthProvider = {
+      authorizeUrl: (state: string) => `https://provider.example/authorize?state=${state}`,
+      exchangeCode: vi.fn().mockResolvedValue({ accessToken: "provider-access" }),
+      fetchUser: vi.fn().mockResolvedValue({
+        externalId: "external-user",
+        email: "user@example.com",
+        emailVerified: true,
+      }),
+    };
+    mockCreateSession.mockResolvedValue({ token: "new-session", user: mockUser });
+    const login = await app.inject({
+      method: "GET",
+      url: `/api/auth/google/login?browserChallenge=${browserChallenge}`,
+    });
+    expect(login.statusCode).toBe(302);
+    const state = new URL(login.headers.location!).searchParams.get("state")!;
+    const responses = await Promise.all(
+      [1, 2].map(() =>
+        app.inject({
+          method: "GET",
+          url: `/api/auth/google/callback?state=${state}&code=provider-code`,
+        }),
+      ),
+    );
+    const success = responses.find((response) =>
+      response.headers.location?.includes("/auth/callback?code="),
+    );
+    expect(success).toBeDefined();
+    expect(mockOAuthProvider.exchangeCode).toHaveBeenCalledTimes(1);
+    expect(responses.some((response) => response.headers.location?.includes("invalid_state"))).toBe(
+      true,
+    );
+    const code = new URL(success!.headers.location!).searchParams.get("code")!;
+    expect(JSON.parse(redisStore.get(`auth_code:${code}`)!)).toEqual({
+      token: "new-session",
+      browserChallenge,
+    });
+  });
+
   it("stores OAuth state in Redis with TTL on login", async () => {
     // getOAuthProvider returns undefined (mocked above), so we just verify
     // the 404 path — but the state would have been stored if provider existed.
@@ -172,19 +277,19 @@ describe("Redis-backed OAuth state", () => {
     // for the exchange-code flow which is fully testable.
 
     // Verify that setex is called with correct TTL for auth codes
-    redisStore.set("auth_code:test-code", JSON.stringify({ token: "tok" }));
+    redisStore.set("auth_code:test-code", JSON.stringify({ token: "tok", browserChallenge }));
     mockValidateSession.mockResolvedValue(mockUser);
 
     await app.inject({
       method: "POST",
       url: "/api/auth/exchange-code",
-      payload: { code: "test-code" },
+      payload: { code: "test-code", browserVerifier },
     });
 
     // get was called to retrieve the code
-    expect(mockRedisClient.get).toHaveBeenCalledWith("auth_code:test-code");
+    expect(mockRedisClient.getdel).toHaveBeenCalledWith("auth_code:test-code");
     // del was called to remove the code (one-time use)
-    expect(mockRedisClient.del).toHaveBeenCalledWith("auth_code:test-code");
+    expect(mockRedisClient.getdel).toHaveBeenCalledWith("auth_code:test-code");
   });
 });
 
@@ -563,5 +668,51 @@ describe("Auth rate limiting", () => {
     });
     expect(res.headers["x-ratelimit-limit"]).toBe("10");
     expect(res.headers["x-ratelimit-remaining"]).toBe("9");
+  });
+});
+
+describe("deployment-wide credential authorization", () => {
+  const hostId = "11111111-1111-4111-8111-111111111111";
+  const endpoints = [
+    { method: "GET" as const, url: "/api/auth/claude-token" },
+    { method: "POST" as const, url: "/api/auth/refresh" },
+    {
+      method: "POST" as const,
+      url: "/api/auth/claude-token/refresh-from-host",
+      payload: { hostId },
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authDisabled = false;
+    deploymentAdmin = false;
+    mockGetHost.mockResolvedValue({ id: hostId, userId: "user-1", workspaceId: "ws-1" });
+    mockRefreshClaudeToken.mockResolvedValue({ ok: true, hostId });
+  });
+  afterEach(() => {
+    deploymentAdmin = false;
+  });
+
+  it.each(endpoints)(
+    "denies a workspace admin at $url before using shared credentials",
+    async (endpoint) => {
+      const app = await buildRouteTestApp(authRoutes);
+      const res = await app.inject(endpoint);
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toMatch(/deployment admin/i);
+      expect(mockGetClaudeAuthToken).not.toHaveBeenCalled();
+      expect(mockInvalidateCredentialsCache).not.toHaveBeenCalled();
+      expect(mockRefreshClaudeToken).not.toHaveBeenCalled();
+      await app.close();
+    },
+  );
+
+  it.each(endpoints)("allows a deployment admin at $url", async (endpoint) => {
+    deploymentAdmin = true;
+    const app = await buildRouteTestApp(authRoutes);
+    const res = await app.inject(endpoint);
+    expect(res.statusCode).toBe(endpoint.url === "/api/auth/claude-token" ? 503 : 200);
+    await app.close();
   });
 });

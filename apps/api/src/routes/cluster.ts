@@ -6,7 +6,7 @@ import { db } from "../db/client.js";
 import { tasks, podHealthEvents, repos } from "../db/schema.js";
 import { getRepoPodView, listRepoPodViews } from "../services/repo-pool-service.js";
 import { deletePod } from "../services/agent-pod-pool.js";
-import { eq, desc, and, inArray, sql } from "drizzle-orm";
+import { eq, desc, and, inArray, isNull, sql } from "drizzle-orm";
 import { requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { getVersionInfo, isLocalDev } from "../services/version-service.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
@@ -144,7 +144,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
         description:
           "Return an aggregate snapshot of the Optio cluster: nodes, all " +
           "pods in the namespace, services, recent events, and resource " +
-          "utilization from metrics-server if available. Requires `admin` role.",
+          "utilization from metrics-server if available. Requires a deployment admin.",
         tags: ["Cluster"],
         response: { 200: ClusterOverviewResponseSchema, 500: ErrorResponseSchema },
       },
@@ -403,7 +403,14 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
                 createdAt: tasks.createdAt,
               })
               .from(tasks)
-              .where(eq(tasks.repoUrl, pod.repoUrl))
+              .where(
+                and(
+                  eq(tasks.repoUrl, pod.repoUrl),
+                  pod.workspaceId
+                    ? eq(tasks.workspaceId, pod.workspaceId)
+                    : isNull(tasks.workspaceId),
+                ),
+              )
               .orderBy(desc(tasks.createdAt))
               .limit(10);
 
@@ -444,7 +451,12 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
       const podTasks = await db
         .select()
         .from(tasks)
-        .where(eq(tasks.repoUrl, pod.repoUrl))
+        .where(
+          and(
+            eq(tasks.repoUrl, pod.repoUrl),
+            pod.workspaceId ? eq(tasks.workspaceId, pod.workspaceId) : isNull(tasks.workspaceId),
+          ),
+        )
         .orderBy(desc(tasks.createdAt))
         .limit(20);
 
@@ -494,7 +506,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
         summary: "List pod health events",
         description:
           "Return recent pod health events (crashes, OOM kills, restarts, " +
-          "etc.) newest first. Requires `admin` role.",
+          "etc.) newest first. Requires a deployment admin.",
         tags: ["Cluster"],
         querystring: healthEventsQuerySchema,
         response: { 200: HealthEventsResponseSchema },
@@ -522,7 +534,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
         description:
           "Destroy a repo pod and clear its DB record so the next task " +
           "recreates it. Records a `restarted` event in pod_health_events. " +
-          "Requires `admin` role.",
+          "Requires a deployment admin.",
         tags: ["Cluster"],
         params: IdParamsSchema,
         response: { 200: OkResponseSchema, 404: ErrorResponseSchema },
@@ -597,7 +609,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
         description:
           "Roll the optio-api deployment (its api and web containers) to a new image tag. " +
           "Only available in production deployments (fails in local dev). " +
-          "Requires `admin` role.",
+          "Requires a deployment admin.",
         tags: ["Cluster"],
         body: updateBodySchema,
         response: {

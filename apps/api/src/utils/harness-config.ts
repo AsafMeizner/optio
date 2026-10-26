@@ -64,10 +64,9 @@ export const OPTIO_OPENCODE_CONFIG = "OPTIO_OPENCODE_CONFIG";
 export const OPTIO_COPILOT_MCP_CONFIG = "OPTIO_COPILOT_MCP_CONFIG";
 
 /**
- * The agent's home: `/home/agent` in every agent pod, and in the API pod
- * too for the work that runs there (the assistant, `OPTIO_ASSISTANT_PLACEMENT`;
- * the API image has it). `OPTIO_AGENT_HOME_DIR` moves it for the test tiers
- * on machines without one; it never changes a pod's paths in production.
+ * The agent's home: `/home/agent` in every agent pod. The API does not run
+ * user-controlled harnesses. `OPTIO_AGENT_HOME_DIR` moves it for test tiers
+ * and trusted process-runtime callers; it never changes production pod paths.
  */
 export const AGENT_HOME_DIR =
   process.env.OPTIO_AGENT_HOME_DIR?.replace(/\/+$/, "") || "/home/agent";

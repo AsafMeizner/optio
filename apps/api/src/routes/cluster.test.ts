@@ -21,18 +21,20 @@ vi.mock("../services/sign-in-config-service.js", () => ({
 }));
 
 vi.mock("@kubernetes/client-node", () => ({
-  KubeConfig: vi.fn().mockImplementation(() => ({
-    loadFromDefault: vi.fn(),
-    makeApiClient: vi.fn().mockReturnValue({
-      listNode: mockListNode,
-      listNamespacedPod: mockListNamespacedPod,
-      listNamespacedService: mockListNamespacedService,
-      listNamespacedEvent: mockListNamespacedEvent,
-      readNamespacedPod: mockReadNamespacedPod,
-      listClusterCustomObject: mockListClusterCustomObject,
-      listNamespacedCustomObject: mockListNamespacedCustomObject,
-    }),
-  })),
+  KubeConfig: vi.fn().mockImplementation(function () {
+    return {
+      loadFromDefault: vi.fn(),
+      makeApiClient: vi.fn().mockReturnValue({
+        listNode: mockListNode,
+        listNamespacedPod: mockListNamespacedPod,
+        listNamespacedService: mockListNamespacedService,
+        listNamespacedEvent: mockListNamespacedEvent,
+        readNamespacedPod: mockReadNamespacedPod,
+        listClusterCustomObject: mockListClusterCustomObject,
+        listNamespacedCustomObject: mockListNamespacedCustomObject,
+      }),
+    };
+  }),
   CoreV1Api: vi.fn(),
   CustomObjectsApi: vi.fn(),
 }));
@@ -146,9 +148,29 @@ async function buildTestApp(): Promise<FastifyInstance> {
 }
 
 beforeEach(() => {
+  mockIsDeploymentAdmin.mockResolvedValue(true);
   mockGetPod.mockReset().mockResolvedValue(null);
   mockListPods.mockReset().mockResolvedValue([]);
   mockDeletePod.mockReset().mockResolvedValue(undefined);
+});
+
+describe("deployment administration boundary", () => {
+  it.each([
+    ["GET", "/api/cluster/overview"],
+    ["GET", "/api/cluster/health-events"],
+    ["POST", "/api/cluster/update"],
+  ] as const)("rejects a workspace admin on %s %s", async (method, url) => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    const app = await buildTestApp();
+    const res = await app.inject({
+      method,
+      url,
+      ...(method === "POST" ? { payload: { targetVersion: "1.0.0" } } : {}),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(mockListNamespacedPod).not.toHaveBeenCalled();
+    await app.close();
+  });
 });
 
 describe("GET /api/cluster/overview", () => {

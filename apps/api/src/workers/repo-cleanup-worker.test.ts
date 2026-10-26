@@ -6,8 +6,10 @@ import { TaskState } from "@optio/shared";
 let processorFn: () => Promise<void>;
 
 vi.mock("bullmq", () => ({
-  Queue: vi.fn().mockImplementation(() => ({ add: vi.fn() })),
-  Worker: vi.fn().mockImplementation((_name: string, processor: () => Promise<void>) => {
+  Queue: vi.fn().mockImplementation(function () {
+    return { add: vi.fn() };
+  }),
+  Worker: vi.fn().mockImplementation(function (_name: string, processor: () => Promise<void>) {
     processorFn = processor;
     return { on: vi.fn() };
   }),

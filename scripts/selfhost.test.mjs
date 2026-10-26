@@ -39,13 +39,13 @@ mv() { :; }; rm() { :; }; mkdir() { :; }; cp() { :; }; ln() { :; }
 }
 
 describe("selfhost images", () => {
-  it("defaults to every upstream runtime and the Claude compatibility pin", () => {
+  it("defaults to every upstream runtime and the audited Claude pin", () => {
     const out = installs("images/base.Dockerfile");
     for (const pkg of [
-      "@anthropic-ai/claude-code@2.1.112",
+      "@anthropic-ai/claude-code@2.1.310",
       "@openai/codex",
-      "@earendil-works/pi-coding-agent@1.4.0",
-      "@github/copilot@1.0.20",
+      "/opt/optio/pi",
+      "@github/copilot@1.0.103",
       "@google/gemini-cli",
       "openclaw",
       "https://cursor.com/install",
@@ -53,6 +53,9 @@ describe("selfhost images", () => {
     ])
       assert.ok(out.includes(pkg), pkg);
     assert.ok(!out.includes("@modelcontextprotocol/"));
+    const pi = JSON.parse(read("images/pi/package.json"));
+    assert.equal(pi.dependencies["@earendil-works/pi-coding-agent"], "1.4.0");
+    assert.equal(pi.overrides.undici, "8.12.3");
     assert.match(read("images/base.Dockerfile"), /git curl wget jq unzip tmux tini/);
     assert.match(read("images/base.Dockerfile"), /awscli.amazonaws.com/);
   });
@@ -66,7 +69,7 @@ describe("selfhost images", () => {
     assert.match(out, /opencode-ai@1\.14\.20/);
     for (const absent of [
       "@openai/codex",
-      "@earendil-works/pi-coding-agent@1.4.0",
+      "/opt/optio/pi",
       "@github/copilot",
       "@google/gemini-cli",
       "https://cursor.com",
@@ -88,15 +91,10 @@ describe("selfhost images", () => {
       /ENV OPTIO_MCP_PREINSTALLED=\$\{PREINSTALL_MCP_SERVERS\}/,
     );
   });
-  for (const file of ["Dockerfile.api", "Dockerfile.agent"]) {
+  for (const file of ["Dockerfile.agent"]) {
     it(`${file} includes Codex by default and supports selecting Claude alone`, () => {
       assert.match(installs(file), /@openai\/codex/);
-      assert.match(
-        installs(file),
-        file === "Dockerfile.agent"
-          ? /@anthropic-ai\/claude-code(?:\n|$)/
-          : /@anthropic-ai\/claude-code@2\.1\.112/,
-      );
+      assert.match(installs(file), /@anthropic-ai\/claude-code@2\.1\.310/);
       assert.match(
         installs(file, { AGENT_CLIS: "claude-code", CLAUDE_CODE_VERSION: "2.1.308" }),
         /@anthropic-ai\/claude-code@2\.1\.308/,
@@ -104,6 +102,14 @@ describe("selfhost images", () => {
       assert.doesNotMatch(installs(file, { AGENT_CLIS: "claude-code" }), /@openai\/codex/);
     });
   }
+  it("keeps agent harnesses out of the API even when selection arguments are supplied", () => {
+    assert.equal(installs("Dockerfile.api", { AGENT_CLIS: "all" }), "");
+    assert.doesNotMatch(
+      read("Dockerfile.api"),
+      /@anthropic-ai\/claude-code|@openai\/codex|COPY --from=bridge/,
+    );
+    assert.match(read("Dockerfile.api"), /--prod --filter @optio\/api/);
+  });
   it("keeps all Docker RUN instructions syntactically valid", () => {
     for (const file of [
       "Dockerfile.api",

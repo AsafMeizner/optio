@@ -126,9 +126,24 @@ should use scoped Connections or a separately isolated deployment. Restrict node
 instance metadata access and node roles accordingly.
 
 Use a CNI that enforces NetworkPolicy; simply installing YAML does not enforce
-network isolation. Review egress requirements for git providers, model APIs,
-connections, DNS and the internal credential endpoint. Apply least-privilege
-network and IAM policies for your environment. Containers share a kernel: pods
+network isolation. The chart's optional policy selects every Optio-created agent
+pod. It allows CoreDNS in `kube-system`, the Optio API port, and public HTTP(S),
+excluding private, loopback, link-local/metadata and multicast ranges. Setting
+`networkPolicy.deniedEgressCidrs` adds exclusions for deployment-specific ranges;
+an empty list does not remove the built-in restrictions. Repo-level `restricted`
+policies allow public HTTPS, CoreDNS and the API port and must be installed before
+the pod starts; a policy-creation error fails provisioning. The chart's
+`networkPolicy.enabled=false` local default does not disable an explicitly
+restricted repo's policy requirement. Docker Desktop does not enforce these rules.
+
+Review egress requirements for git providers, model APIs, Connections, DNS and
+the internal credential endpoint. Private services or nonstandard DNS require
+explicit destination/port rules under `networkPolicy.extraEgress`; those grants
+apply to every agent pod. Do not grant PostgreSQL, Redis or instance metadata.
+Review custom pod/service CIDRs and CNI behavior before production traffic.
+Standard NetworkPolicy is IP/port based and does not enforce a provider-domain
+allowlist. Apply least-privilege network and IAM policies for your environment.
+Containers share a kernel: pods
 are useful process/filesystem boundaries, not a VM boundary against hostile tenants.
 For mutually untrusted tenants, use separate clusters/accounts or an independently
 validated sandbox runtime. See [Kubernetes multi-tenancy](https://kubernetes.io/docs/concepts/security/multi-tenancy/)
@@ -139,6 +154,28 @@ and [AWS tenant isolation guidance](https://docs.aws.amazon.com/eks/latest/best-
 Pin matching API, web and agent image versions. Back up PostgreSQL, encryption
 keys and needed PVC data before the upgrade. Deploy the new agent images too:
 recoverable pod terminals require `tmux`.
+
+The agent images pin Claude Code 2.1.310 to include the worktree, plugin revision
+and edit/write race security fixes. After building an agent image, run
+`node scripts/smoke-claude-exec.mjs <image>` on each deployment CPU architecture
+and kernel family. This network-disabled test exercises `docker exec`, a native
+Bash tool and streamed completion against a local fake provider. `claude --version`
+alone does not exercise the Bun exec/GC crash that prompted the old vulnerable
+2.1.112 pin. Updating an image tag does not replace existing agent pods; drain or
+recreate those pods after preserving active work.
+
+The base image also pins npm and Copilot to audited releases. Experimental
+OpenClaw remains on its Node 22 compatible release; `images/openclaw/package.json`
+and its lockfile override its MCP SDK, Undici and Zod dependencies to fixed
+versions. Audit that separate dependency tree with
+`npm audit --prefix images/openclaw --omit=dev` when updating the agent image.
+Pi also has a separate lockfile at `images/pi`, with its Undici dependency fixed;
+`npm audit --prefix images/pi --omit=dev` checks that tree. The `PI_VERSION` build
+argument still permits explicit overrides, which need their own validation.
+The image uses npm 12, which blocks unapproved dependency install hooks. Repos
+whose setup needs native-module or other install hooks must declare their
+reviewed `allowScripts` policy; the image explicitly approves only the harness
+packages needed during its own build.
 
 Old pods are deliberately **not relabeled** as isolated: their files may contain
 credentials from several owners. New work uses new isolated pools. Existing
