@@ -1166,6 +1166,19 @@ export const authProviderConfigs = pgTable("auth_provider_configs", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Deployment-wide settings (services/deployment-settings.ts) ──────────────
+//
+// What a deployment admin changes for the whole deployment in the app
+// (Settings → Access), one row per key; a key with no row follows the
+// environment's default (1792900800_deployment_settings.sql).
+
+export const deploymentSettings = pgTable("deployment_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").$type<unknown>().notNull(),
+  updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Config as code (docs/plans/config-as-code.md) ───────────────────────────
 
 /**

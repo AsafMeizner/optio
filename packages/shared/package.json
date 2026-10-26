@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./ssrf": "./src/utils/ssrf.ts"
+    "./ssrf": "./src/utils/ssrf.ts",
+    "./features": "./src/config/features.ts"
   },
   "scripts": {
     "build": "tsc",
