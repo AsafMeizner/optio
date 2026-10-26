@@ -4107,7 +4107,15 @@ data class SignInProviderTestResult(
 }
 
 @Serializable
+data class SignInAccessSettings(
+    /** A provider-verified unique email may link to an existing account; disabled by default. */
+    val linkByEmail: Boolean? = null,
+)
+
+@Serializable
 data class LdapSignInSettings(
+    /** A provider-verified unique email may link to an existing account; disabled by default. */
+    val linkByEmail: Boolean? = null,
     /** ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636 */
     val url: String,
     /** Upgrade a plain ldap:// connection with STARTTLS before binding. */

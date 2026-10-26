@@ -103,7 +103,12 @@ export interface SignInProviderTestResult {
   };
 }
 
-export interface LdapSignInSettings extends Pick<OidcSettings, "linkByEmail"> {
+export interface SignInAccessSettings {
+  /** A provider-verified unique email may link to an existing account; disabled by default. */
+  linkByEmail?: boolean;
+}
+
+export interface LdapSignInSettings extends SignInAccessSettings {
   /** ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636 */
   url: string;
   /** Upgrade a plain ldap:// connection with STARTTLS before binding. */

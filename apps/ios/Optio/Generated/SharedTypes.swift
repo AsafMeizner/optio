@@ -8743,6 +8743,19 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
     }
 }
 
+public struct SignInAccessSettings: Codable, Hashable, Sendable {
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+    }
+
+    public init(linkByEmail: Bool? = nil) {
+        self.linkByEmail = linkByEmail
+    }
+}
+
 public struct LdapSignInSettings: Codable, Hashable, Sendable {
     public enum GroupMode: String, Codable, Hashable, Sendable, CaseIterable {
         case memberOf = "memberOf"
@@ -8758,6 +8771,8 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
         }
     }
 
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
     /// ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636
     public let url: String
     /// Upgrade a plain ldap:// connection with STARTTLS before binding.
@@ -8782,6 +8797,7 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
     public let usernameLabel: String?
 
     private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
         case url = "url"
         case startTls = "startTls"
         case caPem = "caPem"
@@ -8799,6 +8815,7 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
     }
 
     public init(
+        linkByEmail: Bool? = nil,
         url: String,
         startTls: Bool? = nil,
         caPem: String? = nil,
@@ -8814,6 +8831,7 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
         groupFilter: String? = nil,
         usernameLabel: String? = nil
     ) {
+        self.linkByEmail = linkByEmail
         self.url = url
         self.startTls = startTls
         self.caPem = caPem
