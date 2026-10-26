@@ -33,6 +33,7 @@ vi.mock("../services/poller-lease.js", () => ({
 }));
 
 import {
+  skillGitEnv,
   SKILL_SYNC_JOB_OPTIONS,
   SkillSyncBusyError,
   assertSkillSourceArgs,
@@ -89,6 +90,19 @@ describe("a skill source that looks like an option", () => {
     expect(() => assertSkillSourceArgs(" -c", "main")).toThrow(/invalid skill source URL/);
     expect(() => assertSkillSourceArgs("https://example.com/s.git", "v1.2-rc")).not.toThrow();
     expect(() => assertSkillSourceArgs("file:///tmp/skills", "")).not.toThrow();
+  });
+
+  it("keeps git to network transports outside tests", () => {
+    vi.stubEnv("VITEST", "");
+    vi.stubEnv("OPTIO_RUNTIME", "kubernetes");
+    vi.stubEnv("OPTIO_SKILL_ALLOW_FILE_SOURCES", "");
+    try {
+      expect(skillGitEnv().GIT_ALLOW_PROTOCOL).toBe("https:ssh:git");
+      vi.stubEnv("OPTIO_SKILL_ALLOW_FILE_SOURCES", "1");
+      expect(skillGitEnv().GIT_ALLOW_PROTOCOL).toBe("https:ssh:git:file");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

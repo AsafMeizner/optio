@@ -267,6 +267,25 @@ export function assertSkillSourceArgs(sourceUrl: string, ref: string): void {
   }
 }
 
+/**
+ * The transports a skill source may use. A member picks the URL, and git
+ * runs in the API pod: `file://` would copy whatever repository the pod can
+ * read, and `ext::` runs a command. Tests clone local fixtures, so they (and
+ * OPTIO_SKILL_ALLOW_FILE_SOURCES=1) may use `file` too. GIT_ALLOW_PROTOCOL
+ * also binds submodules and redirects.
+ */
+export function skillGitEnv(): NodeJS.ProcessEnv {
+  const allowFile =
+    process.env.OPTIO_SKILL_ALLOW_FILE_SOURCES === "1" ||
+    process.env.OPTIO_RUNTIME === "fake" ||
+    !!process.env.VITEST;
+  return {
+    ...process.env,
+    GIT_ALLOW_PROTOCOL: allowFile ? "https:ssh:git:file" : "https:ssh:git",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+}
+
 export async function resolveRefToSha(sourceUrl: string, ref: string): Promise<string> {
   assertSkillSourceArgs(sourceUrl, ref);
   // ls-remote returns "<sha>\trefs/heads/<branch>" lines. We try the requested
@@ -274,7 +293,7 @@ export async function resolveRefToSha(sourceUrl: string, ref: string): Promise<s
   const { stdout } = await execFileP(
     "git",
     ["ls-remote", "--", sourceUrl, ref, `refs/tags/${ref}`],
-    { timeout: CLONE_TIMEOUT_MS },
+    { timeout: CLONE_TIMEOUT_MS, env: skillGitEnv() },
   );
   const line = stdout.trim().split("\n")[0];
   if (line) {
@@ -284,6 +303,7 @@ export async function resolveRefToSha(sourceUrl: string, ref: string): Promise<s
   // Fallback: ls-remote with no ref returns HEAD.
   const head = await execFileP("git", ["ls-remote", "--", sourceUrl, "HEAD"], {
     timeout: CLONE_TIMEOUT_MS,
+    env: skillGitEnv(),
   });
   const headSha = head.stdout.trim().split(/\s+/)[0];
   if (!/^[0-9a-f]{40}$/.test(headSha)) {
@@ -310,15 +330,18 @@ export async function cloneIntoScratch(
     // Clone with depth=1 then check out the exact SHA.
     await execFileP("git", ["clone", "--depth", "1", "--no-tags", "--", sourceUrl, tmpClone], {
       timeout: CLONE_TIMEOUT_MS,
+      env: skillGitEnv(),
     });
     // Best-effort: fetch + checkout the exact SHA in case the default ref isn't
     // what we resolved (e.g. tag vs branch).
     try {
       await execFileP("git", ["-C", tmpClone, "fetch", "--depth", "1", "origin", sha], {
         timeout: CLONE_TIMEOUT_MS,
+        env: skillGitEnv(),
       });
       await execFileP("git", ["-C", tmpClone, "checkout", "--detach", sha], {
         timeout: CLONE_TIMEOUT_MS,
+        env: skillGitEnv(),
       });
     } catch {
       // If fetch-by-sha is unsupported (older servers) the depth-1 clone of
