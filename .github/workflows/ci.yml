@@ -99,6 +99,8 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install Helm for monitoring chart tests
+        uses: azure/setup-helm@v4
       - run: pnpm turbo test
       - name: Verify push gate
         run: node --test scripts/check-push.test.mjs
