@@ -1,3 +1,4 @@
+import { readPrReviews } from "../services/pr-review-state.js";
 import { Queue, Worker } from "bullmq";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -134,7 +135,7 @@ export async function pollPrs(): Promise<void> {
       if (!prData) continue;
 
       const checkRuns = await platform.getCIChecks(ri, prData.headSha).catch(() => []);
-      const reviewsData = await platform.getReviews(ri, prNumber).catch(() => []);
+      const reviewsData = await readPrReviews(platform, ri, prNumber, prData);
       const checksStatus = determineCheckStatus(checkRuns);
       const reviewResult = determineReviewStatus(reviewsData);
       const reviewStatus = reviewResult.status;
