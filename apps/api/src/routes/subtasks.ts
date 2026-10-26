@@ -6,6 +6,7 @@ import * as taskService from "../services/task-service.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { TaskSchema, SubtaskStatusSchema } from "../schemas/task.js";
 import { requireRole } from "../plugins/auth.js";
+import { workActor, workChangeError } from "../services/work-ownership.js";
 
 const createSubtaskSchema = z
   .object({
@@ -91,6 +92,7 @@ export async function subtaskRoutes(rawApp: FastifyInstance) {
         body: createSubtaskSchema,
         response: {
           201: SubtaskCreatedResponseSchema,
+          403: ErrorResponseSchema,
           404: ErrorResponseSchema,
         },
       },
@@ -102,6 +104,12 @@ export async function subtaskRoutes(rawApp: FastifyInstance) {
       const wsId = req.user?.workspaceId;
       if (wsId && task.workspaceId !== wsId) {
         return reply.status(404).send({ error: "Task not found" });
+      }
+      {
+        // A subtask runs under (and can block) its parent: personal work is
+        // its owner's to extend, as it is theirs to resume or retry.
+        const changeErr = await workChangeError(task.ownerUserId, workActor(req), "run");
+        if (changeErr) return reply.status(403).send({ error: changeErr });
       }
       const body = req.body;
 

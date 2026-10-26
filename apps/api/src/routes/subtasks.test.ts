@@ -22,6 +22,13 @@ vi.mock("../services/task-service.js", () => ({
   getTask: (...args: unknown[]) => mockGetTask(...args),
 }));
 
+// Ownership as work-ownership.ts states it, without its display-name lookup.
+vi.mock("../services/work-ownership.js", () => ({
+  workActor: (req: { user?: { id: string } }) => ({ userId: req.user?.id ?? null }),
+  workChangeError: async (owner: string | null, actor: { userId: string | null }) =>
+    owner && owner !== actor.userId ? "Only its owner can run this" : null,
+}));
+
 import { subtaskRoutes } from "./subtasks.js";
 
 // ─── Helpers ───
@@ -132,6 +139,19 @@ describe("POST /api/tasks/:id/subtasks", () => {
 
     expect(res.statusCode).toBe(201);
     expect(mockQueueSubtask).not.toHaveBeenCalled();
+  });
+
+  it("refuses a subtask under someone else's private task", async () => {
+    mockGetTask.mockResolvedValue({ ...mockTaskData, ownerUserId: "someone-else" });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tasks/task-1/subtasks",
+      payload: { title: "Block it", prompt: "x", blocksParent: true },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockCreateSubtask).not.toHaveBeenCalled();
   });
 
   it("rejects missing title (400 from Zod body schema)", async () => {
