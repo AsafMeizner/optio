@@ -36,10 +36,12 @@ vi.mock("../services/secret-service.js", () => ({
 const mockIsBootstrapMode = vi.fn();
 const mockIsDeploymentAdmin = vi.fn();
 const mockHasDeploymentAdmin = vi.fn();
+const mockIsFoundingWorkspaceAdmin = vi.fn();
 vi.mock("../services/sign-in-config-service.js", () => ({
   isBootstrapMode: (...args: unknown[]) => mockIsBootstrapMode(...args),
   isDeploymentAdmin: (...args: unknown[]) => mockIsDeploymentAdmin(...args),
   hasDeploymentAdmin: (...args: unknown[]) => mockHasDeploymentAdmin(...args),
+  isFoundingWorkspaceAdmin: (...args: unknown[]) => mockIsFoundingWorkspaceAdmin(...args),
 }));
 
 import authPlugin, {
@@ -704,11 +706,20 @@ describe("requireDeploymentAdmin", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("keeps the workspace-admin rule while the deployment has no deployment admin", async () => {
+  it("accepts the founding workspace's admin while the deployment has no deployment admin", async () => {
     mockIsDeploymentAdmin.mockResolvedValue(false);
     mockHasDeploymentAdmin.mockResolvedValue(false);
+    mockIsFoundingWorkspaceAdmin.mockResolvedValue(true);
     const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
     expect(res.statusCode).toBe(200);
+  });
+
+  it("refuses the admin of a self-made workspace while the deployment has no deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    mockHasDeploymentAdmin.mockResolvedValue(false);
+    mockIsFoundingWorkspaceAdmin.mockResolvedValue(false);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(403);
   });
 });
 

@@ -137,7 +137,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/cluster/overview",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "getClusterOverview",
         summary: "Get cluster overview",
@@ -377,7 +377,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/cluster/pods",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "listClusterPods",
         summary: "List cluster repo pods",
@@ -420,7 +420,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/cluster/pods/:id",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "getClusterPod",
         summary: "Get a cluster pod",
@@ -488,7 +488,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/cluster/health-events",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "listPodHealthEvents",
         summary: "List pod health events",
@@ -515,7 +515,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.post(
     "/api/cluster/pods/:id/restart",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "restartClusterPod",
         summary: "Force restart a repo pod",

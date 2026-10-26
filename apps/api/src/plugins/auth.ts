@@ -46,15 +46,16 @@ export function requireRole(minimumRole: WorkspaceRole) {
  * workspace. Being a workspace admin isn't enough there — anyone signed in
  * can create a workspace and be its admin — so it takes a deployment admin.
  * A deployment that has none yet (upgraded from before the role existed, or
- * with no `OPTIO_DEPLOYMENT_ADMINS`) keeps the workspace-admin rule until
- * someone claims the role. Pair it with `requireRole("admin")`.
+ * with no `OPTIO_DEPLOYMENT_ADMINS`) accepts an admin of its founding (oldest)
+ * workspace until someone claims the role. Pair it with `requireRole("admin")`.
  */
 export async function requireDeploymentAdmin(req: FastifyRequest, reply: FastifyReply) {
   if (isAuthDisabled()) return;
-  const { isDeploymentAdmin, hasDeploymentAdmin } =
+  const { isDeploymentAdmin, hasDeploymentAdmin, isFoundingWorkspaceAdmin } =
     await import("../services/sign-in-config-service.js");
   if (req.user && (await isDeploymentAdmin(req.user))) return;
-  if (!(await hasDeploymentAdmin())) return;
+  if (req.user && !(await hasDeploymentAdmin()) && (await isFoundingWorkspaceAdmin(req.user.id)))
+    return;
   return reply.status(403).send({ error: "Forbidden: requires a deployment admin" });
 }
 

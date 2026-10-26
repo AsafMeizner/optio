@@ -12,6 +12,14 @@ const mockReadNamespacedPod = vi.fn();
 const mockListClusterCustomObject = vi.fn();
 const mockListNamespacedCustomObject = vi.fn();
 
+// Deployment-admin checks: the caller is one unless a test says otherwise.
+const mockIsDeploymentAdmin = vi.fn().mockResolvedValue(true);
+vi.mock("../services/sign-in-config-service.js", () => ({
+  isDeploymentAdmin: (...args: unknown[]) => mockIsDeploymentAdmin(...args),
+  hasDeploymentAdmin: vi.fn().mockResolvedValue(true),
+  isFoundingWorkspaceAdmin: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock("@kubernetes/client-node", () => ({
   KubeConfig: vi.fn().mockImplementation(() => ({
     loadFromDefault: vi.fn(),

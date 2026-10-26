@@ -3,7 +3,9 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import * as secretService from "../services/secret-service.js";
 import { actorOf } from "../services/ownership.js";
-import { requireRole } from "../plugins/auth.js";
+import { getUserRole } from "../services/workspace-service.js";
+import { isAuthDisabled } from "../services/oauth/index.js";
+import { requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { invalidateCredentialsCache } from "../services/auth-service.js";
 import { publishEvent } from "../services/event-bus.js";
 import { logAction } from "../services/optio-action-service.js";
@@ -101,7 +103,11 @@ async function validateAuthToken(
   return { valid: true };
 }
 
-/** Org-level secrets need an admin; a member manages their own (`scope: user`). */
+/**
+ * Org-level secrets need an admin; a member manages their own (`scope: user`).
+ * A `global` secret (the default scope) serves every workspace, so it takes a
+ * deployment admin: anyone signed in can create a workspace and be its admin.
+ */
 const scopeOnlySchema = z.object({ scope: z.string().optional() }).passthrough();
 
 async function requireAdminUnlessUserScope(req: FastifyRequest, reply: FastifyReply) {
@@ -110,7 +116,9 @@ async function requireAdminUnlessUserScope(req: FastifyRequest, reply: FastifyRe
   const scope =
     (body.success ? body.data.scope : undefined) ?? (query.success ? query.data.scope : undefined);
   if (scope === "user" && req.user?.id) return;
-  return requireRole("admin")(req, reply);
+  await requireRole("admin")(req, reply);
+  if (reply.sent) return;
+  if ((scope ?? "global") === "global") return requireDeploymentAdmin(req, reply);
 }
 
 export async function secretRoutes(rawApp: FastifyInstance) {
@@ -286,9 +294,16 @@ export async function secretRoutes(rawApp: FastifyInstance) {
 
       // A private secret is deleted by its owner — or, for offboarding, by an
       // admin naming the owner (`?userId=`). Anyone else's id is ignored.
+      // The owner must be in the admin's workspace: an admin of a workspace
+      // they made can't reach a stranger's private secrets.
       const actor = actorOf(req);
-      const effectiveUserId =
-        scope === "user" ? (actor.isAdmin && req.query.userId ? req.query.userId : userId) : null;
+      const offboarding =
+        scope === "user" &&
+        actor.isAdmin &&
+        !!req.query.userId &&
+        (isAuthDisabled() ||
+          (!!workspaceId && (await getUserRole(workspaceId, req.query.userId)) !== null));
+      const effectiveUserId = scope === "user" ? (offboarding ? req.query.userId! : userId) : null;
 
       await secretService.deleteSecret(name, scope, workspaceId, effectiveUserId);
       logAction({
