@@ -17,6 +17,7 @@ vi.mock("../services/session-service.js", () => ({
   createSession: (...args: unknown[]) => mockCreateSession(...args),
   revokeSession: (...args: unknown[]) => mockRevokeSession(...args),
   createWsToken: (...args: unknown[]) => mockCreateWsToken(...args),
+  linkAccountsByEmailEnabled: () => false,
 }));
 
 vi.mock("../services/auth-service.js", () => ({
@@ -34,6 +35,15 @@ vi.mock("../services/oauth/index.js", () => ({
   getOAuthProvider: () => mockOAuthProvider,
 }));
 
+const mockResolveProviderConfig = vi.fn<(provider: string) => Promise<unknown>>(async () => null);
+vi.mock("../services/workspace-service.js", () => ({
+  joinWorkspacesByEmailDomain: vi.fn(async () => {}),
+}));
+vi.mock("../services/auth/ldap.js", () => ({
+  LdapAuthError: class extends Error {},
+  ldapAuthenticate: vi.fn(),
+}));
+
 // Sign-in configuration: no stored provider, no allowed-domain restriction,
 // nobody a deployment admin (covered by sign-in-config.int.test.ts).
 vi.mock("../services/sign-in-config-service.js", () => ({
@@ -41,7 +51,7 @@ vi.mock("../services/sign-in-config-service.js", () => ({
   completeSignIn: async () => ({ deploymentAdmin: false, bootstrapped: false }),
   domainDecision: () => "allowed",
   isDeploymentAdmin: async () => false,
-  resolveProviderConfig: async () => null,
+  resolveProviderConfig: (provider: string) => mockResolveProviderConfig(provider),
 }));
 
 vi.mock("../plugins/auth.js", () => ({
@@ -562,5 +572,69 @@ describe("Auth rate limiting", () => {
     });
     expect(res.headers["x-ratelimit-limit"]).toBe("10");
     expect(res.headers["x-ratelimit-remaining"]).toBe("9");
+  });
+});
+
+describe("LDAP password login", () => {
+  let app: FastifyInstance;
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    redisStore.clear();
+    mockResolveProviderConfig.mockResolvedValue(null);
+    mockCreateSession.mockImplementation(async (_provider: string, profile: any) => ({
+      token: "session-token",
+      user: { id: "user-1", email: profile.email, displayName: profile.displayName },
+    }));
+    app = await buildTestApp();
+  });
+  afterEach(async () => {
+    await app.close();
+  });
+  it("links LDAP accounts by email only when LDAP's linkByEmail is on", async () => {
+    const { ldapAuthenticate } = await import("../services/auth/ldap.js");
+    vi.mocked(ldapAuthenticate).mockResolvedValue({
+      externalId: "CN=Ada,DC=corp,DC=example",
+      email: "ada@acme.com",
+      displayName: "Ada",
+      username: "ada",
+      groups: [],
+    } as any);
+    for (const [settings, linkByEmail] of [
+      [{}, false],
+      [{ linkByEmail: true }, true],
+    ] as const) {
+      mockCreateSession.mockClear();
+      mockResolveProviderConfig.mockImplementation(async (p: string) =>
+        p === "ldap"
+          ? {
+              clientId: "",
+              clientSecret: "bind-pw",
+              allowedDomains: [],
+              source: "database",
+              settings: { url: "ldaps://ad.example.com", userBaseDn: "DC=corp", ...settings },
+            }
+          : null,
+      );
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/auth/ldap/login",
+        payload: { username: "ada", password: "pw" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        "ldap",
+        expect.objectContaining({ emailVerified: true }),
+        { linkByEmail },
+      );
+    }
+  });
+
+  it("answers 404 for the LDAP form when LDAP isn't configured", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/ldap/login",
+      payload: { username: "ada", password: "pw" },
+    });
+    expect(res.statusCode).toBe(404);
   });
 });

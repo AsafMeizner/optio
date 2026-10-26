@@ -1153,7 +1153,9 @@ export const modelProviders = pgTable(
 // provider's env vars. `allowedDomains` restricts who may sign in with it.
 
 export const authProviderConfigs = pgTable("auth_provider_configs", {
-  settings: jsonb("settings").$type<import("@optio/shared").OidcSettings | null>().default(null),
+  settings: jsonb("settings")
+    .$type<import("@optio/shared").AnySignInSettings | null>()
+    .default(null),
   provider: text("provider").primaryKey(),
   clientId: text("client_id").notNull(),
   encryptedClientSecret: bytea("encrypted_client_secret"),

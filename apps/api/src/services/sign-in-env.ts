@@ -1,4 +1,4 @@
-import type { OidcSettings } from "@optio/shared";
+import type { AnySignInSettings } from "@optio/shared";
 import type { SignInProviderName } from "./sign-in-config-service.js";
 function envBool(name: string): boolean | undefined {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -8,7 +8,7 @@ function envBool(name: string): boolean | undefined {
 
 export function envConfig(
   provider: SignInProviderName,
-): { clientId: string; clientSecret: string; settings?: OidcSettings } | null {
+): { clientId: string; clientSecret: string; settings?: AnySignInSettings } | null {
   const env = process.env;
   switch (provider) {
     case "google":
@@ -50,5 +50,27 @@ export function envConfig(
           linkByEmail: envBool("OIDC_LINK_BY_EMAIL") ?? false,
         },
       };
+    case "ldap":
+      break;
   }
+  if (!env.LDAP_URL) return null;
+  return {
+    clientId: "",
+    clientSecret: env.LDAP_BIND_PASSWORD ?? "",
+    settings: {
+      url: env.LDAP_URL,
+      startTls: envBool("LDAP_START_TLS"),
+      caPem: env.LDAP_CA_PEM || undefined,
+      bindDn: env.LDAP_BIND_DN || undefined,
+      userBaseDn: env.LDAP_USER_BASE_DN ?? "",
+      userFilter: env.LDAP_USER_FILTER || undefined,
+      usernameAttribute: env.LDAP_USERNAME_ATTRIBUTE || undefined,
+      emailAttribute: env.LDAP_EMAIL_ATTRIBUTE || undefined,
+      displayNameAttribute: env.LDAP_DISPLAY_NAME_ATTRIBUTE || undefined,
+      groupMode: env.LDAP_GROUP_MODE === "search" ? "search" : undefined,
+      groupBaseDn: env.LDAP_GROUP_BASE_DN || undefined,
+      groupFilter: env.LDAP_GROUP_FILTER || undefined,
+      linkByEmail: envBool("LDAP_LINK_BY_EMAIL") ?? false,
+    },
+  };
 }

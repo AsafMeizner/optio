@@ -16,6 +16,7 @@ import {
   OIDC_PRESET_ISSUER_TEMPLATE,
   type OidcPreset,
   type OidcSettings,
+  type LdapSignInSettings,
   type SignInProviderTestResult,
 } from "@optio/shared";
 import { api, type SignInProviderView, type SignInConfig } from "@/lib/api-client";
@@ -33,28 +34,29 @@ import {
 import { cn } from "@/lib/utils";
 type Mode = "settings" | "wizard";
 const CHECK = "mt-0.5 shrink-0";
-const DEFAULT_DISPLAY_NAME = { oidc: "SSO" };
+export const DEFAULT_DISPLAY_NAME = { oidc: "SSO", ldap: "LDAP" };
 const SIGN_IN_PROVIDER_LABEL = {
   oidc: "SSO (OpenID Connect)",
   google: "Google",
   github: "GitHub",
   gitlab: "GitLab",
+  ldap: "LDAP / Active Directory",
 };
 type SignInProviderName = keyof typeof SIGN_IN_PROVIDER_LABEL;
 
-interface AccessDraft {
+export interface AccessDraft {
   linkByEmail: boolean;
   allowedDomains: string;
   enabled: boolean;
 }
-function accessDraftOf(view: SignInProviderView): AccessDraft {
+export function accessDraftOf(view: SignInProviderView): AccessDraft {
   return {
     linkByEmail: view.settings?.linkByEmail ?? false,
     allowedDomains: view.allowedDomains.join(", "),
     enabled: view.source === "none" ? true : view.enabled,
   };
 }
-function accessSettingsOf(d: AccessDraft) {
+export function accessSettingsOf(d: AccessDraft) {
   return { linkByEmail: d.linkByEmail };
 }
 
@@ -84,7 +86,7 @@ const OIDC_PRESET_NOTE: Partial<Record<OidcPreset, string>> = {
   okta: "Add a groups claim to the authorization server (filter the groups to expose) and the groups scope.",
 };
 
-function parseDomains(raw: string): string[] {
+export function parseDomains(raw: string): string[] {
   return [
     ...new Set(
       raw
@@ -96,17 +98,17 @@ function parseDomains(raw: string): string[] {
 }
 
 /** A typed value, or nothing when it is blank (so the API applies its default). */
-function opt(value: string): string | undefined {
+export function opt(value: string): string | undefined {
   const v = value.trim();
   return v ? v : undefined;
 }
 
-function orNull(value: string): string | null {
+export function orNull(value: string): string | null {
   const v = value.trim();
   return v ? v : null;
 }
 
-function errorMessage(err: unknown): string {
+export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -137,7 +139,7 @@ function CopyField({ label, value }: { label: string; value: string }) {
 }
 
 /** A label wired to the single control inside it, with optional help below. */
-function Labeled({
+export function Labeled({
   label,
   help,
   className,
@@ -160,7 +162,7 @@ function Labeled({
   );
 }
 
-function Checkbox({
+export function Checkbox({
   checked,
   onChange,
   label,
@@ -194,7 +196,7 @@ function Checkbox({
   );
 }
 
-function AccessSection({
+export function AccessSection({
   draft,
   onChange,
   bootstrap,
@@ -270,7 +272,13 @@ function YesNo({ value, unknown }: { value: boolean | null; unknown: string }) {
   );
 }
 
-function TestResultView({ result }: { result: SignInProviderTestResult }) {
+export function TestResultView({
+  result,
+  sampleUsername,
+}: {
+  result: SignInProviderTestResult;
+  sampleUsername?: string;
+}) {
   if (!result.ok) {
     return (
       <div
@@ -334,6 +342,60 @@ function TestResultView({ result }: { result: SignInProviderTestResult }) {
             <YesNo value={result.oidc.pkceSupported} unknown="the server doesn't say" />
           </div>
         </>
+      )}{" "}
+      {result.ldap && (
+        <>
+          <p className="flex items-center gap-1.5 text-success font-medium">
+            <CheckCircle2 className="w-4 h-4" /> Connected and bound
+          </p>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            {row(
+              "Bound as",
+              result.ldap.boundAs || <span className="text-text-muted">anonymous</span>,
+            )}
+            {result.ldap.serverInfo?.vendor && row("Server", result.ldap.serverInfo.vendor)}
+            {result.ldap.serverInfo?.namingContexts?.length
+              ? row("Naming contexts", result.ldap.serverInfo.namingContexts.join("; "))
+              : null}
+          </dl>
+          {result.ldap.sample ? (
+            <div className="pt-1 border-t border-success/20">
+              <p className="text-text-muted mb-1">Sample user</p>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                {row("DN", result.ldap.sample.dn)}
+                {row("Username", result.ldap.sample.username)}
+                {row(
+                  "Email",
+                  result.ldap.sample.email || <span className="text-text-muted">none</span>,
+                )}
+                {row(
+                  "Display name",
+                  result.ldap.sample.displayName || <span className="text-text-muted">none</span>,
+                )}
+                {row(
+                  "Groups",
+                  result.ldap.sample.groups.length ? (
+                    <span className="inline-flex flex-wrap gap-1">
+                      {result.ldap.sample.groups.map((g) => (
+                        <Tag key={g}>{g}</Tag>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="text-text-muted">none</span>
+                  ),
+                )}
+              </dl>
+            </div>
+          ) : sampleUsername?.trim() ? (
+            <p className="text-warning">
+              No user matched the filter for “{sampleUsername.trim()}”.
+            </p>
+          ) : (
+            <p className="text-text-muted">
+              Type a username next to Test to see what the directory returns for that person.
+            </p>
+          )}
+        </>
       )}
     </div>
   );
@@ -341,7 +403,7 @@ function TestResultView({ result }: { result: SignInProviderTestResult }) {
 
 // ── Shared form plumbing ──────────────────────────────────────────────────
 
-interface ProviderFormProps {
+export interface ProviderFormProps {
   view: SignInProviderView;
   config: SignInConfig;
   setupToken: string;
@@ -350,7 +412,7 @@ interface ProviderFormProps {
   onRemoved: () => void;
 }
 
-function RemoveButton({
+export function RemoveButton({
   provider,
   view,
   setupToken,
@@ -390,7 +452,7 @@ function RemoveButton({
   );
 }
 
-function CaFields({
+export function CaFields({
   caPem,
   insecureSkipVerify,
   onChange,
@@ -434,7 +496,7 @@ function CaFields({
   );
 }
 
-function displayNameDraft(view: SignInProviderView): string {
+export function displayNameDraft(view: SignInProviderView): string {
   // The API falls back to the generic label when nothing is stored; that's a
   // poor button label, so offer the short default instead.
   return view.displayName === SIGN_IN_PROVIDER_LABEL[view.provider] ? "" : view.displayName;

@@ -23,6 +23,8 @@ export function resetOAuthProviders(): void {
 export interface EnabledProvider {
   name: string;
   displayName: string;
+  method?: "redirect" | "password";
+  usernameLabel?: string | null;
 }
 
 /**
@@ -33,9 +35,18 @@ export async function listEnabledProviders(): Promise<EnabledProvider[]> {
   const { listSignInProviders } = await import("../sign-in-config-service.js");
   const views = await listSignInProviders();
   const out: EnabledProvider[] = [];
-  for (const name of ["github", "google", "gitlab", "oidc"] as const) {
+  for (const name of ["github", "google", "gitlab", "oidc", "ldap"] as const) {
     const view = views.find((v) => v.provider === name);
-    if (view?.enabled) out.push({ name, displayName: view.displayName });
+    if (view?.enabled)
+      out.push({
+        name,
+        displayName: view.displayName,
+        method: name === "ldap" ? "password" : "redirect",
+        usernameLabel:
+          name === "ldap"
+            ? (view.settings as import("@optio/shared").LdapSignInSettings)?.usernameLabel
+            : undefined,
+      });
   }
   return out;
 }

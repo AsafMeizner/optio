@@ -89,4 +89,52 @@ export interface SignInProviderTestResult {
     groupsClaimAdvertised: boolean | null;
     pkceSupported: boolean | null;
   };
+  /** LDAP: what a bind and a sample search found. */
+  ldap?: {
+    boundAs?: string;
+    serverInfo?: { vendor?: string; namingContexts?: string[] };
+    sample?: {
+      dn: string;
+      username: string;
+      email: string;
+      displayName: string;
+      groups: string[];
+    } | null;
+  };
+}
+
+export interface LdapSignInSettings extends Pick<OidcSettings, "linkByEmail"> {
+  /** ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636 */
+  url: string;
+  /** Upgrade a plain ldap:// connection with STARTTLS before binding. */
+  startTls?: boolean;
+  caPem?: string | null;
+  insecureSkipVerify?: boolean;
+  /** Service account for the search bind; empty = anonymous bind. Its password is stored sealed. */
+  bindDn?: string | null;
+  /** Where users live, e.g. OU=People,DC=example,DC=com */
+  userBaseDn: string;
+  /** Filter with a {{username}} placeholder. Default matches sAMAccountName, uid or mail. */
+  userFilter?: string | null;
+  usernameAttribute?: string | null;
+  emailAttribute?: string | null;
+  displayNameAttribute?: string | null;
+  /** "memberOf" (the attribute on the user, default) or "search" (a group search). */
+  groupMode?: "memberOf" | "search";
+  groupBaseDn?: string | null;
+  /** For groupMode "search": filter with {{dn}} / {{username}} placeholders. */
+  groupFilter?: string | null;
+  /** Shown above the username field ("Corporate account"). */
+  usernameLabel?: string | null;
+}
+
+export type AnySignInSettings = OidcSettings | LdapSignInSettings;
+
+export interface PublicSignInProvider {
+  name: "google" | "github" | "gitlab" | "oidc" | "ldap";
+  displayName: string;
+  /** "redirect": a button that sends the browser to the provider; "password": a form on the login page. */
+  method: "redirect" | "password";
+  /** LDAP: the label above the username field. */
+  usernameLabel?: string | null;
 }

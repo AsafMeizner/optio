@@ -1,7 +1,7 @@
 import { envConfig } from "./sign-in-env.js";
 import type { SignInProviderTestResult } from "@optio/shared";
-import type { OidcSettings } from "@optio/shared";
-import { OidcSettingsSchema } from "../schemas/sign-in.js";
+import type { OidcSettings, LdapSignInSettings, AnySignInSettings } from "@optio/shared";
+import { OidcSettingsSchema, ldapSettingsSchema } from "../schemas/sign-in.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -36,10 +36,10 @@ import { ensureUserHasWorkspace, normalizeAutoJoinDomains } from "./workspace-se
 const isAuthDisabled = () => process.env.OPTIO_AUTH_DISABLED === "true";
 
 /** The providers whose config can be stored in the app. */
-export const CONFIGURABLE_PROVIDERS = ["google", "oidc"] as const;
+export const CONFIGURABLE_PROVIDERS = ["google", "oidc", "ldap"] as const;
 export type ConfigurableProvider = (typeof CONFIGURABLE_PROVIDERS)[number];
 
-export const SIGN_IN_PROVIDERS = ["google", "github", "gitlab", "oidc"] as const;
+export const SIGN_IN_PROVIDERS = ["google", "github", "gitlab", "oidc", "ldap"] as const;
 export type SignInProviderName = (typeof SIGN_IN_PROVIDERS)[number];
 
 export class SignInConfigError extends Error {
@@ -60,7 +60,7 @@ export interface ResolvedProviderConfig {
   clientSecret: string;
   allowedDomains: string[];
   source: "database" | "environment";
-  settings?: OidcSettings;
+  settings?: AnySignInSettings;
 }
 
 /** What the Sign-in page shows for one provider (never the secret). */
@@ -75,8 +75,8 @@ export interface SignInProviderView {
   hasClientSecret: boolean;
   allowedDomains: string[];
   /** The redirect URI to register with the provider. */
-  callbackUrl: string;
-  settings?: OidcSettings;
+  callbackUrl: string | null;
+  settings?: AnySignInSettings;
   updatedAt: string | null;
 }
 
@@ -85,6 +85,7 @@ const DISPLAY: Record<SignInProviderName, string> = {
   github: "GitHub",
   gitlab: "GitLab",
   oidc: process.env.OIDC_DISPLAY_NAME || "SSO",
+  ldap: process.env.LDAP_DISPLAY_NAME || "LDAP / Active Directory",
 };
 
 function secretAAD(provider: string): Buffer {
@@ -148,13 +149,18 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
       configurable: (CONFIGURABLE_PROVIDERS as readonly string[]).includes(provider),
       enabled: fromDb || !!env,
       source: fromDb ? "database" : env ? "environment" : stored ? "database" : "none",
-      clientId: fromDb || (stored && !env) ? stored!.clientId : (env?.clientId ?? null),
+      clientId:
+        provider === "ldap"
+          ? null
+          : fromDb || (stored && !env)
+            ? stored!.clientId
+            : (env?.clientId ?? null),
       hasClientSecret:
         fromDb || (stored && !env) ? !!stored!.encryptedClientSecret : !!env?.clientSecret,
       allowedDomains: stored?.allowedDomains ?? [],
-      callbackUrl: getCallbackUrl(provider),
+      callbackUrl: provider === "ldap" ? null : getCallbackUrl(provider),
       settings:
-        provider === "oidc"
+        provider === "oidc" || provider === "ldap"
           ? ((fromDb || (stored && !env) ? stored?.settings : env?.settings) ?? undefined)
           : undefined,
       updatedAt: stored?.updatedAt.toISOString() ?? null,
@@ -164,8 +170,8 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
 }
 
 export interface SaveSignInConfigInput {
-  settings?: OidcSettings;
-  clientId: string;
+  settings?: AnySignInSettings;
+  clientId?: string;
   /** Replaces the stored secret; absent keeps it; required on first save. */
   clientSecret?: string | null;
   allowedDomains?: string[];
@@ -182,8 +188,8 @@ export async function saveSignInConfig(
   if (!(CONFIGURABLE_PROVIDERS as readonly string[]).includes(provider)) {
     throw new SignInConfigError(`${provider} can only be configured by environment variables`, 400);
   }
-  const clientId = input.clientId.trim();
-  if (!clientId) throw new SignInConfigError("A client ID is required");
+  const clientId = input.clientId?.trim() ?? "";
+  if (!clientId && provider !== "ldap") throw new SignInConfigError("A client ID is required");
   let domains: string[] = [];
   if (input.allowedDomains !== undefined) {
     const normalized = normalizeAutoJoinDomains(input.allowedDomains);
@@ -192,7 +198,8 @@ export async function saveSignInConfig(
   }
   const existing = await getStoredConfig(provider);
   const secret = input.clientSecret?.trim();
-  if (!existing && !secret) throw new SignInConfigError("A client secret is required");
+  if (!existing && !secret && provider !== "ldap")
+    throw new SignInConfigError("A client secret is required");
 
   const sealed = secret
     ? (() => {
@@ -204,11 +211,13 @@ export async function saveSignInConfig(
         };
       })()
     : {};
-  let settings: OidcSettings | null = null;
-  if (provider === "oidc") {
+  let settings: AnySignInSettings | null = null;
+  if (provider === "oidc" || provider === "ldap") {
     const candidate = input.settings ?? existing?.settings;
     if (!candidate) throw new SignInConfigError("Settings are required");
-    const parsed = OidcSettingsSchema.safeParse(candidate);
+    const parsed = (provider === "ldap" ? ldapSettingsSchema : OidcSettingsSchema).safeParse(
+      candidate,
+    );
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       throw new SignInConfigError(
@@ -217,6 +226,13 @@ export async function saveSignInConfig(
     }
     settings = parsed.data;
   }
+  if (
+    provider === "ldap" &&
+    (settings as LdapSignInSettings)?.bindDn?.trim() &&
+    !existing?.encryptedClientSecret &&
+    !secret
+  )
+    throw new SignInConfigError("The bind password is required");
   const values = {
     clientId,
     settings,
@@ -534,8 +550,47 @@ function slugOf(name: string, fallbackId: string): string {
 
 export async function testSignInProvider(
   provider: string,
-  input: { settings?: OidcSettings },
+  input: { settings?: AnySignInSettings; clientSecret?: string; sampleUsername?: string },
 ): Promise<SignInProviderTestResult> {
+  if (provider === "ldap") {
+    const stored = await getStoredConfig(provider);
+    const parsed = ldapSettingsSchema.safeParse(
+      input.settings ?? stored?.settings ?? envConfig("ldap")?.settings,
+    );
+    if (!parsed.success) return { ok: false, error: "Valid LDAP settings are required" };
+    const ldap = parsed.data as LdapSignInSettings;
+    const { ldapTest } = await import("./auth/ldap.js");
+    const result = await ldapTest(
+      {
+        url: ldap.url,
+        startTls: ldap.startTls,
+        caPem: ldap.caPem,
+        insecureSkipVerify: ldap.insecureSkipVerify,
+        bindDn: ldap.bindDn,
+        bindPassword:
+          input.clientSecret?.trim() ||
+          (stored ? openSecret(stored) : null) ||
+          envConfig("ldap")?.clientSecret ||
+          "",
+        userBaseDn: ldap.userBaseDn,
+        userFilter: ldap.userFilter,
+        usernameAttribute: ldap.usernameAttribute,
+        emailAttribute: ldap.emailAttribute,
+        displayNameAttribute: ldap.displayNameAttribute,
+        groupMode: ldap.groupMode,
+        groupBaseDn: ldap.groupBaseDn,
+        groupFilter: ldap.groupFilter,
+      },
+      input.sampleUsername,
+    );
+    return {
+      ok: result.ok,
+      error: result.error,
+      ldap: result.ok
+        ? { boundAs: result.boundAs, serverInfo: result.serverInfo, sample: result.sample ?? null }
+        : undefined,
+    };
+  }
   if (provider !== "oidc") throw new SignInConfigError("This provider has no connection test", 400);
   const stored = await getStoredConfig(provider);
   const parsed = OidcSettingsSchema.safeParse(

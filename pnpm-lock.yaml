@@ -53,6 +53,9 @@ importers:
 
   apps/api:
     dependencies:
+      ldapts:
+        specifier: ^8.2.0
+        version: 8.2.0
       '@aws-sdk/client-codecommit':
         specifier: ^3.1156.0
         version: 3.1156.0
@@ -5661,6 +5664,11 @@ packages:
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
+  ldapts@8.2.0:
+    resolution: {integrity: sha512-XfKocadpoHc1kNgtbTBBhD+pSh1U9KVTzxcKwDS4ulFFyC7rJkLC3TwIfbQ4rt3my9KHz8qsw9qFXVjcPOGebw==}
+    engines: {node: '>=20'}
+  strict-event-emitter-types@2.0.0:
+    resolution: {integrity: sha512-Nk/brWYpD85WlOgzw5h173aci0Teyv8YdIAEtV+N88nDB0dLlazZyJMIsN6eo1/AR61l+p6CJTG1JIyFaoNEEA==}
 
 snapshots:
 
@@ -11284,3 +11292,8 @@ snapshots:
       use-sync-external-store: 1.7.0(react@19.3.1)
 
   zwitch@2.0.4: {}
+
+  ldapts@8.2.0:
+    dependencies:
+      strict-event-emitter-types: 2.0.0
+  strict-event-emitter-types@2.0.0: {}

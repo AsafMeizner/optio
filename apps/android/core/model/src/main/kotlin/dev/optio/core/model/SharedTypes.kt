@@ -4066,6 +4066,8 @@ data class SignInProviderTestResult(
     val error: String? = null,
     /** OIDC: what discovery found. */
     val oidc: Oidc? = null,
+    /** LDAP: what a bind and a sample search found. */
+    val ldap: Ldap? = null,
 ) {
     @Serializable
     data class Oidc(
@@ -4080,6 +4082,99 @@ data class SignInProviderTestResult(
         val groupsClaimAdvertised: Boolean? = null,
         val pkceSupported: Boolean? = null,
     )
+
+    @Serializable
+    data class Ldap(
+        val boundAs: String? = null,
+        val serverInfo: ServerInfo? = null,
+        val sample: Sample? = null,
+    ) {
+        @Serializable
+        data class ServerInfo(
+            val vendor: String? = null,
+            val namingContexts: List<String>? = null,
+        )
+
+        @Serializable
+        data class Sample(
+            val dn: String,
+            val username: String,
+            val email: String,
+            val displayName: String,
+            val groups: List<String>,
+        )
+    }
+}
+
+@Serializable
+data class LdapSignInSettings(
+    /** ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636 */
+    val url: String,
+    /** Upgrade a plain ldap:// connection with STARTTLS before binding. */
+    val startTls: Boolean? = null,
+    val caPem: String? = null,
+    val insecureSkipVerify: Boolean? = null,
+    /** Service account for the search bind; empty = anonymous bind. Its password is stored sealed. */
+    val bindDn: String? = null,
+    /** Where users live, e.g. OU=People,DC=example,DC=com */
+    val userBaseDn: String,
+    /** Filter with a {{username}} placeholder. Default matches sAMAccountName, uid or mail. */
+    val userFilter: String? = null,
+    val usernameAttribute: String? = null,
+    val emailAttribute: String? = null,
+    val displayNameAttribute: String? = null,
+    /** "memberOf" (the attribute on the user, default) or "search" (a group search). */
+    val groupMode: GroupMode? = null,
+    val groupBaseDn: String? = null,
+    /** For groupMode "search": filter with {{dn}} / {{username}} placeholders. */
+    val groupFilter: String? = null,
+    /** Shown above the username field ("Corporate account"). */
+    val usernameLabel: String? = null,
+) {
+    @Serializable(with = GroupMode.Companion::class)
+    enum class GroupMode(override val raw: String) : RawEnum {
+        MEMBER_OF("memberOf"),
+        SEARCH("search"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<GroupMode>("dev.optio.core.model.LdapSignInSettings.GroupMode", entries, UNKNOWN)
+    }
+}
+
+typealias AnySignInSettings = JsonElement
+
+@Serializable
+data class PublicSignInProvider(
+    val name: Name,
+    val displayName: String,
+    /** "redirect": a button that sends the browser to the provider; "password": a form on the login page. */
+    val method: Method,
+    /** LDAP: the label above the username field. */
+    val usernameLabel: String? = null,
+) {
+    @Serializable(with = Name.Companion::class)
+    enum class Name(override val raw: String) : RawEnum {
+        GOOGLE("google"),
+        GITHUB("github"),
+        GITLAB("gitlab"),
+        OIDC("oidc"),
+        LDAP("ldap"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<Name>("dev.optio.core.model.PublicSignInProvider.Name", entries, UNKNOWN)
+    }
+
+    @Serializable(with = Method.Companion::class)
+    enum class Method(override val raw: String) : RawEnum {
+        REDIRECT("redirect"),
+        PASSWORD("password"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<Method>("dev.optio.core.model.PublicSignInProvider.Method", entries, UNKNOWN)
+    }
 }
 
 // endregion

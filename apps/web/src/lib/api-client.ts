@@ -1,4 +1,8 @@
-import type { OidcSettings, SignInProviderTestResult } from "@optio/shared";
+import type {
+  AnySignInSettings,
+  SignInProviderTestResult,
+  PublicSignInProvider,
+} from "@optio/shared";
 /**
  * All API requests are routed through the Next.js BFF proxy at /api/[...path].
  * The proxy reads the HttpOnly session cookie server-side and forwards it as a
@@ -98,8 +102,8 @@ export interface ApiKeyCreated {
 
 /** What `GET /api/auth/sign-in` says about one provider (never a secret). */
 export interface SignInProviderView {
-  settings?: OidcSettings;
-  provider: "google" | "github" | "gitlab" | "oidc";
+  settings?: AnySignInSettings;
+  provider: "google" | "github" | "gitlab" | "oidc" | "ldap";
   displayName: string;
   configurable: boolean;
   enabled: boolean;
@@ -107,7 +111,7 @@ export interface SignInProviderView {
   clientId: string | null;
   hasClientSecret: boolean;
   allowedDomains: string[];
-  callbackUrl: string;
+  callbackUrl: string | null;
   updatedAt: string | null;
 }
 
@@ -1012,10 +1016,15 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  ldapLogin: (data: { username: string; password: string }) =>
+    request<{ code: string }>("/api/auth/ldap/login", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
   // OAuth / User Auth
   getAuthProviders: () =>
     request<{
-      providers: Array<{ name: string; displayName: string }>;
+      providers: PublicSignInProvider[];
       authDisabled: boolean;
       /** Nobody can sign in yet: the setup wizard's Sign-in step configures the first provider. */
       setupRequired?: boolean;
@@ -1028,13 +1037,13 @@ export const api = {
   saveSignInProvider: (
     provider: string,
     data: {
-      clientId: string;
+      clientId?: string;
       clientSecret?: string;
       allowedDomains?: string[];
       enabled?: boolean;
       displayName?: string | null;
       organizationName?: string;
-      settings?: OidcSettings;
+      settings?: AnySignInSettings;
     },
     setupToken?: string,
   ) =>
@@ -1045,7 +1054,12 @@ export const api = {
     }),
   testSignInProvider: (
     provider: string,
-    data: { clientId?: string; clientSecret?: string; settings?: OidcSettings },
+    data: {
+      clientId?: string;
+      clientSecret?: string;
+      settings?: AnySignInSettings;
+      sampleUsername?: string;
+    },
     setupToken?: string,
   ) =>
     request<SignInProviderTestResult>(`/api/auth/sign-in/${provider}/test`, {

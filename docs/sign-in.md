@@ -122,3 +122,32 @@ Environment clients retain their existing flow: `OIDC_ISSUER_URL`,
 Move the client into the app to use nonce enforcement. `trustEmail` and
 `OIDC_TRUST_EMAIL` default to **false**. Opting in treats an unverified address
 as verified for domain rules, but never authorizes cross-provider linking.
+
+## LDAP / Active Directory (`ldap`)
+
+Save the directory URL (`ldap://` or `ldaps://`), user base DN and search-bind
+DN/password. An empty bind DN uses an anonymous search. A login searches as
+the service account, then binds **as the user** to verify the password.
+Choose LDAPS or STARTTLS and configure a private CA when needed. Test can
+bind and look up a sample username without saving the settings.
+
+The default user filter is
+`(|(sAMAccountName={{username}})(uid={{username}})(mail={{username}}))`.
+Values substituted into filters are escaped. Customize the username, email
+and display-name attributes as needed. The stable ID is `objectGUID` (AD),
+then `entryUUID`, then the DN. A directory-supplied email counts as verified.
+
+Groups come from `memberOf`, or a group search with base DN and filter
+(default `(|(member={{dn}})(uniqueMember={{dn}})(memberUid={{username}}))`).
+Both full group DNs and their CNs are available to the rules below.
+Environment configuration uses `LDAP_URL`, `LDAP_USER_BASE_DN`,
+`LDAP_BIND_DN`, `LDAP_BIND_PASSWORD`, `LDAP_START_TLS`, `LDAP_CA_PEM`,
+`LDAP_USER_FILTER`, `LDAP_USERNAME_ATTRIBUTE`, `LDAP_EMAIL_ATTRIBUTE`,
+`LDAP_DISPLAY_NAME_ATTRIBUTE`, `LDAP_GROUP_MODE`, `LDAP_GROUP_BASE_DN`,
+`LDAP_GROUP_FILTER`, `LDAP_ADMIN_GROUPS`, `LDAP_REQUIRED_GROUPS` and
+`LDAP_DISPLAY_NAME`. The username field's label is set in the app.
+
+`POST /api/auth/ldap/login` takes `{ username, password }` and returns a
+one-time browser auth code; `cli: true` returns a personal access token.
+Wrong credentials receive the same 401 response. Operations time out after
+10 seconds. For ongoing access checks, enable [LDAP directory sync](directory-sync.md).
