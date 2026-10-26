@@ -29,6 +29,25 @@ describe("run usage accumulation", () => {
     expect(await costAfter("2", 1e-7)).toBe("2.0000001");
   });
 
+  it("never lets an agent's reported usage subtract spend or poison the sum", async () => {
+    // A prompt-injected agent writes its own result line.
+    expect(await costAfter("5", -1000)).toBe("5");
+    expect(await costAfter("5", "-1000")).toBe("5");
+    expect(await costAfter("5", JSON.parse("1e400") as number)).toBe("5");
+    expect(await costAfter("5", Number.NaN)).toBe("5");
+    expect(await costAfter("5", "Infinity")).toBe("5");
+    expect(await costAfter("5", "NaN")).toBe("5");
+    expect(await costAfter("5", "1e400")).toBe("5");
+    expect(await costAfter("2", "1e-7")).toBe("2.0000001");
+    const task = await insertTask({ inputTokens: 100 });
+    const [row] = await db
+      .update(tasks)
+      .set(addUsage(tasks, { inputTokens: -1_000_000, outputTokens: Number.POSITIVE_INFINITY }))
+      .where(eq(tasks.id, task.id))
+      .returning();
+    expect(row).toMatchObject({ inputTokens: 100, outputTokens: 0 });
+  });
+
   it("adds tokens and records the model, leaving absent fields alone", async () => {
     const task = await insertTask({ costUsd: "1", inputTokens: 100, outputTokens: null });
     const [row] = await db
