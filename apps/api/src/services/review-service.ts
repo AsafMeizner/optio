@@ -3,6 +3,7 @@ import {
   DEFAULT_REVIEW_PROMPT_TEMPLATE,
   REVIEW_TASK_FILE_PATH,
   renderPromptTemplate,
+  shellSafeTitle,
   parsePrUrl,
   parseRepoUrl,
 } from "@optio/shared";
@@ -136,7 +137,7 @@ export async function launchReview(parentTaskId: string): Promise<string> {
     PR_NUMBER: String(prNumber),
     TASK_FILE: REVIEW_TASK_FILE_PATH,
     REPO_NAME: repoName,
-    TASK_TITLE: parentTask.title,
+    TASK_TITLE: shellSafeTitle(parentTask.title),
     TEST_COMMAND: repoConfig?.testCommand ?? "",
     GIT_PLATFORM_GITLAB: isGitLab ? "true" : "",
     GIT_PLATFORM_CODECOMMIT: isCodeCommit ? "true" : "",

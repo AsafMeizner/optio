@@ -794,6 +794,8 @@ function taskSetupLines(
     REPO_INIT_TIMEOUT_SECS: String(Math.ceil(REPO_INIT_TIMEOUT_MS / 1000)),
   });
   const runToken = opts.runToken ?? randomUUID();
+  // A stored string, not checked everywhere it is set: always quoted.
+  const branch = env.OPTIO_REPO_BRANCH ?? "main";
 
   // Build worktree setup commands based on whether we're resetting or creating fresh
   const worktreeSetup = opts.resetWorktree
@@ -808,7 +810,7 @@ function taskSetupLines(
         `else`,
         `  echo "[optio] No existing worktree found, creating fresh..."`,
         `  git branch -D optio/task-${taskId} 2>/dev/null || true`,
-        `  if ! git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/${env.OPTIO_REPO_BRANCH ?? "main"}" 2>/dev/null; then`,
+        `  if ! git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} ${shellQuote(`origin/${branch}`)} 2>/dev/null; then`,
         `    echo "[optio] Cleaning up stale worktree references..."`,
         `    git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true`,
         `    for wt_path in $(git worktree list --porcelain | grep -B1 "branch refs/heads/optio/task-${taskId}$" | grep "^worktree " | cut -d" " -f2-); do`,
@@ -816,7 +818,7 @@ function taskSetupLines(
         `    done`,
         `    git worktree prune`,
         `    git branch -D optio/task-${taskId} 2>/dev/null || true`,
-        `    git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/${env.OPTIO_REPO_BRANCH ?? "main"}"`,
+        `    git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} ${shellQuote(`origin/${branch}`)}`,
         `  fi`,
         `fi`,
       ]
@@ -834,7 +836,7 @@ function taskSetupLines(
         `  git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} origin/optio/task-${taskId}`,
         `else`,
         `  git branch -D optio/task-${taskId} 2>/dev/null || true`,
-        `  if ! git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/${env.OPTIO_REPO_BRANCH ?? "main"}" 2>/dev/null; then`,
+        `  if ! git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} ${shellQuote(`origin/${branch}`)} 2>/dev/null; then`,
         `    echo "[optio] Cleaning up stale worktree references..."`,
         `    git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true`,
         `    for wt_path in $(git worktree list --porcelain | grep -B1 "branch refs/heads/optio/task-${taskId}$" | grep "^worktree " | cut -d" " -f2-); do`,
@@ -842,7 +844,7 @@ function taskSetupLines(
         `    done`,
         `    git worktree prune`,
         `    git branch -D optio/task-${taskId} 2>/dev/null || true`,
-        `    git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/${env.OPTIO_REPO_BRANCH ?? "main"}"`,
+        `    git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} ${shellQuote(`origin/${branch}`)}`,
         `  fi`,
         `fi`,
       ];
@@ -890,8 +892,8 @@ function taskSetupLines(
     `echo "[optio] Repo lock acquired"`,
     `cd /workspace/repo`,
     `git fetch origin`,
-    `git checkout "${env.OPTIO_REPO_BRANCH ?? "main"}" 2>/dev/null || true`,
-    `git reset --hard "origin/${env.OPTIO_REPO_BRANCH ?? "main"}"`,
+    `git checkout ${shellQuote(branch)} 2>/dev/null || true`,
+    `git reset --hard ${shellQuote(`origin/${branch}`)}`,
     ...worktreeSetup,
     ...(opts.pruneStaleWorktrees
       ? [

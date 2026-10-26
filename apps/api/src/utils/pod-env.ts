@@ -135,6 +135,11 @@ export const WRITE_SETUP_FILES: readonly string[] = [
   `        p = os.environ.get('OPTIO_AGENT_HOME_DIR', '/home/agent').rstrip('/') + '/optio/' + p[len('/opt/optio/'):]`,
   `    elif not p.startswith('/'):`,
   `        p = os.path.join(here, p)`,
+  // A relative path stays in the working directory, through `..` or a
+  // symlink in the checkout (a repo's own `.claude` pointing elsewhere).
+  `        if os.path.commonpath([os.path.realpath(here), os.path.realpath(p)]) != os.path.realpath(here):`,
+  `            print('  skipped ' + f['path'] + ': outside the working directory')`,
+  `            continue`,
   `    os.makedirs(os.path.dirname(p), exist_ok=True)`,
   `    data = base64.b64decode(f['contentBase64']) if f.get('contentBase64') else f.get('content', '').encode()`,
   `    if f.get('merge') == 'json' and os.path.isfile(p):`,
