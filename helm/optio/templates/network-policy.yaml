@@ -1,5 +1,7 @@
 {{- if .Values.networkPolicy.enabled }}
-# Default-deny NetworkPolicy for agent (repo) pods.
+# Default-deny NetworkPolicy for agent pods: repo pods, Job / session pods
+# (the standalone pool) and persistent-agent pods — every pod an agent runs
+# in, since any of them may be prompt-injected.
 # Restricts cluster-internal traffic so a compromised agent pod cannot
 # reach PostgreSQL, Redis, or other services directly. Only the Optio
 # API service is reachable on the cluster network.
@@ -16,8 +18,10 @@ metadata:
     app.kubernetes.io/component: network-policy
 spec:
   podSelector:
-    matchLabels:
-      optio.type: repo-pod
+    matchExpressions:
+      - key: optio.type
+        operator: In
+        values: [repo-pod, workflow-pod, persistent-agent-pod]
   policyTypes:
     - Ingress
     - Egress
