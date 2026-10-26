@@ -280,6 +280,7 @@ enum JobFormat {
         ("gemini", "Google Gemini"),
         ("openclaw", "OpenClaw"),
         ("cursor", "Cursor"),
+        ("pi", "Pi"),
     ]
 
     static func runtimeLabel(_ value: String) -> String {

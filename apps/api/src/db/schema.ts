@@ -20,6 +20,7 @@ import {
 import { sql } from "drizzle-orm";
 import type {
   ConfigApplyResult,
+  WorkLink,
   ConnectionHealthCheck,
   WorkDefinitionKind,
   WorkSettings,
@@ -652,6 +653,7 @@ export const interactiveSessions = pgTable(
     workspaceId: uuid("workspace_id"),
     // Claude Code session id captured from the first chat turn; later turns
     // pass `--resume <id>` so the chat is one conversation across WS connects.
+    links: jsonb("links").$type<WorkLink[]>().notNull().default([]),
     agentSessionId: text("agent_session_id"),
     agentRuntime: text("agent_runtime"),
     agentOptions: jsonb("agent_options").$type<Record<string, string | boolean>>(),

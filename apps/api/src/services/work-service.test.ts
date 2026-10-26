@@ -140,6 +140,14 @@ describe("projectWork", () => {
             repoUrl: "https://github.com/acme/app",
             state: "active",
             branch: "session/x",
+            links: [
+              {
+                url: "https://github.com/acme/app/pull/12",
+                kind: "pr",
+                provider: "github",
+                label: "acme/app#12",
+              },
+            ],
             title: null,
             createdAt: at("2026-07-01T00:00:00Z"),
             endedAt: null,
@@ -201,6 +209,7 @@ describe("projectWork", () => {
     expect(rows.find((r) => r.source === "pod-session")).toMatchObject({
       who: "terminal",
       name: "session/x",
+      links: [expect.objectContaining({ kind: "pr", label: "acme/app#12" })],
       href: "/work/s1abcdef-0000-0000-0000-000000000000",
       status: "waiting",
     });

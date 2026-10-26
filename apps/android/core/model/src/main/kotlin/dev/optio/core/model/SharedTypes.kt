@@ -288,6 +288,8 @@ data class AgentTaskInput(
     val opencodeAgent: String? = null,
     val opencodeBaseUrl: String? = null,
     val cursorModel: String? = null,
+    val piModel: String? = null,
+    val piThinking: String? = null,
     val openclawModel: String? = null,
     val openclawAgent: String? = null,
     val geminiAuthMode: GeminiAuthMode? = null,

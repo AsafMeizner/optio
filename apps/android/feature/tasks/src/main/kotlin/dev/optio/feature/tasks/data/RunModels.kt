@@ -209,6 +209,7 @@ object RunFormatting {
         "gemini" to "Google Gemini",
         "openclaw" to "OpenClaw",
         "cursor" to "Cursor",
+        "pi" to "Pi",
     )
 
     /** "Claude Code"; null → "default agent" (a blueprint that uses the repo's default). */

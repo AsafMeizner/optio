@@ -2,8 +2,10 @@
 # This file exists so `docker build -t optio-agent:latest -f Dockerfile.agent .` still works
 
 # ---- MCP bridge build stage (see images/base.Dockerfile) ----
-FROM node:22-slim@sha256:80fdb3f57c815e1b638d221f30a826823467c4a56c8f6a8d7aa091cd9b1675ea AS bridge
-RUN corepack enable && corepack prepare pnpm@10 --activate
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS node-runtime
+
+FROM node-runtime AS bridge
+RUN npm install -g pnpm@10.34.8
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/mcp-bridge/ packages/mcp-bridge/
@@ -13,6 +15,10 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --filter @optio/mcp-bridge \
 FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+ARG AGENT_CLIS=all
+# Empty preserves the compatibility image's unpinned Claude installation.
+ARG CLAUDE_CODE_VERSION=
 
 RUN apt-get update && apt-get install -y \
     git curl wget jq unzip \
@@ -34,17 +40,20 @@ RUN ARCH=$(dpkg --print-architecture) \
     && dpkg -i /tmp/glab.deb \
     && rm /tmp/glab.deb
 
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # Verify Node ships OpenSSL >= 3.5 for post-quantum TLS (X25519MLKEM768)
 RUN node -e 'const [maj,min] = process.versions.openssl.split(".").map(Number); if (maj < 3 || (maj === 3 && min < 5)) { console.error("OpenSSL " + process.versions.openssl + " too old; need >= 3.5"); process.exit(1); }'
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN case ",${AGENT_CLIS}," in *,all,*|*,claude-code,*) npm install -g "@anthropic-ai/claude-code${CLAUDE_CODE_VERSION:+@${CLAUDE_CODE_VERSION}}" ;; esac
 
 # OpenAI Codex CLI
-RUN npm install -g @openai/codex
+RUN case ",${AGENT_CLIS}," in *,all,*|*,codex,*) npm install -g @openai/codex ;; esac
 
 # Allow sudo for extra package installation at runtime
 RUN apt-get update && apt-get install -y sudo \

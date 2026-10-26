@@ -21,6 +21,15 @@ describe("generateRepoPodName", () => {
     expect(name).toMatch(/^optio-repo-myorg-my-repo-[0-9a-f]{4}$/);
   });
 
+  it.each([
+    "https://github.com/acme/example.dev",
+    "https://github.com/acme/example.dev.git",
+    "git@github.com:acme/example.dev.git",
+    "ssh://git@github.com/acme/example.dev.git",
+  ])("preserves dotted repo names in %s", (url) => {
+    expect(generateRepoPodName(url)).toMatch(/^optio-repo-acme-example-dev-[0-9a-f]{4}$/);
+  });
+
   it("produces valid K8s names (lowercase, alphanumeric, hyphens)", () => {
     const name = generateRepoPodName("https://github.com/My_Org/My.Repo.Name.git");
     expect(name).toMatch(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/);
@@ -70,6 +79,21 @@ describe("generateStatefulSetName", () => {
   it("handles SSH URLs", () => {
     const name = generateStatefulSetName("git@github.com:org/repo.git");
     expect(name).toBe("optio-sts-org-repo");
+  });
+
+  it.each([
+    "https://github.com/acme/example.dev",
+    "https://github.com/acme/example.dev.git",
+    "git@github.com:acme/example.dev.git",
+    "ssh://git@github.com/acme/example.dev.git",
+  ])("preserves dotted repo names in %s", (url) => {
+    expect(generateStatefulSetName(url)).toBe("optio-sts-acme-example-dev");
+  });
+
+  it("gives different dotted repos distinct names", () => {
+    expect(generateStatefulSetName("https://github.com/acme/example.dev")).not.toBe(
+      generateStatefulSetName("https://github.com/acme/another.dev"),
+    );
   });
 
   it("fits within 63 chars for long names", () => {

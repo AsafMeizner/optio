@@ -40,6 +40,16 @@ export const WorkRowSchema = z
     statusLabel: z.string(),
     note: z.string().nullable(),
     prUrl: z.string().nullable(),
+    links: z
+      .array(
+        z.object({
+          url: z.string(),
+          kind: z.enum(["pr", "issue", "ref"]),
+          provider: z.enum(["github", "gitlab", "linear", "jira"]),
+          label: z.string(),
+        }),
+      )
+      .optional(),
     prState: z.string().nullable().optional().describe("open | merged | closed, when known"),
     triggers: z
       .array(z.object({ type: z.string(), source: z.string().nullable().optional() }))

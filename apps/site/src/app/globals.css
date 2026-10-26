@@ -148,7 +148,7 @@ button {
   background: white;
   border-color: var(--color-border-strong);
 }
-.header-cta {
+.header-repo {
   min-height: 40px;
   padding: 9px 16px;
 }
@@ -233,6 +233,14 @@ button {
   color: var(--color-text-muted);
   margin-top: 18px;
   line-height: 1.8;
+}
+.hero-note a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.hero-note a:hover {
+  color: var(--color-primary-hover);
 }
 .hero-note span {
   margin-inline: 6px;
@@ -1073,9 +1081,14 @@ h2 {
   .brand {
     font-size: 25px;
   }
-  .desktop-navigation,
-  .header-cta {
+  .desktop-navigation {
     display: none;
+  }
+  .header-repo {
+    margin-left: auto;
+    gap: 10px;
+    padding-inline: 12px;
+    white-space: nowrap;
   }
   .menu-toggle {
     display: flex;

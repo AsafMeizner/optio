@@ -10,6 +10,7 @@ import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { parsePodTerminals, podTerminalsHref } from "./pod-terminal-panes";
 import { SessionRailScroll } from "./local/session-rail-scroll";
+import { WorkLinkBadges, workLinksSearchText } from "./local/work-links";
 import { SessionRailHeader } from "./local/session-rail-header";
 
 export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
@@ -44,7 +45,9 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
     };
   }, [id]);
   const shown = sessions.filter((s) =>
-    `${s.title ?? ""} ${s.repoUrl} ${s.branch}`.toLowerCase().includes(search.trim().toLowerCase()),
+    `${s.title ?? ""} ${s.repoUrl} ${s.branch} ${workLinksSearchText(s.links ?? [])}`
+      .toLowerCase()
+      .includes(search.trim().toLowerCase()),
   );
   const focus = (pane: string) => {
     const el = document.querySelector<HTMLElement>(`[data-session-pane="pod-${pane}"]`);
@@ -108,6 +111,12 @@ export function PodSessionRail({ onNavigate }: { onNavigate?: () => void }) {
                           : (s.agentRuntime ?? "Pod")}
                       </div>
                     </Link>
+                    <WorkLinkBadges
+                      links={s.links ?? []}
+                      size="xs"
+                      max={2}
+                      className="ml-3.5 mb-1"
+                    />
                     {s.id === id && panes.length > 0 && (
                       <div
                         aria-label="Grouped terminals"

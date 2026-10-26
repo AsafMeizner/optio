@@ -43,9 +43,12 @@ export function Header() {
             </Link>
           ))}
         </div>
-        <Link href="/docs/getting-started" className="landing-button primary header-cta">
-          Get started <span aria-hidden="true">↗</span>
-        </Link>
+        <a
+          href="https://github.com/jonwiggins/optio"
+          className="landing-button primary header-repo"
+        >
+          GitHub <span aria-hidden="true">↗</span>
+        </a>
         <button
           ref={toggle}
           type="button"
@@ -76,6 +79,9 @@ export function Header() {
               <span aria-hidden="true">↗</span>
             </Link>
           ))}
+          <a href="https://github.com/jonwiggins/optio" onClick={() => setOpen(false)}>
+            GitHub repository <span aria-hidden="true">↗</span>
+          </a>
           <Link href="/docs/getting-started" onClick={() => setOpen(false)}>
             Get started <span aria-hidden="true">↗</span>
           </Link>

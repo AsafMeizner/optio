@@ -1,3 +1,5 @@
+import { piCommand } from "../utils/pi-command.js";
+import { piProviderSecrets } from "../services/pi-provider-secrets.js";
 import { runBudgetHold } from "../services/usage-budget-service.js";
 import { workCredentialProfile } from "../services/pod-isolation.js";
 import {
@@ -23,7 +25,11 @@ import {
   shellQuote,
   describeError,
 } from "@optio/shared";
-import { getAdapter } from "@optio/agent-adapters";
+import {
+  getAdapter,
+  OPENCODE_AUTO_APPROVE_FLAG,
+  opencodeHeadlessEnabled,
+} from "@optio/agent-adapters";
 import { getEventParser } from "../services/event-parsers.js";
 import { checkExistingPr, type ExistingPr } from "../services/pr-detection-service.js";
 import { detectTaskPrs } from "../services/task-pr-service.js";
@@ -128,6 +134,7 @@ export function startTaskWorker() {
           taskFileContent: string;
           taskFilePath: string;
           claudeModel?: string;
+          model?: string;
         };
       };
       const log = logger.child({ taskId, jobId: job.id });
@@ -415,9 +422,7 @@ export function startTaskWorker() {
         // repoConfig already loaded above for concurrency check
 
         const parsedRepo = parseRepoUrl(task.repoUrl);
-        const repoName = parsedRepo
-          ? `${parsedRepo.owner}/${parsedRepo.repo}`
-          : task.repoUrl.replace(/.*[/:]([^/]+\/[^/.]+).*/, "$1");
+        const repoName = parsedRepo ? `${parsedRepo.owner}/${parsedRepo.repo}` : task.repoUrl;
         const isGitLab = parsedRepo?.platform === "gitlab";
         const isCodeCommit = parsedRepo?.platform === "codecommit";
         const branchName = `${TASK_BRANCH_PREFIX}${task.id}`;
@@ -519,6 +524,11 @@ export function startTaskWorker() {
           opencodeAgent: opt("opencodeAgent"),
           opencodeBaseUrl: opt("opencodeBaseUrl") ?? opencodeDefaultBaseUrl,
           cursorModel: opt("cursorModel"),
+          piModel:
+            reviewOverride?.model ??
+            (task.agentType === "pi" ? reviewOverride?.claudeModel : undefined) ??
+            opt("piModel"),
+          piThinking: opt("piThinking"),
           geminiAuthMode,
           geminiModel: opt("geminiModel"),
           geminiApprovalMode:
@@ -565,6 +575,25 @@ export function startTaskWorker() {
           taskWorkspaceId,
           runOwnerUserId,
         );
+        if (task.agentType === "pi") {
+          const pickedCredential = await resolveCredentialForWork({
+            agentType: task.agentType,
+            agentOptions,
+            workspaceId: taskWorkspaceId,
+            ownerUserId: runOwnerUserId,
+            runsOn: "pod",
+          });
+          Object.assign(
+            resolvedSecrets,
+            await piProviderSecrets(
+              (name) =>
+                resolveSecretsForTask([name], task.repoUrl, taskWorkspaceId, runOwnerUserId)
+                  .then((values) => values[name])
+                  .catch(() => null),
+              pickedCredential ? credentialRuntime("pi", pickedCredential) : null,
+            ),
+          );
+        }
         // The secrets this work picked for its pod (personal work: its owner's first).
         const picked = await resolvePodSecrets(task.podSecrets, {
           repoUrl: task.repoUrl,
@@ -611,7 +640,7 @@ export function startTaskWorker() {
         }
 
         // For max-subscription mode, fetch the OAuth token from the auth proxy
-        if (claudeAuthMode === "max-subscription") {
+        if (task.agentType !== "pi" && claudeAuthMode === "max-subscription") {
           const { getClaudeAuthToken } = await import("../services/auth-service.js");
           const authResult = getClaudeAuthToken();
           if (authResult.available && authResult.token) {
@@ -625,7 +654,7 @@ export function startTaskWorker() {
         }
 
         // For oauth-token mode, read the token from the secrets store
-        if (claudeAuthMode === "oauth-token") {
+        if (task.agentType !== "pi" && claudeAuthMode === "oauth-token") {
           // Pre-flight: check the cached validation from the background worker
           // to fail fast before wasting ~10s on pod provisioning + worktree setup
           try {
@@ -1655,12 +1684,15 @@ export function buildAgentCommand(
       const resumeFlag = opts?.resumeSessionId
         ? ` --session ${shellQuote(opts.resumeSessionId)}`
         : "";
+      const autoApprove = opencodeHeadlessEnabled() ? ` ${OPENCODE_AUTO_APPROVE_FLAG}` : "";
       // `opencode run` reads stdin to EOF before it starts whenever stdin is
       // not a TTY; the pod exec hands it a pipe that never closes.
       return [
         `echo "[optio] Running OpenCode (experimental)..."`,
         ...EXPORT_OPENCODE_CONFIG,
-        `opencode run --format json${modelFlag}${agentFlag}${resumeFlag} "$OPTIO_PROMPT" </dev/null`,
+        // With the headless rules on, approve what no rule denies, so a
+        // headless ask never aborts (#585).
+        `opencode run --format json${autoApprove}${modelFlag}${agentFlag}${resumeFlag} "$OPTIO_PROMPT" </dev/null`,
       ];
     }
     case "gemini": {
@@ -1687,6 +1719,8 @@ export function buildAgentCommand(
         `openclaw agent --output-format stream-json${openclawModelFlag}${openclawAgentFlag} "$OPTIO_PROMPT"`,
       ];
     }
+    case "pi":
+      return piCommand(env, opts?.resumeSessionId, true);
     case "cursor": {
       const cursorModelFlag = env.OPTIO_CURSOR_MODEL
         ? ` --model ${shellQuote(env.OPTIO_CURSOR_MODEL)}`

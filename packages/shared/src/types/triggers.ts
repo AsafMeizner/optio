@@ -7,11 +7,7 @@
 
 /** What a trigger row points at (`workflow_triggers.target_type`). */
 export type TriggerTargetType =
-  | "job"
-  | "task_config"
-  | "local_blueprint"
-  | "persistent_agent"
-  | "pr_review";
+  "job" | "task_config" | "local_blueprint" | "persistent_agent" | "pr_review";
 
 export type TriggerType =
   | "manual"
@@ -558,12 +554,7 @@ export interface PagerDutyEvent {
  * `X-Hub-Signature: sha256=<hex HMAC of the body>`.
  */
 export type JiraEventKind =
-  | "assigned"
-  | "mentioned"
-  | "created"
-  | "commented"
-  | "transitioned"
-  | "labeled";
+  "assigned" | "mentioned" | "created" | "commented" | "transitioned" | "labeled";
 
 export const JIRA_EVENT_KINDS: readonly JiraEventKind[] = [
   "assigned",

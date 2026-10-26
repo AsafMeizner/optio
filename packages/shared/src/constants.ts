@@ -1,3 +1,5 @@
+import { parseRepoUrl } from "./utils/parse-repo-url.js";
+
 export const DEFAULT_BRANCH = "main";
 export const DEFAULT_MAX_RETRIES = 3;
 export const TASK_BRANCH_PREFIX = "optio/task-";
@@ -63,12 +65,9 @@ export function generateWorkflowPodName(workflowId: string, instanceIndex = 0): 
 }
 
 export function generateRepoPodName(repoUrl: string): string {
-  // Extract owner/repo from URL patterns like:
-  //   https://github.com/owner/repo.git
-  //   git@github.com:owner/repo.git
-  const match = repoUrl.match(/[/:]([^/]+)\/([^/.]+?)(?:\.git)?$/);
-  const owner = match?.[1] ?? "unknown";
-  const repo = match?.[2] ?? "unknown";
+  const parsed = parseRepoUrl(repoUrl);
+  const owner = parsed?.owner ?? "unknown";
+  const repo = parsed?.repo ?? "unknown";
 
   // Sanitize: lowercase, replace non-alphanumeric with hyphens, collapse multiples
   const sanitize = (s: string) =>
@@ -108,9 +107,9 @@ export function generateRepoPodName(repoUrl: string): string {
  * the StatefulSet are `<sts-name>-<ordinal>`.
  */
 export function generateStatefulSetName(repoUrl: string): string {
-  const match = repoUrl.match(/[/:]([^/]+)\/([^/.]+?)(?:\.git)?$/);
-  const owner = match?.[1] ?? "unknown";
-  const repo = match?.[2] ?? "unknown";
+  const parsed = parseRepoUrl(repoUrl);
+  const owner = parsed?.owner ?? "unknown";
+  const repo = parsed?.repo ?? "unknown";
 
   const sanitize = (s: string) =>
     s

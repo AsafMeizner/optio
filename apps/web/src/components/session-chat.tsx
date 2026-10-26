@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { extractWorkLinks, type WorkLink } from "@optio/shared";
 import { cn } from "@/lib/utils";
 import { Send, Square, Bot, Loader2 } from "lucide-react";
 import { ActionCard } from "@/components/optio-chat/action-card";
@@ -10,6 +11,9 @@ import { useSessionLogs } from "@/hooks/use-session-logs";
 
 interface SessionChatProps {
   sessionId: string;
+  repoUrl?: string;
+  readOnly?: boolean;
+  onLinks?: (links: WorkLink[]) => void;
   selectedModel?: string;
   onCostUpdate?: (costUsd: number) => void;
   /**
@@ -33,13 +37,30 @@ interface SessionChatProps {
 export function SessionChat({
   sessionId,
   selectedModel,
+  repoUrl,
+  readOnly = false,
+  onLinks,
   onCostUpdate,
   onSendToAgent,
 }: SessionChatProps) {
-  const session = useSessionLogs(sessionId, { onCostUpdate });
+  const session = useSessionLogs(sessionId, { onCostUpdate, readOnly });
   useEffect(() => {
-    if (selectedModel && session.connected) session.setModel(selectedModel);
-  }, [selectedModel, session.connected, session.setModel]);
+    if (!readOnly && selectedModel && session.connected) session.setModel(selectedModel);
+  }, [readOnly, selectedModel, session.connected, session.setModel]);
+  const links = useMemo(
+    () =>
+      extractWorkLinks(
+        [
+          ...session.logs.map((log) => `${log.content}\n${JSON.stringify(log.metadata ?? {})}`),
+          ...session.userMessages.map((message) => message.text),
+        ].join("\n"),
+        { repoUrl, wrapWidth: Infinity },
+      ),
+    [session.logs, session.userMessages, repoUrl],
+  );
+  useEffect(() => {
+    onLinks?.(links);
+  }, [links, onLinks]);
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -91,111 +112,119 @@ export function SessionChat({
         }}
         userMessages={session.userMessages}
         emptyMessage={
-          <div className="flex flex-col items-center gap-3 px-6">
-            <span className="grid h-12 w-12 place-items-center rounded-2xl border border-primary/15 bg-primary/5 text-primary">
-              <Bot className="h-5 w-5" />
-            </span>
-            <span className="text-base font-semibold text-text-heading">
-              Your workspace, with an agent
-            </span>
-            <span className="text-sm leading-relaxed max-w-xs text-text-muted">
-              Ask the agent to write code, fix bugs, or explore the repository. It operates in the
-              same worktree as your terminal.
-            </span>
-          </div>
+          readOnly ? (
+            "No saved chat history."
+          ) : (
+            <div className="flex flex-col items-center gap-3 px-6">
+              <span className="grid h-12 w-12 place-items-center rounded-2xl border border-primary/15 bg-primary/5 text-primary">
+                <Bot className="h-5 w-5" />
+              </span>
+              <span className="text-base font-semibold text-text-heading">
+                Your workspace, with an agent
+              </span>
+              <span className="text-sm leading-relaxed max-w-xs text-text-muted">
+                Ask the agent to write code, fix bugs, or explore the repository. It operates in the
+                same worktree as your terminal.
+              </span>
+            </div>
+          )
         }
         status={
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  "w-2 h-2 rounded-full",
-                  session.status === "thinking"
-                    ? "bg-primary animate-pulse"
-                    : session.status === "ready" || session.status === "idle"
-                      ? "bg-success"
-                      : session.status === "connecting"
-                        ? "bg-warning animate-pulse"
-                        : "bg-error",
-                )}
-              />
-              <span className="font-medium capitalize">{session.status}</span>
-              {session.status === "thinking" ? (
-                <Loader2 className="w-3 h-3 animate-spin text-text-muted" />
-              ) : null}
+          !readOnly && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span
+                  className={cn(
+                    "w-2 h-2 rounded-full",
+                    session.status === "thinking"
+                      ? "bg-primary animate-pulse"
+                      : session.status === "ready" || session.status === "idle"
+                        ? "bg-success"
+                        : session.status === "connecting"
+                          ? "bg-warning animate-pulse"
+                          : "bg-error",
+                  )}
+                />
+                <span className="font-medium capitalize">{session.status}</span>
+                {session.status === "thinking" ? (
+                  <Loader2 className="w-3 h-3 animate-spin text-text-muted" />
+                ) : null}
+              </div>
+              <div className="flex items-center gap-3 text-text-muted/80">
+                <span className="font-mono text-[11px]">{session.model}</span>
+                {session.costUsd > 0 ? (
+                  <span className="font-mono text-[11px] tabular-nums">
+                    ${session.costUsd.toFixed(4)}
+                  </span>
+                ) : null}
+              </div>
             </div>
-            <div className="flex items-center gap-3 text-text-muted/80">
-              <span className="font-mono text-[11px]">{session.model}</span>
-              {session.costUsd > 0 ? (
-                <span className="font-mono text-[11px] tabular-nums">
-                  ${session.costUsd.toFixed(4)}
-                </span>
-              ) : null}
-            </div>
-          </div>
+          )
         }
         composer={
-          <div className="space-y-2">
-            {session.approvals.map((action) => (
-              <ActionCard
-                key={action.id}
-                action={action}
-                disabled={!session.connected}
-                onApprove={(id) => session.decide(id, true)}
-                onDeny={(id, feedback) => session.decide(id, false, feedback)}
-              />
-            ))}
-            <QueuedMessages messages={session.queuedMessages} onCancel={session.cancelQueued} />
-            <div className="flex items-end gap-2 rounded-xl border border-border bg-bg px-3 py-2.5 transition-colors focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10">
-              <textarea
-                ref={textareaRef}
-                aria-label="Message the agent"
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  e.target.style.height = "auto";
-                  e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
-                }}
-                onKeyDown={handleKeyDown}
-                disabled={disabled}
-                placeholder={
-                  session.status === "thinking"
-                    ? session.canQueue
-                      ? "Queue another message…"
-                      : "Agent is working…"
-                    : disabled
-                      ? "Reconnecting…"
-                      : "Ask the agent…"
-                }
-                rows={1}
-                className="min-h-[28px] max-h-[160px] min-w-0 flex-1 resize-none border-0 bg-transparent py-1 text-sm text-text outline-none placeholder:text-text-muted/60 disabled:cursor-not-allowed"
-              />
-              {session.status === "thinking" && (
-                <button
-                  onClick={session.interrupt}
-                  className="shrink-0 p-2 rounded-lg bg-error/10 text-error hover:bg-error/20 transition-colors"
-                  title="Interrupt"
-                >
-                  <Square className="w-4 h-4" />
-                </button>
-              )}
-              {(session.status !== "thinking" || session.canQueue) && (
-                <button
-                  onClick={handleSend}
-                  disabled={!input.trim() || disabled}
-                  className={cn(
-                    "shrink-0 p-2 rounded-lg transition-colors",
-                    input.trim() && !disabled
-                      ? "bg-primary text-white hover:bg-primary-hover"
-                      : "bg-bg-card text-text-muted/40 border border-border",
-                  )}
-                  title="Send (Enter)"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
-              )}
+          !readOnly && (
+            <div className="space-y-2">
+              {session.approvals.map((action) => (
+                <ActionCard
+                  key={action.id}
+                  action={action}
+                  disabled={!session.connected}
+                  onApprove={(id) => session.decide(id, true)}
+                  onDeny={(id, feedback) => session.decide(id, false, feedback)}
+                />
+              ))}
+              <QueuedMessages messages={session.queuedMessages} onCancel={session.cancelQueued} />
+              <div className="flex items-end gap-2 rounded-xl border border-border bg-bg px-3 py-2.5 transition-colors focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10">
+                <textarea
+                  ref={textareaRef}
+                  aria-label="Message the agent"
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    e.target.style.height = "auto";
+                    e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
+                  }}
+                  onKeyDown={handleKeyDown}
+                  disabled={disabled}
+                  placeholder={
+                    session.status === "thinking"
+                      ? session.canQueue
+                        ? "Queue another message…"
+                        : "Agent is working…"
+                      : disabled
+                        ? "Reconnecting…"
+                        : "Ask the agent…"
+                  }
+                  rows={1}
+                  className="min-h-[28px] max-h-[160px] min-w-0 flex-1 resize-none border-0 bg-transparent py-1 text-sm text-text outline-none placeholder:text-text-muted/60 disabled:cursor-not-allowed"
+                />
+                {session.status === "thinking" && (
+                  <button
+                    onClick={session.interrupt}
+                    className="shrink-0 p-2 rounded-lg bg-error/10 text-error hover:bg-error/20 transition-colors"
+                    title="Interrupt"
+                  >
+                    <Square className="w-4 h-4" />
+                  </button>
+                )}
+                {(session.status !== "thinking" || session.canQueue) && (
+                  <button
+                    onClick={handleSend}
+                    disabled={!input.trim() || disabled}
+                    className={cn(
+                      "shrink-0 p-2 rounded-lg transition-colors",
+                      input.trim() && !disabled
+                        ? "bg-primary text-white hover:bg-primary-hover"
+                        : "bg-bg-card text-text-muted/40 border border-border",
+                    )}
+                    title="Send (Enter)"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
+          )
         }
       />
     </div>

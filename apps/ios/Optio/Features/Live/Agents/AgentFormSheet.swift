@@ -11,7 +11,7 @@ struct AgentFormSheet: View {
     @Environment(APIClient.self) private var api
     @Environment(\.dismiss) private var dismiss
 
-    static let runtimes = ["claude-code", "codex", "copilot", "gemini", "opencode", "cursor"]
+    static let runtimes = ["claude-code", "codex", "copilot", "gemini", "opencode", "cursor", "pi"]
     static let lifecycles = ["sticky", "always-on", "on-demand"]
 
     @State private var slug = ""

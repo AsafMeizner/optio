@@ -11,6 +11,7 @@
 import { and, desc, eq, inArray, or } from "drizzle-orm";
 import {
   sortWork,
+  collectWorkLinks,
   shortDir,
   shortRepo,
   type WorkRow,
@@ -419,6 +420,7 @@ function terminalRow(t: LocalTerminalRow, at: Context): WorkRow {
     statusLabel,
     note: t.attentionState === "needs_you" && t.attentionReason ? t.attentionReason : null,
     prUrl: null,
+    links: collectWorkLinks(t),
     triggers:
       t.spawnedBy === "ticket"
         ? [{ type: "ticket", source: t.ticketSource ?? null }]
@@ -451,6 +453,7 @@ function podSessionRow(s: PodSessionRow): WorkRow {
     statusLabel: active ? "open" : "ended",
     note: null,
     prUrl: null,
+    links: s.links ?? [],
     lastActivity: iso(s.endedAt ?? s.createdAt),
     recurring: false,
     editHref: null,

@@ -2,17 +2,19 @@ import { canJoinSession, watchSessionAccess } from "../services/session-sharing-
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getRuntime } from "../services/container-service.js";
-import { getSession, addSessionPr } from "../services/interactive-session-service.js";
+import {
+  getSession,
+  addSessionPr,
+  addSessionLinks,
+} from "../services/interactive-session-service.js";
 import { getPod } from "../services/agent-pod-pool.js";
 import { logger } from "../logger.js";
-import { shellQuote } from "@optio/shared";
+import { shellQuote, createPodLinkScanner } from "@optio/shared";
 import type { ContainerHandle, ExecSession } from "@optio/shared";
 import { authenticateWs } from "./ws-auth.js";
 import { requireWsRole } from "./ws-authz.js";
 import { acceptWs, serializeWsInput } from "./ws-connection.js";
 import { isMessageWithinSizeLimit, WS_CLOSE_MESSAGE_TOO_LARGE } from "./ws-limits.js";
-
-const PR_URL_REGEX = /https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/g;
 
 export async function sessionTerminalWs(app: FastifyInstance) {
   app.get("/ws/sessions/:sessionId/terminal", { websocket: true }, async (socket, req) => {
@@ -108,23 +110,36 @@ export async function sessionTerminalWs(app: FastifyInstance) {
     ].join("\n");
 
     let execSession: ExecSession | null = null;
-    const detectedPrs = new Set<number>();
-
-    // Scan a chunk of terminal output for GitHub PR URLs and register them
-    const scanForPrUrls = (chunk: Buffer) => {
-      const text = chunk.toString("utf-8");
-      for (const match of text.matchAll(PR_URL_REGEX)) {
-        const prNumber = parseInt(match[1], 10);
-        if (!detectedPrs.has(prNumber)) {
-          detectedPrs.add(prNumber);
-          const prUrl = match[0];
-          addSessionPr(sessionId, prUrl, prNumber).catch((err) => {
-            log.warn({ err, prUrl }, "Failed to register session PR");
-          });
-          log.info({ prUrl, prNumber }, "Detected PR from session terminal");
-        }
+    const detected = new Set<string>();
+    const scan = createPodLinkScanner(session.repoUrl);
+    const decoder = new TextDecoder();
+    let output = "";
+    let scanTimer: ReturnType<typeof setTimeout> | undefined;
+    let columns = 80;
+    const flushLinks = (final = false) => {
+      clearTimeout(scanTimer);
+      scanTimer = undefined;
+      const links = scan(output, columns, final).filter(
+        (link) => !detected.has(`${link.kind}:${link.url}`),
+      );
+      output = "";
+      if (!links.length) return;
+      for (const link of links) detected.add(`${link.kind}:${link.url}`);
+      addSessionLinks(sessionId, links).catch((err) =>
+        log.warn({ err }, "Failed to register session links"),
+      );
+      for (const link of links.filter((link) => link.kind === "pr" && link.provider === "github")) {
+        const prNumber = Number(link.url.split("/").pop());
+        addSessionPr(sessionId, link.url, prNumber).catch((err) =>
+          log.warn({ err }, "Failed to register session PR"),
+        );
       }
     };
+    const scanForWorkLinks = (chunk: Buffer) => {
+      output = (output + decoder.decode(chunk, { stream: true })).slice(-65536);
+      if (!scanTimer) scanTimer = setTimeout(flushLinks, 150);
+    };
+    conn.onClose(() => flushLinks(true));
 
     try {
       execSession = await rt.exec(handle, ["bash", "-c", setupScript], { tty: true });
@@ -141,14 +156,14 @@ export async function sessionTerminalWs(app: FastifyInstance) {
         if (socket.readyState === 1) {
           socket.send(chunk);
         }
-        scanForPrUrls(chunk);
+        scanForWorkLinks(chunk);
       });
 
       execSession.stderr.on("data", (chunk: Buffer) => {
         if (socket.readyState === 1) {
           socket.send(chunk);
         }
-        scanForPrUrls(chunk);
+        scanForWorkLinks(chunk);
       });
 
       // Handle exec session end
@@ -173,6 +188,7 @@ export async function sessionTerminalWs(app: FastifyInstance) {
           try {
             const parsed = JSON.parse(str);
             if (parsed.type === "resize" && parsed.cols && parsed.rows) {
+              columns = parsed.cols;
               execSession?.resize(parsed.cols, parsed.rows);
               return;
             }

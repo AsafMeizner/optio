@@ -3,6 +3,7 @@ import {
   OPENCODE_PLACEHOLDER_KEY,
   OPENCODE_PROVIDER_KEYS,
 } from "@optio/agent-adapters";
+import { piProviderSecrets } from "./pi-provider-secrets.js";
 import { agentOptionsEnv } from "./agent-options-env.js";
 import { podProviderRuntime, resolveProviderForWork } from "./model-provider-service.js";
 import {
@@ -88,18 +89,18 @@ export async function pooledAgentEnv(
     env.OPENAI_BASE_URL = env.OPTIO_OPENCODE_BASE_URL;
     env.OPENAI_API_KEY ||= OPENCODE_PLACEHOLDER_KEY;
   }
-  if (claudeAuthMode === "api-key") {
+  if (agent.agentRuntime !== "pi" && claudeAuthMode === "api-key") {
     const apiKey = await secret("ANTHROPIC_API_KEY");
     if (apiKey) env.ANTHROPIC_API_KEY = apiKey;
   }
-  if (claudeAuthMode === "oauth-token") {
+  if (agent.agentRuntime !== "pi" && claudeAuthMode === "oauth-token") {
     const oauthToken = await secret("CLAUDE_CODE_OAUTH_TOKEN");
     if (!oauthToken) {
       throw new Error("OAuth token mode selected but no CLAUDE_CODE_OAUTH_TOKEN secret found");
     }
     env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
   }
-  if (claudeAuthMode === "max-subscription") {
+  if (agent.agentRuntime !== "pi" && claudeAuthMode === "max-subscription") {
     const { getClaudeAuthToken } = await import("./auth-service.js");
     const authResult = getClaudeAuthToken();
     if (!authResult.available || !authResult.token) {
@@ -130,6 +131,7 @@ export async function pooledProviderSecrets(
   resolveRequired: (names: string[]) => Promise<Record<string, string>>,
   credential: CredentialRuntime | null = null,
 ): Promise<Record<string, string>> {
+  if (agent.agentRuntime === "pi") return piProviderSecrets(secret, credential);
   if (agent.agentRuntime !== "opencode") {
     // A picked credential supplies its own secret (and, for Codex, an
     // app-server makes the key unnecessary): don't require what it provides.

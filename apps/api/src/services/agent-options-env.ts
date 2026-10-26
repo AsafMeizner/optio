@@ -75,6 +75,12 @@ export function agentOptionsEnv(
       if (approval) env.OPTIO_GEMINI_APPROVAL_MODE = approval;
       break;
     }
+    case "pi": {
+      if (model) env.OPTIO_PI_MODEL = model;
+      const thinking = str("piThinking");
+      if (thinking) env.OPTIO_PI_THINKING = thinking;
+      break;
+    }
     case "cursor": {
       if (model) env.OPTIO_CURSOR_MODEL = model;
       break;

@@ -534,6 +534,8 @@ public struct AgentTaskInput: Codable, Hashable, Sendable {
     public let opencodeAgent: String?
     public let opencodeBaseUrl: String?
     public let cursorModel: String?
+    public let piModel: String?
+    public let piThinking: String?
     public let openclawModel: String?
     public let openclawAgent: String?
     public let geminiAuthMode: GeminiAuthMode?
@@ -573,6 +575,8 @@ public struct AgentTaskInput: Codable, Hashable, Sendable {
         case opencodeAgent = "opencodeAgent"
         case opencodeBaseUrl = "opencodeBaseUrl"
         case cursorModel = "cursorModel"
+        case piModel = "piModel"
+        case piThinking = "piThinking"
         case openclawModel = "openclawModel"
         case openclawAgent = "openclawAgent"
         case geminiAuthMode = "geminiAuthMode"
@@ -610,6 +614,8 @@ public struct AgentTaskInput: Codable, Hashable, Sendable {
         opencodeAgent: String? = nil,
         opencodeBaseUrl: String? = nil,
         cursorModel: String? = nil,
+        piModel: String? = nil,
+        piThinking: String? = nil,
         openclawModel: String? = nil,
         openclawAgent: String? = nil,
         geminiAuthMode: GeminiAuthMode? = nil,
@@ -645,6 +651,8 @@ public struct AgentTaskInput: Codable, Hashable, Sendable {
         self.opencodeAgent = opencodeAgent
         self.opencodeBaseUrl = opencodeBaseUrl
         self.cursorModel = cursorModel
+        self.piModel = piModel
+        self.piThinking = piThinking
         self.openclawModel = openclawModel
         self.openclawAgent = openclawAgent
         self.geminiAuthMode = geminiAuthMode

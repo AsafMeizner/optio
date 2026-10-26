@@ -21,6 +21,7 @@ val RUNTIMES: List<Runtime> = listOf(
     Runtime("copilot", "GitHub Copilot"),
     Runtime("gemini", "Google Gemini"),
     Runtime("cursor", "Cursor"),
+    Runtime("pi", "Pi"),
     Runtime("opencode", "OpenCode"),
     Runtime("openclaw", "OpenClaw"),
 )
@@ -42,6 +43,7 @@ fun providerFor(runtime: String): String = when (runtime) {
     "opencode" -> "opencode"
     "openclaw" -> "openclaw"
     "cursor" -> "cursor"
+    "pi" -> "pi"
     else -> "anthropic"
 }
 
@@ -55,6 +57,7 @@ fun modelFieldForProvider(provider: String): String = when (provider) {
     "opencode" -> "opencodeModel"
     "openclaw" -> "openclawModel"
     "cursor" -> "cursorModel"
+    "pi" -> "piModel"
     else -> "claudeModel"
 }
 
@@ -127,7 +130,7 @@ sealed interface OptionValue {
  * Runtimes a repo keeps no settings for. Codex shares Copilot's copilotModel / copilotEffort
  * columns, so a repo's values there are Copilot's — Codex runs on its own defaults.
  */
-val NO_REPO_SETTINGS: Set<String> = setOf("codex")
+val NO_REPO_SETTINGS: Set<String> = setOf("codex", "pi")
 
 /**
  * The repo's configured values for this runtime's options, to seed the picker. [keys] = the
@@ -174,7 +177,7 @@ fun repoOwnRuntime(repo: JsonObject?, keys: (String) -> List<String>): String? {
 }
 
 /** Every agent column a repo row carries ([repoKeysForProvider] over every runtime). */
-val REPO_AGENT_KEYS: List<String> = RUNTIMES.flatMap { repoKeysForProvider(providerFor(it.value)) }.distinct()
+val REPO_AGENT_KEYS: List<String> = RUNTIMES.filter { it.value !in NO_REPO_SETTINGS }.flatMap { repoKeysForProvider(providerFor(it.value)) }.distinct()
 
 /** Every agent column on a repo row, as one picker-values map; columns left null read as their default. */
 fun repoAgentValues(repo: JsonObject): Map<String, OptionValue> {

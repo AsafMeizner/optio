@@ -12,6 +12,9 @@ import {
 import { publishEvent, publishSessionEvent } from "./event-bus.js";
 import {
   InteractiveSessionState,
+  extractWorkLinks,
+  mergePodWorkLinks,
+  type WorkLink,
   normalizeRepoUrl,
   shellQuote,
   type PresetImageId,
@@ -50,6 +53,7 @@ export async function createSession(input: {
         agentRuntime: input.agentRuntime,
         agentOptions: input.agentOptions,
         initialPrompt: input.initialPrompt ?? "",
+        links: extractWorkLinks(input.initialPrompt ?? "", { repoUrl, wrapWidth: Infinity }),
         settings: input.settings,
         assistant: input.assistant ?? false,
       })
@@ -195,6 +199,15 @@ export async function listSessions(opts?: {
   return sessionList;
 }
 
+export async function renameSession(id: string, title: string) {
+  const [session] = await db
+    .update(interactiveSessions)
+    .set({ title: title.trim() })
+    .where(eq(interactiveSessions.id, id))
+    .returning();
+  return session;
+}
+
 export async function endSession(id: string) {
   const session = await getSession(id);
   if (!session) throw new Error("Session not found");
@@ -275,6 +288,25 @@ export async function updateSessionAgentSessionId(id: string, agentSessionId: st
     .where(eq(interactiveSessions.id, id));
 }
 
+/** Serialize updates from chat and every terminal pane so no discovered links are lost. */
+export async function addSessionLinks(sessionId: string, incoming: WorkLink[]) {
+  if (!incoming.length) return;
+  await db.transaction(async (tx) => {
+    const [session] = await tx
+      .select({ links: interactiveSessions.links })
+      .from(interactiveSessions)
+      .where(eq(interactiveSessions.id, sessionId))
+      .for("update");
+    if (!session) return;
+    const links = mergePodWorkLinks(session.links, incoming);
+    if (JSON.stringify(links) === JSON.stringify(session.links)) return;
+    await tx
+      .update(interactiveSessions)
+      .set({ links })
+      .where(eq(interactiveSessions.id, sessionId));
+  });
+}
+
 export async function getSessionPrs(sessionId: string) {
   return db
     .select()
@@ -284,18 +316,32 @@ export async function getSessionPrs(sessionId: string) {
 }
 
 export async function addSessionPr(sessionId: string, prUrl: string, prNumber: number) {
-  const [pr] = await db
-    .insert(sessionPrs)
-    .values({
-      sessionId,
-      prUrl,
-      prNumber,
-      prState: "open",
-      prChecksStatus: "pending",
-      prReviewStatus: "none",
-    })
-    .returning();
-  return pr;
+  return db.transaction(async (tx) => {
+    // The session lock also protects concurrent detections of the same PR.
+    await tx
+      .select({ id: interactiveSessions.id })
+      .from(interactiveSessions)
+      .where(eq(interactiveSessions.id, sessionId))
+      .for("update");
+    const [existing] = await tx
+      .select()
+      .from(sessionPrs)
+      .where(and(eq(sessionPrs.sessionId, sessionId), eq(sessionPrs.prUrl, prUrl)))
+      .limit(1);
+    if (existing) return existing;
+    const [pr] = await tx
+      .insert(sessionPrs)
+      .values({
+        sessionId,
+        prUrl,
+        prNumber,
+        prState: "open",
+        prChecksStatus: "pending",
+        prReviewStatus: "none",
+      })
+      .returning();
+    return pr;
+  });
 }
 
 export async function updateSessionPr(
@@ -372,6 +418,24 @@ export async function appendSessionChatEvent(input: AppendSessionChatEventInput)
       timestamp: input.timestamp ?? new Date(),
     })
     .returning();
+
+  // Remember references independently of chat retention and browser connections.
+  const text = `${input.content}\n${JSON.stringify(input.metadata ?? {})}`;
+  if (/https?:\/\/|(?:^|\s)#\d/.test(text)) {
+    try {
+      const [session] = await db
+        .select({ repoUrl: interactiveSessions.repoUrl })
+        .from(interactiveSessions)
+        .where(eq(interactiveSessions.id, input.sessionId));
+      if (session)
+        await addSessionLinks(
+          input.sessionId,
+          extractWorkLinks(text, { repoUrl: session.repoUrl, wrapWidth: Infinity }),
+        );
+    } catch (err) {
+      logger.warn({ err, sessionId: input.sessionId }, "Failed to save session references");
+    }
+  }
 
   // Best-effort retention prune. A bulk DELETE keyed on the cutoff timestamp
   // avoids a per-row lookup on the hot streaming path.

@@ -131,10 +131,7 @@ function parseEpochSecondsToMs(headers: Headers | undefined, name: string): numb
 
 /** Distinct GitHub failure classes, each of which needs a distinct retry policy. */
 export type GitHubFailureKind =
-  | "secondary_rate_limit"
-  | "primary_rate_limit"
-  | "auth"
-  | "permission";
+  "secondary_rate_limit" | "primary_rate_limit" | "auth" | "permission";
 
 export interface GitHubFailure {
   kind: GitHubFailureKind;

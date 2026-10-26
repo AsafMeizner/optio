@@ -25,15 +25,15 @@
     "gen:kotlin": "pnpm --filter @optio/shared gen:kotlin"
   },
   "devDependencies": {
-    "@commitlint/cli": "^19.8.0",
-    "@commitlint/config-conventional": "^19.8.0",
-    "eslint": "^10.1.0",
-    "husky": "^9.1.0",
-    "lint-staged": "^17.0.7",
-    "prettier": "^3.5.0",
-    "turbo": "^2.9.18",
-    "typescript": "^5.7.0",
-    "typescript-eslint": "^8.33.0"
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "eslint": "^10.13.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10",
+    "turbo": "^2.11.10",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.0"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -52,32 +52,36 @@
       "@fastify/static": "10.1.6",
       "@grpc/grpc-js": "1.14.6",
       "@humanfs/node": "0.16.8",
-      "@protobufjs/utf8": "1.1.1",
+      "@protobufjs/utf8": "1.1.2",
       "apns2>undici": "7.30.1",
       "axios": "1.20.0",
       "brace-expansion@>=2.0.0 <3.0.0": "2.1.7",
       "brace-expansion@>=5.0.0 <6.0.0": "5.0.12",
-      "esbuild": "0.28.1",
+      "dompurify": "3.4.17",
+      "esbuild": "0.28.2",
       "fast-copy": "4.1.2",
       "fast-json-stringify": "7.1.0",
       "fast-jwt": "6.3.4",
-      "fast-uri": "3.1.8",
+      "fast-uri": "3.1.9",
       "find-my-way": "9.10.0",
       "follow-redirects": "1.16.1",
       "form-data": "4.0.6",
-      "ip-address": "10.7.4",
+      "ip-address": "10.7.5",
       "jira.js>zod": "4.6.6",
       "js-yaml@>=4.0.0 <5.0.0": "4.3.2",
       "nanoid@>=3.0.0 <4.0.0": "3.3.19",
-      "postcss": "8.5.29",
+      "postcss": "8.5.31",
       "protobufjs": "7.6.6",
       "sharp": "0.35.5",
       "source-map-js": "1.2.2",
       "uuid": "11.1.1",
       "vite@>=7.0.0 <8.0.0": "7.3.7",
-      "ws": "8.21.0",
-      "yaml": "2.9.0"
+      "ws": "8.22.0",
+      "yaml": "2.9.1"
     }
   },
-  "packageManager": "pnpm@10.11.0"
+  "packageManager": "pnpm@10.34.8",
+  "engines": {
+    "node": ">=26.12.1 <27"
+  }
 }

@@ -44,7 +44,7 @@ export function useLocalTranscript(
       let backfill = false;
       try {
         // Page until the server says it handed over everything.
-        for (let after = 0; ; ) {
+        for (let after = 0; ;) {
           const res = await api.getLocalTerminalTranscript(terminalId, { after, limit: PAGE });
           if (cancelled) return;
           all.push(...res.entries);

@@ -359,6 +359,64 @@ describe("POST /api/setup/validate/copilot-token + gitlab-token null names (#621
   });
 });
 
+describe("POST /api/setup/validate/repo", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    app = await buildTestApp();
+    mockRetrieveSecret.mockResolvedValue("stored-token");
+  });
+
+  afterEach(async () => {
+    await app.close();
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    "https://github.com/acme/example.dev",
+    "https://github.com/acme/example.dev.git",
+    "git@github.com:acme/example.dev.git",
+    "ssh://git@github.com/acme/example.dev.git",
+  ])("validates the complete dotted repo name from %s", async (repoUrl) => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ full_name: "acme/example.dev", default_branch: "main", private: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/validate/repo",
+      payload: { repoUrl },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      valid: true,
+      repo: { fullName: "acme/example.dev", defaultBranch: "main", isPrivate: true },
+    });
+    expect(fetchMock).toHaveBeenCalledWith("https://api.github.com/repos/acme/example.dev", {
+      headers: { "User-Agent": "Optio", Authorization: "Bearer stored-token" },
+    });
+  });
+
+  it.each(["not-a-url", "https://gitlab.com/acme/example.dev", "https://notgithub.com/acme/repo"])(
+    "rejects unsupported URLs without contacting GitHub: %s",
+    async (repoUrl) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/setup/validate/repo",
+        payload: { repoUrl, token: "provided-token" },
+      });
+      expect(res.json().valid).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("POST /api/setup/validate/anthropic-key", () => {
   let app: FastifyInstance;
 

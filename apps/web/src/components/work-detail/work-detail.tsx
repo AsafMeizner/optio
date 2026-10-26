@@ -114,7 +114,7 @@ export function WorkDetail({ id }: { id: string }) {
       </div>
     );
   if (!resolved) return <SessionSkeleton />;
-  if (resolved.kind === "pod") return <PodWorkDetail id={id} />;
+  if (resolved.kind === "pod") return <PodWorkDetail key={id} id={id} />;
   return <Workspace id={id} resolved={resolved} />;
 }
 

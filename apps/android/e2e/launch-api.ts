@@ -501,8 +501,7 @@ async function startFakeKube(): Promise<string> {
     if (req.method !== "GET")
       return send(403, status(403, "the Android test API's cluster is read-only"));
     let body = lists[url.pathname] as
-      | { items?: Array<{ metadata: { labels?: Record<string, string> } }> }
-      | undefined;
+      { items?: Array<{ metadata: { labels?: Record<string, string> } }> } | undefined;
     const selector = url.searchParams.get("labelSelector");
     if (body?.items && selector) {
       body = {

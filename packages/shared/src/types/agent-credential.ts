@@ -16,12 +16,7 @@ import type { ResourceOwner } from "./model-provider.js";
 
 /** How the credential signs the agent in. */
 export type AgentCredentialMethod =
-  | "api-key"
-  | "oauth-token"
-  | "app-server"
-  | "github-token"
-  | "vertex-ai"
-  | "bedrock";
+  "api-key" | "oauth-token" | "app-server" | "github-token" | "vertex-ai" | "bedrock";
 
 export type AgentCredentialKind = "secret" | "provider";
 

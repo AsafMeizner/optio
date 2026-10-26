@@ -1,3 +1,4 @@
+import { piMcpJson } from "./harness-config.js";
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
@@ -157,4 +158,22 @@ describe("launch lines", () => {
       }),
     ).toBe(" --additional-mcp-config '@/home/agent/optio/runs/r1/copilot/mcp-config.json'");
   });
+});
+
+it("Pi preserves valid names and safely disambiguates human connection names", () => {
+  const server = { command: "node", args: ["server.js"], env: { KEY: "value" } };
+  const parsed = JSON.parse(
+    piMcpJson({
+      "optio-controller": server,
+      "Jon's API": server,
+      "my-api": server,
+      my_api: server,
+    }),
+  );
+  const names = Object.keys(parsed.mcpServers);
+  expect(names).toContain("optio-controller");
+  expect(names.every((name) => /^[A-Za-z0-9_-]+$/.test(name))).toBe(true);
+  expect(new Set(names.map((name) => name.replace(/-/g, "_"))).size).toBe(4);
+  expect(Object.values(parsed.mcpServers)).toEqual(Array(4).fill(server));
+  expect(piMcpJson({ "Jon's API": server })).toBe(piMcpJson({ "Jon's API": server }));
 });

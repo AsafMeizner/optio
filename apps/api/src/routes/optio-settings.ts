@@ -11,7 +11,7 @@ import { requireRole } from "../plugins/auth.js";
 const updateSettingsSchema = z
   .object({
     agentRuntime: z
-      .enum(["claude-code", "codex", "copilot", "gemini", "opencode", "cursor"])
+      .enum(["claude-code", "codex", "copilot", "gemini", "opencode", "cursor", "pi"])
       .optional(),
     agentOptions: z.record(z.union([z.string().max(2000), z.boolean()])).optional(),
     model: z

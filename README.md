@@ -16,7 +16,7 @@ _Know what is running, what is ready, and what needs you. All screenshots use fi
 
 Optio gives your agents a shared workspace. Hand off a code change, schedule a report, respond to an event, or keep a terminal open while you move between your desk and your phone. Start and follow all of it from one **Work** feed.
 
-Choose **Claude Code, OpenAI Codex, GitHub Copilot, Google Gemini, Cursor, OpenCode, or OpenClaw**—or run a plain shell command. Pick the runtime for each piece of work, with the models and providers it supports.
+Choose **Claude Code, OpenAI Codex, GitHub Copilot, Google Gemini, Cursor, OpenCode, Pi, or OpenClaw**—or run a plain shell command. Pick the runtime for each piece of work, with the models and providers it supports.
 
 ## What can you do with Optio?
 

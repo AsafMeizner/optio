@@ -1122,6 +1122,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  renameSession: (id: string, title: string) =>
+    request<{ session: any }>(`/api/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+
   endSession: (id: string) =>
     request<{ session: any }>(`/api/sessions/${id}/end`, { method: "POST" }),
 

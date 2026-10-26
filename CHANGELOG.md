@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-25
+
+### Added
+
+- Pi agent support for pod-based tasks, Jobs, persistent agents, interactive sessions, and PR reviews, with isolated credentials and MCP configuration, model selection, streamed results, and session resume. Supports Anthropic, OpenAI, and Gemini API keys; Pi on Local machines is not yet supported.
+- Pod sessions discover PR and ticket references in chat and terminal output, persist them, and display searchable badges in the header, sidebar, and Work list.
+- Pod-session inline renaming, saved chat drafts, readable ended-session chat history, sending selected terminal text to the agent, and keyboard and mobile terminal scrolling improvements.
+
+### Changed
+
+- Standardize service images, agent images, development, and CI on Node.js 26.12.1, including the October security fixes for CVE-2026-111497 and other advisories. Node images are pinned by multi-platform digest; Ubuntu agent images copy the same runtime. Install pnpm explicitly because Node 26 no longer bundles Corepack.
+- Refresh compatible dependency releases, including Fastify, AWS SDK, MCP SDK, React, Tailwind, Playwright, authentication libraries, tooling, and the latest Next.js 15 patch. Keep larger framework migrations and documented agent workaround pins separate.
+- The GitHub Pages site prominently links to the repository in desktop and mobile headers, with View on GitHub as the primary home-page action.
+
+### Fixed
+
+- Repository setup and pod-naming helpers preserve dotted repository names (#676).
+- Cleanup keeps PR-review worktrees while their reviews are running (#677).
+- iOS chat tables render in horizontally scrolling columns.
+
 ## [0.19.2] - 2026-10-22
 
 ### Changed

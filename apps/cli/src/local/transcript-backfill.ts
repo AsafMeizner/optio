@@ -64,7 +64,7 @@ export function transcriptCwd(path: string): string | null {
   try {
     const buf = Buffer.allocUnsafe(CWD_CHUNK);
     let carry = "";
-    for (let offset = 0; offset < CWD_SCAN_MAX; ) {
+    for (let offset = 0; offset < CWD_SCAN_MAX;) {
       const n = readSync(fd, buf, 0, CWD_CHUNK, offset);
       if (n <= 0) break;
       offset += n;

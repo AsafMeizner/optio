@@ -150,3 +150,10 @@ describe("agentOptionsEnv — Claude effort and thinking", () => {
     expect(JSON.parse(old.OPTIO_CLAUDE_SETTINGS_JSON)).toEqual({ effortLevel: "high" });
   });
 });
+
+it("maps Pi's model and thinking independently from other agents", () => {
+  expect(
+    agentOptionsEnv("pi", { piModel: "openai/model", piThinking: "high", claudeModel: "wrong" }),
+  ).toEqual({ OPTIO_PI_MODEL: "openai/model", OPTIO_PI_THINKING: "high" });
+  expect(agentOptionsEnv("pi", null, "google/model")).toEqual({ OPTIO_PI_MODEL: "google/model" });
+});

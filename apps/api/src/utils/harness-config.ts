@@ -42,8 +42,9 @@
  * (Cursor's) are merged into the repo's own file when it has one and kept
  * out of git by the setup-file writer.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { shellQuote } from "@optio/shared";
+import { opencodeHeadlessEnabled, opencodeHeadlessPermission } from "@optio/agent-adapters";
 import type { CodexMcpServer } from "./codex-config.js";
 
 /** An MCP server as `.mcp.json` carries it (stdio only). */
@@ -53,7 +54,11 @@ export type McpStdioServer = CodexMcpServer;
 export const OPTIO_RUN_HOME = "OPTIO_RUN_HOME";
 /** The run's `GEMINI_CLI_HOME`, when its Gemini run has MCP servers. */
 export const OPTIO_GEMINI_HOME = "OPTIO_GEMINI_HOME";
-/** The run's `OPENCODE_CONFIG` file, when its OpenCode run has MCP servers. */
+/**
+ * The run's `OPENCODE_CONFIG` file, when its OpenCode run has MCP servers —
+ * or for every OpenCode run with the headless rules on
+ * (services/opencode-run-setup.ts).
+ */
 export const OPTIO_OPENCODE_CONFIG = "OPTIO_OPENCODE_CONFIG";
 /** The run's Copilot MCP config file, passed as `--additional-mcp-config`. */
 export const OPTIO_COPILOT_MCP_CONFIG = "OPTIO_COPILOT_MCP_CONFIG";
@@ -128,7 +133,13 @@ export function geminiSettingsJson(base: Record<string, unknown>, servers: Serve
   return JSON.stringify({ ...base, mcpServers }, null, 2);
 }
 
-/** OpenCode's `opencode.json` with the servers as `mcp` entries. */
+/**
+ * OpenCode's `opencode.json` with the servers as `mcp` entries — and, with
+ * the headless rules on, the headless permissions (@optio/agent-adapters
+ * opencode-headless.ts), as this file is merged over the global one the
+ * adapter pre-seeds. Then written for a run with no servers too, so a Job
+ * run gets the permissions (services/opencode-run-setup.ts).
+ */
 export function opencodeConfigJson(servers: Servers): string {
   const mcp: Record<string, unknown> = {};
   for (const [name, s] of Object.entries(servers)) {
@@ -139,7 +150,20 @@ export function opencodeConfigJson(servers: Servers): string {
       enabled: true,
     };
   }
-  return JSON.stringify({ $schema: "https://opencode.ai/config.json", mcp }, null, 2);
+  // The headless permissions only when the deployment turns them on
+  // (agent-adapters opencode-headless.ts); otherwise the file as before.
+  if (!opencodeHeadlessEnabled()) {
+    return JSON.stringify({ $schema: "https://opencode.ai/config.json", mcp }, null, 2);
+  }
+  return JSON.stringify(
+    {
+      $schema: "https://opencode.ai/config.json",
+      permission: opencodeHeadlessPermission(),
+      ...(Object.keys(mcp).length > 0 ? { mcp } : {}),
+    },
+    null,
+    2,
+  );
 }
 
 /** Cursor's `.cursor/mcp.json`. */
@@ -147,6 +171,24 @@ export function cursorMcpJson(servers: Servers): string {
   const mcpServers: Record<string, unknown> = {};
   for (const [name, s] of Object.entries(servers)) {
     mcpServers[name] = withEnv({ command: s.command, args: s.args }, s.env);
+  }
+  return JSON.stringify({ mcpServers }, null, 2);
+}
+
+/** Pi rejects punctuation/spaces and treats hyphens and underscores as the same name. */
+export function piMcpJson(servers: Servers): string {
+  const mcpServers: Record<string, unknown> = {};
+  const canonical = (name: string) => name.replace(/-/g, "_");
+  const bases = Object.keys(servers).map((name) => canonical(name.replace(/[^A-Za-z0-9_-]/g, "_")));
+  const seen = new Set<string>();
+  for (const [original, server] of Object.entries(servers)) {
+    let name = original.replace(/[^A-Za-z0-9_-]/g, "_") || "server";
+    if (name !== original || bases.filter((base) => base === canonical(name)).length > 1) {
+      name += `_${createHash("sha256").update(original).digest("hex").slice(0, 12)}`;
+    }
+    while (seen.has(canonical(name))) name += "_";
+    seen.add(canonical(name));
+    mcpServers[name] = withEnv({ command: server.command, args: server.args }, server.env);
   }
   return JSON.stringify({ mcpServers }, null, 2);
 }

@@ -1,3 +1,4 @@
+import { parsePiEvent } from "./pi-event-parser.js";
 import type { AgentLogEntry } from "@optio/shared";
 import { parseClaudeEvent } from "./agent-event-parser.js";
 import { parseCodexEvent } from "./codex-event-parser.js";
@@ -30,6 +31,8 @@ export function getEventParser(agentType: string | null | undefined): AgentEvent
       return parseGeminiEvent;
     case "openclaw":
       return parseOpenClawEvent;
+    case "pi":
+      return parsePiEvent;
     case "cursor":
       return parseCursorEvent;
     default:

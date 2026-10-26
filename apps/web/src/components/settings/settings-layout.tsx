@@ -34,12 +34,19 @@ export function SettingsLayout({ sections }: { sections: SettingsSection[] }) {
     return () => observer.disconnect();
   }, [ids]);
   useEffect(() => {
-    // A clicked section must stay in view as earlier cards replace their
+    // A clicked or deep-linked section must stay in view as earlier cards replace their
     // skeletons. Stop following it as soon as the user scrolls or interacts.
     const align = () => {
       if (anchorRef.current)
         document.getElementById(anchorRef.current)?.scrollIntoView({ block: "start" });
     };
+    const followHash = () => {
+      const id = window.location.hash.slice(1);
+      anchorRef.current = ids.split(",").includes(id) ? id : null;
+      align();
+    };
+    followHash();
+    window.addEventListener("hashchange", followHash);
     const stop = () => {
       anchorRef.current = null;
     };
@@ -62,12 +69,13 @@ export function SettingsLayout({ sections }: { sections: SettingsSection[] }) {
     window.addEventListener("keydown", key, true);
     return () => {
       observer.disconnect();
+      window.removeEventListener("hashchange", followHash);
       window.removeEventListener("wheel", stop, true);
       window.removeEventListener("touchstart", stop, true);
       window.removeEventListener("pointerdown", pointer, true);
       window.removeEventListener("keydown", key, true);
     };
-  }, []);
+  }, [ids]);
   return (
     <div className="flex min-w-0 flex-col gap-6 lg:flex-row lg:items-start lg:gap-8">
       <nav

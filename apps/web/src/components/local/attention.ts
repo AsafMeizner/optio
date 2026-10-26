@@ -18,13 +18,7 @@ export type AttentionTone = "needs_you" | "working" | "idle" | "error" | "comple
  *   purple  launching      — about to work (dimmer, pulsing)
  */
 export type SessionTone =
-  | "working"
-  | "needs_you"
-  | "completed"
-  | "dead"
-  | "idle"
-  | "pending"
-  | "launching";
+  "working" | "needs_you" | "completed" | "dead" | "idle" | "pending" | "launching";
 
 export function sessionTone(t: any): SessionTone {
   if (t.attentionState === "needs_you") return "needs_you";

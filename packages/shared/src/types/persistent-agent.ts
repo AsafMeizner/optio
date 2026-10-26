@@ -41,12 +41,7 @@ export type PersistentAgentWakeSource =
 export type PersistentAgentControlIntent = "pause" | "resume" | "archive" | "restart";
 
 export type PersistentAgentTurnHaltReason =
-  | "natural"
-  | "wait_tool"
-  | "max_duration"
-  | "max_turns"
-  | "error"
-  | "cancelled";
+  "natural" | "wait_tool" | "max_duration" | "max_turns" | "error" | "cancelled";
 
 export type PersistentAgentMessageSenderType = "user" | "agent" | "system" | "external";
 

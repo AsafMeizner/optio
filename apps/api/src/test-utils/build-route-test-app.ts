@@ -68,8 +68,7 @@ function installErrorHandler(app: FastifyInstance): void {
       params?: { issue?: FpvIssue; zodError?: unknown };
     };
     const fpvValidation = (error as unknown as { validation?: unknown }).validation as
-      | FpvValidationEntry[]
-      | undefined;
+      FpvValidationEntry[] | undefined;
     const isFpvZodValidation =
       Array.isArray(fpvValidation) && fpvValidation.length > 0 && !!fpvValidation[0]?.params?.issue;
 

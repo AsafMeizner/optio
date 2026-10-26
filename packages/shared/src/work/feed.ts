@@ -10,6 +10,7 @@
  */
 
 /** What happens when a turn ends — the form's **Then**. */
+import type { WorkLink } from "../utils/extract-work-links.js";
 import type { ManagedBy } from "../types/config.js";
 export const WORK_THENS = ["exits", "until-merged", "waits-for-me", "waits-for-messages"] as const;
 export type WorkThen = (typeof WORK_THENS)[number];
@@ -79,6 +80,8 @@ export interface WorkRow {
   /** Extra one-liner: PR link, attention reason, next fire… */
   note: string | null;
   prUrl: string | null;
+  /** PRs and tickets mentioned by this work. */
+  links?: WorkLink[];
   /** The PR's state when known ("open" | "merged" | "closed"). */
   prState?: string | null;
   /**

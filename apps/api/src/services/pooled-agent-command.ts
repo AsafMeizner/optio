@@ -1,4 +1,6 @@
 import { shellQuote } from "@optio/shared";
+import { OPENCODE_AUTO_APPROVE_FLAG, opencodeHeadlessEnabled } from "@optio/agent-adapters";
+import { piCommand } from "../utils/pi-command.js";
 import { EXPORT_CODEX_HOME } from "../utils/codex-config.js";
 import {
   copilotMcpConfigFlag,
@@ -94,12 +96,15 @@ export function buildPooledAgentCommand(
     case "opencode": {
       const modelFlag = env.OPTIO_OPENCODE_MODEL ? ` --model ${q(env.OPTIO_OPENCODE_MODEL)}` : "";
       const agentFlag = env.OPTIO_OPENCODE_AGENT ? ` --agent ${q(env.OPTIO_OPENCODE_AGENT)}` : "";
+      const autoApprove = opencodeHeadlessEnabled() ? ` ${OPENCODE_AUTO_APPROVE_FLAG}` : "";
       // `opencode run` reads stdin to EOF before it starts whenever stdin is
       // not a TTY; the pod exec hands it a pipe that never closes.
       return [
         `echo "[optio] Running ${label} (OpenCode)..."`,
         ...EXPORT_OPENCODE_CONFIG,
-        `opencode run --format json${modelFlag}${agentFlag} "$OPTIO_PROMPT" </dev/null`,
+        // With the headless rules on, approve what no rule denies, so a
+        // headless ask never aborts (#585).
+        `opencode run --format json${autoApprove}${modelFlag}${agentFlag} "$OPTIO_PROMPT" </dev/null`,
       ];
     }
     case "gemini": {
@@ -113,6 +118,8 @@ export function buildPooledAgentCommand(
         `gemini${modelFlag}${approvalFlag} -p "$OPTIO_PROMPT" --output-format stream-json`,
       ];
     }
+    case "pi":
+      return piCommand(env);
     case "cursor": {
       const modelFlag = env.OPTIO_CURSOR_MODEL ? ` --model ${q(env.OPTIO_CURSOR_MODEL)}` : "";
       // --approve-mcps: the run's MCP servers load without an approval prompt.
