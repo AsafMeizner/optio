@@ -131,6 +131,14 @@ export async function buildServer() {
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
+  // Baseline response headers. The chart's ingress routes /api and /ws to
+  // this server on the web UI's own origin, so its responses (log exports,
+  // config YAML, the /docs UI) must never be sniffed into HTML or framed.
+  app.addHook("onRequest", async (_req, reply) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  });
   // Rate limit is backed by Redis in normal operation. The
   // `OPTIO_SKIP_RATE_LIMIT_REDIS` flag lets the OpenAPI dump script build
   // the server without a Redis connection — it registers the plugin

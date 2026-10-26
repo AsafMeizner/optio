@@ -169,6 +169,17 @@ describe("CORS configuration", () => {
   });
 });
 
+describe("security headers", () => {
+  it("marks every response nosniff, unframeable, and referrer-limited", async () => {
+    for (const url of ["/api/health", "/api/no-such-route"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["x-frame-options"]).toBe("DENY");
+      expect(res.headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+    }
+  });
+});
+
 describe("POST endpoints accept empty body", () => {
   it("retry endpoint does not reject empty body", async () => {
     const res = await app.inject({
