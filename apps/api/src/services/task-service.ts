@@ -1,7 +1,7 @@
-import { eq, desc, and, or, ilike, gte, lte, sql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, gte, lte, isNull, sql } from "drizzle-orm";
 import { ensurePrimaryPrRow, prNumberFromUrl } from "./task-pr-service.js";
 import { db } from "../db/client.js";
-import { tasks, taskEvents, taskLogs, users, repos } from "../db/schema.js";
+import { tasks, taskEvents, taskLogs, users, repos, workRuns } from "../db/schema.js";
 import * as runLogService from "./run-log-service.js";
 import {
   TaskState,
@@ -1112,11 +1112,26 @@ export async function getTaskStats(workspaceId?: string | null) {
   return { total, queued, running, ci, review, needsAttention, failed, completed };
 }
 
-/** Fetch the most recent state-change events across all tasks. */
-export async function getRecentEvents(opts?: { limit?: number }) {
-  return db
-    .select()
-    .from(taskEvents)
-    .orderBy(desc(taskEvents.createdAt))
-    .limit(opts?.limit ?? 20);
+/**
+ * Fetch the most recent state-change events. With an `actor`, only runs in
+ * the actor's workspace that it may see (private runs: their owner and
+ * admins); without one, across all runs (auth-disabled dev).
+ */
+export async function getRecentEvents(opts?: { limit?: number; actor?: Actor }) {
+  const actor = opts?.actor;
+  const base = db.select({ event: taskEvents }).from(taskEvents);
+  const scoped = actor
+    ? base
+        .innerJoin(workRuns, eq(workRuns.id, taskEvents.taskId))
+        .where(
+          and(
+            actor.workspaceId
+              ? eq(workRuns.workspaceId, actor.workspaceId)
+              : isNull(workRuns.workspaceId),
+            visibleOwner(workRuns.ownerUserId, actor),
+          ),
+        )
+    : base;
+  const rows = await scoped.orderBy(desc(taskEvents.createdAt)).limit(opts?.limit ?? 20);
+  return rows.map((r) => r.event);
 }
