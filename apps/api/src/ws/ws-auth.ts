@@ -48,6 +48,38 @@ function extractUpgradeTokenFromProtocol(req: FastifyRequest): string | undefine
   return undefined;
 }
 
+function originOf(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the upgrade's `Origin` may carry the session cookie: none at all
+ * (not a browser), the API's own host, `PUBLIC_URL`, or one of
+ * `OPTIO_ALLOWED_ORIGINS` (the CORS list; dev's localhost web ports when
+ * unset outside production). Any other page gets no cookie auth — first-party
+ * clients authenticate with a protocol token, which a foreign page can't mint.
+ */
+export function cookieOriginAllowed(req: FastifyRequest): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  const parsed = originOf(origin);
+  if (!parsed) return false;
+  const host = req.headers.host;
+  if (host && new URL(parsed).host === host) return true;
+  if (parsed === originOf(process.env.PUBLIC_URL)) return true;
+  const allowed = process.env.OPTIO_ALLOWED_ORIGINS
+    ? process.env.OPTIO_ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+    : process.env.NODE_ENV === "production"
+      ? []
+      : ["http://localhost:3000", "http://localhost:3001"];
+  return allowed.some((o) => originOf(o) === parsed);
+}
+
 /**
  * Authenticate a WebSocket connection.
  *
@@ -91,8 +123,12 @@ export async function authenticateWsWithCredentials(
     };
   }
 
-  // Path 1: cookie-based session auth (long-lived session token or PAT)
-  const cookieToken = parseCookie(req.headers.cookie, SESSION_COOKIE_NAME);
+  // Path 1: cookie-based session auth (long-lived session token or PAT).
+  // A browser attaches the cookie to an upgrade any page starts, so it only
+  // counts when the page is Optio's own (Cross-Site WebSocket Hijacking).
+  const cookieToken = cookieOriginAllowed(req)
+    ? parseCookie(req.headers.cookie, SESSION_COOKIE_NAME)
+    : undefined;
   if (cookieToken) {
     const user = cookieToken.startsWith("optio_pat_")
       ? await validateApiKey(cookieToken)

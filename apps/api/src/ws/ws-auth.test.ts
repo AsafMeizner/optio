@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 
 // Mock session service
 const mockValidateSession = vi.fn();
@@ -318,5 +318,61 @@ describe("authenticated WebSocket credential passthrough", () => {
     );
     expect(result).toEqual({ user, token: "valid" });
     expect(mockValidateApiKey).not.toHaveBeenCalled();
+  });
+});
+
+describe("cookie auth and the upgrade's Origin (CSWSH)", () => {
+  const user = { id: "u", provider: "github", email: "a@b.c", displayName: "A", avatarUrl: null };
+  const saved = { public: process.env.PUBLIC_URL, allowed: process.env.OPTIO_ALLOWED_ORIGINS };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authDisabled = false;
+    process.env.PUBLIC_URL = "https://optio.example.com";
+    process.env.OPTIO_ALLOWED_ORIGINS = "https://web.example.com";
+    mockValidateSession.mockResolvedValue(user);
+  });
+  afterAll(() => {
+    if (saved.public === undefined) delete process.env.PUBLIC_URL;
+    else process.env.PUBLIC_URL = saved.public;
+    if (saved.allowed === undefined) delete process.env.OPTIO_ALLOWED_ORIGINS;
+    else process.env.OPTIO_ALLOWED_ORIGINS = saved.allowed;
+  });
+
+  function req(origin: string | undefined, token?: string) {
+    const r = createMockRequest({ cookie: "optio_session=abc123", token });
+    const headers = r.headers as Record<string, string>;
+    if (origin !== undefined) headers.origin = origin;
+    headers.host = "api.example.com";
+    return r;
+  }
+
+  it.each([
+    ["no Origin (not a browser)", undefined],
+    ["the API's own host", "https://api.example.com"],
+    ["PUBLIC_URL", "https://optio.example.com"],
+    ["an allowed origin", "https://web.example.com"],
+  ])("accepts the cookie from %s", async (_name, origin) => {
+    const socket = createMockSocket();
+    expect(await authenticateWs(socket as any, req(origin))).toEqual(user);
+    expect(mockValidateSession).toHaveBeenCalledWith("abc123");
+  });
+
+  it.each([
+    ["another site", "https://evil.example.net"],
+    ["a sibling subdomain", "https://evil.example.com"],
+    ["an opaque Origin", "null"],
+  ])("ignores the cookie from %s", async (_name, origin) => {
+    const socket = createMockSocket();
+    expect(await authenticateWs(socket as any, req(origin))).toBeNull();
+    expect(mockValidateSession).not.toHaveBeenCalled();
+    expect(socket.close).toHaveBeenCalledWith(4401, "Authentication required");
+  });
+
+  it("still takes a protocol token from any Origin (a foreign page can't mint one)", async () => {
+    mockValidateWsToken.mockResolvedValue(user);
+    const socket = createMockSocket();
+    expect(await authenticateWs(socket as any, req("https://evil.example.net", "t"))).toEqual(user);
+    expect(mockValidateSession).not.toHaveBeenCalled();
   });
 });
