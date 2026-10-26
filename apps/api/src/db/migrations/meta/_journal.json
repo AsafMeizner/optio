@@ -911,6 +911,13 @@
       "when": 1792900800000,
       "tag": "1792900800_deployment_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1792990800000,
+      "tag": "1792990800_oidc_sign_in_settings",
+      "breakpoints": true
     }
   ]
 }

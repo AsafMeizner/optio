@@ -32,6 +32,7 @@ import {
   SkeletonCard,
 } from "@/components/settings/settings-ui";
 import { cn } from "@/lib/utils";
+import { OidcForm } from "./oidc-sign-in-form";
 
 /**
  * How everyone signs in — the Settings → Access → Sign-in card and the setup
@@ -450,7 +451,8 @@ export function SignInSetupForm({
   }
 
   const google = config.providers.find((p) => p.provider === "google")!;
-  const others = config.providers.filter((p) => p.provider !== "google");
+  const oidc = config.providers.find((p) => p.provider === "oidc");
+  const others = config.providers.filter((p) => p.provider !== "google" && p.provider !== "oidc");
   const canEdit = config.canEdit || (config.bootstrap && setupToken.trim().length > 0);
 
   return (
@@ -476,8 +478,8 @@ export function SignInSetupForm({
             <div>
               <p className="font-medium">Nobody can sign in yet</p>
               <p className="text-xs text-text-muted mt-0.5">
-                Configure your organization's Google sign-in below. The one-time setup token unlocks
-                it: the API prints it in its log —{" "}
+                Configure your organization's Google or OpenID Connect sign-in below. The one-time
+                setup token unlocks it: the API prints it in its log —{" "}
                 <code className="px-1 py-0.5 bg-bg rounded font-mono text-[11px]">
                   kubectl logs deploy/optio-api -n optio | grep &quot;setup token&quot;
                 </code>{" "}
@@ -582,6 +584,38 @@ export function SignInSetupForm({
         )}
       </div>
 
+      {oidc && (
+        <section className="space-y-3" aria-label="OpenID Connect sign-in">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">SSO (OpenID Connect)</h3>
+            <Status p={oidc} />
+          </div>
+          {canEdit ? (
+            <OidcForm
+              key={oidc.updatedAt ?? "new"}
+              view={oidc}
+              config={config}
+              mode={mode}
+              onRemoved={() => void load()}
+              setupToken={setupToken}
+              onSaved={(view, bootstrap) => {
+                setConfig((old) =>
+                  old
+                    ? {
+                        ...old,
+                        bootstrap,
+                        providers: old.providers.map((p) => (p.provider === "oidc" ? view : p)),
+                      }
+                    : old,
+                );
+                onBootstrapChange?.(bootstrap);
+              }}
+            />
+          ) : (
+            <p className={HELP}>Only a deployment admin can change OpenID Connect settings.</p>
+          )}
+        </section>
+      )}
       {/* Other providers: environment-configured, read-only here */}
       <ul className={LIST}>
         {others.map((p) => {

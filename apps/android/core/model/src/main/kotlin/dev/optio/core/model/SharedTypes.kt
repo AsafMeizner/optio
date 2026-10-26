@@ -3996,6 +3996,94 @@ data class SessionChatEvent(
 
 // endregion
 
+// region sign-in.ts
+
+@Serializable(with = OidcPreset.Companion::class)
+enum class OidcPreset(override val raw: String) : RawEnum {
+    ADFS("adfs"),
+    AUTH0("auth0"),
+    AUTHELIA("authelia"),
+    AUTHENTIK("authentik"),
+    ENTRA("entra"),
+    GENERIC("generic"),
+    KEYCLOAK("keycloak"),
+    OKTA("okta"),
+    ZITADEL("zitadel"),
+    /** Fallback for raw values this client does not know about yet. */
+    UNKNOWN("__unknown__");
+
+    companion object : RawEnumSerializer<OidcPreset>("dev.optio.core.model.OidcPreset", entries, UNKNOWN)
+}
+
+@Serializable
+data class OidcSettings(
+    /** Link only a unique, provider-verified email; disabled by default. */
+    val linkByEmail: Boolean? = null,
+    val preset: OidcPreset? = null,
+    /** The issuer: `<issuerUrl>/.well-known/openid-configuration` must exist. */
+    val issuerUrl: String,
+    /** Space-separated; default "openid profile email" plus the preset's groups scope. */
+    val scopes: String? = null,
+    /** The claim that carries the person's groups (default "groups"). */
+    val groupsClaim: String? = null,
+    /** Claims used for the account (defaults: email, name, preferred_username). */
+    val emailClaim: String? = null,
+    val nameClaim: String? = null,
+    val usernameClaim: String? = null,
+    /**
+     * Treat the email as verified when the provider sends no `email_verified`
+     * claim (default false). An explicit
+     * `email_verified: false` is never overridden, and it never links an
+     * account to another by email.
+     */
+    val trustEmail: Boolean? = null,
+    /**
+     * PKCE (S256) on the authorization request (default true when set up in
+     * the app; the environment's OIDC uses it with `OIDC_USE_PKCE=true`).
+     */
+    val usePkce: Boolean? = null,
+    /** How the client secret is sent to the token endpoint (default post). */
+    val tokenAuthMethod: TokenAuthMethod? = null,
+    /** PEM bundle of the CA that signed the provider's certificate, when it's a private one. */
+    val caPem: String? = null,
+    /** Skip certificate verification (test labs only). */
+    val insecureSkipVerify: Boolean? = null,
+) {
+    @Serializable(with = TokenAuthMethod.Companion::class)
+    enum class TokenAuthMethod(override val raw: String) : RawEnum {
+        CLIENT_SECRET_POST("client_secret_post"),
+        CLIENT_SECRET_BASIC("client_secret_basic"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<TokenAuthMethod>("dev.optio.core.model.OidcSettings.TokenAuthMethod", entries, UNKNOWN)
+    }
+}
+
+@Serializable
+data class SignInProviderTestResult(
+    val ok: Boolean,
+    val error: String? = null,
+    /** OIDC: what discovery found. */
+    val oidc: Oidc? = null,
+) {
+    @Serializable
+    data class Oidc(
+        val issuer: String,
+        val authorizationEndpoint: String,
+        val tokenEndpoint: String,
+        val userinfoEndpoint: String? = null,
+        val jwksUri: String,
+        val scopesSupported: List<String>,
+        val claimsSupported: List<String>,
+        /** Whether the configured groups claim is advertised (null when the server lists no claims). */
+        val groupsClaimAdvertised: Boolean? = null,
+        val pkceSupported: Boolean? = null,
+    )
+}
+
+// endregion
+
 // region task.ts
 
 @Serializable(with = TaskState.Companion::class)

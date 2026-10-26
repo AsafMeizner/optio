@@ -1,3 +1,4 @@
+import type { OAuthFlowState } from "../services/oauth/provider.js";
 import { randomBytes } from "node:crypto";
 import { joinWorkspacesByEmailDomain } from "../services/workspace-service.js";
 import type { FastifyInstance } from "fastify";
@@ -24,6 +25,7 @@ const isSignInProvider = (name: string): name is SignInProviderName =>
   (SIGN_IN_PROVIDERS as readonly string[]).includes(name);
 import {
   createSession,
+  linkAccountsByEmailEnabled,
   createWsToken,
   revokeSession,
   validateSession,
@@ -163,20 +165,26 @@ const OAUTH_STATE_TTL_SECS = 600; // 10 minutes
 const AUTH_CODE_PREFIX = "auth_code:";
 const AUTH_CODE_TTL_SECS = 300; // 5 minutes
 
-async function addOAuthState(state: string, provider: string): Promise<void> {
+async function addOAuthState(
+  state: string,
+  provider: string,
+  flow?: OAuthFlowState,
+): Promise<void> {
   const redis = getRedisClient();
   await redis.setex(
     `${OAUTH_STATE_PREFIX}${state}`,
     OAUTH_STATE_TTL_SECS,
-    JSON.stringify({ provider }),
+    JSON.stringify({ provider, flow }),
   );
 }
 
-async function getOAuthState(state: string): Promise<{ provider: string } | null> {
+async function getOAuthState(
+  state: string,
+): Promise<{ provider: string; flow?: OAuthFlowState } | null> {
   const redis = getRedisClient();
   const raw = await redis.get(`${OAUTH_STATE_PREFIX}${state}`);
   if (!raw) return null;
-  return JSON.parse(raw) as { provider: string };
+  return JSON.parse(raw) as { provider: string; flow?: OAuthFlowState };
 }
 
 async function deleteOAuthState(state: string): Promise<void> {
@@ -465,10 +473,11 @@ export async function authRoutes(rawApp: FastifyInstance) {
       }
 
       const state = randomBytes(16).toString("hex");
-      await addOAuthState(state, providerName);
+      const flow = provider.beginFlow?.();
+      await addOAuthState(state, providerName, flow);
 
       if (provider.prepare) await provider.prepare();
-      const url = provider.authorizeUrl(state);
+      const url = provider.authorizeUrl(state, flow);
       reply.redirect(url);
     },
   );
@@ -522,8 +531,8 @@ export async function authRoutes(rawApp: FastifyInstance) {
       }
 
       try {
-        const tokens = await provider.exchangeCode(code);
-        const profile = await provider.fetchUser(tokens.accessToken);
+        const tokens = await provider.exchangeCode(code, storedState.flow);
+        const profile = await provider.fetchUser(tokens.accessToken, tokens);
         // Who may sign in with this provider (Settings → Sign-in → allowed
         // domains): refused before any account is created.
         const config = isSignInProvider(providerName)
@@ -537,7 +546,9 @@ export async function authRoutes(rawApp: FastifyInstance) {
           );
           return reply.redirect(`${WEB_URL}/login?error=${decision}`);
         }
-        const session = await createSession(providerName, profile);
+        const session = await createSession(providerName, profile, {
+          linkByEmail: config?.settings?.linkByEmail === true || linkAccountsByEmailEnabled(),
+        });
         // Workspaces that let people with this (verified) email domain in.
         await joinWorkspacesByEmailDomain(
           session.user.id,
@@ -836,10 +847,11 @@ export async function authRoutes(rawApp: FastifyInstance) {
 
       // Create the OAuth state that embeds the CLI state
       const oauthState = randomBytes(16).toString("hex") + "." + cliState;
-      await addOAuthState(oauthState, provider);
+      const flow = oauthProvider.beginFlow?.();
+      await addOAuthState(oauthState, provider, flow);
 
       if (oauthProvider.prepare) await oauthProvider.prepare();
-      const url = oauthProvider.authorizeUrl(oauthState);
+      const url = oauthProvider.authorizeUrl(oauthState, flow);
       reply.send({ url });
     },
   );

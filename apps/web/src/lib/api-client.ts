@@ -1,3 +1,4 @@
+import type { OidcSettings, SignInProviderTestResult } from "@optio/shared";
 /**
  * All API requests are routed through the Next.js BFF proxy at /api/[...path].
  * The proxy reads the HttpOnly session cookie server-side and forwards it as a
@@ -97,6 +98,7 @@ export interface ApiKeyCreated {
 
 /** What `GET /api/auth/sign-in` says about one provider (never a secret). */
 export interface SignInProviderView {
+  settings?: OidcSettings;
   provider: "google" | "github" | "gitlab" | "oidc";
   displayName: string;
   configurable: boolean;
@@ -1032,6 +1034,7 @@ export const api = {
       enabled?: boolean;
       displayName?: string | null;
       organizationName?: string;
+      settings?: OidcSettings;
     },
     setupToken?: string,
   ) =>
@@ -1040,8 +1043,21 @@ export const api = {
       body: JSON.stringify(data),
       headers: setupTokenHeader(setupToken),
     }),
-  deleteSignInProvider: (provider: string) =>
-    request<void>(`/api/auth/sign-in/${provider}`, { method: "DELETE" }),
+  testSignInProvider: (
+    provider: string,
+    data: { clientId?: string; clientSecret?: string; settings?: OidcSettings },
+    setupToken?: string,
+  ) =>
+    request<SignInProviderTestResult>(`/api/auth/sign-in/${provider}/test`, {
+      method: "POST",
+      body: JSON.stringify(data),
+      headers: setupTokenHeader(setupToken),
+    }),
+  deleteSignInProvider: (provider: string, setupToken?: string) =>
+    request<void>(`/api/auth/sign-in/${provider}`, {
+      method: "DELETE",
+      headers: setupTokenHeader(setupToken),
+    }),
   listDeploymentAdmins: () => request<{ admins: DeploymentAdmin[] }>("/api/auth/deployment-admins"),
   addDeploymentAdmin: (email: string) =>
     request<{ admin: DeploymentAdmin }>("/api/auth/deployment-admins", {

@@ -1153,6 +1153,7 @@ export const modelProviders = pgTable(
 // provider's env vars. `allowedDomains` restricts who may sign in with it.
 
 export const authProviderConfigs = pgTable("auth_provider_configs", {
+  settings: jsonb("settings").$type<import("@optio/shared").OidcSettings | null>().default(null),
   provider: text("provider").primaryKey(),
   clientId: text("client_id").notNull(),
   encryptedClientSecret: bytea("encrypted_client_secret"),
@@ -2365,4 +2366,22 @@ export const sessionToolApprovals = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("session_tool_approvals_session_idx").on(t.sessionId)],
+);
+
+export const userIdentities = pgTable(
+  "user_identities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    externalId: text("external_id").notNull(),
+    email: text("email"),
+    linkedAt: timestamp("linked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("user_identities_provider_external_key").on(table.provider, table.externalId),
+    index("user_identities_user_idx").on(table.userId),
+  ],
 );
