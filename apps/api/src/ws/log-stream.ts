@@ -22,7 +22,9 @@ export async function logStreamWs(app: FastifyInstance) {
       socket.close(4404, "Task not found");
       return conn.discard();
     }
-    if (user.workspaceId && task.workspaceId && task.workspaceId !== user.workspaceId) {
+    // Same rule as GET /api/tasks/:id/logs: a scoped user reads only its
+    // workspace's tasks (a legacy null-workspace task included).
+    if (user.workspaceId && task.workspaceId !== user.workspaceId) {
       socket.close(4403, "Access denied");
       return conn.discard();
     }
