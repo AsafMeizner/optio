@@ -29,8 +29,16 @@ function pathWith(...bins: string[]): string {
 }
 
 describe("assistant placement", () => {
-  it("defaults to the API pod inside Kubernetes only", () => {
-    expect(assistantPlacement({ KUBERNETES_SERVICE_HOST: "10.0.0.1" })).toBe("api-pod");
+  it("runs in the API pod only when explicitly configured", () => {
+    // The API pod hands its secrets to the harness: never the default, not
+    // even inside Kubernetes.
+    expect(assistantPlacement({ KUBERNETES_SERVICE_HOST: "10.0.0.1" })).toBe("agent-pod");
+    expect(
+      assistantPlacement({
+        KUBERNETES_SERVICE_HOST: "10.0.0.1",
+        OPTIO_ASSISTANT_PLACEMENT: "api-pod",
+      }),
+    ).toBe("api-pod");
     expect(assistantPlacement({})).toBe("agent-pod");
     expect(assistantPlacement({ KUBERNETES_SERVICE_HOST: "10.0.0.1", OPTIO_RUNTIME: "fake" })).toBe(
       "agent-pod",
@@ -57,9 +65,12 @@ describe("assistant placement", () => {
   });
 
   it("places a turn: API pod when it can, an agent pod and why when it can't", () => {
-    const env = { PATH: pathWith("claude"), KUBERNETES_SERVICE_HOST: "10.0.0.1" };
+    const env = { PATH: pathWith("claude"), OPTIO_ASSISTANT_PLACEMENT: "api-pod" };
     const base = { runtime: "claude-code", assistant: true, repoUrl: null, liveInPod: 0 };
     expect(placeAssistantTurn(base, env)).toEqual({ where: "api-pod" });
+    expect(
+      placeAssistantTurn(base, { PATH: env.PATH, KUBERNETES_SERVICE_HOST: "10.0.0.1" }),
+    ).toEqual({ where: "agent-pod", reason: "configured" });
     expect(placeAssistantTurn({ ...base, assistant: false }, env)).toEqual({
       where: "agent-pod",
       reason: "configured",

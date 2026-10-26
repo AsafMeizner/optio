@@ -254,6 +254,7 @@ export async function runHarnessSession(
         await applyGitAccess(env, {
           workspaceId: session.workspaceId,
           ownerUserId: session.userId,
+          repoUrl: session.repoUrl,
           helper: false,
         });
       }

@@ -1,22 +1,26 @@
 /**
  * Where an Ask Optio turn runs.
  *
- * By default in the API pod itself, as a child process of this server
- * (`OPTIO_ASSISTANT_PLACEMENT=api-pod`, the process runtime): the assistant
- * is a short, chatty turn that only talks to Optio's own controller MCP, so
- * an agent pod of its own is a pod's worth of memory and scheduling for
- * nothing. `agent-pod` keeps the pooled agent pod per conversation for
- * deployments that want the assistant isolated from the API (its own
- * resources, no harness in the API image).
+ * By default in a pooled agent pod per conversation (`agent-pod`).
+ * `OPTIO_ASSISTANT_PLACEMENT=api-pod` opts in to running the turn in the API
+ * pod itself, as a child process of this server (the process runtime), which
+ * saves the pod an agent pod would cost.
+ *
+ * SECURITY: `api-pod` is opt-in only. The harness runs with its permission
+ * checks skipped, as the API's own uid, in the API's container: whoever can
+ * steer it — anyone who can use Ask Optio, or text it reads through the
+ * controller MCP — can read the API process's environment
+ * (`/proc/<pid>/environ`: `OPTIO_ENCRYPTION_KEY`, `DATABASE_URL`, `REDIS_URL`,
+ * OAuth client secrets), the API's service-account token, and the other
+ * in-pod turns' credentials. Scrubbing the child's own env does not help
+ * against a same-uid process. Use it only where every Ask Optio user is
+ * trusted with the deployment's secrets.
  *
  * A turn falls back to an agent pod when the API pod can't take it: the
  * harness isn't installed in the API image (every image has Claude Code and
  * Codex; a Copilot / Gemini / OpenCode / Cursor assistant runs in a pod),
  * the session has a repo (checkouts live in pods), or as many turns as the
  * pod allows are already running (`OPTIO_ASSISTANT_IN_POD_MAX`, default 3).
- * Unset, it is `api-pod` only inside Kubernetes: an API on a developer's
- * machine, or a test, must never run that machine's real `claude` as its
- * child unless told to.
  */
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
@@ -34,15 +38,12 @@ export const HARNESS_BINARIES: Record<string, string> = {
 };
 
 /**
- * Unset, the placement is `api-pod` inside Kubernetes (the chart sets it
- * explicitly anyway) and `agent-pod` anywhere else: an API on a developer's
- * machine, or a test, must never pick up the `claude` on that machine's
- * PATH and run it as its own child.
+ * Unset (or anything else), the placement is `agent-pod`: running a turn in
+ * the API pod hands the API's secrets to the harness (see above), so it
+ * happens only when a deployment asks for it explicitly.
  */
 export function assistantPlacement(env: NodeJS.ProcessEnv = process.env): AssistantPlacement {
-  const raw = env.OPTIO_ASSISTANT_PLACEMENT?.trim();
-  if (raw === "api-pod" || raw === "agent-pod") return raw;
-  return env.KUBERNETES_SERVICE_HOST && env.OPTIO_RUNTIME !== "fake" ? "api-pod" : "agent-pod";
+  return env.OPTIO_ASSISTANT_PLACEMENT?.trim() === "api-pod" ? "api-pod" : "agent-pod";
 }
 
 /** How many assistant turns the API pod runs at once before the rest go to agent pods. */

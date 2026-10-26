@@ -7,6 +7,7 @@ import type { SecretRef } from "@optio/shared";
 import { canSee, ownerNameFor, ownerNames, type Actor } from "./ownership.js";
 
 const ALGORITHM = "aes-256-gcm";
+const GCM_TAG_BYTES = 16;
 
 // ── Algorithm version constants ─────────────────────────────────────────────
 export const ALG_AES_256_GCM_V1 = 0x01;
@@ -126,7 +127,13 @@ export function decrypt(blob: EncryptedBlob, aad?: Buffer, secretName?: string):
 
 function decryptAesGcmV1(blob: EncryptedBlob, aad?: Buffer): string {
   const key = encryptionKey();
-  const decipher = createDecipheriv(ALGORITHM, key, blob.iv);
+  // Every tag Optio writes is GCM's full 16 bytes. Node would otherwise
+  // accept a truncated tag (down to 4 bytes), which makes a forged
+  // ciphertext written to the database far cheaper to brute-force.
+  if (blob.authTag.length !== GCM_TAG_BYTES) {
+    throw new Error(`Invalid authentication tag length: ${blob.authTag.length}`);
+  }
+  const decipher = createDecipheriv(ALGORITHM, key, blob.iv, { authTagLength: GCM_TAG_BYTES });
   // Legacy rows use 16-byte IV without AAD; new rows use 12-byte IV with AAD.
   // Skip AAD for legacy data to maintain backward compatibility.
   if (aad && blob.iv.length !== 16) {
