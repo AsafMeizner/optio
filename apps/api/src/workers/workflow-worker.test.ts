@@ -41,14 +41,18 @@ vi.mock("../services/redis-config.js", () => ({
 }));
 
 vi.mock("bullmq", () => ({
-  Queue: vi.fn().mockImplementation(() => ({
-    add: vi.fn().mockResolvedValue({}),
-    close: vi.fn().mockResolvedValue(undefined),
-  })),
-  Worker: vi.fn().mockImplementation((_name: string, _fn: unknown, _opts: unknown) => ({
-    on: vi.fn(),
-    close: vi.fn().mockResolvedValue(undefined),
-  })),
+  Queue: vi.fn().mockImplementation(function () {
+    return {
+      add: vi.fn().mockResolvedValue({}),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+  }),
+  Worker: vi.fn().mockImplementation(function (_name: string, _fn: unknown, _opts: unknown) {
+    return {
+      on: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+  }),
 }));
 
 vi.mock("../services/workflow-service.js", () => ({

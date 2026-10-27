@@ -1,4 +1,4 @@
-import { eq, desc } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { taskComments, users } from "../db/schema.js";
 import { publishEvent } from "./event-bus.js";
@@ -51,25 +51,38 @@ export async function listComments(taskId: string) {
   }));
 }
 
-export async function updateComment(commentId: string, content: string, userId?: string) {
-  const [existing] = await db.select().from(taskComments).where(eq(taskComments.id, commentId));
+export async function updateComment(
+  taskId: string,
+  commentId: string,
+  content: string,
+  userId?: string,
+) {
+  const [existing] = await db
+    .select()
+    .from(taskComments)
+    .where(and(eq(taskComments.id, commentId), eq(taskComments.taskId, taskId)));
   if (!existing) throw new Error("Comment not found");
-  if (existing.userId && existing.userId !== userId) {
+  if (existing.userId !== (userId ?? null)) {
     throw new Error("Not authorized to edit this comment");
   }
   const [updated] = await db
     .update(taskComments)
     .set({ content, updatedAt: new Date() })
-    .where(eq(taskComments.id, commentId))
+    .where(and(eq(taskComments.id, commentId), eq(taskComments.taskId, taskId)))
     .returning();
   return updated;
 }
 
-export async function deleteComment(commentId: string, userId?: string) {
-  const [existing] = await db.select().from(taskComments).where(eq(taskComments.id, commentId));
+export async function deleteComment(taskId: string, commentId: string, userId?: string) {
+  const [existing] = await db
+    .select()
+    .from(taskComments)
+    .where(and(eq(taskComments.id, commentId), eq(taskComments.taskId, taskId)));
   if (!existing) throw new Error("Comment not found");
-  if (existing.userId && existing.userId !== userId) {
+  if (existing.userId !== (userId ?? null)) {
     throw new Error("Not authorized to delete this comment");
   }
-  await db.delete(taskComments).where(eq(taskComments.id, commentId));
+  await db
+    .delete(taskComments)
+    .where(and(eq(taskComments.id, commentId), eq(taskComments.taskId, taskId)));
 }

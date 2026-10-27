@@ -6,8 +6,8 @@ import { db } from "../db/client.js";
 import { tasks, podHealthEvents, repos } from "../db/schema.js";
 import { getRepoPodView, listRepoPodViews } from "../services/repo-pool-service.js";
 import { deletePod } from "../services/agent-pod-pool.js";
-import { eq, desc, and, inArray, sql } from "drizzle-orm";
-import { requireRole } from "../plugins/auth.js";
+import { eq, desc, and, inArray, isNull, sql } from "drizzle-orm";
+import { requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { getVersionInfo, isLocalDev } from "../services/version-service.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 
@@ -137,14 +137,14 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/cluster/overview",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "getClusterOverview",
         summary: "Get cluster overview",
         description:
           "Return an aggregate snapshot of the Optio cluster: nodes, all " +
           "pods in the namespace, services, recent events, and resource " +
-          "utilization from metrics-server if available. Requires `admin` role.",
+          "utilization from metrics-server if available. Requires a deployment admin.",
         tags: ["Cluster"],
         response: { 200: ClusterOverviewResponseSchema, 500: ErrorResponseSchema },
       },
@@ -377,7 +377,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/cluster/pods",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "listClusterPods",
         summary: "List cluster repo pods",
@@ -403,7 +403,14 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
                 createdAt: tasks.createdAt,
               })
               .from(tasks)
-              .where(eq(tasks.repoUrl, pod.repoUrl))
+              .where(
+                and(
+                  eq(tasks.repoUrl, pod.repoUrl),
+                  pod.workspaceId
+                    ? eq(tasks.workspaceId, pod.workspaceId)
+                    : isNull(tasks.workspaceId),
+                ),
+              )
               .orderBy(desc(tasks.createdAt))
               .limit(10);
 
@@ -420,7 +427,7 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/cluster/pods/:id",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "getClusterPod",
         summary: "Get a cluster pod",
@@ -444,7 +451,12 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
       const podTasks = await db
         .select()
         .from(tasks)
-        .where(eq(tasks.repoUrl, pod.repoUrl))
+        .where(
+          and(
+            eq(tasks.repoUrl, pod.repoUrl),
+            pod.workspaceId ? eq(tasks.workspaceId, pod.workspaceId) : isNull(tasks.workspaceId),
+          ),
+        )
         .orderBy(desc(tasks.createdAt))
         .limit(20);
 
@@ -488,13 +500,13 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/cluster/health-events",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "listPodHealthEvents",
         summary: "List pod health events",
         description:
           "Return recent pod health events (crashes, OOM kills, restarts, " +
-          "etc.) newest first. Requires `admin` role.",
+          "etc.) newest first. Requires a deployment admin.",
         tags: ["Cluster"],
         querystring: healthEventsQuerySchema,
         response: { 200: HealthEventsResponseSchema },
@@ -515,14 +527,14 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.post(
     "/api/cluster/pods/:id/restart",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "restartClusterPod",
         summary: "Force restart a repo pod",
         description:
           "Destroy a repo pod and clear its DB record so the next task " +
           "recreates it. Records a `restarted` event in pod_health_events. " +
-          "Requires `admin` role.",
+          "Requires a deployment admin.",
         tags: ["Cluster"],
         params: IdParamsSchema,
         response: { 200: OkResponseSchema, 404: ErrorResponseSchema },
@@ -589,19 +601,21 @@ export async function clusterRoutes(rawApp: FastifyInstance) {
   app.post(
     "/api/cluster/update",
     {
-      preHandler: [requireRole("admin")],
+      // Rolls the deployment everyone shares: a workspace admin isn't enough.
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "triggerClusterUpdate",
         summary: "Trigger a self-update",
         description:
           "Roll the optio-api deployment (its api and web containers) to a new image tag. " +
           "Only available in production deployments (fails in local dev). " +
-          "Requires `admin` role.",
+          "Requires a deployment admin.",
         tags: ["Cluster"],
         body: updateBodySchema,
         response: {
           200: UpdateResponseSchema,
           400: ErrorResponseSchema,
+          403: ErrorResponseSchema,
           500: ErrorResponseSchema,
         },
       },

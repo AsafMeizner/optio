@@ -37,16 +37,13 @@ export function _resetConnectionCounts(): void {
 
 /**
  * Extract the client IP address from a Fastify request.
- * Uses x-forwarded-for if present (trusted proxy), otherwise raw IP.
+ * Fastify resolves req.ip under its configured trusted-proxy policy. Never
+ * trust the forwarded header directly: direct clients can freely replace it.
  */
 export function getClientIp(req: {
   ip: string;
   headers: Record<string, string | string[] | undefined>;
 }): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    return forwarded.split(",")[0].trim();
-  }
   return req.ip;
 }
 

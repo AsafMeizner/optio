@@ -1,0 +1,464 @@
+diff --git a/src/v3/types.ts b/src/v3/types.ts
+index b10e84f1beb1dacdae5e01c42a223974b9e20b73..0dc1051fdf0fc833e2ce245fd738c16104c4f601 100644
+--- a/src/v3/types.ts
++++ b/src/v3/types.ts
+@@ -2264,6 +2264,7 @@ export class ZodArray<T extends ZodTypeAny, Cardinality extends ArrayCardinality
+           message: def.exactLength.message,
+         });
+         status.dirty();
++        if (tooBig) return INVALID;
+       }
+     }
+ 
+@@ -2291,7 +2292,7 @@ export class ZodArray<T extends ZodTypeAny, Cardinality extends ArrayCardinality
+           exact: false,
+           message: def.maxLength.message,
+         });
+-        status.dirty();
++        return INVALID;
+       }
+     }
+ 
+@@ -3723,7 +3724,7 @@ export class ZodSet<Value extends ZodTypeAny = ZodTypeAny> extends ZodType<
+           exact: false,
+           message: def.maxSize.message,
+         });
+-        status.dirty();
++        return INVALID;
+       }
+     }
+ 
+diff --git a/src/v4/core/checks.ts b/src/v4/core/checks.ts
+index 85a7ce7b8ac2876330b992b71871a51661c90fdd..dba96f4336d5f135e195a14472d61af6b6123507 100644
+--- a/src/v4/core/checks.ts
++++ b/src/v4/core/checks.ts
+@@ -19,6 +19,8 @@ export interface $ZodCheckDef {
+ 
+ export interface $ZodCheckInternals<T> {
+   def: $ZodCheckDef;
++  /** Optio: only built-in collection checks may run on unparsed input. */
++  optioCollectionGuard?: $ZodCheckDef["when"];
+   /** The set of issues this check might throw. */
+   issc?: errors.$ZodIssueBase;
+   check(payload: schemas.ParsePayload<T>): util.MaybeAsync<void>;
+@@ -450,10 +452,12 @@ export const $ZodCheckMaxSize: core.$constructor<$ZodCheckMaxSize> = /*@__PURE__
+   (inst, def) => {
+     $ZodCheck.init(inst, def);
+ 
++    const hasCustomWhen = inst._zod.def.when != null;
+     inst._zod.def.when ??= (payload) => {
+       const val = payload.value;
+       return !util.nullish(val) && (val as any).size !== undefined;
+     };
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+ 
+     inst._zod.onattach.push((inst) => {
+       const curr = (inst._zod.bag.maximum ?? Number.POSITIVE_INFINITY) as number;
+@@ -499,10 +503,12 @@ export const $ZodCheckMinSize: core.$constructor<$ZodCheckMinSize> = /*@__PURE__
+   (inst, def) => {
+     $ZodCheck.init(inst, def);
+ 
++    const hasCustomWhen = inst._zod.def.when != null;
+     inst._zod.def.when ??= (payload) => {
+       const val = payload.value;
+       return !util.nullish(val) && (val as any).size !== undefined;
+     };
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+ 
+     inst._zod.onattach.push((inst) => {
+       const curr = (inst._zod.bag.minimum ?? Number.NEGATIVE_INFINITY) as number;
+@@ -548,10 +554,12 @@ export const $ZodCheckSizeEquals: core.$constructor<$ZodCheckSizeEquals> = /*@__
+   (inst, def) => {
+     $ZodCheck.init(inst, def);
+ 
++    const hasCustomWhen = inst._zod.def.when != null;
+     inst._zod.def.when ??= (payload) => {
+       const val = payload.value;
+       return !util.nullish(val) && (val as any).size !== undefined;
+     };
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+ 
+     inst._zod.onattach.push((inst) => {
+       const bag = inst._zod.bag;
+@@ -602,10 +610,12 @@ export const $ZodCheckMaxLength: core.$constructor<$ZodCheckMaxLength> = /*@__PU
+   (inst, def) => {
+     $ZodCheck.init(inst, def);
+ 
++    const hasCustomWhen = inst._zod.def.when != null;
+     inst._zod.def.when ??= (payload) => {
+       const val = payload.value;
+       return !util.nullish(val) && (val as any).length !== undefined;
+     };
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+ 
+     inst._zod.onattach.push((inst) => {
+       const curr = (inst._zod.bag.maximum ?? Number.POSITIVE_INFINITY) as number;
+@@ -653,10 +663,12 @@ export const $ZodCheckMinLength: core.$constructor<$ZodCheckMinLength> = /*@__PU
+   (inst, def) => {
+     $ZodCheck.init(inst, def);
+ 
++    const hasCustomWhen = inst._zod.def.when != null;
+     inst._zod.def.when ??= (payload) => {
+       const val = payload.value;
+       return !util.nullish(val) && (val as any).length !== undefined;
+     };
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+ 
+     inst._zod.onattach.push((inst) => {
+       const curr = (inst._zod.bag.minimum ?? Number.NEGATIVE_INFINITY) as number;
+@@ -705,10 +717,12 @@ export const $ZodCheckLengthEquals: core.$constructor<$ZodCheckLengthEquals> = /
+   (inst, def) => {
+     $ZodCheck.init(inst, def);
+ 
++    const hasCustomWhen = inst._zod.def.when != null;
+     inst._zod.def.when ??= (payload) => {
+       const val = payload.value;
+       return !util.nullish(val) && (val as any).length !== undefined;
+     };
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+ 
+     inst._zod.onattach.push((inst) => {
+       const bag = inst._zod.bag;
+diff --git a/src/v4/core/schemas.ts b/src/v4/core/schemas.ts
+index ce16838549a39ff2522a1b6eea2b8994265f1b0f..9cb4f7ecb5d5053449f90afddde2cc47eba59ca2 100644
+--- a/src/v4/core/schemas.ts
++++ b/src/v4/core/schemas.ts
+@@ -242,6 +242,26 @@ export const $ZodType: core.$constructor<$ZodType> = /*@__PURE__*/ core.$constru
+     };
+ 
+     inst._zod.run = (payload, ctx) => {
++      // Reject oversized collections before allocating per-element issues.
++      // Custom checks/when callbacks still receive parsed values exactly once.
++      // Set/map caps deliberately constrain raw input, before transforms can deduplicate it.
++      const input = payload.value;
++      const size = def.type === "array" && Array.isArray(input) ? input.length
++        : def.type === "set" && input instanceof Set ? input.size
++        : def.type === "map" && input instanceof Map ? input.size : undefined;
++      if (size !== undefined) {
++        for (const ch of checks) {
++          const bound = ch._zod.def as checks.$ZodCheckMaxLengthDef | checks.$ZodCheckLengthEqualsDef | checks.$ZodCheckMaxSizeDef | checks.$ZodCheckSizeEqualsDef | checks.$ZodCheckMinLengthDef | checks.$ZodCheckMinSizeDef;
++          if (!ch._zod.optioCollectionGuard || ch._zod.optioCollectionGuard !== bound.when) break;
++          if (bound.check === "min_length" || bound.check === "min_size") continue;
++          const maximum = "maximum" in bound ? bound.maximum : "length" in bound ? bound.length : bound.size;
++          if (!(size > maximum)) continue;
++          const before = payload.issues.length;
++          ch._zod.check(payload);
++          if (payload.issues.length > before) return payload;
++        }
++      }
++
+       const result = inst._zod.parse(payload, ctx);
+ 
+       if (result instanceof Promise) {
+diff --git a/v3/types.cjs b/v3/types.cjs
+index 11ed4dfc4745f9af1f1501874576b78b77d294ef..7624bc3581485d953c461127fe1e8df021565f37 100644
+--- a/v3/types.cjs
++++ b/v3/types.cjs
+@@ -1791,6 +1791,7 @@ class ZodArray extends ZodType {
+                     message: def.exactLength.message,
+                 });
+                 status.dirty();
++                if (tooBig) return parseUtil_js_1.INVALID;
+             }
+         }
+         if (def.minLength !== null) {
+@@ -1816,7 +1817,7 @@ class ZodArray extends ZodType {
+                     exact: false,
+                     message: def.maxLength.message,
+                 });
+-                status.dirty();
++                return parseUtil_js_1.INVALID;
+             }
+         }
+         if (ctx.common.async) {
+@@ -2843,7 +2844,7 @@ class ZodSet extends ZodType {
+                     exact: false,
+                     message: def.maxSize.message,
+                 });
+-                status.dirty();
++                return parseUtil_js_1.INVALID;
+             }
+         }
+         const valueType = this._def.valueType;
+diff --git a/v3/types.js b/v3/types.js
+index 40b11c0f01b2af54e0ed48e198607bd8836d9a63..084b3dffcee64b2df7d22f0dd36b5dfabe9bb99b 100644
+--- a/v3/types.js
++++ b/v3/types.js
+@@ -1770,6 +1770,7 @@ export class ZodArray extends ZodType {
+                     message: def.exactLength.message,
+                 });
+                 status.dirty();
++                if (tooBig) return INVALID;
+             }
+         }
+         if (def.minLength !== null) {
+@@ -1795,7 +1796,7 @@ export class ZodArray extends ZodType {
+                     exact: false,
+                     message: def.maxLength.message,
+                 });
+-                status.dirty();
++                return INVALID;
+             }
+         }
+         if (ctx.common.async) {
+@@ -2814,7 +2815,7 @@ export class ZodSet extends ZodType {
+                     exact: false,
+                     message: def.maxSize.message,
+                 });
+-                status.dirty();
++                return INVALID;
+             }
+         }
+         const valueType = this._def.valueType;
+diff --git a/v4/core/checks.cjs b/v4/core/checks.cjs
+index c00e84dfe749200ef71f8d21f16f235f866d5e90..3a38bb1eea332d05bc7f2b0243672d4fd142bbaf 100644
+--- a/v4/core/checks.cjs
++++ b/v4/core/checks.cjs
+@@ -250,10 +250,12 @@ exports.$ZodCheckBigIntFormat = core.$constructor("$ZodCheckBigIntFormat", (inst
+ exports.$ZodCheckMaxSize = core.$constructor("$ZodCheckMaxSize", (inst, def) => {
+     var _a;
+     exports.$ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.size !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const curr = (inst._zod.bag.maximum ?? Number.POSITIVE_INFINITY);
+         if (def.maximum < curr)
+@@ -277,10 +279,12 @@ exports.$ZodCheckMaxSize = core.$constructor("$ZodCheckMaxSize", (inst, def) =>
+ exports.$ZodCheckMinSize = core.$constructor("$ZodCheckMinSize", (inst, def) => {
+     var _a;
+     exports.$ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.size !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const curr = (inst._zod.bag.minimum ?? Number.NEGATIVE_INFINITY);
+         if (def.minimum > curr)
+@@ -304,10 +308,12 @@ exports.$ZodCheckMinSize = core.$constructor("$ZodCheckMinSize", (inst, def) =>
+ exports.$ZodCheckSizeEquals = core.$constructor("$ZodCheckSizeEquals", (inst, def) => {
+     var _a;
+     exports.$ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.size !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const bag = inst._zod.bag;
+         bag.minimum = def.size;
+@@ -334,10 +340,12 @@ exports.$ZodCheckSizeEquals = core.$constructor("$ZodCheckSizeEquals", (inst, de
+ exports.$ZodCheckMaxLength = core.$constructor("$ZodCheckMaxLength", (inst, def) => {
+     var _a;
+     exports.$ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.length !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const curr = (inst._zod.bag.maximum ?? Number.POSITIVE_INFINITY);
+         if (def.maximum < curr)
+@@ -363,10 +371,12 @@ exports.$ZodCheckMaxLength = core.$constructor("$ZodCheckMaxLength", (inst, def)
+ exports.$ZodCheckMinLength = core.$constructor("$ZodCheckMinLength", (inst, def) => {
+     var _a;
+     exports.$ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.length !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const curr = (inst._zod.bag.minimum ?? Number.NEGATIVE_INFINITY);
+         if (def.minimum > curr)
+@@ -392,10 +402,12 @@ exports.$ZodCheckMinLength = core.$constructor("$ZodCheckMinLength", (inst, def)
+ exports.$ZodCheckLengthEquals = core.$constructor("$ZodCheckLengthEquals", (inst, def) => {
+     var _a;
+     exports.$ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.length !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const bag = inst._zod.bag;
+         bag.minimum = def.length;
+diff --git a/v4/core/checks.d.cts b/v4/core/checks.d.cts
+index 6c9bc6658e76fc9fcf10f22c80ea20dce011880c..68d0346210c5019f6b50a9ef7b02acb9778d3208 100644
+--- a/v4/core/checks.d.cts
++++ b/v4/core/checks.d.cts
+@@ -12,6 +12,8 @@ export interface $ZodCheckDef {
+ }
+ export interface $ZodCheckInternals<T> {
+     def: $ZodCheckDef;
++    /** Optio: only built-in collection checks may run on unparsed input. */
++    optioCollectionGuard?: $ZodCheckDef["when"];
+     /** The set of issues this check might throw. */
+     issc?: errors.$ZodIssueBase;
+     check(payload: schemas.ParsePayload<T>): util.MaybeAsync<void>;
+diff --git a/v4/core/checks.d.ts b/v4/core/checks.d.ts
+index 07b856b3401b2a6e6ddd2c2a1bad38cd6c2526fb..8956e683c719052c79165a259a55147dcd2901ac 100644
+--- a/v4/core/checks.d.ts
++++ b/v4/core/checks.d.ts
+@@ -12,6 +12,8 @@ export interface $ZodCheckDef {
+ }
+ export interface $ZodCheckInternals<T> {
+     def: $ZodCheckDef;
++    /** Optio: only built-in collection checks may run on unparsed input. */
++    optioCollectionGuard?: $ZodCheckDef["when"];
+     /** The set of issues this check might throw. */
+     issc?: errors.$ZodIssueBase;
+     check(payload: schemas.ParsePayload<T>): util.MaybeAsync<void>;
+diff --git a/v4/core/checks.js b/v4/core/checks.js
+index c5eca1e358df9476a6f80e0f15a037aadf3f7d29..7714121aa901838ca9147d5e9360e443898f851f 100644
+--- a/v4/core/checks.js
++++ b/v4/core/checks.js
+@@ -224,10 +224,12 @@ export const $ZodCheckBigIntFormat = /*@__PURE__*/ core.$constructor("$ZodCheckB
+ export const $ZodCheckMaxSize = /*@__PURE__*/ core.$constructor("$ZodCheckMaxSize", (inst, def) => {
+     var _a;
+     $ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.size !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const curr = (inst._zod.bag.maximum ?? Number.POSITIVE_INFINITY);
+         if (def.maximum < curr)
+@@ -251,10 +253,12 @@ export const $ZodCheckMaxSize = /*@__PURE__*/ core.$constructor("$ZodCheckMaxSiz
+ export const $ZodCheckMinSize = /*@__PURE__*/ core.$constructor("$ZodCheckMinSize", (inst, def) => {
+     var _a;
+     $ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.size !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const curr = (inst._zod.bag.minimum ?? Number.NEGATIVE_INFINITY);
+         if (def.minimum > curr)
+@@ -278,10 +282,12 @@ export const $ZodCheckMinSize = /*@__PURE__*/ core.$constructor("$ZodCheckMinSiz
+ export const $ZodCheckSizeEquals = /*@__PURE__*/ core.$constructor("$ZodCheckSizeEquals", (inst, def) => {
+     var _a;
+     $ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.size !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const bag = inst._zod.bag;
+         bag.minimum = def.size;
+@@ -308,10 +314,12 @@ export const $ZodCheckSizeEquals = /*@__PURE__*/ core.$constructor("$ZodCheckSiz
+ export const $ZodCheckMaxLength = /*@__PURE__*/ core.$constructor("$ZodCheckMaxLength", (inst, def) => {
+     var _a;
+     $ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.length !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const curr = (inst._zod.bag.maximum ?? Number.POSITIVE_INFINITY);
+         if (def.maximum < curr)
+@@ -337,10 +345,12 @@ export const $ZodCheckMaxLength = /*@__PURE__*/ core.$constructor("$ZodCheckMaxL
+ export const $ZodCheckMinLength = /*@__PURE__*/ core.$constructor("$ZodCheckMinLength", (inst, def) => {
+     var _a;
+     $ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.length !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const curr = (inst._zod.bag.minimum ?? Number.NEGATIVE_INFINITY);
+         if (def.minimum > curr)
+@@ -366,10 +376,12 @@ export const $ZodCheckMinLength = /*@__PURE__*/ core.$constructor("$ZodCheckMinL
+ export const $ZodCheckLengthEquals = /*@__PURE__*/ core.$constructor("$ZodCheckLengthEquals", (inst, def) => {
+     var _a;
+     $ZodCheck.init(inst, def);
++    const hasCustomWhen = inst._zod.def.when != null;
+     (_a = inst._zod.def).when ?? (_a.when = (payload) => {
+         const val = payload.value;
+         return !util.nullish(val) && val.length !== undefined;
+     });
++    if (!hasCustomWhen) inst._zod.optioCollectionGuard = inst._zod.def.when;
+     inst._zod.onattach.push((inst) => {
+         const bag = inst._zod.bag;
+         bag.minimum = def.length;
+diff --git a/v4/core/schemas.cjs b/v4/core/schemas.cjs
+index 7c77d2b5af031e086d535f4b2e1898cec17eda29..75cf0723e8f5516b09b0670a785526866041606c 100644
+--- a/v4/core/schemas.cjs
++++ b/v4/core/schemas.cjs
+@@ -104,6 +104,26 @@ exports.$ZodType = core.$constructor("$ZodType", (inst, def) => {
+             return payload;
+         };
+         inst._zod.run = (payload, ctx) => {
++            // Reject oversized collections before allocating per-element issues.
++            // Custom checks/when callbacks still receive parsed values exactly once.
++            // Set/map caps deliberately constrain raw input, before transforms can deduplicate it.
++            const input = payload.value;
++            const size = def.type === "array" && Array.isArray(input) ? input.length
++              : def.type === "set" && input instanceof Set ? input.size
++              : def.type === "map" && input instanceof Map ? input.size : undefined;
++            if (size !== undefined) {
++              for (const ch of checks) {
++                const bound = ch._zod.def;
++                if (!ch._zod.optioCollectionGuard || ch._zod.optioCollectionGuard !== bound.when) break;
++                if (bound.check === "min_length" || bound.check === "min_size") continue;
++                const maximum = "maximum" in bound ? bound.maximum : "length" in bound ? bound.length : bound.size;
++                if (!(size > maximum)) continue;
++                const before = payload.issues.length;
++                ch._zod.check(payload);
++                if (payload.issues.length > before) return payload;
++              }
++            }
++
+             const result = inst._zod.parse(payload, ctx);
+             if (result instanceof Promise) {
+                 if (ctx.async === false)
+diff --git a/v4/core/schemas.js b/v4/core/schemas.js
+index 692ce1fc2d0e138b51b5af2bafe0e2b4a279c0bc..5eb8de6a3985a1527ed07a9913eed8aa63ac22d3 100644
+--- a/v4/core/schemas.js
++++ b/v4/core/schemas.js
+@@ -74,6 +74,26 @@ export const $ZodType = /*@__PURE__*/ core.$constructor("$ZodType", (inst, def)
+             return payload;
+         };
+         inst._zod.run = (payload, ctx) => {
++            // Reject oversized collections before allocating per-element issues.
++            // Custom checks/when callbacks still receive parsed values exactly once.
++            // Set/map caps deliberately constrain raw input, before transforms can deduplicate it.
++            const input = payload.value;
++            const size = def.type === "array" && Array.isArray(input) ? input.length
++              : def.type === "set" && input instanceof Set ? input.size
++              : def.type === "map" && input instanceof Map ? input.size : undefined;
++            if (size !== undefined) {
++              for (const ch of checks) {
++                const bound = ch._zod.def;
++                if (!ch._zod.optioCollectionGuard || ch._zod.optioCollectionGuard !== bound.when) break;
++                if (bound.check === "min_length" || bound.check === "min_size") continue;
++                const maximum = "maximum" in bound ? bound.maximum : "length" in bound ? bound.length : bound.size;
++                if (!(size > maximum)) continue;
++                const before = payload.issues.length;
++                ch._zod.check(payload);
++                if (payload.issues.length > before) return payload;
++              }
++            }
++
+             const result = inst._zod.parse(payload, ctx);
+             if (result instanceof Promise) {
+                 if (ctx.async === false)

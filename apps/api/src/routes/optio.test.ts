@@ -9,12 +9,14 @@ const mockExecute = vi.fn();
 
 vi.mock("@kubernetes/client-node", () => {
   return {
-    KubeConfig: vi.fn().mockImplementation(() => ({
-      loadFromDefault: vi.fn(),
-      makeApiClient: vi.fn(() => ({
-        listNamespacedPod: mockListNamespacedPod,
-      })),
-    })),
+    KubeConfig: vi.fn().mockImplementation(function () {
+      return {
+        loadFromDefault: vi.fn(),
+        makeApiClient: vi.fn(() => ({
+          listNamespacedPod: mockListNamespacedPod,
+        })),
+      };
+    }),
     CoreV1Api: vi.fn(),
   };
 });

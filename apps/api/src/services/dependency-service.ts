@@ -1,9 +1,11 @@
-import { eq, and, inArray, sql } from "drizzle-orm";
+import { eq, and, inArray, isNull, or, sql, type Column } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { db } from "../db/client.js";
 import { taskDependencies, tasks } from "../db/schema.js";
 import { TaskState, detectCycle, type DagEdge, getOffPeakInfo, parseIntEnv } from "@optio/shared";
 import * as taskService from "./task-service.js";
 import { taskQueue } from "../workers/task-worker.js";
+import { canUse } from "./ownership.js";
 import { logger } from "../logger.js";
 
 /**
@@ -17,12 +19,23 @@ export async function addDependencies(taskId: string, dependsOnIds: string[]): P
     throw new Error("A task cannot depend on itself");
   }
 
-  // Validate all dependency tasks exist
+  const source = await taskService.getTask(taskId);
+  if (!source) throw new Error("Task not found");
+
+  // Validate all dependency tasks belong to the same execution boundary
   const depTasks = await db
-    .select({ id: tasks.id })
+    .select({ id: tasks.id, workspaceId: tasks.workspaceId, ownerUserId: tasks.ownerUserId })
     .from(tasks)
     .where(inArray(tasks.id, dependsOnIds));
-  const foundIds = new Set(depTasks.map((t) => t.id));
+  const foundIds = new Set(
+    depTasks
+      .filter(
+        (t) =>
+          (t.workspaceId ?? null) === (source.workspaceId ?? null) &&
+          canUse(t.ownerUserId, source.ownerUserId),
+      )
+      .map((t) => t.id),
+  );
   const missing = dependsOnIds.filter((id) => !foundIds.has(id));
   if (missing.length > 0) {
     throw new Error(`Dependency tasks not found: ${missing.join(", ")}`);
@@ -54,7 +67,17 @@ export async function addDependencies(taskId: string, dependsOnIds: string[]): P
 /**
  * Get all tasks that taskId depends on.
  */
+type BoundaryColumns = { workspaceId: Column; ownerUserId: Column };
+
+function validBoundary(source: BoundaryColumns, target: BoundaryColumns) {
+  return and(
+    sql`${source.workspaceId} is not distinct from ${target.workspaceId}`,
+    or(isNull(target.ownerUserId), eq(target.ownerUserId, source.ownerUserId)),
+  );
+}
+
 export async function getDependencies(taskId: string) {
+  const source = alias(tasks, "dependency_source");
   const deps = await db
     .select({
       id: tasks.id,
@@ -64,6 +87,7 @@ export async function getDependencies(taskId: string) {
     })
     .from(taskDependencies)
     .innerJoin(tasks, eq(tasks.id, taskDependencies.dependsOnTaskId))
+    .innerJoin(source, and(eq(source.id, taskDependencies.taskId), validBoundary(source, tasks)))
     .where(eq(taskDependencies.taskId, taskId));
   return deps;
 }
@@ -72,6 +96,7 @@ export async function getDependencies(taskId: string) {
  * Get all tasks that depend on taskId (reverse lookup).
  */
 export async function getDependents(taskId: string) {
+  const target = alias(tasks, "dependency_target");
   const deps = await db
     .select({
       id: tasks.id,
@@ -81,6 +106,10 @@ export async function getDependents(taskId: string) {
     })
     .from(taskDependencies)
     .innerJoin(tasks, eq(tasks.id, taskDependencies.taskId))
+    .innerJoin(
+      target,
+      and(eq(target.id, taskDependencies.dependsOnTaskId), validBoundary(tasks, target)),
+    )
     .where(eq(taskDependencies.dependsOnTaskId, taskId));
   return deps;
 }

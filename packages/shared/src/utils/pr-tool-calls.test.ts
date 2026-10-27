@@ -152,6 +152,14 @@ describe("prsFromToolResult", () => {
     expect(prUrlFromToolResult(out)).toBe("https://github.com/o/r/pull/42");
   });
 
+  it("scans a long run of URL-like text in linear time", () => {
+    // Unbounded, this took ~2s for 160 KB and grew with the square of the size.
+    const out = "https://a/".repeat(16_000) + " https://github.com/o/r/pull/7";
+    const started = Date.now();
+    expect(prUrlFromToolResult(out)).toBe("https://github.com/o/r/pull/7");
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
   it("ignores /pull/new/ suggestion links and API URLs", () => {
     const out =
       "remote: Create a pull request for 'b' on GitHub by visiting:\nremote: https://github.com/o/r/pull/new/b\nhttps://api.github.com/repos/o/r/pulls/3";

@@ -14,6 +14,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { acceptTriggerEvent } from "../services/trigger-delivery.js";
 import { logger } from "../logger.js";
@@ -184,9 +185,13 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
 
       const body = (req.body ?? {}) as Record<string, unknown>;
       const eventObj = (body.event ?? {}) as Record<string, unknown>;
+      // The signature covers the body only, with no timestamp: key the
+      // dedupe on the signed event id, so a captured delivery replayed with
+      // a fresh (unsigned) X-Webhook-Id header is still a duplicate.
       const deliveryId =
+        (typeof eventObj.id === "string" && eventObj.id) ||
         (req.headers["x-webhook-id"] as string | undefined) ||
-        (typeof eventObj.id === "string" ? eventObj.id : "");
+        "";
 
       const event = normalizePagerDutyEvent(body);
       if (!event) return reply.status(200).send({ ok: true });
@@ -316,11 +321,13 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
       const event = normalizeSentryEvent(resource, req.body);
       if (!event) return reply.status(200).send({ ok: true });
 
-      // Sentry sends no delivery id; the resource, action, object and the
-      // delivery's own timestamp name it.
-      const stamp = String(req.headers["sentry-hook-timestamp"] ?? "");
+      // Sentry sends no delivery id, and its signature covers the body only
+      // (not Sentry-Hook-Timestamp or -Resource): the signed bytes name the
+      // delivery, so a captured one replayed with fresh headers is still a
+      // duplicate, while a retry (the same bytes) is dropped as before.
+      const digest = createHash("sha256").update(rawBodyOf(req)).digest("hex");
 
-      const accepted = await acceptTriggerEvent("sentry", `${event.eventId}:${stamp}`, event);
+      const accepted = await acceptTriggerEvent("sentry", `${event.eventId}:${digest}`, event);
       return reply.status(200).send({ ok: true, ...accepted });
     },
   });

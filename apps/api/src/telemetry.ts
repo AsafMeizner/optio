@@ -81,7 +81,7 @@ export async function initTelemetry(): Promise<void> {
     const { logs } = await import("@opentelemetry/api-logs");
 
     const logExporter = new OTLPLogExporter();
-    logRecordProcessors = [new BatchLogRecordProcessor(logExporter)];
+    logRecordProcessors = [new BatchLogRecordProcessor({ exporter: logExporter })];
     otelLogs = logs;
   }
 

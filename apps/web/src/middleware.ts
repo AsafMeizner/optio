@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { authCookieName } from "./lib/auth-cookies.js";
 
 const PUBLIC_PATHS = ["/login", "/setup", "/auth/callback", "/shared-session"];
-const SESSION_COOKIE_NAME = "optio_session";
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -29,7 +29,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const sessionCookie = request.cookies.get(SESSION_COOKIE_NAME);
+  const sessionCookie = request.cookies.get(authCookieName("session"));
   if (!sessionCookie?.value) {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("redirect", pathname);

@@ -7,12 +7,22 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Readable } from "node:stream";
+import { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import type { ContainerRuntime, RunAttachment, RunExit } from "@optio/container-runtime";
 
 const mockAppend = vi.fn();
 const mockUpdateReturning = vi.fn();
 const mockUpdateSet = vi.fn();
 const mockSelectRows = vi.fn();
+
+/** Releases use the same database clock as the claim's expiry comparison. */
+function releasedLeases() {
+  return mockUpdateSet.mock.calls
+    .map((c) => (c[0] as { attachLeaseUntil?: Date | SQL }).attachLeaseUntil)
+    .filter((lease): lease is SQL => lease instanceof SQL)
+    .map((lease) => new PgDialect().sqlToQuery(lease));
+}
 
 vi.mock("../db/client.js", () => {
   const chain = {
@@ -478,10 +488,7 @@ describe("runAttachJob", () => {
     expect(spec.onAttachFailed).not.toHaveBeenCalled();
     expect(mockKillRun).not.toHaveBeenCalled();
     expect(spec.afterFinish).not.toHaveBeenCalled();
-    const releases = mockUpdateSet.mock.calls
-      .map((c) => c[0] as { attachLeaseUntil?: Date })
-      .filter((v) => v.attachLeaseUntil && v.attachLeaseUntil.getTime() <= Date.now());
-    expect(releases).toHaveLength(1);
+    expect(releasedLeases()).toEqual([{ sql: "now()", params: [] }]);
     expect(heldRunCount()).toBe(0);
     mockGetPod.mockReset();
   });
@@ -559,7 +566,6 @@ describe("the hold: renew or lose", () => {
     a.attachment = { close: closeA };
     b.attachment = { close: closeB };
     settling.attachment = { close: closeC };
-    const before = Date.now();
 
     expect(heldRunCount()).toBe(3);
     const detaching = detachAll({ settleWaitMs: 10_000 });
@@ -575,10 +581,10 @@ describe("the hold: renew or lose", () => {
     expect(a.released && b.released).toBe(true);
     expect(settling.released).toBe(false);
     expect(heldRunCount()).toBe(0);
-    const releases = mockUpdateSet.mock.calls
-      .map((c) => c[0] as { attachLeaseUntil?: Date })
-      .filter((v) => v.attachLeaseUntil && v.attachLeaseUntil.getTime() <= before);
-    expect(releases).toHaveLength(2);
+    expect(releasedLeases()).toEqual([
+      { sql: "now()", params: [] },
+      { sql: "now()", params: [] },
+    ]);
   });
 
   it("shutdown waits for a settling run only so long", async () => {
@@ -771,10 +777,7 @@ describe("endRunJob after shutdown let the run go", () => {
       expect(h.released).toBe(true);
       mockUpdateSet.mockClear();
       await endRunJob(h, "detached");
-      const releases = mockUpdateSet.mock.calls
-        .map((c) => c[0] as { attachLeaseUntil?: Date })
-        .filter((v) => v.attachLeaseUntil);
-      expect(releases).toHaveLength(1);
+      expect(releasedLeases()).toEqual([{ sql: "now()", params: [] }]);
       expect(mockKillRun).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();

@@ -908,8 +908,15 @@
     {
       "idx": 129,
       "version": "7",
-      "when": 1792900800000,
-      "tag": "1792900800_deployment_settings",
+      "when": 1793059200000,
+      "tag": "1793059200_verified_sign_in_email",
+      "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1793059201000,
+      "tag": "1793059201_deployment_settings",
       "breakpoints": true
     }
   ]

@@ -2214,7 +2214,7 @@ export function normalizeRepoKey(url: string): string | null {
 }
 
 /** Workspace of a repo registered in Optio, matched by URL; null when unknown. */
-async function workspaceOfRepo(repoUrl: string | undefined): Promise<string | null> {
+export async function workspaceOfRepo(repoUrl: string | undefined): Promise<string | null> {
   if (!repoUrl) return null;
   const wanted = normalizeRepoKey(repoUrl);
   if (!wanted) return null;

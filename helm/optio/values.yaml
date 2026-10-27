@@ -126,18 +126,6 @@ web:
 # Ask Optio (the assistant)
 # ──────────────────────────────────────────────────────────────────────────────
 optio:
-  assistant:
-    # Where an Ask Optio turn runs:
-    #   api-pod    (default) as a child process of the API, in the API pod —
-    #              no agent pod per conversation. The API image carries Claude
-    #              Code and Codex for it; an assistant on another harness, or
-    #              one with a repo, runs in an agent pod regardless.
-    #   agent-pod  a pooled agent pod per conversation (the assistant isolated
-    #              from the API: its own resources, nothing of the API's
-    #              filesystem or service account within its reach).
-    placement: api-pod
-    # Turns the API pod runs at once; the rest go to agent pods.
-    inPodMax: 3
   # The legacy dedicated assistant pod (below). Off by default: nothing in
   # Optio uses it. Set true to run it.
   enabled: false
@@ -190,7 +178,7 @@ agent:
   envoyProxy:
     image:
       repository: envoyproxy/envoy
-      tag: v1.31-latest
+      tag: v1.39.5
       pullPolicy: IfNotPresent
   # PVC template for repo pod home directories.
   # These PVCs are created dynamically by the API server (one per repo pod
@@ -254,13 +242,23 @@ outbound:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Network Policy
-# Default-deny policy for agent (repo) pods. Restricts cluster-internal
-# traffic so compromised pods cannot reach PostgreSQL, Redis, or other
-# services directly. Requires a CNI plugin that supports NetworkPolicy
-# (e.g. Calico, Cilium, Weave Net). Not supported on Docker Desktop.
+# Default-deny policy for every agent pod Optio starts (repo pods, Job pods,
+# persistent-agent pods, assistant agent pods — all labeled managed-by=optio).
+# Restricts cluster-internal traffic so compromised pods cannot reach
+# PostgreSQL, Redis, or other services directly. Requires a CNI plugin that
+# supports NetworkPolicy (e.g. Calico, Cilium, Weave Net). Not supported on
+# Docker Desktop.
 # ──────────────────────────────────────────────────────────────────────────────
 networkPolicy:
   enabled: false  # Set to true when your cluster supports NetworkPolicy
+  # Additional destination CIDRs to deny on public HTTP(S). Private, loopback,
+  # link-local and multicast ranges are always excluded, even if this is [].
+  # Keep this setting for deployment-specific public pod/service CIDRs.
+  deniedEgressCidrs: []
+  # Explicit administrator-authorized access to trusted private Connections
+  # or nonstandard / node-local DNS. These rules apply to every agent pod.
+  # Do not grant access to PostgreSQL, Redis or cloud instance metadata.
+  extraEgress: []
 
 # Marketplace skills (issue #497) are synced into the database
 # (`installed_skill_files`), so every API pod serves them and no volume is
@@ -313,7 +311,7 @@ postgresql:
   enabled: true
   image:
     repository: postgres
-    tag: "16"
+    tag: "16@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97"
   resources:
     requests:
       cpu: 100m
@@ -345,7 +343,7 @@ redis:
   enabled: true
   image:
     repository: redis
-    tag: 7-alpine
+    tag: "7-alpine@sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af"
   # Kubernetes nodeSelector for Redis pods (opt-in).
   nodeSelector: {}
   resources:
