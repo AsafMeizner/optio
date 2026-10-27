@@ -12,6 +12,7 @@ import githubAppRoutes from "./github-app.js";
 const membership = vi.hoisted(() => vi.fn());
 vi.mock("../services/workspace-service.js", () => ({ getUserRole: membership }));
 const token = vi.hoisted(() => vi.fn());
+const REPO = "https://github.com/acme/widgets";
 vi.mock("../services/github-token-service.js", () => ({ getGitHubToken: token }));
 
 beforeEach(() => {
@@ -41,7 +42,7 @@ async function call(scope: string | null, secret: string, suffix = "") {
 
 describe("credential helper scope", () => {
   it("refreshes only the owner's credentials, ignoring any arbitrary taskId", async () => {
-    const owner = { workspaceId: randomUUID(), ownerUserId: randomUUID() };
+    const owner = { workspaceId: randomUUID(), ownerUserId: randomUUID(), repoUrl: REPO };
     const scope = gitCredentialScope(owner);
     expect((await call(scope, gitCredentialKey(scope), `&taskId=${randomUUID()}`)).statusCode).toBe(
       200,
@@ -49,22 +50,29 @@ describe("credential helper scope", () => {
     expect(token).toHaveBeenCalledWith({
       workspaceId: owner.workspaceId,
       userId: owner.ownerUserId,
+      repo: { owner: "acme", name: "widgets" },
     });
   });
-  it("rejects changing owner, workspace, or promoting an org key to a user key", async () => {
-    const owner = { workspaceId: randomUUID(), ownerUserId: randomUUID() };
+  it("rejects changing owner, workspace, repo, or promoting an org key to a user key", async () => {
+    const owner = { workspaceId: randomUUID(), ownerUserId: randomUUID(), repoUrl: REPO };
     const key = gitCredentialKey(gitCredentialScope(owner));
     for (const other of [
       { ...owner, ownerUserId: randomUUID() },
       { ...owner, workspaceId: randomUUID() },
       { ...owner, ownerUserId: null },
+      { ...owner, repoUrl: "https://github.com/acme/secrets" },
+      { ...owner, repoUrl: null },
     ]) {
       expect((await call(gitCredentialScope(other), key)).statusCode).toBe(401);
     }
     expect(token).not.toHaveBeenCalled();
   });
   it("rejects a removed member and a key forged from the old pod secret", async () => {
-    const scope = gitCredentialScope({ workspaceId: randomUUID(), ownerUserId: randomUUID() });
+    const scope = gitCredentialScope({
+      workspaceId: randomUUID(),
+      ownerUserId: randomUUID(),
+      repoUrl: REPO,
+    });
     membership.mockResolvedValue(null);
     expect((await call(scope, gitCredentialKey(scope))).statusCode).toBe(401);
     const forged = createHmac("sha256", getCredentialSecret())
@@ -79,10 +87,44 @@ describe("credential helper scope", () => {
       (
         await call(
           null,
-          gitCredentialKey(gitCredentialScope({ workspaceId: null, ownerUserId: null })),
+          gitCredentialKey(
+            gitCredentialScope({ workspaceId: null, ownerUserId: null, repoUrl: REPO }),
+          ),
         )
       ).statusCode,
     ).toBe(401);
+    expect(token).not.toHaveBeenCalled();
+  });
+  it("limits an organization pod's installation token to its repo", async () => {
+    const workspaceId = randomUUID();
+    const scope = gitCredentialScope({
+      workspaceId,
+      ownerUserId: null,
+      repoUrl: "git@github.com:Acme/Widgets.git",
+    });
+    expect((await call(scope, gitCredentialKey(scope))).statusCode).toBe(200);
+    expect(token).toHaveBeenCalledWith({
+      server: true,
+      workspaceId,
+      repo: { owner: "acme", name: "widgets" },
+    });
+  });
+  it("refuses a scope minted before repos were bound, unless legacy is allowed", async () => {
+    const legacy = Buffer.from(
+      JSON.stringify({ workspaceId: randomUUID(), ownerUserId: null }),
+    ).toString("base64url");
+    expect((await call(legacy, gitCredentialKey(legacy))).statusCode).toBe(401);
+    expect(token).not.toHaveBeenCalled();
+    vi.stubEnv("OPTIO_ALLOW_LEGACY_GIT_CREDENTIALS", "1");
+    expect((await call(legacy, gitCredentialKey(legacy))).statusCode).toBe(200);
+  });
+  it("gives a pod whose repo is not on GitHub no GitHub token", async () => {
+    const scope = gitCredentialScope({
+      workspaceId: randomUUID(),
+      ownerUserId: null,
+      repoUrl: "https://gitlab.com/acme/widgets",
+    });
+    expect((await call(scope, gitCredentialKey(scope))).statusCode).toBe(401);
     expect(token).not.toHaveBeenCalled();
   });
 });

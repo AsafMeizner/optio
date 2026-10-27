@@ -80,6 +80,14 @@ async function row(id: string) {
   return r;
 }
 
+async function expectReleased(id: string) {
+  const [lease] = await db
+    .select({ expired: sql<boolean>`${workRuns.attachLeaseUntil} <= now()` })
+    .from(workRuns)
+    .where(eq(workRuns.id, id));
+  expect(lease.expired).toBe(true);
+}
+
 /** Claims the run for `inst` and holds it, as an attach job does. */
 async function claimAndHold(inst: Instance, id: string) {
   const claim = await inst.att.claimAttachment(ref(id));
@@ -134,6 +142,34 @@ describe("run attachment, two instances on one database", () => {
     await a.att.releaseAttachment(held);
     expect(await b.att.claimAttachment(ref(run.id))).not.toBeNull();
     expect(await a.att.renewAttachment(held)).toBe(false);
+  });
+
+  it("a released attachment is immediately claimable even when the releasing API clock is ahead", async () => {
+    const a = await bootInstance();
+    const b = await bootInstance();
+    const run = await startedRun();
+    const claim = await a.att.claimAttachment(ref(run.id));
+    expect(claim).not.toBeNull();
+    const held = { ref: ref(run.id), token: claim!.token };
+
+    // Only Date is replaced: database I/O and timers remain real. A handoff
+    // must not wait for Postgres to catch up with the releasing host's clock.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    try {
+      await a.att.releaseAttachment(held);
+    } finally {
+      vi.useRealTimers();
+    }
+    await expectReleased(run.id);
+    const taken = await b.att.claimAttachment(ref(run.id));
+    expect(taken).not.toBeNull();
+    expect((await row(run.id)).attachedBy).toBe(taken!.token);
+
+    // A late release from the old holder must still respect the token CAS.
+    await a.att.releaseAttachment(held);
+    expect(await a.att.claimAttachment(ref(run.id))).toBeNull();
+    expect((await row(run.id)).attachedBy).toBe(taken!.token);
   });
 
   it("(4) one instance never claims a run it holds live: a second job of it loses the claim", async () => {
@@ -319,7 +355,7 @@ describe("run attachment, two instances on one database", () => {
       expect.objectContaining({ runId: run.id, signal: "TERM", pid: 4242 }),
     );
     // Its lease was given up.
-    expect((await row(run.id)).attachLeaseUntil!.getTime()).toBeLessThanOrEqual(Date.now());
+    await expectReleased(run.id);
 
     // The job errored while streaming: the agent is left running for the
     // next attach, the lease given up so it comes at once.
@@ -329,7 +365,7 @@ describe("run attachment, two instances on one database", () => {
     expect(await a.att.onStreamError(held)).toBe("detached");
     await a.att.endRunJob(held, "detached");
     expect(killRun).not.toHaveBeenCalled();
-    expect((await row(streaming.id)).attachLeaseUntil!.getTime()).toBeLessThanOrEqual(Date.now());
+    await expectReleased(streaming.id);
     expect((await row(streaming.id)).metadata).toMatchObject({ attachFailures: 1 });
 
     // …until it is the attempt's third failed attach in a row: failed, stopped.

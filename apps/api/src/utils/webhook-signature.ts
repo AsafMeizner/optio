@@ -149,18 +149,36 @@ export function presentedSecret(headers: Record<string, unknown>): string | unde
   return undefined;
 }
 
+/** Fastify's default `bodyLimit` (1 MiB), used when the route reports none. */
+const DEFAULT_BODY_LIMIT = 1024 * 1024;
+
 /**
  * `preParsing` hook: keep the raw bytes before the JSON / form parser runs,
  * so signatures verify byte-exact. Read them back with `rawBodyOf`.
+ *
+ * Fastify only enforces `bodyLimit` in the body parser, which runs after
+ * this hook, so the hook enforces it itself while reading: these receivers
+ * are public, and a chunked request with no Content-Length would otherwise
+ * be buffered whole, however large, before anything rejected it.
  */
 export async function captureRawBody(
   req: FastifyRequest,
   _reply: FastifyReply,
   payload: Readable,
 ): Promise<Readable> {
+  const limit = req.routeOptions?.bodyLimit ?? DEFAULT_BODY_LIMIT;
   const chunks: Buffer[] = [];
+  let size = 0;
   for await (const chunk of payload) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    size += buf.length;
+    if (size > limit) {
+      throw Object.assign(new Error("Request body is too large"), {
+        statusCode: 413,
+        code: "FST_ERR_CTP_BODY_TOO_LARGE",
+      });
+    }
+    chunks.push(buf);
   }
   const rawBody = Buffer.concat(chunks);
   (req as unknown as { rawBody: Buffer }).rawBody = rawBody;

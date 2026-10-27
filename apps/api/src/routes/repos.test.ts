@@ -185,6 +185,17 @@ describe("PATCH /api/repos/:id", () => {
     app = await buildTestApp();
   });
 
+  it("rejects enabling the unsupported credential-isolation proxy", async () => {
+    mockGetRepo.mockResolvedValue(mockRepoData);
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/repos/repo-1",
+      payload: { secretProxy: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(mockUpdateRepo).not.toHaveBeenCalled();
+  });
+
   it("updates a repo", async () => {
     mockGetRepo.mockResolvedValue(mockRepoData);
     mockUpdateRepo.mockResolvedValue({ ...mockRepoData, imagePreset: "node" });

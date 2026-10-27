@@ -10,7 +10,7 @@
 #     --skip-toolchain   reuse the toolchain images already built for <version>
 #                        (optio.local/toolchain/*:<version>)
 #     --agent-clis <list>        all (default) or a comma-separated runtime list
-#     --claude-code-version <v>  override the default 2.1.112
+#     --claude-code-version <v>  override the default 2.1.310
 #     --preinstall-mcp-servers   include the built-in MCP server binaries
 #     --opencode-install-method <script|npm>  default script
 #     --out <dir>        another directory than release/kit-<version>
@@ -113,7 +113,7 @@ VERSION=""
 WITH_PRESETS=1
 SKIP_TOOLCHAIN=0
 AGENT_CLIS="${AGENT_CLIS:-all}"
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.112}"
+CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.310}"
 PREINSTALL_MCP_SERVERS="${PREINSTALL_MCP_SERVERS:-0}"
 OPENCODE_INSTALL_METHOD="${OPENCODE_INSTALL_METHOD:-script}"
 OUT=""

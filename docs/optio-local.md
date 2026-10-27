@@ -99,9 +99,9 @@ over (`services/local-auth-refresh-service.ts`, `cli/src/local/claude-credential
   token against Anthropic, stores it as the global `CLAUDE_CODE_OAUTH_TOKEN` (what the
   validation worker, usage probe, and agent pods read), invalidates the credential / usage
   caches, marks the validation cache good, and publishes `auth:status_changed`.
-- Who may: a host owned by a workspace **admin** (the same gate as the Secrets page), or
+- Who may: a host owned by a **deployment admin** (the same gate as global secrets), or
   any host in auth-disabled dev.
-- **Explicit**: `POST /api/auth/claude-token/refresh-from-host {hostId}` (admin, own host);
+- **Explicit**: `POST /api/auth/claude-token/refresh-from-host {hostId}` (deployment admin, own host);
   the expired-token banner shows a "Refresh from _machine_" button for every online host
   that can, above the copy/paste steps.
 - **Automatic**: when the token-validation worker finds the stored token expired it tries

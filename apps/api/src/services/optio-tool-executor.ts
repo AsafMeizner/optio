@@ -50,9 +50,9 @@ export interface OptioToolAuth {
 }
 
 function toolHeaders(auth: string | OptioToolAuth): Record<string, string> {
-  // String support preserves the existing executor callers' session-cookie contract.
+  // Explicit bearer authentication also works when browser cookies are host-bound.
   if (typeof auth === "string")
-    return { cookie: `optio_session=${auth}`, "content-type": "application/json" };
+    return { authorization: `Bearer ${auth}`, "content-type": "application/json" };
   return {
     ...(auth.token ? { authorization: `Bearer ${auth.token}` } : {}),
     ...(auth.workspaceId ? { "x-workspace-id": auth.workspaceId } : {}),

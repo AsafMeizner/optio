@@ -1,8 +1,7 @@
 /**
- * The process runtime: an agent run as a child process of this API process,
- * for work that lives in the API pod itself — the Ask Optio assistant by
- * default (`OPTIO_ASSISTANT_PLACEMENT`), saving the pod an agent pod would
- * cost. It speaks the run protocol's four operations and keeps the run
+ * The process runtime runs a child process with its parent's privileges.
+ * It is for trusted local callers only; API-requested agent work must use an
+ * isolated container. It speaks the run protocol's four operations and keeps the run
  * directory's files (run-protocol.ts: `output.ndjson`, `stderr.log`,
  * `stdin.ndjson`, `pid`, `exit`), so a consumer attaches from a byte offset
  * exactly as it does to a pod.
