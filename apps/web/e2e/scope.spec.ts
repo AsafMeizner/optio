@@ -128,6 +128,7 @@ test.describe("Scope", () => {
       "github",
       "gitlab",
       "google",
+      "ldap",
       "oidc",
     ]);
   });
