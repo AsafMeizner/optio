@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-27
+
+### Added
+
+- **The built-in Redis can keep its data.** `redis.persistence.enabled=true` gives the chart's Redis a ReadWriteOnce volume (`redis.persistence.size`, `redis.persistence.storageClass`) and runs it with an append-only file, so BullMQ's delayed and in-flight jobs and short-lived keys survive a pod restart or a node pool scaled to zero (runs are recovered from Postgres either way). An init container owns the volume for Redis on storage drivers that do not apply `fsGroup`. Off by default; turning it on or off replaces the dataset. See `docs/redis.md`. (#688, thanks @travis-burmaster)
+
+### Changed
+
+- Project instructions for coding agents live in `AGENTS.md`; `CLAUDE.md` imports it and holds only Claude-Code-specific notes.
+- Security vulnerabilities are reported through GitHub's private vulnerability reporting for the repository (`SECURITY.md`), not by email.
+
+### Fixed
+
+- **Repo pods could never start under the resource quota.** With `resourceQuota.enabled` (as `values.production.yaml` sets it), Kubernetes rejected every container without its own cpu/memory requests and limits, and tasks sat in `provisioning`. The chart now also renders a LimitRange (`resourceQuota.limitRange`, on by default: 250m / 512Mi requested, 2 CPU / 4Gi limits) that fills them in for every container Optio creates without its own settings — repo, Job, agent and session pods, and the chart's own Postgres init and test pods. `default` is a hard cap per container and counts against the quota's `limits.*`; `docs/production-eks.md` says how to size it. (#685, thanks @travis-burmaster)
+
 ## [0.21.0] - 2026-10-27
 
 ### Added
