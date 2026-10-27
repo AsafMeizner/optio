@@ -30,6 +30,11 @@ time; a deterministic clock-skew regression verifies immediate handoff and that
 an old holder cannot release the newer holder's lease. Browser test cleanup also
 drains in-flight mock requests before disposing their response context.
 
+Post-merge artifact verification found that the preset-image workflow's two
+`include` entries overwrote the platform on each preset, producing only ARM64
+images. Platform is now an explicit matrix axis, so each of the five presets
+builds on both architectures before their manifests are published.
+
 Unrelated unfinished Codex-login and session-UI edits were kept out of this PR.
 Their security guards remain in the original working tree and must accompany
 those features when they are submitted.
