@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const registeredRows: { id: string }[] = [];
-const limit = vi.fn(async () => registeredRows);
-vi.mock("../db/client.js", () => ({
-  db: { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) },
-}));
 vi.mock("./github-token-service.js", () => ({
   getGitHubToken: vi.fn(async () => "ghs_server_token"),
 }));
@@ -23,8 +18,7 @@ let savedEnv: Record<string, string | undefined>;
 beforeEach(() => {
   savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   for (const k of ENV_KEYS) delete process.env[k];
-  registeredRows.length = 0;
-  limit.mockClear();
+  vi.clearAllMocks();
 });
 afterEach(() => {
   for (const k of ENV_KEYS) {
@@ -46,31 +40,30 @@ describe("isListedGitHost", () => {
 });
 
 describe("isTrustedGitHost", () => {
-  it("trusts the host of a registered repo, and nothing else", async () => {
-    const registered = vi.fn(async (h: string) => h === "ghe.corp.example");
-    expect(
-      await isTrustedGitHost({ host: "ghe.corp.example", platform: "github" }, registered),
-    ).toBe(true);
-    expect(
-      await isTrustedGitHost({ host: "attacker.example", platform: "github" }, registered),
-    ).toBe(false);
-    expect(
-      await isTrustedGitHost({ host: "gitlab.attacker.example", platform: "gitlab" }, registered),
-    ).toBe(false);
+  it("requires deployment configuration for custom hosts", async () => {
+    expect(await isTrustedGitHost({ host: "ghe.corp.example", platform: "github" })).toBe(false);
+    expect(await isTrustedGitHost({ host: "gitlab.attacker.example", platform: "gitlab" })).toBe(
+      false,
+    );
+    process.env.GITHUB_HOSTS = "ghe.corp.example";
+    expect(await isTrustedGitHost({ host: "GHE.CORP.EXAMPLE", platform: "github" })).toBe(true);
+    expect(await isTrustedGitHost({ host: "ghe.corp.example.evil", platform: "github" })).toBe(
+      false,
+    );
   });
 
   it("trusts CodeCommit (reached by region through the AWS SDK)", async () => {
     expect(
-      await isTrustedGitHost(
-        { host: "git-codecommit.us-east-1.amazonaws.com", platform: "codecommit" },
-        async () => false,
-      ),
+      await isTrustedGitHost({
+        host: "git-codecommit.us-east-1.amazonaws.com",
+        platform: "codecommit",
+      }),
     ).toBe(true);
   });
 });
 
 describe("getGitPlatformForRepo", () => {
-  it("refuses to hand the server token to an unregistered, unlisted host", async () => {
+  it("refuses to hand the server token to an unlisted host", async () => {
     // A PR URL on a host someone controls: the GitHub client would call
     // https://attacker.example/api/v3/... with `Authorization: Bearer <token>`.
     await expect(
@@ -81,18 +74,16 @@ describe("getGitPlatformForRepo", () => {
     ).rejects.toThrow(/Refusing/);
   });
 
-  it("serves github.com, listed hosts and registered hosts as before", async () => {
+  it("serves github.com and deployment-listed hosts", async () => {
     const gh = await getGitPlatformForRepo("https://github.com/o/r", { server: true });
     expect(gh.ri.apiBaseUrl).toBe("https://api.github.com");
-    expect(limit).not.toHaveBeenCalled();
 
     process.env.GITLAB_HOSTS = "git.corp.example";
     const gl = await getGitPlatformForRepo("https://git.corp.example/g/r", { server: true });
     expect(gl.platform.type).toBe("gitlab");
 
-    registeredRows.push({ id: "repo-1" });
+    process.env.GITHUB_HOSTS = "ghe.corp.example";
     const ghe = await getGitPlatformForRepo("https://ghe.corp.example/o/r", { server: true });
     expect(ghe.ri.apiBaseUrl).toBe("https://ghe.corp.example/api/v3");
-    expect(limit).toHaveBeenCalledTimes(1);
   });
 });

@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends unzip \
     && rm -rf /root/.bun
 
 # Build tools for native modules
-RUN apt-get update && apt-get install -y build-essential python3-dev \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends build-essential python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 USER agent

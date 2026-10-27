@@ -1,8 +1,4 @@
-import {
-  createRuntime,
-  ProcessContainerRuntime,
-  type ContainerRuntime,
-} from "@optio/container-runtime";
+import { createRuntime, type ContainerRuntime } from "@optio/container-runtime";
 import type { ContainerSpec, ContainerHandle, ContainerStatus } from "@optio/shared";
 import { DEFAULT_AGENT_IMAGE } from "@optio/shared";
 
@@ -15,18 +11,6 @@ export function getRuntime(): ContainerRuntime {
     runtime = createRuntime({ type, kubernetes: { namespace: process.env.OPTIO_NAMESPACE } });
   }
   return runtime;
-}
-
-let processRuntime: ProcessContainerRuntime | null = null;
-
-/**
- * The runtime for work that runs in this API process's own pod (the
- * assistant by default, `services/assistant-placement.ts`): the agent as a
- * child process, with the run protocol's files.
- */
-export function getProcessRuntime(): ProcessContainerRuntime {
-  if (!processRuntime) processRuntime = new ProcessContainerRuntime();
-  return processRuntime;
 }
 
 export async function launchAgentContainer(

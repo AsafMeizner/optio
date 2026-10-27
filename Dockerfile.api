@@ -1,17 +1,3 @@
-# ---- MCP bridge build stage ----
-# The same bundle the agent images bake in (images/base.Dockerfile): the
-# controller MCP (/opt/optio/controller-mcp.js) and the REST bridge
-# (/opt/optio/mcp-bridge.js). An Ask Optio turn that runs in this pod
-# (OPTIO_ASSISTANT_PLACEMENT=api-pod) gets the same .mcp.json as a turn in an
-# agent pod, so the scripts it names have to be here too.
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS bridge
-RUN npm install -g pnpm@10.34.8
-WORKDIR /app
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
-COPY packages/mcp-bridge/ packages/mcp-bridge/
-RUN pnpm install --frozen-lockfile --ignore-scripts --filter @optio/mcp-bridge \
-    && pnpm --filter @optio/mcp-bridge build
-
 # ---- Dependencies stage ----
 FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS deps
 
@@ -21,6 +7,7 @@ WORKDIR /app
 
 # Copy workspace config
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
+COPY patches/ patches/
 
 # Copy package.json for ALL workspace packages (pnpm needs full workspace graph)
 COPY apps/api/package.json apps/api/tsconfig.json apps/api/drizzle.config.ts apps/api/
@@ -31,18 +18,14 @@ COPY packages/shared/package.json packages/shared/tsconfig.json packages/shared/
 COPY packages/container-runtime/package.json packages/container-runtime/tsconfig.json packages/container-runtime/
 COPY packages/agent-adapters/package.json packages/agent-adapters/tsconfig.json packages/agent-adapters/
 COPY packages/ticket-providers/package.json packages/ticket-providers/tsconfig.json packages/ticket-providers/
-# mcp-bridge is built in the bridge stage above; its package.json is here so
-# the frozen lockfile still matches the workspace graph.
+# Include every workspace manifest so the frozen lockfile matches.
 COPY packages/mcp-bridge/package.json packages/mcp-bridge/
 
 # Install production dependencies (--ignore-scripts avoids husky prepare hook)
-RUN pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter @optio/api...
 
 # ---- Runtime stage ----
 FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
-
-ARG AGENT_CLIS=all
-ARG CLAUDE_CODE_VERSION=2.1.112
 
 ARG OPTIO_VERSION=dev
 ENV OPTIO_VERSION=${OPTIO_VERSION}
@@ -51,42 +34,18 @@ ENV OPTIO_VERSION=${OPTIO_VERSION}
 RUN node -e 'const [maj,min] = process.versions.openssl.split(".").map(Number); if (maj < 3 || (maj === 3 && min < 5)) { console.error("OpenSSL " + process.versions.openssl + " too old; need >= 3.5"); process.exit(1); }'
 
 # git + ca-certificates: required by the skill-sync worker for shallow-cloning
-# marketplace skills (issue #497, Phase 2). python3 + curl: the run setup
-# (WRITE_SETUP_FILES) and the harness commands of the work that runs in this
-# pod (below).
+# marketplace skills (issue #497, Phase 2). Agent harnesses run only in
+# isolated agent containers, never in this control-plane image.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates python3 curl \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install tsx globally for TypeScript execution at runtime
 # (workspace packages export .ts source, so the API runs via tsx)
-RUN npm install -g tsx
-
-# The harnesses the Ask Optio assistant runs with in this pod by default
-# (OPTIO_ASSISTANT_PLACEMENT=api-pod, services/assistant-placement.ts): the
-# same Claude Code pin as the agent images (images/base.Dockerfile) and Codex.
-# An assistant on another harness runs in an agent pod instead.
-# TODO(#566): bump back to latest once upstream Bun ships a fix and claude-code adopts it.
-# The API launches Codex with `codex exec --dangerously-bypass-approvals-and-
-# sandbox` (task-worker.ts, pooled-agent-command.ts; `--full-auto` is gone
-# from 0.162+): fail the build if the Codex this image gets no longer takes it.
-RUN case ",${AGENT_CLIS}," in \
-      *,all,*) npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" @openai/codex \
-        && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox ;; \
-      *) case ",${AGENT_CLIS}," in *,claude-code,*) npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" ;; esac \
-         && case ",${AGENT_CLIS}," in *,codex,*) npm install -g @openai/codex \
-           && codex exec --help | grep -q -- --dangerously-bypass-approvals-and-sandbox ;; esac ;; \
-    esac
-
-# The agent home every run writes under (/home/agent, as in the agent
-# images): the assistant's run homes, setup files and harness config. The
-# chart mounts an emptyDir here (the root filesystem is read-only).
-RUN mkdir -p /home/agent && chown node:node /home/agent
-
-# The MCP scripts an agent's .mcp.json names, at the path the agent images use.
-RUN mkdir -p /opt/optio
-COPY --from=bridge --chmod=0755 /app/packages/mcp-bridge/dist/mcp-bridge.js /opt/optio/mcp-bridge.js
-COPY --from=bridge --chmod=0755 /app/packages/mcp-bridge/dist/controller-mcp.js /opt/optio/controller-mcp.js
+# npm is only needed to install the launcher; keep its separate dependency tree
+# out of the production image (agent package installs happen in agent pods).
+RUN npm install -g tsx && npm uninstall -g npm && rm -rf /root/.npm
 
 WORKDIR /app
 

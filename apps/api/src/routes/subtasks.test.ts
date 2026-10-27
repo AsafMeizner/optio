@@ -152,6 +152,7 @@ describe("POST /api/tasks/:id/subtasks", () => {
 
     expect(res.statusCode).toBe(403);
     expect(mockCreateSubtask).not.toHaveBeenCalled();
+    expect(mockQueueSubtask).not.toHaveBeenCalled();
   });
 
   it("rejects missing title (400 from Zod body schema)", async () => {
@@ -191,5 +192,26 @@ describe("GET /api/tasks/:id/subtasks/status", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().allComplete).toBe(false);
     expect(res.json().total).toBe(3);
+  });
+});
+
+describe("private task resource visibility", () => {
+  it.each(["subtasks", "subtasks/status"])("hides %s from a different member", async (resource) => {
+    vi.clearAllMocks();
+    mockGetTask.mockResolvedValue({
+      id: "task-private",
+      workspaceId: "ws-1",
+      ownerUserId: "someone-else",
+    });
+    const app = await buildRouteTestApp(subtaskRoutes, {
+      user: { id: "user-1", workspaceId: "ws-1", workspaceRole: "member" },
+    });
+    try {
+      const res = await app.inject({ method: "GET", url: `/api/tasks/task-private/${resource}` });
+      expect(res.statusCode).toBe(404);
+      expect(mockGetSubtasks).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
   });
 });

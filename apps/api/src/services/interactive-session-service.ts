@@ -104,6 +104,7 @@ export async function createSession(input: {
     maxAgentsPerPod: repoConfig?.maxAgentsPerPod ?? 2,
     maxPodInstances: repoConfig?.maxPodInstances ?? 1,
     networkPolicy: repoConfig?.networkPolicy ?? "unrestricted",
+    secretProxy: repoConfig?.secretProxy ?? false,
     cpuRequest: repoConfig?.cpuRequest,
     cpuLimit: repoConfig?.cpuLimit,
     memoryRequest: repoConfig?.memoryRequest,

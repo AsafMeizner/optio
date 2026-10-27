@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import { actorOf, canSee, canChange } from "../services/ownership.js";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import * as dependencyService from "../services/dependency-service.js";
@@ -64,11 +65,11 @@ export async function dependencyRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
       const dependencies = await dependencyService.getDependencies(id);
-      reply.send({ dependencies });
+      reply.send({ dependencies: await visibleDependencies(dependencies, task, req) });
     },
   );
 
@@ -92,11 +93,11 @@ export async function dependencyRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
       const dependents = await dependencyService.getDependents(id);
-      reply.send({ dependents });
+      reply.send({ dependents: await visibleDependencies(dependents, task, req) });
     },
   );
 
@@ -115,6 +116,7 @@ export async function dependencyRoutes(rawApp: FastifyInstance) {
         body: addDependenciesBodySchema,
         response: {
           201: DependencyAddedResponseSchema,
+          403: ErrorResponseSchema,
           400: ErrorResponseSchema,
           404: ErrorResponseSchema,
         },
@@ -127,8 +129,12 @@ export async function dependencyRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
+      }
+
+      if (!canChange(task.ownerUserId, actorOf(req), true)) {
+        return reply.status(403).send({ error: "Only its owner can change private work" });
       }
 
       try {
@@ -152,6 +158,7 @@ export async function dependencyRoutes(rawApp: FastifyInstance) {
         params: depParamsSchema,
         response: {
           204: z.null().describe("Dependency edge removed"),
+          403: ErrorResponseSchema,
           404: ErrorResponseSchema,
         },
       },
@@ -161,12 +168,35 @@ export async function dependencyRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
+      }
+      if (!canChange(task.ownerUserId, actorOf(req), true)) {
+        return reply.status(403).send({ error: "Only its owner can change private work" });
       }
       const removed = await dependencyService.removeDependency(id, depTaskId);
       if (!removed) return reply.status(404).send({ error: "Dependency not found" });
       reply.status(204).send(null);
     },
   );
+}
+
+/** Historic edges may predate tenant checks; never expose their other endpoint. */
+async function visibleDependencies<T extends { id: string }>(
+  rows: T[],
+  task: { workspaceId?: string | null },
+  req: FastifyRequest,
+): Promise<T[]> {
+  const actor = actorOf(req);
+  const visible = await Promise.all(
+    rows.map(async (row) => {
+      const target = await taskService.getTask(row.id);
+      return (
+        target &&
+        (target.workspaceId ?? null) === (task.workspaceId ?? null) &&
+        canSee(target.ownerUserId, actor)
+      );
+    }),
+  );
+  return rows.filter((_, i) => visible[i]);
 }

@@ -78,6 +78,11 @@ import {
 describe("dependency-service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(taskService.getTask).mockResolvedValue({
+      id: "task-1",
+      workspaceId: null,
+      ownerUserId: null,
+    } as any);
   });
 
   describe("addDependencies", () => {
@@ -156,6 +161,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi.fn().mockResolvedValue(deps),
           }),
         }),
@@ -174,6 +180,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi.fn().mockResolvedValue(dependents),
           }),
         }),
@@ -189,6 +196,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi.fn().mockResolvedValue([]),
           }),
         }),
@@ -202,6 +210,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi.fn().mockResolvedValue([
               { id: "d-1", state: "completed" },
               { id: "d-2", state: "pr_opened" },
@@ -218,6 +227,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi.fn().mockResolvedValue([
               { id: "d-1", state: "completed" },
               { id: "d-2", state: "running" },
@@ -237,6 +247,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi.fn().mockImplementation(() => {
               innerJoinCallCount++;
               if (innerJoinCallCount === 1) {
@@ -268,6 +279,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi
               .fn()
               .mockResolvedValue([
@@ -287,6 +299,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi
               .fn()
               .mockResolvedValue([
@@ -309,6 +322,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockImplementation(() => ({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi.fn().mockImplementation(() => {
               callCount++;
               if (callCount === 1) {
@@ -337,6 +351,7 @@ describe("dependency-service", () => {
       (db.select as any) = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi
               .fn()
               .mockResolvedValue([
@@ -408,6 +423,7 @@ describe("dependency-service", () => {
             return Promise.resolve([{ id: "d-1", title: "Build", state: "running" }]);
           }),
           innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnThis(),
             where: vi.fn().mockResolvedValue([{ id: "d-1", title: "Build", state: "running" }]),
           }),
         }),

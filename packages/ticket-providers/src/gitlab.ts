@@ -6,7 +6,7 @@ import {
   type TicketComment,
   type TicketProviderConfig,
 } from "@optio/shared";
-import { assertSsrfSafe } from "@optio/shared/ssrf";
+import { guardedFetch } from "@optio/shared/outbound-http";
 import type { TicketProvider } from "./types.js";
 
 export interface GitLabProviderConfig extends TicketProviderConfig {
@@ -55,9 +55,6 @@ export class GitLabTicketProvider implements TicketProvider {
     const allTickets: Ticket[] = [];
     let page = 1;
 
-    // SSRF check: verify the constructed API URL does not target internal addresses
-    await assertSsrfSafe(baseUrl);
-
     while (page <= maxPages) {
       const params = new URLSearchParams({
         labels: label,
@@ -67,7 +64,7 @@ export class GitLabTicketProvider implements TicketProvider {
       });
 
       const fetchUrl = `${baseUrl}/projects/${pid}/issues?${params}`;
-      const res = await fetch(fetchUrl, { headers: hdrs, redirect: "error" });
+      const res = await guardedFetch(fetchUrl, { headers: hdrs, redirect: "error" });
       if (!res.ok) break;
 
       const issues = (await res.json()) as any[];
@@ -110,8 +107,7 @@ export class GitLabTicketProvider implements TicketProvider {
     const hdrs = this.headers(glConfig);
 
     const fetchUrl = `${baseUrl}/projects/${pid}/issues/${ticketId}/notes?sort=asc&per_page=30`;
-    await assertSsrfSafe(fetchUrl);
-    const res = await fetch(fetchUrl, { headers: hdrs, redirect: "error" });
+    const res = await guardedFetch(fetchUrl, { headers: hdrs, redirect: "error" });
     if (!res.ok) return [];
 
     const notes = (await res.json()) as any[];
@@ -131,8 +127,7 @@ export class GitLabTicketProvider implements TicketProvider {
     const hdrs = this.headers(glConfig);
 
     const fetchUrl = `${baseUrl}/projects/${pid}/issues/${ticketId}/notes`;
-    await assertSsrfSafe(fetchUrl);
-    await fetch(fetchUrl, {
+    await guardedFetch(fetchUrl, {
       method: "POST",
       headers: hdrs,
       body: JSON.stringify({ body: comment }),
@@ -152,8 +147,7 @@ export class GitLabTicketProvider implements TicketProvider {
 
     const stateEvent = state === "closed" ? "close" : "reopen";
     const fetchUrl = `${baseUrl}/projects/${pid}/issues/${ticketId}`;
-    await assertSsrfSafe(fetchUrl);
-    await fetch(fetchUrl, {
+    await guardedFetch(fetchUrl, {
       method: "PUT",
       headers: hdrs,
       body: JSON.stringify({ state_event: stateEvent }),

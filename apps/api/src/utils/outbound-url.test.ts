@@ -234,6 +234,46 @@ describe("guardedFetch", () => {
       vi.restoreAllMocks();
     });
 
+    it.each(["object", "tuples", "Headers"])(
+      "drops custom credentials on cross-origin redirects (%s)",
+      async (shape) => {
+        const entries: [string, string][] = [
+          ["PRIVATE-TOKEN", "gitlab-secret"],
+          ["X-Api-Key", "api-secret"],
+          ["X-Custom-Credential", "custom-secret"],
+          ["Authorization", "Bearer secret"],
+          ["Cookie", "session=secret"],
+          ["Accept", "application/json"],
+        ];
+        const headers =
+          shape === "Headers"
+            ? new Headers(entries)
+            : shape === "tuples"
+              ? entries
+              : Object.fromEntries(entries);
+        const impl = vi
+          .fn()
+          .mockResolvedValueOnce(
+            new Response(null, {
+              status: 302,
+              headers: { location: "https://other.example.com/collect" },
+            }),
+          )
+          .mockResolvedValueOnce(new Response("ok"));
+        await guardedFetch("https://api.example.com/", {
+          headers,
+          fetchImpl: impl,
+          resolveHost: async () => [{ address: "93.184.216.34", family: 4 }],
+        });
+        const forwarded = new Headers(impl.mock.calls[1]![1].headers);
+        const values: Record<string, string> = {};
+        forwarded.forEach((value, key) => {
+          values[key] = value;
+        });
+        expect(values).toEqual({ accept: "application/json" });
+      },
+    );
+
     it("never calls it for a blocked URL", async () => {
       const impl = vi.fn();
       await expect(

@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { createHash, randomBytes } from "node:crypto";
+import { authCookieName, secureAuthCookies } from "../../../lib/auth-cookies.js";
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? "http://localhost:4000";
-const SESSION_COOKIE_NAME = "optio_session";
 
 /**
  * BFF (Backend for Frontend) proxy route.
@@ -17,13 +18,33 @@ const SESSION_COOKIE_NAME = "optio_session";
  */
 async function proxyRequest(request: NextRequest) {
   const url = new URL(request.url);
-  const targetUrl = `${INTERNAL_API_URL}${url.pathname}${url.search}`;
+  const targetUrl = new URL(`${INTERNAL_API_URL}${url.pathname}${url.search}`);
   const isMcp = url.pathname === "/api/mcp";
+  const browserVerifier =
+    request.method === "GET" && /^\/api\/auth\/[^/]+\/login$/.test(url.pathname)
+      ? randomBytes(32).toString("base64url")
+      : undefined;
+  if (browserVerifier) {
+    targetUrl.searchParams.set(
+      "browserChallenge",
+      createHash("sha256").update(browserVerifier).digest("base64url"),
+    );
+  }
+
+  // SameSite cookies still accompany requests from hostile sibling origins.
+  // Check before converting ambient cookies into an explicit Bearer token.
+  if (!isMcp && !["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+    const origin = request.headers.get("origin");
+    const expected = new URL(process.env.PUBLIC_URL ?? request.url).origin;
+    if (origin && origin !== expected) {
+      return NextResponse.json({ error: "Origin not allowed" }, { status: 403 });
+    }
+  }
 
   const headers = new Headers();
 
   // Forward safe request headers
-  const forwardHeaders = ["content-type", "accept", "x-workspace-id"];
+  const forwardHeaders = ["content-type", "accept", "x-workspace-id", "x-optio-setup-token"];
   for (const name of forwardHeaders) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
@@ -38,7 +59,7 @@ async function proxyRequest(request: NextRequest) {
   }
 
   // Inject session token as Bearer header (from HttpOnly cookie)
-  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const sessionToken = request.cookies.get(authCookieName("session"))?.value;
   if (sessionToken && !isMcp) {
     headers.set("Authorization", `Bearer ${sessionToken}`);
   }
@@ -94,7 +115,17 @@ async function proxyRequest(request: NextRequest) {
     if (isAuthRedirect && apiRes.status >= 300 && apiRes.status < 400) {
       const location = apiRes.headers.get("location");
       if (location) {
-        return NextResponse.redirect(location, apiRes.status);
+        const response = NextResponse.redirect(location, apiRes.status);
+        if (browserVerifier) {
+          response.cookies.set(authCookieName("oauth_verifier"), browserVerifier, {
+            path: "/",
+            httpOnly: true,
+            sameSite: "lax",
+            secure: secureAuthCookies(),
+            maxAge: 600,
+          });
+        }
+        return response;
       }
     }
 

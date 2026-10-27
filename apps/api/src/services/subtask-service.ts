@@ -41,6 +41,12 @@ export async function createSubtask(input: SubtaskInput) {
     // Inherit the parent's workspace so subtasks (incl. review subtasks)
     // stay visible in the workspace-scoped UI.
     workspaceId: parent.workspaceId ?? null,
+    ownerUserId: parent.ownerUserId ?? null,
+    podSecrets: parent.podSecrets ?? null,
+    settings: parent.settings ?? null,
+    repoBranch: parent.repoBranch,
+    autoResume: parent.autoResume,
+    autoMerge: parent.autoMerge,
   });
 
   // Set subtask fields
@@ -186,7 +192,7 @@ export async function onSubtaskComplete(subtaskId: string) {
 
       // Auto-merge if enabled on the repo
       const { getRepoByUrl } = await import("./repo-service.js");
-      const repoConfig = await getRepoByUrl(parent.repoUrl);
+      const repoConfig = await getRepoByUrl(parent.repoUrl, parent.workspaceId);
 
       if (repoConfig?.autoMerge) {
         try {
@@ -195,7 +201,11 @@ export async function onSubtaskComplete(subtaskId: string) {
 
           const parsed = parsePrUrl(parent.prUrl!);
           if (parsed) {
-            const { platform, ri } = await getGitPlatformForRepo(parent.repoUrl, { server: true });
+            const { platform, ri } = await getGitPlatformForRepo(parent.repoUrl, {
+              workspaceId: parent.workspaceId,
+              userId: parent.ownerUserId ?? undefined,
+              server: !parent.ownerUserId,
+            });
             await platform.mergePullRequest(ri, parsed.prNumber, "squash");
 
             await taskService.transitionTask(

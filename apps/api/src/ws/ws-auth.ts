@@ -2,18 +2,26 @@ import type { FastifyRequest } from "fastify";
 import { validateSession, validateWsToken, type SessionUser } from "../services/session-service.js";
 import { validateApiKey } from "../services/api-key-service.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
+import { browserOriginAllowed } from "../utils/browser-origin.js";
+import { getUserRole } from "../services/workspace-service.js";
 
 /** Minimal WebSocket interface for auth — avoids depending on @types/ws. */
 interface WsSocket {
   close(code?: number, reason?: string): void;
 }
 
-const SESSION_COOKIE_NAME = "optio_session";
+const SESSION_COOKIE_NAME = process.env.PUBLIC_URL?.startsWith("https://")
+  ? "__Host-optio_session"
+  : "optio_session";
 
 function parseCookie(header: string | undefined, name: string): string | undefined {
   if (!header) return undefined;
   const match = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : undefined;
+  try {
+    return match ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Prefix used in the Sec-WebSocket-Protocol header to carry upgrade tokens. */
@@ -48,38 +56,6 @@ function extractUpgradeTokenFromProtocol(req: FastifyRequest): string | undefine
   return undefined;
 }
 
-function originOf(url: string | undefined): string | null {
-  if (!url) return null;
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Whether the upgrade's `Origin` may carry the session cookie: none at all
- * (not a browser), the API's own host, `PUBLIC_URL`, or one of
- * `OPTIO_ALLOWED_ORIGINS` (the CORS list; dev's localhost web ports when
- * unset outside production). Any other page gets no cookie auth — first-party
- * clients authenticate with a protocol token, which a foreign page can't mint.
- */
-export function cookieOriginAllowed(req: FastifyRequest): boolean {
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  const parsed = originOf(origin);
-  if (!parsed) return false;
-  const host = req.headers.host;
-  if (host && new URL(parsed).host === host) return true;
-  if (parsed === originOf(process.env.PUBLIC_URL)) return true;
-  const allowed = process.env.OPTIO_ALLOWED_ORIGINS
-    ? process.env.OPTIO_ALLOWED_ORIGINS.split(",").map((o) => o.trim())
-    : process.env.NODE_ENV === "production"
-      ? []
-      : ["http://localhost:3000", "http://localhost:3001"];
-  return allowed.some((o) => originOf(o) === parsed);
-}
-
 /**
  * Authenticate a WebSocket connection.
  *
@@ -108,6 +84,10 @@ export async function authenticateWsWithCredentials(
   socket: WsSocket,
   req: FastifyRequest,
 ): Promise<{ user: SessionUser; token?: string } | null> {
+  if (!browserOriginAllowed(req.headers.origin)) {
+    socket.close(4403, "Origin not allowed");
+    return null;
+  }
   if (isAuthDisabled()) {
     return {
       user: {
@@ -123,17 +103,23 @@ export async function authenticateWsWithCredentials(
     };
   }
 
-  // Path 1: cookie-based session auth (long-lived session token or PAT).
-  // A browser attaches the cookie to an upgrade any page starts, so it only
-  // counts when the page is Optio's own (Cross-Site WebSocket Hijacking).
-  const cookieToken = cookieOriginAllowed(req)
-    ? parseCookie(req.headers.cookie, SESSION_COOKIE_NAME)
-    : undefined;
+  async function authorize(user: SessionUser, token?: string) {
+    const role = user.workspaceId ? await getUserRole(user.workspaceId, user.id) : null;
+    if (!role) {
+      socket.close(4403, "Workspace membership required");
+      return null;
+    }
+    user.workspaceRole = role;
+    return { user, ...(token ? { token } : {}) };
+  }
+
+  // Path 1: cookie-based session auth (long-lived session token or PAT)
+  const cookieToken = parseCookie(req.headers.cookie, SESSION_COOKIE_NAME);
   if (cookieToken) {
     const user = cookieToken.startsWith("optio_pat_")
       ? await validateApiKey(cookieToken)
       : await validateSession(cookieToken);
-    if (user) return { user, token: cookieToken };
+    if (user) return authorize(user, cookieToken);
     // Cookie was present but invalid/expired — fall through to protocol check
   }
 
@@ -145,7 +131,7 @@ export async function authenticateWsWithCredentials(
       ? await validateApiKey(upgradeToken)
       : await validateWsToken(upgradeToken);
     if (user)
-      return { user, ...(upgradeToken.startsWith("optio_pat_") ? { token: upgradeToken } : {}) };
+      return authorize(user, upgradeToken.startsWith("optio_pat_") ? upgradeToken : undefined);
     // Token was present but invalid/expired/already consumed
   }
 

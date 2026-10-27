@@ -1,3 +1,4 @@
+import { actorOf, canSee } from "../services/ownership.js";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -66,11 +67,13 @@ export async function subtaskRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
       const subtasks = await subtaskService.getSubtasks(id);
-      reply.send({ subtasks });
+      reply.send({
+        subtasks: subtasks.filter((subtask) => canSee(subtask.ownerUserId, actorOf(req))),
+      });
     },
   );
 
@@ -102,7 +105,7 @@ export async function subtaskRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
       {
@@ -161,7 +164,7 @@ export async function subtaskRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
       const status = await subtaskService.checkBlockingSubtasks(id);

@@ -223,8 +223,8 @@ describe("Zod error sanitization", () => {
     process.env.NODE_ENV = "production";
     const testApp = await buildServer();
 
-    // Use /api/setup/ path to bypass auth middleware
-    testApp.post("/api/setup/test-zod", async () => {
+    // Keep this synthetic error-handler route under the public docs prefix.
+    testApp.post("/docs/test-zod", async () => {
       const { z } = await import("zod");
       const schema = z.object({ name: z.string(), age: z.number() });
       schema.parse({ name: 123, age: "not-a-number" });
@@ -232,7 +232,7 @@ describe("Zod error sanitization", () => {
 
     const res = await testApp.inject({
       method: "POST",
-      url: "/api/setup/test-zod",
+      url: "/docs/test-zod",
       payload: {},
     });
 
@@ -253,7 +253,7 @@ describe("Zod error sanitization", () => {
     process.env.NODE_ENV = "development";
     const testApp = await buildServer();
 
-    testApp.post("/api/setup/test-zod-dev", async () => {
+    testApp.post("/docs/test-zod-dev", async () => {
       const { z } = await import("zod");
       const schema = z.object({ name: z.string() });
       schema.parse({ name: 123 });
@@ -261,7 +261,7 @@ describe("Zod error sanitization", () => {
 
     const res = await testApp.inject({
       method: "POST",
-      url: "/api/setup/test-zod-dev",
+      url: "/docs/test-zod-dev",
       payload: {},
     });
 
@@ -294,7 +294,7 @@ describe("Zod type provider error envelope", () => {
     const testApp = await buildServer();
     const { z } = await import("zod");
     testApp.post(
-      "/api/setup/test-fpv-prod",
+      "/docs/test-fpv-prod",
       {
         schema: {
           body: z.object({
@@ -308,7 +308,7 @@ describe("Zod type provider error envelope", () => {
 
     const res = await testApp.inject({
       method: "POST",
-      url: "/api/setup/test-fpv-prod",
+      url: "/docs/test-fpv-prod",
       payload: { name: 123, nested: { age: "not-a-number" } },
     });
 
@@ -329,7 +329,7 @@ describe("Zod type provider error envelope", () => {
     const testApp = await buildServer();
     const { z } = await import("zod");
     testApp.post(
-      "/api/setup/test-fpv-dev",
+      "/docs/test-fpv-dev",
       {
         schema: { body: z.object({ name: z.string() }) },
       },
@@ -338,7 +338,7 @@ describe("Zod type provider error envelope", () => {
 
     const res = await testApp.inject({
       method: "POST",
-      url: "/api/setup/test-fpv-dev",
+      url: "/docs/test-fpv-dev",
       payload: { name: 123 },
     });
 
@@ -356,7 +356,7 @@ describe("Zod type provider error envelope", () => {
     const testApp = await buildServer();
     const { z } = await import("zod");
     testApp.get(
-      "/api/setup/test-fpv-query",
+      "/docs/test-fpv-query",
       {
         schema: {
           querystring: z.object({
@@ -369,7 +369,7 @@ describe("Zod type provider error envelope", () => {
 
     const res = await testApp.inject({
       method: "GET",
-      url: "/api/setup/test-fpv-query?limit=-5",
+      url: "/docs/test-fpv-query?limit=-5",
     });
 
     expect(res.statusCode).toBe(400);

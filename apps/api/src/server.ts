@@ -9,6 +9,7 @@ import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import websocket from "@fastify/websocket";
+import { MAX_WS_MESSAGE_SIZE } from "./ws/ws-limits.js";
 import {
   validatorCompiler,
   serializerCompiler,
@@ -83,7 +84,7 @@ import { persistentAgentStreamWs } from "./ws/persistent-agent-stream.js";
 import { prReviewLogStreamWs } from "./ws/pr-review-log-stream.js";
 import { localDaemonWs } from "./ws/local-daemon.js";
 import { localTerminalStreamWs } from "./ws/local-terminal-stream.js";
-import authPlugin from "./plugins/auth.js";
+import authPlugin, { SESSION_COOKIE_NAME } from "./plugins/auth.js";
 import { httpMetricsPlugin } from "./plugins/http-metrics.js";
 
 const loggerConfig =
@@ -170,6 +171,9 @@ export async function buildServer() {
   await app.register(formbody);
   await app.register(websocket, {
     options: {
+      // Enforce the same limit while assembling frames, before the application
+      // handler sees the message (ws otherwise buffers up to 100 MiB).
+      maxPayload: MAX_WS_MESSAGE_SIZE,
       // WebSocket auth tokens are sent via Sec-WebSocket-Protocol header to avoid
       // leaking tokens in URLs. The client sends ["optio-ws-v1", "optio-auth-<TOKEN>"]
       // and we select "optio-ws-v1" so the raw token is never echoed back.
@@ -259,7 +263,7 @@ export async function buildServer() {
           cookieAuth: {
             type: "apiKey",
             in: "cookie",
-            name: "optio_session",
+            name: SESSION_COOKIE_NAME,
             description:
               "HttpOnly session cookie set by the OAuth login flow. Value is " +
               "an opaque session ID validated against the sessions table.",

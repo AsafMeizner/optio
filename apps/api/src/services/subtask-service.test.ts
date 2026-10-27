@@ -137,6 +137,9 @@ describe("subtask-service", () => {
         agentType: "claude-code",
         priority: 100,
         workspaceId: "ws-1",
+        ownerUserId: "owner-1",
+        podSecrets: ["LIMITED_TOKEN"],
+        settings: { connections: { remove: ["restricted-connection"] }, controllerAccess: "off" },
       };
       vi.mocked(taskService.getTask).mockResolvedValue(parent as any);
       vi.mocked(taskService.createTask).mockResolvedValue({ id: "sub-1" } as any);
@@ -160,7 +163,12 @@ describe("subtask-service", () => {
       });
 
       expect(taskService.createTask).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceId: "ws-1" }),
+        expect.objectContaining({
+          workspaceId: "ws-1",
+          ownerUserId: parent.ownerUserId,
+          podSecrets: parent.podSecrets,
+          settings: parent.settings,
+        }),
       );
     });
 

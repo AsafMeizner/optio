@@ -64,8 +64,8 @@ export async function writeControllerComment(
     throw new ControllerError(403, "Only the author may change this comment");
   if (action === "edit")
     return {
-      comment: await comments.updateComment(commentId, content!, p.actor.userId ?? undefined),
+      comment: await comments.updateComment(id, commentId, content!, p.actor.userId ?? undefined),
     };
-  await comments.deleteComment(commentId, p.actor.userId ?? undefined);
+  await comments.deleteComment(id, commentId, p.actor.userId ?? undefined);
   return { commentId, deleted: true };
 }

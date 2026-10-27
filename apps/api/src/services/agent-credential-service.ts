@@ -22,6 +22,12 @@ import { db } from "../db/client.js";
 import { secrets } from "../db/schema.js";
 import { listModelProviders } from "./model-provider-service.js";
 import type { Actor } from "./ownership.js";
+import { isAuthDisabled } from "./oauth/index.js";
+import {
+  hasDeploymentAdmin,
+  isDeploymentAdmin,
+  isFoundingWorkspaceAdmin,
+} from "./sign-in-config-service.js";
 import { retrieveSecretById, retrieveSecretWithFallback, storeSecret } from "./secret-service.js";
 
 /**
@@ -375,8 +381,14 @@ export async function createAgentCredential(
     }
     if (!ok) throw new AgentCredentialError("Enter an http(s) URL");
   }
-  if (input.owner === "workspace" && !actor.isAdmin) {
-    throw new AgentCredentialError("Only admins add organization credentials", 403);
+  // The legacy "workspace" owner stores a deployment-wide global secret.
+  if (input.owner === "workspace" && !isAuthDisabled()) {
+    const allowed =
+      actor.userId &&
+      ((await isDeploymentAdmin({ id: actor.userId })) ||
+        (!(await hasDeploymentAdmin()) && (await isFoundingWorkspaceAdmin(actor.userId))));
+    if (!allowed)
+      throw new AgentCredentialError("Only deployment admins add shared credentials", 403);
   }
   if (input.owner === "me" && !actor.userId) {
     throw new AgentCredentialError("Sign in to add your own credential", 403);

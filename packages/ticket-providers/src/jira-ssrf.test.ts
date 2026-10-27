@@ -1,90 +1,120 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { JiraTicketProvider } from "./jira.js";
-import type { JiraProviderConfig } from "./jira.js";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { setOutboundDefaults } from "@optio/shared/outbound-http";
+import { JiraTicketProvider, type JiraProviderConfig } from "./jira.js";
 
-vi.mock("@optio/shared/ssrf", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@optio/shared/ssrf")>();
-  return {
-    ...actual,
-    assertSsrfSafe: vi.fn(),
-  };
+let server: http.Server;
+let port: number;
+let mode: "ok" | "redirect" = "ok";
+let restoreOutbound: (() => void) | undefined;
+const seen: Array<{ path: string; method: string; auth?: string; body: string }> = [];
+const resolveHost = vi.fn();
+const provider = new JiraTicketProvider();
+const config = (): JiraProviderConfig => ({
+  baseUrl: `http://jira.test:${port}/jira`,
+  email: "owner@example.com",
+  apiToken: "secret-token",
 });
+const operations = [
+  ["issues", () => provider.fetchActionableTickets(config())],
+  ["comments", () => provider.fetchTicketComments("TEST-1", config())],
+  ["add comment", () => provider.addComment("TEST-1", "A comment", config())],
+  ["transition", () => provider.updateState("TEST-1", "closed", config())],
+] as const;
 
-vi.mock("jira.js", () => {
-  return {
-    Version3Client: vi.fn().mockImplementation(() => ({
-      issueSearch: {
-        searchForIssuesUsingJqlEnhancedSearch: vi.fn().mockResolvedValue({ issues: [] }),
-      },
-      issueComments: {
-        addComment: vi.fn().mockResolvedValue({}),
-        getComments: vi.fn().mockResolvedValue({ comments: [] }),
-      },
-      issues: {
-        getTransitions: vi.fn().mockResolvedValue({ transitions: [] }),
-        doTransition: vi.fn().mockResolvedValue({}),
-      },
-    })),
-  };
-});
-
-import { assertSsrfSafe, SsrfError } from "@optio/shared/ssrf";
-
-const mockAssertSsrfSafe = assertSsrfSafe as ReturnType<typeof vi.fn>;
-
-function baseConfig(): JiraProviderConfig {
-  return {
-    baseUrl: "https://test.atlassian.net",
-    email: "test@example.com",
-    apiToken: "test-token",
-  };
-}
-
-beforeEach(() => {
-  mockAssertSsrfSafe.mockReset();
-  mockAssertSsrfSafe.mockResolvedValue(undefined);
-});
-
-describe("JiraTicketProvider SSRF protection", () => {
-  it("calls assertSsrfSafe with baseUrl before fetching tickets", async () => {
-    const provider = new JiraTicketProvider();
-    await provider.fetchActionableTickets(baseConfig());
-
-    expect(mockAssertSsrfSafe).toHaveBeenCalledWith("https://test.atlassian.net");
-  });
-
-  it("throws SsrfError when baseUrl resolves to private address", async () => {
-    mockAssertSsrfSafe.mockRejectedValueOnce(
-      new SsrfError("DNS resolved evil.example.com to private address 169.254.169.254"),
+beforeAll(async () => {
+  server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    seen.push({ path: req.url!, method: req.method!, auth: req.headers.authorization, body });
+    if (mode === "redirect") {
+      res.writeHead(302, { location: `http://127.0.0.1:${port}/stolen` });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify(
+        req.url!.includes("transitions")
+          ? { transitions: [{ id: "done", to: { name: "Done" } }] }
+          : { issues: [], comments: [] },
+      ),
     );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  port = (server.address() as AddressInfo).port;
+});
+afterAll(async () => {
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+beforeEach(() => {
+  seen.length = 0;
+  mode = "ok";
+  resolveHost.mockReset().mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+  // The fake host has no system DNS record: successful traffic proves that
+  // Axios used the guard's pinned address rather than resolving it again.
+  restoreOutbound = setOutboundDefaults({
+    resolveHost,
+    policy: { allowPrivate: false, allowAll: false, allowedHosts: ["127.0.0.1"] },
+  });
+});
+afterEach(() => {
+  restoreOutbound?.();
+});
 
-    const provider = new JiraTicketProvider();
-    const config: JiraProviderConfig = {
-      ...baseConfig(),
-      baseUrl: "http://evil.example.com",
-    };
+describe("Jira SDK guarded transport", () => {
+  it.each(operations)(
+    "pins vetted DNS for %s and preserves authentication",
+    async (_name, operation) => {
+      await operation();
+      expect(seen.length).toBeGreaterThan(0);
+      expect(resolveHost).toHaveBeenCalledTimes(seen.length);
+      for (const request of seen) {
+        expect(request.path).toMatch(/^\/jira\/rest\/api\/3\//);
+        expect(request.auth).toBe(
+          `Basic ${Buffer.from("owner@example.com:secret-token").toString("base64")}`,
+        );
+      }
+    },
+  );
 
-    await expect(provider.fetchActionableTickets(config)).rejects.toThrow(SsrfError);
+  it.each(operations)(
+    "blocks redirects from %s before reaching their target",
+    async (_name, operation) => {
+      mode = "redirect";
+      await expect(operation()).rejects.toThrow();
+      expect(seen).toHaveLength(1);
+      expect(seen[0].path).not.toBe("/stolen");
+    },
+  );
+
+  it.each(operations)(
+    "rejects a DNS answer resolving to an unapproved private address for %s",
+    async (_name, operation) => {
+      resolveHost.mockResolvedValue([{ address: "127.0.0.2", family: 4 }]);
+      await expect(operation()).rejects.toThrow(/blocked/);
+      expect(seen).toEqual([]);
+    },
+  );
+
+  it("re-vets DNS before a second SDK request so rebinding cannot redirect a state change", async () => {
+    resolveHost
+      .mockResolvedValueOnce([{ address: "127.0.0.1", family: 4 }])
+      .mockResolvedValue([{ address: "127.0.0.2", family: 4 }]);
+    await expect(provider.updateState("TEST-1", "closed", config())).rejects.toThrow(/blocked/);
+    expect(resolveHost).toHaveBeenCalledTimes(2);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].method).toBe("GET");
   });
 
-  it("calls assertSsrfSafe before fetching comments", async () => {
-    const provider = new JiraTicketProvider();
-    await provider.fetchTicketComments("TEST-123", baseConfig());
-
-    expect(mockAssertSsrfSafe).toHaveBeenCalledWith("https://test.atlassian.net");
-  });
-
-  it("calls assertSsrfSafe before adding a comment", async () => {
-    const provider = new JiraTicketProvider();
-    await provider.addComment("TEST-123", "comment", baseConfig());
-
-    expect(mockAssertSsrfSafe).toHaveBeenCalledWith("https://test.atlassian.net");
-  });
-
-  it("calls assertSsrfSafe before updating state", async () => {
-    const provider = new JiraTicketProvider();
-    await provider.updateState("TEST-123", "closed", baseConfig());
-
-    expect(mockAssertSsrfSafe).toHaveBeenCalledWith("https://test.atlassian.net");
+  it("preserves Jira query and JSON body serialization through the guarded adapter", async () => {
+    await provider.fetchActionableTickets({ ...config(), projectKey: "TEST" });
+    const url = new URL(seen[0].path, "http://placeholder");
+    expect(url.searchParams.get("jql")).toContain('project = "TEST"');
+    expect(url.searchParams.get("fields")).toContain("summary,description");
+    await provider.addComment("TEST-1", 'Quoted "comment"', config());
+    expect(JSON.parse(seen[1].body).body.content[0].content[0].text).toBe('Quoted "comment"');
   });
 });

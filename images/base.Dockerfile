@@ -8,21 +8,22 @@ FROM node-runtime AS bridge
 RUN npm install -g pnpm@10.34.8
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY patches/ patches/
 COPY packages/mcp-bridge/ packages/mcp-bridge/
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter @optio/mcp-bridge \
     && pnpm --filter @optio/mcp-bridge build
 
-FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG AGENT_CLIS=all
-ARG CLAUDE_CODE_VERSION=2.1.112
+ARG CLAUDE_CODE_VERSION=2.1.310
 
 # System essentials
 # tini: the pods' pid 1 (`exec tini -- sleep infinity` ends every init
 # script), so the run supervisors reparented to it are reaped (run protocol).
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git curl wget jq unzip tmux tini \
     ca-certificates gnupg \
     openssh-client \
@@ -64,6 +65,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 libs
     && ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
+ARG NPM_VERSION=12.2.1
+RUN npm install -g npm@"${NPM_VERSION}"
+
 # Verify Node ships OpenSSL >= 3.5 for post-quantum TLS (X25519MLKEM768)
 RUN node -e 'const [maj,min] = process.versions.openssl.split(".").map(Number); if (maj < 3 || (maj === 3 && min < 5)) { console.error("OpenSSL " + process.versions.openssl + " too old; need >= 3.5"); process.exit(1); }'
 
@@ -73,17 +77,8 @@ RUN npm install -g corepack@0.36.0 \
     && corepack enable \
     && corepack prepare pnpm@10.34.8 --activate
 
-# Claude Code
-# PINNED to work around a Bun regression, NOT for feature reasons.
-# 2.1.112 is the last release shipped as a plain Node.js bundle (bin/cli.js).
-# Starting at 2.1.113 the CLI ships as a Bun-compiled single-file binary
-# (bin/claude.exe), and every such build embeds Bun >= 1.3.13 — which segfaults
-# with "embedder failed to suspend thread ... for TLC" when the binary is launched
-# via `docker exec` / `kubectl exec` (i.e. NOT as PID 1) on Linux kernel >= 7.0.
-# Optio ALWAYS execs the agent inside the long-lived repo pod, so it always hits this.
-# Upstream regression: https://github.com/oven-sh/bun/issues/31832 (Bun 1.3.12-1.3.14).
-# TODO(#566): bump back to latest once upstream Bun ships a fix and claude-code adopts it.
-RUN case ",${AGENT_CLIS}," in *,all,*|*,claude-code,*) npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" ;; esac
+# Claude Code security fixes, validated with the native exec smoke.
+RUN case ",${AGENT_CLIS}," in *,all,*|*,claude-code,*) npm install -g --allow-scripts=@anthropic-ai/claude-code "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" ;; esac
 
 # OpenAI Codex CLI. The entrypoint runs `codex exec
 # --dangerously-bypass-approvals-and-sandbox` (the pod is the sandbox; the
@@ -94,11 +89,18 @@ RUN case ",${AGENT_CLIS}," in *,all,*|*,codex,*) npm install -g @openai/codex \
 
 # Pi: native JSONL + MCP protocol used by the Pi adapter.
 ARG PI_VERSION=1.4.0
-RUN case ",${AGENT_CLIS}," in *,all,*|*,pi,*) npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION} \
+COPY images/pi/package.json images/pi/package-lock.json /opt/optio/pi/
+RUN case ",${AGENT_CLIS}," in *,all,*|*,pi,*) \
+    if [ "$PI_VERSION" = "1.4.0" ]; then \
+      npm ci --prefix /opt/optio/pi --omit=dev --ignore-scripts --no-audit --no-fund; \
+    else \
+      npm install --prefix /opt/optio/pi --omit=dev --ignore-scripts --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_VERSION}"; \
+    fi \
+    && ln -s /opt/optio/pi/node_modules/.bin/pi /usr/local/bin/pi \
     && pi --version ;; esac
 
 # GitHub Copilot CLI (pinned + best-effort — package may be temporarily unavailable)
-RUN case ",${AGENT_CLIS}," in *,all,*|*,copilot,*) npm install -g @github/copilot@1.0.20 || echo "WARN: @github/copilot install failed; copilot agent will not be available in this image" ;; esac
+RUN case ",${AGENT_CLIS}," in *,all,*|*,copilot,*) npm install -g @github/copilot@1.0.103 || echo "WARN: @github/copilot install failed; copilot agent will not be available in this image" ;; esac
 
 # OpenCode CLI (experimental).
 # PINNED to work around the same Bun regression as Claude Code above.
@@ -122,10 +124,12 @@ RUN case ",${AGENT_CLIS}," in *,all,*|*,opencode,*) if [ "$OPENCODE_INSTALL_METH
   || echo "WARN: opencode install failed; opencode agent will not be available in this image"; fi ;; esac
 
 # Google Gemini CLI
-RUN case ",${AGENT_CLIS}," in *,all,*|*,gemini,*) npm install -g @google/gemini-cli ;; esac
+RUN case ",${AGENT_CLIS}," in *,all,*|*,gemini,*) npm install -g --allow-scripts=@github/keytar,node-pty @google/gemini-cli ;; esac
 
-# OpenClaw CLI (experimental)
-RUN case ",${AGENT_CLIS}," in *,all,*|*,openclaw,*) npm install -g openclaw || echo "WARN: openclaw install failed; openclaw agent will not be available in this image" ;; esac
+# OpenClaw CLI with an audited, reproducible dependency tree.
+COPY images/openclaw/package.json images/openclaw/package-lock.json /opt/optio/openclaw/
+RUN case ",${AGENT_CLIS}," in *,all,*|*,openclaw,*) npm ci --prefix /opt/optio/openclaw --omit=dev --no-audit --no-fund --strict-allow-scripts \
+    && ln -s /opt/optio/openclaw/node_modules/.bin/openclaw /usr/local/bin/openclaw ;; esac
 
 # Cursor CLI (cursor-agent). The install script drops a versioned payload under
 # ~/.local/share/cursor-agent with a ~/.local/bin/cursor-agent symlink; relocate
@@ -166,6 +170,12 @@ COPY scripts/optio-git-credential /usr/local/bin/optio-git-credential
 COPY scripts/optio-gh-wrapper /usr/local/bin/optio-gh-wrapper
 COPY scripts/optio-glab-wrapper /usr/local/bin/optio-glab-wrapper
 RUN chmod +x /usr/local/bin/optio-git-credential /usr/local/bin/optio-gh-wrapper /usr/local/bin/optio-glab-wrapper
+
+# npm's bundled dependencies need fixes newer than its release lock.
+RUN npm install --prefix /tmp/optio-npm-fixes --ignore-scripts --no-package-lock --no-audit --no-fund undici@6.29.1 ip-address@10.7.5 \
+    && rm -rf /usr/local/lib/node_modules/npm/node_modules/undici /usr/local/lib/node_modules/npm/node_modules/ip-address \
+    && cp -a /tmp/optio-npm-fixes/node_modules/undici /tmp/optio-npm-fixes/node_modules/ip-address /usr/local/lib/node_modules/npm/node_modules/ \
+    && rm -rf /tmp/optio-npm-fixes /root/.npm
 
 # Non-root user (UID 1001 to match k8s securityContext)
 RUN groupadd -g 1001 agent \

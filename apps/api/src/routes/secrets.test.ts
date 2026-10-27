@@ -301,10 +301,11 @@ describe("deployment-wide and other people's secrets", () => {
     );
 
     mockGetUserRole.mockResolvedValueOnce(null);
-    await app.inject({
+    const stranger = await app.inject({
       method: "DELETE",
       url: "/api/secrets/T?scope=user&userId=00000000-0000-4000-8000-000000000009",
     });
-    expect(mockDeleteSecret).toHaveBeenLastCalledWith("T", "user", "ws-1", "user-1");
+    expect(stranger.statusCode).toBe(404);
+    expect(mockDeleteSecret).toHaveBeenCalledTimes(1);
   });
 });

@@ -45,6 +45,7 @@ export async function createSession(
       .update(users)
       .set({
         email: profile.email,
+        emailVerified: profile.emailVerified === true,
         displayName: profile.displayName,
         username: profile.username ?? null,
         avatarUrl: profile.avatarUrl ?? null,
@@ -61,6 +62,7 @@ export async function createSession(
         provider,
         externalId: profile.externalId,
         email: profile.email,
+        emailVerified: profile.emailVerified === true,
         displayName: profile.displayName,
         username: profile.username ?? null,
         avatarUrl: profile.avatarUrl ?? null,

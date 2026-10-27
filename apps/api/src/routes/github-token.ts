@@ -1,9 +1,8 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { retrieveSecret, storeSecret } from "../services/secret-service.js";
 import { isGitHubAppConfigured } from "../services/github-app-service.js";
-import { isAuthDisabled } from "../services/oauth/index.js";
 import { requireDeploymentAdmin } from "../plugins/auth.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
 
@@ -36,16 +35,6 @@ const GitHubTokenRotateResponseSchema = z
 const RATE_LIMIT = {
   max: 10,
   timeWindow: "1 minute",
-};
-
-const requireAdminWhenAuthenticated = async (req: FastifyRequest, reply: FastifyReply) => {
-  if (isAuthDisabled()) return;
-  if (!req.user) return;
-  if (req.user.workspaceRole !== "admin") {
-    return reply.status(403).send({ error: "Admin role required" });
-  }
-  // The token is the deployment's, not the workspace's.
-  return requireDeploymentAdmin(req, reply);
 };
 
 export async function githubTokenRoutes(rawApp: FastifyInstance) {
@@ -125,7 +114,7 @@ export async function githubTokenRoutes(rawApp: FastifyInstance) {
     "/api/github-token/rotate",
     {
       config: { rateLimit: RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireDeploymentAdmin],
       schema: {
         operationId: "rotateGitHubToken",
         summary: "Rotate the stored GitHub token",
@@ -133,7 +122,7 @@ export async function githubTokenRoutes(rawApp: FastifyInstance) {
           "Validate a new GitHub personal access token against the GitHub API " +
           "and replace the stored GITHUB_TOKEN secret. If validation fails, " +
           "the existing token is NOT replaced. Rate limited to 10/minute per IP. " +
-          "Requires admin role post-setup.",
+          "Requires deployment admin role.",
         tags: ["Auth & Sessions"],
         body: rotateTokenSchema,
         response: {
