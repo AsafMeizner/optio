@@ -135,6 +135,11 @@ export const WRITE_SETUP_FILES: readonly string[] = [
   `        p = os.environ.get('OPTIO_AGENT_HOME_DIR', '/home/agent').rstrip('/') + '/optio/' + p[len('/opt/optio/'):]`,
   `    elif not p.startswith('/'):`,
   `        p = os.path.join(here, p)`,
+  // A relative path stays in the working directory, through `..` or a
+  // symlink in the checkout (a repo's own `.claude` pointing elsewhere).
+  `        if os.path.commonpath([os.path.realpath(here), os.path.realpath(p)]) != os.path.realpath(here):`,
+  `            print('  skipped ' + f['path'] + ': outside the working directory')`,
+  `            continue`,
   `    os.makedirs(os.path.dirname(p), exist_ok=True)`,
   `    data = base64.b64decode(f['contentBase64']) if f.get('contentBase64') else f.get('content', '').encode()`,
   `    if f.get('merge') == 'json' and os.path.isfile(p):`,
@@ -193,12 +198,10 @@ export const RUN_WORK_SETUP_COMMANDS: readonly string[] = [
 ];
 
 /**
- * The start script of a run in the API pod itself (the process runtime,
- * `OPTIO_ASSISTANT_PLACEMENT=api-pod`): the run's env, its setup files and
- * setup commands, then the agent in the foreground — no pod readiness wait,
- * no lock, no supervisor (the process runtime is the supervisor). The home
- * is the agent home the API image provides (`AGENT_HOME_DIR`), so the setup
- * files and run homes land where every other run's do.
+ * A foreground start script for trusted process-runtime callers: the run's
+ * env, setup files and setup commands, then the agent — no pod readiness
+ * wait, lock or supervisor. The caller must provision AGENT_HOME_DIR. This
+ * provides no isolation and must never be used for user-controlled sessions.
  */
 export function buildProcessStartScript(input: {
   env: Record<string, string>;

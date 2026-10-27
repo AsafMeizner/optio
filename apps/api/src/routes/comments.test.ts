@@ -120,7 +120,7 @@ describe("PATCH /api/tasks/:taskId/comments/:commentId", () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(mockUpdateComment).toHaveBeenCalledWith("c-1", "Updated", "user-1");
+    expect(mockUpdateComment).toHaveBeenCalledWith("task-1", "c-1", "Updated", "user-1");
   });
 
   it("returns 404 for nonexistent comment", async () => {
@@ -165,7 +165,7 @@ describe("DELETE /api/tasks/:taskId/comments/:commentId", () => {
     const res = await app.inject({ method: "DELETE", url: "/api/tasks/task-1/comments/c-1" });
 
     expect(res.statusCode).toBe(204);
-    expect(mockDeleteComment).toHaveBeenCalledWith("c-1", "user-1");
+    expect(mockDeleteComment).toHaveBeenCalledWith("task-1", "c-1", "user-1");
   });
 
   it("returns 404 for nonexistent comment", async () => {
@@ -250,5 +250,26 @@ describe("workspace scoping", () => {
 
     expect(res.statusCode).toBe(404);
     expect(mockDeleteComment).not.toHaveBeenCalled();
+  });
+});
+
+describe("private task resource visibility", () => {
+  it.each(["comments", "activity"])("hides %s from a different member", async (resource) => {
+    vi.clearAllMocks();
+    mockGetTask.mockResolvedValue({
+      id: "task-private",
+      workspaceId: "ws-1",
+      ownerUserId: "someone-else",
+    });
+    const app = await buildRouteTestApp(commentRoutes, {
+      user: { id: "user-1", workspaceId: "ws-1", workspaceRole: "member" },
+    });
+    try {
+      const res = await app.inject({ method: "GET", url: `/api/tasks/task-private/${resource}` });
+      expect(res.statusCode).toBe(404);
+      expect(mockListComments).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
   });
 });

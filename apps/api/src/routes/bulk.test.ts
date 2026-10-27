@@ -119,3 +119,50 @@ describe("POST /api/tasks/bulk/cancel-active", () => {
     expect(res.json().total).toBe(2);
   });
 });
+
+describe("bulk task ownership", () => {
+  it.each(["member", "admin"] as const)(
+    "never retries someone else's personal work for a %s",
+    async (workspaceRole) => {
+      vi.clearAllMocks();
+      mockDbSelect.mockReturnValue({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockResolvedValue([
+          { id: "org", ownerUserId: null },
+          { id: "mine", ownerUserId: "user-1" },
+          { id: "theirs", ownerUserId: "user-2" },
+        ]),
+      });
+      mockTransitionTask.mockResolvedValue(undefined);
+      const app = await buildRouteTestApp(bulkRoutes, {
+        user: { id: "user-1", workspaceId: "ws-1", workspaceRole },
+      });
+      try {
+        const res = await app.inject({ method: "POST", url: "/api/tasks/bulk/retry-failed" });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual({ retried: 2, total: 2 });
+        expect(mockTransitionTask.mock.calls.map(([id]) => id)).toEqual(["org", "mine"]);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
+  it("never cancels someone else's personal work", async () => {
+    vi.clearAllMocks();
+    const where = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: "theirs", ownerUserId: "user-2" }])
+      .mockResolvedValueOnce([{ id: "mine", ownerUserId: "user-1" }]);
+    mockDbSelect.mockReturnValue({ from: vi.fn().mockReturnThis(), where });
+    mockTransitionTask.mockResolvedValue(undefined);
+    const app = await buildTestApp();
+    try {
+      const res = await app.inject({ method: "POST", url: "/api/tasks/bulk/cancel-active" });
+      expect(res.json()).toEqual({ cancelled: 1, total: 1 });
+      expect(mockTransitionTask.mock.calls.map(([id]) => id)).toEqual(["mine"]);
+    } finally {
+      await app.close();
+    }
+  });
+});

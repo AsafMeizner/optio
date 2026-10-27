@@ -93,6 +93,28 @@ describe("readManifestDirectory", () => {
     expect(read.errors[0].message).toMatch(/outside the configuration directory/);
   });
 
+  it("refuses a symlink in the directory that points out of it", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "optio-config-outside-"));
+    try {
+      await fs.writeFile(path.join(outside, "secret.txt"), "OPTIO_ENCRYPTION_KEY=abc");
+      await fs.writeFile(
+        path.join(outside, "stray.yaml"),
+        "kind: Prompt\nmetadata: { name: stray }\nspec: { template: t }",
+      );
+      await fs.symlink(path.join(outside, "secret.txt"), path.join(dir, "env.md"));
+      await fs.symlink(outside, path.join(dir, "linked-dir"));
+      await write("p.yaml", "kind: Prompt\nmetadata: { name: p }\nspec: { templateFile: env.md }");
+      const read = await readManifestDirectory(dir);
+      // The linked directory's yaml is not read, and the linked file is refused.
+      expect(read.manifests).toEqual([]);
+      expect(read.errors).toHaveLength(1);
+      expect(read.errors[0].message).toMatch(/outside the configuration directory/);
+      expect(JSON.stringify(read)).not.toContain("OPTIO_ENCRYPTION_KEY");
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it("follows symlinks, the way a ConfigMap mount lays files out", async () => {
     // kubelet: <mount>/<file> -> ..data/<file>, ..data -> ..2026_10_04_…/
     await write(

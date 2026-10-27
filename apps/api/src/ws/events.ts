@@ -3,7 +3,8 @@ import { createSubscriber } from "../services/event-bus.js";
 import { authenticateWs } from "./ws-auth.js";
 import { getRecentEvents } from "../services/task-service.js";
 import { acceptWs } from "./ws-connection.js";
-import { isAuthDisabled } from "../services/oauth/index.js";
+import { globalEventFor } from "../services/event-visibility.js";
+import { wsActor } from "./ws-authz.js";
 
 export async function eventsWs(app: FastifyInstance) {
   app.get("/ws/events", { websocket: true }, async (socket, req) => {
@@ -14,9 +15,11 @@ export async function eventsWs(app: FastifyInstance) {
     const user = await authenticateWs(socket, req);
     if (!user) return conn.discard();
 
+    const actor = wsActor(user);
+
     // Send catch-up: recent state-change events so reconnecting clients stay in sync
     try {
-      const recentEvents = await getRecentEvents({ limit: 20 });
+      const recentEvents = await getRecentEvents({ actor, limit: 20 });
       for (const event of recentEvents) {
         socket.send(
           JSON.stringify({
@@ -36,34 +39,38 @@ export async function eventsWs(app: FastifyInstance) {
 
     const subscriber = createSubscriber();
     const channel = "optio:events";
-    subscriber.subscribe(channel);
+    subscriber.subscribe(channel).catch(() => {});
 
-    // This channel fans out to every authenticated user. Two kinds of frame
-    // are private: `local:changed` nudges (a terminal / host / user id of
-    // their owner) and events about **private work** — a task, Job run or
-    // agent with an `ownerUserId` — which only its owner and workspace admins
-    // may see (services/ownership.ts). Dev / auth-disabled has one user and
-    // null owners, so everything passes.
-    const isAdmin = isAuthDisabled() || user.workspaceRole === "admin";
+    // Resolve resource ownership from stored rows, not optional event fields.
+    // Serialize lookups so async authorization cannot reorder state changes.
+    let pending = Promise.resolve();
     subscriber.on("message", (_ch: string, message: string) => {
-      if (message.includes('"local:changed"') || message.includes('"ownerUserId"')) {
-        try {
-          const evt = JSON.parse(message) as {
-            type?: string;
-            userId?: string | null;
-            ownerUserId?: string | null;
-          };
-          if (evt.type === "local:changed" && evt.userId && evt.userId !== user.id) return;
-          if (evt.ownerUserId && evt.ownerUserId !== user.id && !isAdmin) return;
-        } catch {
-          // Unparseable — fall through and forward (matches prior behavior).
-        }
+      let event: unknown;
+      try {
+        event = JSON.parse(message);
+      } catch {
+        return; // Malformed messages fail closed.
       }
-      socket.send(message);
+      // Log content only belongs on the separately authorized entity stream.
+      if (
+        typeof event !== "object" ||
+        event === null ||
+        ("type" in event && typeof event.type === "string" && event.type.endsWith(":log"))
+      )
+        return;
+      pending = pending
+        .then(async () => {
+          if (conn.closed) return;
+          const visible = await globalEventFor(event, actor);
+          if (visible && !conn.closed) socket.send(JSON.stringify(visible));
+        })
+        .catch(() => {
+          /* Failed authorization/lookups never forward a frame. */
+        });
     });
 
     conn.onClose(() => {
-      subscriber.unsubscribe(channel);
+      subscriber.unsubscribe(channel).catch(() => {});
       subscriber.disconnect();
     });
     // Server → client only: client frames are ignored.

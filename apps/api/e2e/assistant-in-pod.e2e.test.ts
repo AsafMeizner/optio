@@ -1,11 +1,6 @@
-/**
- * Ask Optio in the API pod (OPTIO_ASSISTANT_PLACEMENT=api-pod): a turn runs
- * as a child process of the API through the process runtime, with a fake
- * `claude` on PATH (test-utils/e2e/fake-harness) that plays the fake
- * runtime's tape, and never touches an agent pod.
- */
+/** Regression: legacy placement settings cannot run a user-controlled harness in the API. */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,15 +43,14 @@ async function peer(path = "/ws/optio/chat") {
   return { ws, frames };
 }
 
-it("runs an assistant turn as a child process of the API, in the agent home, with no agent pod", async () => {
+it("isolates assistant turns in agent pods even with legacy api-pod placement configured", async () => {
   const chat = await peer();
   const { sessionId } = chat.frames.find((f) => f.type === "history");
   chat.ws.send(
     JSON.stringify({ type: "message", content: "List my machines", requestId: randomUUID() }),
   );
   await waitFor(
-    async () =>
-      chat.frames.find((f) => f.type === "text" && f.content.includes("Mock agent handled:")),
+    async () => chat.frames.find((f) => f.type === "text" && f.content.includes("Mock agent")),
     { label: "the fake claude's reply", timeoutMs: 60_000 },
   );
   await waitFor(
@@ -69,15 +63,10 @@ it("runs an assistant turn as a child process of the API, in the agent home, wit
   // The setup's own lines ("wrote …/.mcp.json") are not part of the conversation.
   expect(chat.frames.filter((f) => f.type === "text" && /^wrote /.test(f.content))).toEqual([]);
 
-  // The turn ran in this process: its run home is under the agent home, with
-  // the protocol's files, and the server said so.
-  const runs = join(agentHome, "optio", "runs");
-  const turnDirs = existsSync(runs) ? readdirSync(runs) : [];
-  expect(turnDirs.length).toBeGreaterThanOrEqual(1);
-  const output = readFileSync(join(runs, turnDirs[0]!, "output.ndjson"), "utf8");
-  expect(output).toContain("Mock agent handled:");
-  expect(readFileSync(join(runs, turnDirs[0]!, "exit"), "utf8").trim()).toBe("0");
-  expect(existsSync(join(agentHome, "optio", "sessions", sessionId))).toBe(true);
+  // Neither the harness nor setup files ran in the API filesystem, despite
+  // an installed harness and an explicit legacy api-pod environment setting.
+  expect(readdirSync(agentHome)).toEqual([]);
+  expect(existsSync(join(agentHome, "optio", "sessions", sessionId))).toBe(false);
   const session = await fetch(`${server.baseUrl}/api/sessions/${sessionId}`).then((r) => r.json());
-  expect(session.session.podId ?? null).toBeNull();
+  expect(session.session.podId).toEqual(expect.any(String));
 }, 120_000);

@@ -1,0 +1,21 @@
+{
+  "name": "optio-openclaw-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Node 22 compatible OpenClaw with audited runtime dependency overrides",
+  "dependencies": {
+    "openclaw": "2026.9.2"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "undici": "8.12.2",
+    "zod@^4": "4.6.7"
+  },
+  "allowScripts": {
+    "@google/genai@2.18.0": true,
+    "koffi@3.1.6": true,
+    "openclaw@2026.9.2": true,
+    "protobufjs@7.6.6": true,
+    "tree-sitter-bash@0.25.1": true
+  }
+}

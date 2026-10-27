@@ -33,12 +33,78 @@ vi.mock("../services/poller-lease.js", () => ({
 }));
 
 import {
+  skillGitEnv,
   SKILL_SYNC_JOB_OPTIONS,
   SkillSyncBusyError,
+  assertSkillSourceArgs,
+  cloneIntoScratch,
   parseFrontmatter,
   processSkillSyncJob,
   readSkillDir,
+  resolveRefToSha,
+  skillDirIn,
 } from "./skill-sync-worker.js";
+
+describe("a skill source that looks like an option", () => {
+  const dir = path.join(tmpdir(), `optio-skill-argv-${process.pid}-${Date.now()}`);
+  const marker = path.join(dir, "pwned");
+
+  beforeAll(() => fs.mkdir(dir, { recursive: true }));
+  afterAll(() => fs.rm(dir, { recursive: true, force: true }));
+
+  it("is refused before it reaches git, so --upload-pack never runs a command", async () => {
+    const url = `--upload-pack=touch ${marker};false`;
+    await expect(resolveRefToSha(url, ".")).rejects.toThrow(/invalid skill source URL/);
+    await expect(resolveRefToSha(url, "HEAD")).rejects.toThrow(/invalid skill source URL/);
+    await expect(cloneIntoScratch(url, "0".repeat(40), { info: () => {} })).rejects.toThrow(
+      /invalid skill source URL/,
+    );
+    await expect(fs.stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never reads a subpath that leads out of the clone through a symlink", async () => {
+    const clone = path.join(dir, "clone");
+    const outside = path.join(dir, "api-pod-home");
+    await fs.mkdir(path.join(clone, "skills", "real"), { recursive: true });
+    await fs.mkdir(outside, { recursive: true });
+    await fs.writeFile(path.join(outside, "credentials.json"), "secret");
+    await fs.symlink(outside, path.join(clone, "link"));
+    await fs.symlink(path.join(clone, "skills"), path.join(clone, "inner"));
+
+    await expect(skillDirIn(clone, "link")).rejects.toThrow(/leads out of the source/);
+    await expect(skillDirIn(clone, "link/.")).rejects.toThrow(/leads out of the source/);
+    expect(await skillDirIn(clone, "skills/real")).toBe(
+      await fs.realpath(path.join(clone, "skills", "real")),
+    );
+    // A link that stays inside the clone is fine; a missing subpath is null.
+    expect(await skillDirIn(clone, "inner/real")).toBe(
+      await fs.realpath(path.join(clone, "skills", "real")),
+    );
+    expect(await skillDirIn(clone, "nope")).toBeNull();
+  });
+
+  it("refuses a ref that starts with -, and takes ordinary ones", () => {
+    expect(() => assertSkillSourceArgs("https://example.com/s.git", "--output=x")).toThrow(
+      /invalid skill ref/,
+    );
+    expect(() => assertSkillSourceArgs(" -c", "main")).toThrow(/invalid skill source URL/);
+    expect(() => assertSkillSourceArgs("https://example.com/s.git", "v1.2-rc")).not.toThrow();
+    expect(() => assertSkillSourceArgs("file:///tmp/skills", "")).not.toThrow();
+  });
+
+  it("keeps git to network transports outside tests", () => {
+    vi.stubEnv("VITEST", "");
+    vi.stubEnv("OPTIO_RUNTIME", "kubernetes");
+    vi.stubEnv("OPTIO_SKILL_ALLOW_FILE_SOURCES", "");
+    try {
+      expect(skillGitEnv().GIT_ALLOW_PROTOCOL).toBe("https:ssh:git");
+      vi.stubEnv("OPTIO_SKILL_ALLOW_FILE_SOURCES", "1");
+      expect(skillGitEnv().GIT_ALLOW_PROTOCOL).toBe("https:ssh:git:file");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 describe("sync-one under another instance's lease", () => {
   it("throws a retryable busy error instead of dropping the sync", async () => {

@@ -1034,7 +1034,7 @@ export async function taskRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
       const logsQuery = req.query;
@@ -1083,7 +1083,7 @@ export async function taskRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
 
@@ -1208,7 +1208,7 @@ export async function taskRoutes(rawApp: FastifyInstance) {
       const task = await taskService.getTask(id);
       if (!task) return reply.status(404).send({ error: "Task not found" });
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
       const events = await taskService.getTaskEvents(id);

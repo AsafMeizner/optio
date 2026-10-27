@@ -20,8 +20,15 @@ vi.mock("../services/github-app-service.js", () => ({
   isGitHubAppConfigured: (...args: unknown[]) => mockIsGitHubAppConfigured(...args),
 }));
 
+let authDisabled = true;
+let deploymentAdmin = false;
 vi.mock("../services/oauth/index.js", () => ({
-  isAuthDisabled: () => true,
+  isAuthDisabled: () => authDisabled,
+}));
+vi.mock("../services/sign-in-config-service.js", () => ({
+  hasDeploymentAdmin: async () => true,
+  isFoundingWorkspaceAdmin: async () => false,
+  isDeploymentAdmin: async () => deploymentAdmin,
 }));
 
 // Mock global fetch
@@ -181,5 +188,55 @@ describe("POST /api/github-token/rotate", () => {
     const body = res.json();
     expect(body.success).toBe(false);
     expect(mockStoreSecret).not.toHaveBeenCalled();
+  });
+});
+
+describe("deployment token rotation authorization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authDisabled = false;
+    deploymentAdmin = false;
+  });
+
+  it("does not let a workspace admin replace the deployment's GitHub token", async () => {
+    const app = await buildRouteTestApp(githubTokenRoutes);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/github-token/rotate",
+      payload: { token: "ghp_attacker" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockStoreSecret).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("requires authentication even before a token is configured", async () => {
+    const app = await buildTestApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/github-token/rotate",
+      payload: { token: "ghp_attacker" },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(mockStoreSecret).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("lets a deployment admin rotate the shared token", async () => {
+    deploymentAdmin = true;
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ login: "admin", name: "Admin" }),
+    });
+    const app = await buildRouteTestApp(githubTokenRoutes);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/github-token/rotate",
+      payload: { token: "ghp_deployment" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockStoreSecret).toHaveBeenCalledWith("GITHUB_TOKEN", "ghp_deployment", "global");
+    await app.close();
   });
 });

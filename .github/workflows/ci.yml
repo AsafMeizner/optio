@@ -8,7 +8,26 @@ on:
   # By hand, for a push whose event GitHub dropped (v0.19.1, 2026-10-22).
   workflow_dispatch:
 
+# Every job only reads the repository; nothing here needs a write token.
+permissions:
+  contents: read
+
 jobs:
+  security:
+    name: Dependency security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm security:audit
+      - run: npm audit --prefix images/openclaw --omit=dev --audit-level=low
+      - run: npm audit --prefix images/pi --omit=dev --audit-level=low
+
   format:
     name: Format
     runs-on: ubuntu-latest
@@ -115,7 +134,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: bash scripts/test-infra.sh start
-      - run: pnpm --filter @optio/api test:integration
+      - name: Measure API coverage across unit and integration tests
+        run: pnpm --filter @optio/api test:coverage
 
   e2e:
     name: E2E Test (fake runtime)

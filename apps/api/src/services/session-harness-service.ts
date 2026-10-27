@@ -3,28 +3,22 @@ import { randomUUID } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { getAdapter } from "@optio/agent-adapters";
 import { getProviderCatalog, providerForAgentType } from "@optio/shared";
-import {
-  PROCESS_HANDLE,
-  STDIN_EOF_SENTINEL,
-  type ContainerRuntime,
-} from "@optio/container-runtime";
-import type { ContainerHandle } from "@optio/shared";
+import { STDIN_EOF_SENTINEL } from "@optio/container-runtime";
 import { db } from "../db/client.js";
 import { interactiveSessions, repos } from "../db/schema.js";
 import { createSession, getSession, listSessionChatEvents } from "./interactive-session-service.js";
 import { getSettings } from "./optio-settings-service.js";
 import { getOrCreateWorkflowPod } from "./workflow-pool-service.js";
 import { acquireSlot, releaseSlot, podHandle } from "./agent-pod-pool.js";
-import { getProcessRuntime, getRuntime } from "./container-service.js";
-import { placeAssistantTurn } from "./assistant-placement.js";
+import { getRuntime } from "./container-service.js";
 import { pooledAgentEnv } from "./pooled-agent-env.js";
 import { buildAgentEnvironment } from "./agent-environment-service.js";
 import {
   buildPooledAgentCommand,
   buildInitialClaudeStreamMessage,
 } from "./pooled-agent-command.js";
-import { buildPooledStartScript, buildProcessStartScript } from "../utils/pod-env.js";
-import { AGENT_HOME_DIR, runHome } from "../utils/harness-config.js";
+import { buildPooledStartScript } from "../utils/pod-env.js";
+import { runHome } from "../utils/harness-config.js";
 import { getEventParser } from "./event-parsers.js";
 import {
   claimSessionTurn,
@@ -204,69 +198,45 @@ export async function runHarnessSession(
       (runtime === "claude-code" ? buildInitialClaudeStreamMessage(fullPrompt) : "") +
       STDIN_EOF_SENTINEL +
       "\n";
-    // The assistant runs in this pod by default (assistant-placement.ts);
-    // everything else, and an assistant the pod can't take, in an agent pod.
-    const placement = placeAssistantTurn({
-      runtime,
-      assistant: !!session.assistant,
-      repoUrl: session.repoUrl || null,
-      liveInPod: getProcessRuntime().liveRunIds().length,
+    // Every user-controlled harness runs outside the API process. Native shell
+    // and filesystem tools can bypass a prompt/MCP allowlist and otherwise read
+    // the API's service-account token, environment and other users' run files.
+    // Legacy OPTIO_ASSISTANT_PLACEMENT=api-pod must not restore that boundary.
+    const pod = await getOrCreateWorkflowPod(sessionId, {
+      workspaceId: session.workspaceId,
+      ownerUserId: session.userId,
+      credentialProfile: { runtime, options: session.agentOptions },
+      maxAgentsPerPod: 1,
+      imageConfig: repo?.imagePreset
+        ? { preset: repo.imagePreset as import("@optio/shared").PresetImageId }
+        : undefined,
     });
-    let rt: ContainerRuntime;
-    let handle: ContainerHandle;
-    let script: string;
-    if (placement.where === "api-pod") {
-      rt = getProcessRuntime();
-      handle = PROCESS_HANDLE;
-      script = buildProcessStartScript({
-        env,
-        runId: turnId,
-        workDir: `${AGENT_HOME_DIR}/optio/sessions/${sessionId}`,
-        agentCommand: command,
-        label: "Interactive session",
-      });
-      logger.info({ sessionId, turnId, runtime }, "Assistant turn runs in the API pod");
-    } else {
-      if (session.assistant)
-        logger.info(
-          { sessionId, turnId, runtime, reason: placement.reason },
-          "Assistant turn runs in an agent pod",
-        );
-      const pod = await getOrCreateWorkflowPod(sessionId, {
+    await acquireSlot(pod.id);
+    podId = pod.id;
+    await db
+      .update(interactiveSessions)
+      .set({ podId: pod.id })
+      .where(eq(interactiveSessions.id, sessionId));
+    if (session.repoUrl) {
+      env.OPTIO_REPO_URL = session.repoUrl;
+      env.OPTIO_REPO_BRANCH = session.branch || repo?.defaultBranch || "main";
+      const { applyGitAccess } = await import("./git-access-env.js");
+      await applyGitAccess(env, {
         workspaceId: session.workspaceId,
         ownerUserId: session.userId,
-        credentialProfile: { runtime, options: session.agentOptions },
-        maxAgentsPerPod: 1,
-        imageConfig: repo?.imagePreset
-          ? { preset: repo.imagePreset as import("@optio/shared").PresetImageId }
-          : undefined,
-      });
-      await acquireSlot(pod.id);
-      podId = pod.id;
-      await db
-        .update(interactiveSessions)
-        .set({ podId: pod.id })
-        .where(eq(interactiveSessions.id, sessionId));
-      if (session.repoUrl) {
-        env.OPTIO_REPO_URL = session.repoUrl;
-        env.OPTIO_REPO_BRANCH = session.branch || repo?.defaultBranch || "main";
-        const { applyGitAccess } = await import("./git-access-env.js");
-        await applyGitAccess(env, {
-          workspaceId: session.workspaceId,
-          ownerUserId: session.userId,
-          helper: false,
-        });
-      }
-      rt = getRuntime();
-      handle = podHandle(pod);
-      script = buildPooledStartScript({
-        env,
-        runId: turnId,
-        workDir: session.worktreePath!,
-        agentCommand: command,
-        checkout: !!session.repoUrl,
+        repoUrl: session.repoUrl,
+        helper: false,
       });
     }
+    const rt = getRuntime();
+    const handle = podHandle(pod);
+    const script = buildPooledStartScript({
+      env,
+      runId: turnId,
+      workDir: session.worktreePath!,
+      agentCommand: command,
+      checkout: !!session.repoUrl,
+    });
     const started = await rt.startRun(handle, { runId: turnId, runDir, script, initialStdin });
     stopRun = async () => {
       await rt.killRun(handle, { runId: turnId, runDir, pid: started.pid, signal: "TERM" });
