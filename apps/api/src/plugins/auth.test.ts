@@ -33,12 +33,18 @@ vi.mock("../services/secret-service.js", () => ({
   listSecrets: (...args: unknown[]) => mockListSecrets(...args),
 }));
 
-import authPlugin, {
-  requireRole,
-  isSetupComplete,
-  resetSetupCompleteCache,
-  isPublicRoute,
-} from "./auth.js";
+const mockIsBootstrapMode = vi.fn();
+const mockIsDeploymentAdmin = vi.fn();
+const mockHasDeploymentAdmin = vi.fn();
+const mockIsFoundingWorkspaceAdmin = vi.fn();
+vi.mock("../services/sign-in-config-service.js", () => ({
+  isBootstrapMode: (...args: unknown[]) => mockIsBootstrapMode(...args),
+  isDeploymentAdmin: (...args: unknown[]) => mockIsDeploymentAdmin(...args),
+  hasDeploymentAdmin: (...args: unknown[]) => mockHasDeploymentAdmin(...args),
+  isFoundingWorkspaceAdmin: (...args: unknown[]) => mockIsFoundingWorkspaceAdmin(...args),
+}));
+
+import authPlugin, { requireDeploymentAdmin, requireRole, isPublicRoute } from "./auth.js";
 
 // ─── Helpers ───
 
@@ -241,6 +247,74 @@ describe("authPlugin workspace context", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().user.workspaceId).toBe("ws-1");
     expect(res.json().user.workspaceRole).toBe("member");
+    await app.close();
+  });
+});
+
+describe("browser mutation protection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authDisabled = false;
+    mockValidateSession.mockResolvedValue(makeUser("member"));
+    mockGetUserRole.mockResolvedValue("member");
+  });
+
+  async function mutationApp() {
+    const app = Fastify();
+    await app.register(authPlugin);
+    app.post("/api/private-write", async () => ({ changed: true }));
+    return app;
+  }
+
+  it("rejects browser writes from hostile sibling origins before using a cookie", async () => {
+    const app = await mutationApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/private-write",
+      headers: { origin: "https://attacker.example", cookie: "optio_session=valid" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(mockValidateSession).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("keeps native Bearer-authenticated mutations working", async () => {
+    const app = await mutationApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/private-write",
+      headers: { authorization: "Bearer valid" },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("protects auth-disabled local installs from browser writes too", async () => {
+    authDisabled = true;
+    const app = await mutationApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/private-write",
+      headers: { origin: "https://attacker.example" },
+    });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+});
+
+describe("setup authentication", () => {
+  it("never makes setup operations anonymous based on missing agent credentials", async () => {
+    authDisabled = false;
+    vi.clearAllMocks();
+    mockListSecrets.mockRejectedValue(new Error("secrets unavailable"));
+    const app = Fastify();
+    await app.register(authPlugin);
+    app.post("/api/setup/repos", async () => ({ repos: ["private"] }));
+    app.get("/api/setup/status", async () => ({ isSetUp: false }));
+    const response = await app.inject({ method: "POST", url: "/api/setup/repos" });
+    expect(response.statusCode).toBe(401);
+    expect(mockListSecrets).not.toHaveBeenCalled();
+    expect((await app.inject({ method: "GET", url: "/api/setup/status" })).statusCode).toBe(200);
     await app.close();
   });
 });
@@ -602,61 +676,52 @@ describe("isPublicRoute", () => {
     expect(isPublicRoute("/api/auth/something-new")).toBe(false);
   });
 });
-
-describe("isSetupComplete", () => {
+describe("requireDeploymentAdmin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetSetupCompleteCache();
+    authDisabled = false;
   });
 
-  it("returns true when an agent key secret exists", async () => {
-    mockListSecrets.mockResolvedValue([{ name: "ANTHROPIC_API_KEY" }]);
-    expect(await isSetupComplete()).toBe(true);
+  async function deploymentApp(): Promise<FastifyInstance> {
+    const app = Fastify({ logger: false });
+    app.addHook("onRequest", async (req) => {
+      (req as any).user = makeUser("admin");
+    });
+    app.post(
+      "/deployment-wide",
+      { preHandler: [requireRole("admin"), requireDeploymentAdmin] },
+      async () => ({ ok: true }),
+    );
+    await app.ready();
+    return app;
+  }
+
+  it("refuses a workspace admin who isn't a deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    mockHasDeploymentAdmin.mockResolvedValue(true);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(403);
   });
 
-  it("returns true for OPENAI_API_KEY", async () => {
-    mockListSecrets.mockResolvedValue([{ name: "OPENAI_API_KEY" }]);
-    expect(await isSetupComplete()).toBe(true);
+  it("allows a deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(true);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(200);
   });
 
-  it("returns true for CLAUDE_CODE_OAUTH_TOKEN", async () => {
-    mockListSecrets.mockResolvedValue([{ name: "CLAUDE_CODE_OAUTH_TOKEN" }]);
-    expect(await isSetupComplete()).toBe(true);
+  it("accepts the founding workspace's admin while the deployment has no deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    mockHasDeploymentAdmin.mockResolvedValue(false);
+    mockIsFoundingWorkspaceAdmin.mockResolvedValue(true);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(200);
   });
 
-  it("returns true for COPILOT_GITHUB_TOKEN", async () => {
-    mockListSecrets.mockResolvedValue([{ name: "COPILOT_GITHUB_TOKEN" }]);
-    expect(await isSetupComplete()).toBe(true);
-  });
-
-  it("returns false when no agent key secrets exist", async () => {
-    mockListSecrets.mockResolvedValue([{ name: "GITHUB_TOKEN" }]);
-    expect(await isSetupComplete()).toBe(false);
-  });
-
-  it("returns false when secrets list is empty", async () => {
-    mockListSecrets.mockResolvedValue([]);
-    expect(await isSetupComplete()).toBe(false);
-  });
-
-  it("returns false when listSecrets throws", async () => {
-    mockListSecrets.mockRejectedValue(new Error("db error"));
-    expect(await isSetupComplete()).toBe(false);
-  });
-
-  it("caches the result across calls", async () => {
-    mockListSecrets.mockResolvedValue([{ name: "ANTHROPIC_API_KEY" }]);
-    await isSetupComplete();
-    await isSetupComplete();
-    expect(mockListSecrets).toHaveBeenCalledTimes(1);
-  });
-
-  it("refreshes after cache reset", async () => {
-    mockListSecrets.mockResolvedValue([{ name: "ANTHROPIC_API_KEY" }]);
-    await isSetupComplete();
-    resetSetupCompleteCache();
-    mockListSecrets.mockResolvedValue([]);
-    expect(await isSetupComplete()).toBe(false);
-    expect(mockListSecrets).toHaveBeenCalledTimes(2);
+  it("refuses the admin of a self-made workspace while the deployment has no deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    mockHasDeploymentAdmin.mockResolvedValue(false);
+    mockIsFoundingWorkspaceAdmin.mockResolvedValue(false);
+    const res = await (await deploymentApp()).inject({ method: "POST", url: "/deployment-wide" });
+    expect(res.statusCode).toBe(403);
   });
 });

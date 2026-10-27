@@ -5,6 +5,13 @@ vi.mock("../services/event-bus.js", () => ({
   getRedisClient: () => ({}),
   publishEvent: vi.fn(),
 }));
+// This feature-list test acts as an authorized deployment administrator;
+// deployment-wide credential authorization is covered by the upstream route tests.
+vi.mock("../services/sign-in-config-service.js", () => ({
+  isDeploymentAdmin: vi.fn(async () => true),
+  hasDeploymentAdmin: vi.fn(async () => true),
+  isFoundingWorkspaceAdmin: vi.fn(async () => false),
+}));
 // Every receiver claims the delivery id in the database first
 // (services/inbound-delivery-service.ts); the claim is a set here.
 const claimed = new Set<string>();
@@ -37,7 +44,8 @@ vi.mock("@optio/ticket-providers", () => ({
   jiraConfigProblem: () => null,
 }));
 
-import { verifyGitHubSignature } from "./tickets.js";
+import { ticketRoutes } from "./tickets.js";
+import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
 
 describe("ticket routes with the independent feature lists narrowed", () => {
   let app: import("fastify").FastifyInstance;
@@ -45,8 +53,6 @@ describe("ticket routes with the independent feature lists narrowed", () => {
   async function build(preset: "minimal" | "", user?: null) {
     vi.stubEnv("OPTIO_TRIGGERS", preset ? "manual,gitlab" : "");
     vi.stubEnv("OPTIO_TICKET_SOURCES", preset ? "gitlab,jira" : "");
-    const { buildRouteTestApp } = await import("../test-utils/build-route-test-app.js");
-    const { ticketRoutes } = await import("./tickets.js");
     app = await buildRouteTestApp(ticketRoutes, user === null ? { user: null } : {});
   }
 

@@ -227,7 +227,12 @@ async function main(): Promise<void> {
   apiServer = await startApiServer({
     port: API_PORT,
     logLevel: "warn",
-    env: { OPTIO_CONFIG_DIR: configDir, OPTIO_CONFIG_INTERVAL: "15000" },
+    env: {
+      OPTIO_CONFIG_DIR: configDir,
+      OPTIO_CONFIG_INTERVAL: "15000",
+      PUBLIC_URL: `http://127.0.0.1:${WEB_PORT}`,
+      PUBLIC_API_URL: API_URL,
+    },
   });
   console.warn(`[stack] API ready at ${apiServer.baseUrl}`);
 
@@ -242,6 +247,7 @@ async function main(): Promise<void> {
       ...process.env,
       OPTIO_NEXT_DIST_DIR: ".next-e2e",
       INTERNAL_API_URL: API_URL,
+      PUBLIC_URL: `http://127.0.0.1:${WEB_PORT}`,
       PUBLIC_API_URL: API_URL,
       // Beats the stale apps/web/.env.local value so WebSockets hit our API.
       NEXT_PUBLIC_WS_URL: `ws://127.0.0.1:${API_PORT}`,

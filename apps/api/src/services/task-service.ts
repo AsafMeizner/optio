@@ -1,7 +1,7 @@
-import { eq, desc, and, or, ilike, gte, lte, sql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, gte, lte, isNull, sql } from "drizzle-orm";
 import { ensurePrimaryPrRow, prNumberFromUrl } from "./task-pr-service.js";
 import { db } from "../db/client.js";
-import { tasks, taskEvents, taskLogs, users, repos } from "../db/schema.js";
+import { tasks, taskEvents, taskLogs, users, repos, workRuns } from "../db/schema.js";
 import * as runLogService from "./run-log-service.js";
 import {
   TaskState,
@@ -1112,11 +1112,22 @@ export async function getTaskStats(workspaceId?: string | null) {
   return { total, queued, running, ci, review, needsAttention, failed, completed };
 }
 
-/** Fetch the most recent state-change events across all tasks. */
-export async function getRecentEvents(opts?: { limit?: number }) {
-  return db
-    .select()
+/** Catch-up uses current tenant and owner visibility, including auth-disabled dev. */
+export async function getRecentEvents(opts: { limit?: number; actor: Actor }) {
+  const { actor } = opts;
+  const rows = await db
+    .select({ event: taskEvents })
     .from(taskEvents)
+    .innerJoin(workRuns, eq(workRuns.id, taskEvents.taskId))
+    .where(
+      and(
+        actor.workspaceId
+          ? eq(workRuns.workspaceId, actor.workspaceId)
+          : isNull(workRuns.workspaceId),
+        visibleOwner(workRuns.ownerUserId, actor),
+      ),
+    )
     .orderBy(desc(taskEvents.createdAt))
-    .limit(opts?.limit ?? 20);
+    .limit(opts.limit ?? 20);
+  return rows.map(({ event }) => event);
 }

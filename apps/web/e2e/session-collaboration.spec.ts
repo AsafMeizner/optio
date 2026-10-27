@@ -61,8 +61,13 @@ test("sharing explains control, supports revocation and keeps link tokens out of
       await page.evaluate(() => sessionStorage.getItem("optio_pending_session_share")),
     ).toBeNull();
   } finally {
-    await page.unrouteAll({ behavior: "wait" });
-    await session.done();
+    // Polling may still have a route.fetch() in flight when assertions finish.
+    // Drain those handlers before Playwright disposes their response/context.
+    try {
+      await page.unrouteAll({ behavior: "wait" });
+    } finally {
+      await session.done();
+    }
   }
 });
 

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { and, eq, gt, sql } from "drizzle-orm";
-import { Readable } from "node:stream";
+import { captureRawBody, rawBodyOf } from "../utils/webhook-signature.js";
 import { db } from "../db/client.js";
 import { ticketProviders, authEvents } from "../db/schema.js";
 import { TaskState } from "@optio/shared";
@@ -16,7 +16,7 @@ import { logger } from "../logger.js";
 import { claimDelivery } from "./event-ingress.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { TicketProviderSchema } from "../schemas/integration.js";
-import { requireRole } from "../plugins/auth.js";
+import { requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { receiverFor, ticketSourceRefusal } from "../services/feature-guard.js";
 
 // ── Zod schemas for ticket provider config ─────────────────────────────────
@@ -193,7 +193,7 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
   app.post(
     "/api/tickets/providers",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "createTicketProvider",
         summary: "Configure a ticket provider",
@@ -247,7 +247,7 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
   app.delete(
     "/api/tickets/providers/:id",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "deleteTicketProvider",
         summary: "Delete a ticket provider",
@@ -268,7 +268,7 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
   app.patch(
     "/api/tickets/providers/:id/re-enable",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "reEnableTicketProvider",
         summary: "Re-enable a ticket provider",
@@ -314,15 +314,8 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
       tags: ["Repos & Integrations"],
       response: { 200: WebhookOkResponseSchema, 401: ErrorResponseSchema },
     },
-    preParsing: async (req, _reply, payload) => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of payload) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
-      }
-      const rawBody = Buffer.concat(chunks);
-      (req as unknown as { rawBody: Buffer }).rawBody = rawBody;
-      return Readable.from(rawBody);
-    },
+    // Bounded by the route's bodyLimit while reading (the endpoint is public).
+    preParsing: captureRawBody,
     handler: async (req, reply) => {
       const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
 
@@ -337,7 +330,7 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
         return reply.status(401).send({ error: "Missing signature" });
       }
 
-      const rawBody = (req as unknown as { rawBody: Buffer }).rawBody;
+      const rawBody = rawBodyOf(req);
       if (!(await verifyGitHubSignature(rawBody, signature, webhookSecret))) {
         logger.warn("Webhook signature verification failed");
         return reply.status(401).send({ error: "Invalid signature" });

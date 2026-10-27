@@ -192,6 +192,53 @@ describe("github-app-service", () => {
         "Failed to get installation token: 401 Unauthorized",
       );
     });
+
+    it("limits a repo's token to that repo and caches it apart from the installation's", async () => {
+      resetTokenCache();
+      const expires_at = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const mockFetch = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+        const body = init.body ? JSON.parse(String(init.body)) : null;
+        return {
+          ok: true,
+          json: async () =>
+            body
+              ? {
+                  token: `ghs_${body.repositories[0]}`,
+                  expires_at,
+                  repositories: [{ full_name: `Acme/${body.repositories[0]}` }],
+                }
+              : { token: "ghs_all", expires_at },
+        };
+      });
+      globalThis.fetch = mockFetch;
+
+      expect(await getInstallationToken({ owner: "acme", name: "widgets" })).toBe("ghs_widgets");
+      expect(JSON.parse(String(mockFetch.mock.calls[0][1].body))).toEqual({
+        repositories: ["widgets"],
+      });
+      expect(await getInstallationToken({ owner: "acme", name: "gadgets" })).toBe("ghs_gadgets");
+      expect(await getInstallationToken()).toBe("ghs_all");
+      expect(await getInstallationToken({ owner: "ACME", name: "Widgets" })).toBe("ghs_widgets");
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it("refuses a token that is not limited to exactly the asked repo", async () => {
+      resetTokenCache();
+      const expires_at = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      for (const repositories of [
+        undefined,
+        [{ full_name: "other-owner/widgets" }],
+        [{ full_name: "acme/widgets" }, { full_name: "acme/secrets" }],
+      ]) {
+        globalThis.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ token: "ghs_x", expires_at, repositories }),
+        });
+        await expect(getInstallationToken({ owner: "acme", name: "widgets" })).rejects.toThrow(
+          /not limited to acme\/widgets/,
+        );
+      }
+    });
   });
 });
 

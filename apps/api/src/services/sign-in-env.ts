@@ -6,9 +6,12 @@ function envBool(name: string): boolean | undefined {
   return raw === "true" || raw === "1" || raw === "yes";
 }
 
-export function envConfig(
-  provider: SignInProviderName,
-): { clientId: string; clientSecret: string; settings?: AnySignInSettings } | null {
+export function envConfig(provider: SignInProviderName): {
+  clientId: string;
+  clientSecret: string;
+  displayName?: string;
+  settings?: AnySignInSettings;
+} | null {
   const env = process.env;
   switch (provider) {
     case "google":
@@ -57,6 +60,7 @@ export function envConfig(
   return {
     clientId: "",
     clientSecret: env.LDAP_BIND_PASSWORD ?? "",
+    displayName: env.LDAP_DISPLAY_NAME || "Corporate account",
     settings: {
       url: env.LDAP_URL,
       startTls: envBool("LDAP_START_TLS"),

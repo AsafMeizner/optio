@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
+import http from "node:http";
+import Fastify from "fastify";
 import {
+  captureRawBody,
   hmacHex,
+  rawBodyOf,
   presentedSecret,
   safeEqualHex,
   verifyGitLabToken,
@@ -109,5 +113,64 @@ describe("hmacHex / safeEqualHex", () => {
     expect(safeEqualHex(a, a)).toBe(true);
     expect(safeEqualHex(a, a.slice(1))).toBe(false);
     expect(safeEqualHex("", "")).toBe(false);
+  });
+});
+
+describe("captureRawBody", () => {
+  /** Streams `mib` MiB chunked (no Content-Length) and reports the status and what the hook kept. */
+  async function post(mib: number, bodyLimit?: number) {
+    const app = Fastify({ forceCloseConnections: true, ...(bodyLimit ? { bodyLimit } : {}) });
+    let kept = -1;
+    app.addHook("onResponse", async (req) => {
+      kept = rawBodyOf(req).length;
+    });
+    app.post("/hook", { preParsing: captureRawBody }, async () => ({ ok: true }));
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    try {
+      const { port } = app.server.address() as { port: number };
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          {
+            host: "127.0.0.1",
+            port,
+            method: "POST",
+            path: "/hook",
+            headers: { "content-type": "application/json", "transfer-encoding": "chunked" },
+          },
+          (res) => {
+            resolve(res.statusCode ?? 0);
+            res.resume();
+            req.destroy();
+          },
+        );
+        // The server may hang up mid-upload once it has refused the body.
+        req.on("error", (err) =>
+          ["EPIPE", "ECONNRESET"].includes((err as { code?: string }).code ?? "")
+            ? null
+            : reject(err),
+        );
+        const chunk = Buffer.alloc(1024 * 1024, 0x20);
+        for (let i = 0; i < mib; i++) req.write(chunk);
+        req.end("{}");
+      });
+      await new Promise((r) => setTimeout(r, 50)); // let onResponse run
+      return { status, kept };
+    } finally {
+      await app.close();
+    }
+  }
+
+  it("keeps the bytes of a body within the limit", async () => {
+    expect(await post(0)).toEqual({ status: 200, kept: 2 });
+  });
+
+  it("refuses a chunked body past bodyLimit while reading, before buffering it whole", async () => {
+    const { status, kept } = await post(8);
+    expect(status).toBe(413);
+    expect(kept).toBe(0);
+  });
+
+  it("follows the configured bodyLimit", async () => {
+    expect((await post(2, 4 * 1024 * 1024)).status).toBe(200);
   });
 });

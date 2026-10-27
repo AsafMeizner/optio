@@ -253,7 +253,9 @@ export async function releaseAttachment(hold: HoldRef): Promise<void> {
   const t = runRowTable(hold.ref.kind);
   await db
     .update(t)
-    .set({ attachLeaseUntil: new Date() })
+    // Claims compare against Postgres now(); an API clock ahead of the
+    // database must not leave this released lease in the future.
+    .set({ attachLeaseUntil: sql`now()` })
     .where(and(eq(t.id, hold.ref.id), eq(t.attachedBy, hold.token)));
 }
 

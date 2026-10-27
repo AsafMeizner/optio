@@ -36,6 +36,42 @@ Deployment admins, by email, for people who have signed in once) or by
 `OPTIO_DEPLOYMENT_ADMINS` (comma-separated emails; Helm
 `auth.deploymentAdmins`). `GET /api/auth/me` reports `deploymentAdmin`.
 
+Email-based grants require a verified email assertion from the sign-in
+provider, persisted in `users.email_verified`. Existing users populate it at
+their next sign-in; an existing explicit `deployment_admin` grant remains in
+place. The first bootstrap login must also use the configured provider and
+an allowed, verified domain, and only one concurrent login can claim it.
+
+Deployment admins also control deployment-wide secrets: rotating the shared
+GitHub token, reading the Claude token proxy, refreshing shared Claude
+credentials from a machine, and adding shared agent credentials. The legacy
+agent-credential owner value `workspace` stores a global secret, so it needs
+this role too. Members can still store personal credentials. Automatic shared-token refresh
+checks the machine owner's permission again before using it. For upgrades with
+no deployment admin yet, the founding workspace's admin retains shared-credential
+administration until a deployment admin is appointed.
+
+## Browser authentication
+
+Browser login starts through the web application's `/api/auth/:provider/login`
+proxy. It creates a private verifier cookie and sends its SHA-256 challenge to
+the API. The OAuth state and final exchange code retain that challenge, and
+the callback exchanges the code only with the originating browser's verifier.
+State and exchange codes are consumed atomically in Redis. Native CLI login
+continues to use its own PKCE verifier.
+
+With an HTTPS `PUBLIC_URL`, browser session and verifier cookies use the
+`__Host-` prefix, `Secure`, `HttpOnly`, `SameSite=Lax`, and `Path=/`, without a
+Domain attribute. Upgrading from the old cookie name requires one browser
+sign-in; existing PATs are unaffected. HTTP development keeps the original
+cookie names. Set the same `PUBLIC_URL` on the web and API containers.
+
+Cookie-authenticated mutations and browser WebSocket upgrades require a
+trusted Origin (`PUBLIC_URL`, `PUBLIC_API_URL`, or `OPTIO_ALLOWED_ORIGINS` at
+the API; the web proxy accepts its own origin). Native clients without an
+Origin header keep explicit credential authentication. WebSocket upgrades
+also recheck workspace membership and resolve the current role.
+
 ## First install: bootstrap
 
 Install the chart with `publicUrl` and **no provider** (allowed now). Nobody
@@ -78,6 +114,9 @@ nothing.
 
 The setup token travels in `X-Optio-Setup-Token`. The auth plugin lets
 `/api/auth/sign-in*` through without a session only while in bootstrap mode.
+Only `/api/setup/status` is public among the agent setup endpoints. Credential
+probes and repository listing require a signed-in workspace admin, even before
+any agent credentials have been stored. Complete the Sign-in step first.
 
 ## Testing
 

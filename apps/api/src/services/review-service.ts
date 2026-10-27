@@ -3,6 +3,7 @@ import {
   DEFAULT_REVIEW_PROMPT_TEMPLATE,
   REVIEW_TASK_FILE_PATH,
   renderPromptTemplate,
+  shellSafeTitle,
   parsePrUrl,
   parseRepoUrl,
 } from "@optio/shared";
@@ -20,7 +21,8 @@ import * as optioSettingsService from "./optio-settings-service.js";
 async function fetchPrContext(
   repoUrl: string,
   prNumber: number,
-  createdBy: string | null,
+  ownerUserId: string | null,
+  workspaceId: string | null,
 ): Promise<{
   prDescription: string;
   existingReviews: string;
@@ -30,8 +32,9 @@ async function fetchPrContext(
   const result = { prDescription: "", existingReviews: "", prComments: "", inlineComments: "" };
   try {
     const { platform, ri } = await getGitPlatformForRepo(repoUrl, {
-      userId: createdBy ?? undefined,
-      server: !createdBy,
+      userId: ownerUserId ?? undefined,
+      server: !ownerUserId,
+      workspaceId,
     });
 
     // Fetch PR description
@@ -91,7 +94,7 @@ export async function launchReview(parentTaskId: string): Promise<string> {
 
   // Get repo config
   const { getRepoByUrl } = await import("./repo-service.js");
-  const repoConfig = await getRepoByUrl(parentTask.repoUrl);
+  const repoConfig = await getRepoByUrl(parentTask.repoUrl, parentTask.workspaceId);
 
   // Resolve which agent + model the review should run with. The same resolver
   // is used by pr-review-worker so config behaviour stays consistent across
@@ -108,7 +111,12 @@ export async function launchReview(parentTaskId: string): Promise<string> {
   });
 
   // Fetch PR context using platform abstraction
-  const prContextPromise = fetchPrContext(parentTask.repoUrl, prNumber, parentTask.createdBy);
+  const prContextPromise = fetchPrContext(
+    parentTask.repoUrl,
+    prNumber,
+    parentTask.ownerUserId ?? null,
+    parentTask.workspaceId ?? null,
+  );
 
   // Create the review task as a subtask
   const { createSubtask } = await import("./subtask-service.js");
@@ -136,7 +144,7 @@ export async function launchReview(parentTaskId: string): Promise<string> {
     PR_NUMBER: String(prNumber),
     TASK_FILE: REVIEW_TASK_FILE_PATH,
     REPO_NAME: repoName,
-    TASK_TITLE: parentTask.title,
+    TASK_TITLE: shellSafeTitle(parentTask.title),
     TEST_COMMAND: repoConfig?.testCommand ?? "",
     GIT_PLATFORM_GITLAB: isGitLab ? "true" : "",
     GIT_PLATFORM_CODECOMMIT: isCodeCommit ? "true" : "",

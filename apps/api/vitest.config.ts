@@ -4,9 +4,10 @@ export default defineConfig({
   test: {
     // *.int.test.ts files need real Postgres/Redis (vitest.integration.config.ts)
     // and e2e/ spawns real servers (vitest.e2e.config.ts) — never run here.
-    exclude: [...configDefaults.exclude, "src/**/*.int.test.ts", "e2e/**"],
+    exclude: [...configDefaults.exclude, "**/dist/**", "src/**/*.int.test.ts", "e2e/**"],
     coverage: {
-      enabled: !!process.env.CI,
+      // The aggregate unit + integration command enforces these thresholds.
+      // Unit tests alone deliberately mock services covered by the database tier.
       provider: "v8",
       reporter: ["text", "json-summary", "json"],
       reportsDirectory: "./coverage",

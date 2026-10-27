@@ -9,28 +9,40 @@ import {
   deleteSecret,
   deleteSecretsIfUnchanged,
 } from "./secret-service.js";
-import { isGitHubAppConfigured, getInstallationToken } from "./github-app-service.js";
+import {
+  isGitHubAppConfigured,
+  getInstallationToken,
+  type InstallationRepo,
+} from "./github-app-service.js";
 import { LeaseLostError, withLease } from "./lease-service.js";
 import { logger } from "../logger.js";
 
 const refreshLocks = new Map<string, Promise<string | null>>();
 const TOKEN_REFRESH_BUFFER_MS = 10 * 60 * 1000;
 
+/**
+ * `repo` limits an installation token to that one repository: set it
+ * whenever the token is for a pod (a prompt-injected agent must not get
+ * every repository of the installation).
+ */
 export type GitHubTokenContext =
   | { taskId: string }
-  | { userId: string; workspaceId?: string | null }
-  | { server: true; workspaceId?: string | null };
+  | { userId: string; workspaceId?: string | null; repo?: InstallationRepo }
+  | { server: true; workspaceId?: string | null; repo?: InstallationRepo };
 
 export async function getGitHubToken(context: GitHubTokenContext): Promise<string> {
-  if ("server" in context) return getServerToken(context.workspaceId);
+  if ("server" in context) return getServerToken(context.workspaceId, context.repo);
   if ("taskId" in context) return getTokenForTask(context.taskId);
-  return getTokenForUser(context.userId, context.workspaceId);
+  return getTokenForUser(context.userId, context.workspaceId, context.repo);
 }
 
-async function getServerToken(workspaceId?: string | null): Promise<string> {
+async function getServerToken(
+  workspaceId?: string | null,
+  repo?: InstallationRepo,
+): Promise<string> {
   if (isGitHubAppConfigured()) {
     try {
-      return await getInstallationToken();
+      return await getInstallationToken(repo);
     } catch (err) {
       logger.warn({ err }, "Installation token failed, falling back to PAT");
       return getPatFallback(workspaceId);
@@ -56,7 +68,11 @@ const ACCESS_TOKEN = "GITHUB_USER_ACCESS_TOKEN";
 const REFRESH_TOKEN = "GITHUB_USER_REFRESH_TOKEN";
 const EXPIRES_AT = "GITHUB_USER_TOKEN_EXPIRES_AT";
 
-async function getTokenForUser(userId: string, workspaceId?: string | null): Promise<string> {
+async function getTokenForUser(
+  userId: string,
+  workspaceId?: string | null,
+  repo?: InstallationRepo,
+): Promise<string> {
   let refreshed: string | null = null;
   try {
     const accessToken = await retrieveSecret(ACCESS_TOKEN, `user:${userId}`);
@@ -71,7 +87,7 @@ async function getTokenForUser(userId: string, workspaceId?: string | null): Pro
   } catch (err) {
     logger.warn({ userId, err }, "No usable user token, falling back to PAT");
   }
-  return refreshed ?? getPatFallback(workspaceId, userId);
+  return refreshed ?? getPatFallback(workspaceId, userId, repo);
 }
 
 /** Within one instance, concurrent refreshes of a user share one promise. */
@@ -223,11 +239,15 @@ async function doRefreshUserToken(userId: string, signal: AbortSignal): Promise<
  * Last-resort fallback: try to retrieve a manually-configured GITHUB_TOKEN PAT.
  * Returns the token if found, throws a descriptive error if not.
  */
-async function getPatFallback(workspaceId?: string | null, userId?: string): Promise<string> {
+async function getPatFallback(
+  workspaceId?: string | null,
+  userId?: string,
+  repo?: InstallationRepo,
+): Promise<string> {
   try {
     return await retrieveSecretWithFallback("GITHUB_TOKEN", "global", workspaceId, userId);
   } catch {
-    if (userId && isGitHubAppConfigured()) return getInstallationToken();
+    if (userId && isGitHubAppConfigured()) return getInstallationToken(repo);
     throw new Error(
       "No GitHub token available. Configure a GitHub App (recommended) or add a GITHUB_TOKEN secret.",
     );

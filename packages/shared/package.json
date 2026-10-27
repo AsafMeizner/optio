@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./ssrf": "./src/utils/ssrf.ts",
-    "./features": "./src/config/features.ts"
+    "./features": "./src/config/features.ts",
+    "./outbound-http": "./src/utils/outbound-http.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -18,9 +19,13 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
-    "@vitest/coverage-v8": "^3.2.7",
+    "@vitest/coverage-v8": "^4.1.12",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.12",
+    "vite": "^7.3.7"
+  },
+  "dependencies": {
+    "undici": "^8.12.3"
   }
 }

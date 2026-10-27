@@ -327,6 +327,7 @@ export function startPersistentAgentWorker() {
           env.OPTIO_REPO_BRANCH = claimedAgent.branch || repo.defaultBranch;
           await applyGitAccess(env, {
             workspaceId: claimedAgent.workspaceId ?? null,
+            repoUrl: repo.repoUrl,
             helper: false,
           });
         }

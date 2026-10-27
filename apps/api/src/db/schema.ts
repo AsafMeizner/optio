@@ -37,6 +37,7 @@ export const users = pgTable("users", {
   provider: text("provider").notNull(), // "github" | "google" | "gitlab"
   externalId: text("external_id").notNull(),
   email: text("email").notNull(),
+  emailVerified: boolean("email_verified").notNull().default(false),
   displayName: text("display_name").notNull(),
   // The provider's handle (GitHub login, GitLab username) — what "@-mention
   // me" / "assigned to me" event triggers match on. Null for providers

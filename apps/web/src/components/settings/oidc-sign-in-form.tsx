@@ -34,7 +34,7 @@ import {
 import { cn } from "@/lib/utils";
 type Mode = "settings" | "wizard";
 const CHECK = "mt-0.5 shrink-0";
-export const DEFAULT_DISPLAY_NAME = { oidc: "SSO", ldap: "LDAP" };
+export const DEFAULT_DISPLAY_NAME = { oidc: "SSO", ldap: "Corporate account" };
 const SIGN_IN_PROVIDER_LABEL = {
   oidc: "SSO (OpenID Connect)",
   google: "Google",

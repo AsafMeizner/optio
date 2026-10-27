@@ -230,3 +230,24 @@ describe("workspace scoping", () => {
     expect(res.statusCode).toBe(200);
   });
 });
+
+describe("private task resource visibility", () => {
+  it.each(["dependencies", "dependents"])("hides %s from a different member", async (resource) => {
+    vi.clearAllMocks();
+    mockGetTask.mockResolvedValue({
+      id: "task-private",
+      workspaceId: "ws-1",
+      ownerUserId: "someone-else",
+    });
+    const app = await buildRouteTestApp(dependencyRoutes, {
+      user: { id: "user-1", workspaceId: "ws-1", workspaceRole: "member" },
+    });
+    try {
+      const res = await app.inject({ method: "GET", url: `/api/tasks/task-private/${resource}` });
+      expect(res.statusCode).toBe(404);
+      expect(mockGetDependencies).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});

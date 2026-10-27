@@ -2,6 +2,7 @@ import { eq, and, or, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { customSkills } from "../db/schema.js";
 import { usableBy, visibleOwner, type Actor } from "./ownership.js";
+import { isSafeSkillName } from "../utils/skill-name.js";
 import type {
   CreateCustomSkillInput,
   CustomSkillConfig,
@@ -164,13 +165,16 @@ function skillMatchesAgent(skill: CustomSkillConfig, agentType?: string | null):
  *                   plus any `files` entries resolved under that directory.
  *
  * Extra-file paths are sanitized: leading slashes are stripped and `..`
- * segments are rejected so a malformed entry can't escape the skill dir.
+ * segments are rejected so a malformed entry can't escape the skill dir. A
+ * skill whose name isn't one path segment (`../../x`) is left out: its files
+ * would land outside `.claude/`.
  */
 export function buildSkillSetupFiles(
   skills: CustomSkillConfig[],
 ): Array<{ path: string; content: string }> {
   const out: Array<{ path: string; content: string }> = [];
   for (const skill of skills) {
+    if (!isSafeSkillName(skill.name)) continue;
     if (skill.layout === "skill-dir") {
       const baseDir = `.claude/skills/${skill.name}`;
       out.push({ path: `${baseDir}/SKILL.md`, content: skill.prompt });

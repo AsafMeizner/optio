@@ -44,6 +44,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { shellQuote } from "@optio/shared";
+import { opencodeHeadlessEnabled, opencodeHeadlessPermission } from "@optio/agent-adapters";
 import type { CodexMcpServer } from "./codex-config.js";
 
 /** An MCP server as `.mcp.json` carries it (stdio only). */
@@ -53,16 +54,19 @@ export type McpStdioServer = CodexMcpServer;
 export const OPTIO_RUN_HOME = "OPTIO_RUN_HOME";
 /** The run's `GEMINI_CLI_HOME`, when its Gemini run has MCP servers. */
 export const OPTIO_GEMINI_HOME = "OPTIO_GEMINI_HOME";
-/** The run's `OPENCODE_CONFIG` file, when its OpenCode run has MCP servers. */
+/**
+ * The run's `OPENCODE_CONFIG` file, when its OpenCode run has MCP servers —
+ * or for every OpenCode run with the headless rules on
+ * (services/opencode-run-setup.ts).
+ */
 export const OPTIO_OPENCODE_CONFIG = "OPTIO_OPENCODE_CONFIG";
 /** The run's Copilot MCP config file, passed as `--additional-mcp-config`. */
 export const OPTIO_COPILOT_MCP_CONFIG = "OPTIO_COPILOT_MCP_CONFIG";
 
 /**
- * The agent's home: `/home/agent` in every agent pod, and in the API pod
- * too for the work that runs there (the assistant, `OPTIO_ASSISTANT_PLACEMENT`;
- * the API image has it). `OPTIO_AGENT_HOME_DIR` moves it for the test tiers
- * on machines without one; it never changes a pod's paths in production.
+ * The agent's home: `/home/agent` in every agent pod. The API does not run
+ * user-controlled harnesses. `OPTIO_AGENT_HOME_DIR` moves it for test tiers
+ * and trusted process-runtime callers; it never changes production pod paths.
  */
 export const AGENT_HOME_DIR =
   process.env.OPTIO_AGENT_HOME_DIR?.replace(/\/+$/, "") || "/home/agent";
@@ -128,7 +132,13 @@ export function geminiSettingsJson(base: Record<string, unknown>, servers: Serve
   return JSON.stringify({ ...base, mcpServers }, null, 2);
 }
 
-/** OpenCode's `opencode.json` with the servers as `mcp` entries. */
+/**
+ * OpenCode's `opencode.json` with the servers as `mcp` entries — and, with
+ * the headless rules on, the headless permissions (@optio/agent-adapters
+ * opencode-headless.ts), as this file is merged over the global one the
+ * adapter pre-seeds. Then written for a run with no servers too, so a Job
+ * run gets the permissions (services/opencode-run-setup.ts).
+ */
 export function opencodeConfigJson(servers: Servers): string {
   const mcp: Record<string, unknown> = {};
   for (const [name, s] of Object.entries(servers)) {
@@ -139,7 +149,20 @@ export function opencodeConfigJson(servers: Servers): string {
       enabled: true,
     };
   }
-  return JSON.stringify({ $schema: "https://opencode.ai/config.json", mcp }, null, 2);
+  // The headless permissions only when the deployment turns them on
+  // (agent-adapters opencode-headless.ts); otherwise the file as before.
+  if (!opencodeHeadlessEnabled()) {
+    return JSON.stringify({ $schema: "https://opencode.ai/config.json", mcp }, null, 2);
+  }
+  return JSON.stringify(
+    {
+      $schema: "https://opencode.ai/config.json",
+      permission: opencodeHeadlessPermission(),
+      ...(Object.keys(mcp).length > 0 ? { mcp } : {}),
+    },
+    null,
+    2,
+  );
 }
 
 /** Cursor's `.cursor/mcp.json`. */

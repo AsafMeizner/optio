@@ -3,9 +3,9 @@ import type { SignInProviderTestResult } from "@optio/shared";
 import type { OidcSettings, LdapSignInSettings, AnySignInSettings } from "@optio/shared";
 import { OidcSettingsSchema, ldapSettingsSchema } from "../schemas/sign-in.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { authProviderConfigs, users, workspaces } from "../db/schema.js";
+import { authProviderConfigs, users, workspaceMembers, workspaces } from "../db/schema.js";
 import { logger } from "../logger.js";
 import { decrypt, encrypt } from "./secret-service.js";
 import { getRedisClient } from "./event-bus.js";
@@ -60,6 +60,7 @@ export interface ResolvedProviderConfig {
   clientSecret: string;
   allowedDomains: string[];
   source: "database" | "environment";
+  displayName?: string;
   settings?: AnySignInSettings;
 }
 
@@ -145,7 +146,7 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
     const fromDb = !!stored?.enabled;
     out.push({
       provider,
-      displayName: stored?.displayName || DISPLAY[provider],
+      displayName: stored?.displayName || env?.displayName || DISPLAY[provider],
       configurable: (CONFIGURABLE_PROVIDERS as readonly string[]).includes(provider),
       enabled: fromDb || !!env,
       source: fromDb ? "database" : env ? "environment" : stored ? "database" : "none",
@@ -313,12 +314,39 @@ export async function isDeploymentAdmin(user: {
   email?: string | null;
 }): Promise<boolean> {
   if (isAuthDisabled()) return true;
-  if (user.email && envDeploymentAdmins().has(user.email.toLowerCase())) return true;
   const [row] = await db
-    .select({ deploymentAdmin: users.deploymentAdmin })
+    .select({
+      deploymentAdmin: users.deploymentAdmin,
+      email: users.email,
+      emailVerified: users.emailVerified,
+    })
     .from(users)
     .where(eq(users.id, user.id));
-  return row?.deploymentAdmin ?? false;
+  return (
+    !!row &&
+    (row.deploymentAdmin ||
+      (row.emailVerified && envDeploymentAdmins().has(row.email.toLowerCase())))
+  );
+}
+
+/**
+ * Whether `userId` is an admin of the deployment's first workspace — the
+ * stand-in for a deployment admin until someone holds that role. Only the
+ * founding workspace counts: anyone signed in can create a workspace and be
+ * its admin, so "an admin somewhere" proves nothing about the deployment.
+ */
+export async function isFoundingWorkspaceAdmin(userId: string): Promise<boolean> {
+  const [first] = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .orderBy(asc(workspaces.createdAt), asc(workspaces.id))
+    .limit(1);
+  if (!first) return false;
+  const [member] = await db
+    .select({ role: workspaceMembers.role })
+    .from(workspaceMembers)
+    .where(and(eq(workspaceMembers.workspaceId, first.id), eq(workspaceMembers.userId, userId)));
+  return member?.role === "admin";
 }
 
 export interface DeploymentAdmin {
@@ -341,10 +369,10 @@ export async function listDeploymentAdmins(): Promise<DeploymentAdmin[]> {
     .from(users)
     .where(
       env.size > 0
-        ? sql`${users.deploymentAdmin} = true OR lower(${users.email}) IN (${sql.join(
+        ? sql`${users.deploymentAdmin} = true OR (${users.emailVerified} = true AND lower(${users.email}) IN (${sql.join(
             [...env].map((e) => sql`${e}`),
             sql`, `,
-          )})`
+          )}))`
         : eq(users.deploymentAdmin, true),
     )
     .orderBy(users.displayName);
@@ -361,10 +389,15 @@ export async function addDeploymentAdminByEmail(email: string): Promise<Deployme
   const [user] = await db
     .select()
     .from(users)
-    .where(sql`lower(${users.email}) = ${email.trim().toLowerCase()}`);
+    .where(
+      and(
+        eq(users.emailVerified, true),
+        sql`lower(${users.email}) = ${email.trim().toLowerCase()}`,
+      ),
+    );
   if (!user) {
     throw new SignInConfigError(
-      `No one with the email ${email} has signed in yet — they need to sign in once first`,
+      `No one with the verified email ${email} has signed in yet — they need to sign in once first`,
       404,
     );
   }
@@ -492,19 +525,35 @@ export async function pendingBootstrapClaim(): Promise<BootstrapClaim | null> {
 export async function completeSignIn(user: {
   id: string;
   email: string;
+  emailVerified: boolean;
+  provider: string;
 }): Promise<{ deploymentAdmin: boolean; bootstrapped: boolean }> {
   let deploymentAdmin = false;
-  if (envDeploymentAdmins().has(user.email.toLowerCase())) {
+  if (user.emailVerified && envDeploymentAdmins().has(user.email.toLowerCase())) {
     await db.update(users).set({ deploymentAdmin: true }).where(eq(users.id, user.id));
     deploymentAdmin = true;
   }
   const claim = await pendingBootstrapClaim();
   if (!claim) return { deploymentAdmin, bootstrapped: false };
+  if (
+    user.provider !== claim.provider ||
+    !user.emailVerified ||
+    domainDecision(user, claim.domains) !== "allowed"
+  )
+    return { deploymentAdmin, bootstrapped: false };
   if (await hasDeploymentAdmin()) {
     // Someone already is; the claim is spent.
     await getRedisClient().del(BOOTSTRAP_CLAIM_KEY);
     return { deploymentAdmin, bootstrapped: false };
   }
+  // Exactly one concurrent first login may claim deployment administration.
+  const claimed = await getRedisClient().eval(
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+    1,
+    BOOTSTRAP_CLAIM_KEY,
+    JSON.stringify(claim),
+  );
+  if (claimed !== 1) return { deploymentAdmin, bootstrapped: false };
   await db.update(users).set({ deploymentAdmin: true }).where(eq(users.id, user.id));
   const wsId = await ensureUserHasWorkspace(user.id);
   const updates: Record<string, unknown> = { updatedAt: new Date() };

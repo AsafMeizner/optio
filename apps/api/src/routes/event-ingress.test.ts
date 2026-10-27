@@ -292,7 +292,8 @@ describe("POST /api/webhooks/pagerduty", () => {
         eventId: "ev-PINC1",
       }),
     );
-    expect(mockClaim).toHaveBeenCalledWith("pagerduty", "wh-1");
+    // Keyed on the signed event id, not the unsigned X-Webhook-Id header.
+    expect(mockClaim).toHaveBeenCalledWith("pagerduty", "ev-PINC1");
   });
 
   it("accepts a header carrying several signatures when one matches", async () => {
@@ -366,6 +367,26 @@ describe("POST /api/webhooks/pagerduty", () => {
     });
     expect(again.statusCode).toBe(200);
     expect(again.json()).toEqual({ ok: true, duplicate: true });
+    await flush();
+    expect(mockPersist).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a captured delivery replayed under a fresh X-Webhook-Id", async () => {
+    const raw = pagerDutyIncident("incident.triggered", "PREPLAY");
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/pagerduty",
+      headers: pagerDutyHeaders(raw, "wh-original"),
+      payload: raw,
+    });
+    expect(first.json()).toEqual({ ok: true });
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/pagerduty",
+      headers: pagerDutyHeaders(raw, "wh-forged-new-id"),
+      payload: raw,
+    });
+    expect(replay.json()).toEqual({ ok: true, duplicate: true });
     await flush();
     expect(mockPersist).toHaveBeenCalledTimes(1);
   });
