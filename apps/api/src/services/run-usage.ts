@@ -10,14 +10,30 @@
  */
 import { sql, type AnyColumn, type SQL } from "drizzle-orm";
 
-/** `column + amount`, for a cost stored as a decimal string (null and '' count as 0). */
-export function plusCost(column: AnyColumn, amount: string | number): SQL<string> {
-  return sql<string>`trim_scale(COALESCE(NULLIF(${column}, ''), '0')::numeric + ${String(amount)}::numeric)::text`;
+/**
+ * The amount a run may add. Usage comes from the agent's own output, which a
+ * prompt-injected agent controls: it must not subtract spend (hiding it from
+ * budgets and analytics) or turn a sum into NaN / Infinity (`1e400` parses to
+ * Infinity, which Postgres numeric stores — a budget that never resets).
+ * Anything but a finite, non-negative decimal adds nothing.
+ */
+export function usageAmount(amount: string | number): string {
+  if (typeof amount === "string") {
+    const t = amount.trim();
+    return /^\d+(\.\d+)?(e[-+]?\d+)?$/i.test(t) && Number.isFinite(Number(t)) ? t : "0";
+  }
+  return Number.isFinite(amount) && amount > 0 ? String(amount) : "0";
 }
 
-/** `column + amount`, for a token count (null counts as 0). */
+/** `column + amount`, for a cost stored as a decimal string (null and '' count as 0). */
+export function plusCost(column: AnyColumn, amount: string | number): SQL<string> {
+  return sql<string>`trim_scale(COALESCE(NULLIF(${column}, ''), '0')::numeric + ${usageAmount(amount)}::numeric)::text`;
+}
+
+/** `column + amount`, for a token count (null counts as 0; see `usageAmount`). */
 export function plusTokens(column: AnyColumn, amount: number): SQL<number> {
-  return sql<number>`COALESCE(${column}, 0) + ${Math.round(amount)}`;
+  const n = Number.isFinite(amount) && amount > 0 ? Math.round(amount) : 0;
+  return sql<number>`COALESCE(${column}, 0) + ${n}`;
 }
 
 export interface Usage {

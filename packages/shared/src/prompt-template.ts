@@ -293,6 +293,20 @@ export const DEFAULT_PR_REVIEW_PROMPT_TEMPLATE = `You are a code review assistan
 `;
 
 /**
+ * A title as `{{TASK_TITLE}}` takes it: the templates put it inside a
+ * double-quoted shell argument the agent runs (`gh pr create --title
+ * "{{TASK_TITLE}}"`), and the title can be anyone's (an issue's, a PR's).
+ * One line, with what double quotes would still expand (`$`, `` ` ``) or
+ * end (`"`, `\`) backslash-escaped, so the command is the title verbatim.
+ */
+export function shellSafeTitle(title: string): string {
+  return title
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\\"$`]/g, (c) => `\\${c}`);
+}
+
+/**
  * Render a prompt template by replacing {{VARIABLE}} placeholders.
  */
 export function renderPromptTemplate(template: string, vars: Record<string, string>): string {

@@ -215,8 +215,8 @@ export async function syncOne(id: string): Promise<void> {
     }
 
     clone = await cloneIntoScratch(row.sourceUrl, sha, log);
-    const subpathDir = path.join(clone, row.subpath === "." ? "" : row.subpath);
-    if (!(await pathExists(subpathDir))) {
+    const subpathDir = await skillDirIn(clone, row.subpath);
+    if (!subpathDir) {
       throw new Error(`subpath '${row.subpath}' not found in source@${sha}`);
     }
 
@@ -253,20 +253,57 @@ export async function syncOne(id: string): Promise<void> {
   }
 }
 
-async function resolveRefToSha(sourceUrl: string, ref: string): Promise<string> {
+/**
+ * A skill's source URL and ref reach git as arguments, and one that starts
+ * with `-` would be read as an option (`--upload-pack=<cmd>` runs a command
+ * in the API pod). Neither may, and every call ends its options with `--`.
+ */
+export function assertSkillSourceArgs(sourceUrl: string, ref: string): void {
+  if (!sourceUrl.trim() || sourceUrl.trimStart().startsWith("-")) {
+    throw new Error(`invalid skill source URL: ${JSON.stringify(sourceUrl)}`);
+  }
+  if (ref.trimStart().startsWith("-")) {
+    throw new Error(`invalid skill ref: ${JSON.stringify(ref)}`);
+  }
+}
+
+/**
+ * The transports a skill source may use. A member picks the URL, and git
+ * runs in the API pod: `file://` would copy whatever repository the pod can
+ * read, and `ext::` runs a command. Tests clone local fixtures, so they (and
+ * OPTIO_SKILL_ALLOW_FILE_SOURCES=1) may use `file` too. GIT_ALLOW_PROTOCOL
+ * also binds submodules and redirects.
+ */
+export function skillGitEnv(): NodeJS.ProcessEnv {
+  const allowFile =
+    process.env.OPTIO_SKILL_ALLOW_FILE_SOURCES === "1" ||
+    process.env.OPTIO_RUNTIME === "fake" ||
+    !!process.env.VITEST;
+  return {
+    ...process.env,
+    GIT_ALLOW_PROTOCOL: allowFile ? "https:ssh:git:file" : "https:ssh:git",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+}
+
+export async function resolveRefToSha(sourceUrl: string, ref: string): Promise<string> {
+  assertSkillSourceArgs(sourceUrl, ref);
   // ls-remote returns "<sha>\trefs/heads/<branch>" lines. We try the requested
   // ref directly and fall back to bare HEAD if the ref doesn't exist.
-  const { stdout } = await execFileP("git", ["ls-remote", sourceUrl, ref, `refs/tags/${ref}`], {
-    timeout: CLONE_TIMEOUT_MS,
-  });
+  const { stdout } = await execFileP(
+    "git",
+    ["ls-remote", "--", sourceUrl, ref, `refs/tags/${ref}`],
+    { timeout: CLONE_TIMEOUT_MS, env: skillGitEnv() },
+  );
   const line = stdout.trim().split("\n")[0];
   if (line) {
     const sha = line.split(/\s+/)[0];
     if (/^[0-9a-f]{40}$/.test(sha)) return sha;
   }
   // Fallback: ls-remote with no ref returns HEAD.
-  const head = await execFileP("git", ["ls-remote", sourceUrl, "HEAD"], {
+  const head = await execFileP("git", ["ls-remote", "--", sourceUrl, "HEAD"], {
     timeout: CLONE_TIMEOUT_MS,
+    env: skillGitEnv(),
   });
   const headSha = head.stdout.trim().split(/\s+/)[0];
   if (!/^[0-9a-f]{40}$/.test(headSha)) {
@@ -284,23 +321,27 @@ export async function cloneIntoScratch(
   sha: string,
   log: { info: (...args: unknown[]) => void },
 ): Promise<string> {
+  assertSkillSourceArgs(sourceUrl, "");
   await fs.mkdir(scratchDir(), { recursive: true });
   const tmpRoot = await fs.mkdtemp(path.join(scratchDir(), "skill-"));
   const tmpClone = path.join(tmpRoot, "clone");
   try {
     log.info({ sourceUrl, sha }, "shallow-cloning skill source");
     // Clone with depth=1 then check out the exact SHA.
-    await execFileP("git", ["clone", "--depth", "1", "--no-tags", sourceUrl, tmpClone], {
+    await execFileP("git", ["clone", "--depth", "1", "--no-tags", "--", sourceUrl, tmpClone], {
       timeout: CLONE_TIMEOUT_MS,
+      env: skillGitEnv(),
     });
     // Best-effort: fetch + checkout the exact SHA in case the default ref isn't
     // what we resolved (e.g. tag vs branch).
     try {
       await execFileP("git", ["-C", tmpClone, "fetch", "--depth", "1", "origin", sha], {
         timeout: CLONE_TIMEOUT_MS,
+        env: skillGitEnv(),
       });
       await execFileP("git", ["-C", tmpClone, "checkout", "--detach", sha], {
         timeout: CLONE_TIMEOUT_MS,
+        env: skillGitEnv(),
       });
     } catch {
       // If fetch-by-sha is unsupported (older servers) the depth-1 clone of
@@ -400,13 +441,24 @@ export function parseFrontmatter(content: string): Record<string, unknown> | und
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-async function pathExists(p: string): Promise<boolean> {
+/**
+ * The skill's directory in the clone, after symlinks — null when there is
+ * none. A source may carry a symlink, and a subpath through one (`link` →
+ * `/home/agent/optio/runs`) would read the API pod's own files into the
+ * skill: it must resolve inside the clone.
+ */
+export async function skillDirIn(clone: string, subpath: string): Promise<string | null> {
+  let real: string;
   try {
-    await fs.access(p);
-    return true;
+    real = await fs.realpath(path.join(clone, subpath === "." ? "" : subpath));
   } catch {
-    return false;
+    return null;
   }
+  const root = await fs.realpath(clone);
+  if (real !== root && !real.startsWith(root + path.sep)) {
+    throw new Error(`subpath '${subpath}' leads out of the source (a symlink)`);
+  }
+  return real;
 }
 
 /**

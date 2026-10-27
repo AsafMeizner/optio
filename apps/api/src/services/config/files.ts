@@ -50,6 +50,8 @@ async function* walk(root: string, dir: string): AsyncGenerator<string> {
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
     const full = path.join(dir, entry.name);
+    // A link out of the directory is not part of it.
+    if (entry.isSymbolicLink() && !(await insideReal(root, full).catch(() => null))) continue;
     const kind = await kindOf(full, entry);
     if (kind === "dir") yield* walk(root, full);
     else if (kind === "file" && /\.ya?ml$/i.test(entry.name)) yield full;
@@ -66,18 +68,32 @@ function inside(root: string, candidate: string): string {
   return resolved;
 }
 
+/**
+ * `inside`, after following symlinks: a link in the directory (a synced
+ * repo can carry one) must not read a file from outside it, like the API
+ * pod's `/proc/self/environ`, into a manifest or a prompt.
+ */
+async function insideReal(root: string, candidate: string): Promise<string> {
+  const lexical = inside(root, candidate);
+  const [real, rootReal] = await Promise.all([fs.realpath(lexical), fs.realpath(root)]);
+  if (real !== rootReal && !real.startsWith(rootReal + path.sep)) {
+    throw new Error(`${candidate} is outside the configuration directory`);
+  }
+  return real;
+}
+
 /** A reader for the `*File` fields of a manifest at `file`. */
 export function readerFor(root: string, file: string): ManifestFileReader {
   const dir = path.dirname(file);
   return {
     async readText(relativePath) {
-      const target = inside(root, path.resolve(dir, relativePath));
+      const target = await insideReal(root, path.resolve(dir, relativePath));
       const stat = await fs.stat(target);
       if (stat.size > MAX_FILE_BYTES) throw new Error(`${relativePath} is larger than 2 MiB`);
       return fs.readFile(target, "utf8");
     },
     async readDir(relativePath) {
-      const target = inside(root, path.resolve(dir, relativePath));
+      const target = await insideReal(root, path.resolve(dir, relativePath));
       const out: Record<string, string> = {};
       const visit = async (current: string, rel: string) => {
         for (const entry of await fs.readdir(current, { withFileTypes: true })) {
@@ -87,9 +103,10 @@ export function readerFor(root: string, file: string): ManifestFileReader {
           const kind = await kindOf(full, entry);
           if (kind === "dir") await visit(full, relPath);
           else if (kind === "file") {
-            const stat = await fs.stat(full);
+            const real = await insideReal(root, full);
+            const stat = await fs.stat(real);
             if (stat.size > MAX_FILE_BYTES) throw new Error(`${relPath} is larger than 2 MiB`);
-            out[relPath] = await fs.readFile(full, "utf8");
+            out[relPath] = await fs.readFile(real, "utf8");
           }
         }
       };

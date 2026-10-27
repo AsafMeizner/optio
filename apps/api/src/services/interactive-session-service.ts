@@ -88,7 +88,11 @@ export async function createSession(input: {
   };
 
   const { applyGitAccess } = await import("./git-access-env.js");
-  await applyGitAccess(env, { workspaceId: input.workspaceId ?? null, ownerUserId: input.userId });
+  await applyGitAccess(env, {
+    workspaceId: input.workspaceId ?? null,
+    ownerUserId: input.userId,
+    repoUrl,
+  });
 
   const imageConfig = repoConfig
     ? { preset: (repoConfig.imagePreset ?? "base") as PresetImageId }
@@ -100,6 +104,7 @@ export async function createSession(input: {
     maxAgentsPerPod: repoConfig?.maxAgentsPerPod ?? 2,
     maxPodInstances: repoConfig?.maxPodInstances ?? 1,
     networkPolicy: repoConfig?.networkPolicy ?? "unrestricted",
+    secretProxy: repoConfig?.secretProxy ?? false,
     cpuRequest: repoConfig?.cpuRequest,
     cpuLimit: repoConfig?.cpuLimit,
     memoryRequest: repoConfig?.memoryRequest,

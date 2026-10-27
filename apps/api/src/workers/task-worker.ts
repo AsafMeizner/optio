@@ -11,6 +11,7 @@ import {
   TaskState,
   TASK_BRANCH_PREFIX,
   renderPromptTemplate,
+  shellSafeTitle,
   renderTaskFile,
   TASK_FILE_PATH,
   DEFAULT_MAX_TURNS_CODING,
@@ -24,7 +25,11 @@ import {
   shellQuote,
   describeError,
 } from "@optio/shared";
-import { getAdapter } from "@optio/agent-adapters";
+import {
+  getAdapter,
+  OPENCODE_AUTO_APPROVE_FLAG,
+  opencodeHeadlessEnabled,
+} from "@optio/agent-adapters";
 import { getEventParser } from "../services/event-parsers.js";
 import { checkExistingPr, type ExistingPr } from "../services/pr-detection-service.js";
 import { detectTaskPrs } from "../services/task-pr-service.js";
@@ -433,7 +438,7 @@ export function startTaskWorker() {
           TASK_FILE: taskFilePath,
           BRANCH_NAME: branchName,
           TASK_ID: task.id,
-          TASK_TITLE: task.title,
+          TASK_TITLE: shellSafeTitle(task.title),
           REPO_NAME: repoName,
           // The task's own follow-through wins over the repo's; cautious mode
           // (draft PRs) never merges.
@@ -617,6 +622,7 @@ export function startTaskWorker() {
         await applyGitAccess(allEnv, {
           workspaceId: taskWorkspaceId,
           ownerUserId: runOwnerUserId,
+          repoUrl: task.repoUrl,
           runId: task.id,
         });
 
@@ -1678,12 +1684,15 @@ export function buildAgentCommand(
       const resumeFlag = opts?.resumeSessionId
         ? ` --session ${shellQuote(opts.resumeSessionId)}`
         : "";
+      const autoApprove = opencodeHeadlessEnabled() ? ` ${OPENCODE_AUTO_APPROVE_FLAG}` : "";
       // `opencode run` reads stdin to EOF before it starts whenever stdin is
       // not a TTY; the pod exec hands it a pipe that never closes.
       return [
         `echo "[optio] Running OpenCode (experimental)..."`,
         ...EXPORT_OPENCODE_CONFIG,
-        `opencode run --format json${modelFlag}${agentFlag}${resumeFlag} "$OPTIO_PROMPT" </dev/null`,
+        // With the headless rules on, approve what no rule denies, so a
+        // headless ask never aborts (#585).
+        `opencode run --format json${autoApprove}${modelFlag}${agentFlag}${resumeFlag} "$OPTIO_PROMPT" </dev/null`,
       ];
     }
     case "gemini": {

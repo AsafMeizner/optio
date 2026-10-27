@@ -318,6 +318,7 @@ describe("POST /api/connections/:id/test", () => {
   });
 
   it("returns updated connection after test", async () => {
+    mockGetConnection.mockResolvedValue({ id: "conn-1", workspaceId: "ws-1" });
     mockTestConnection.mockResolvedValue({ id: "conn-1", status: "connected" });
 
     const res = await app.inject({ method: "POST", url: "/api/connections/conn-1/test" });
@@ -325,6 +326,15 @@ describe("POST /api/connections/:id/test", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().connection.status).toBe("connected");
     expect(mockTestConnection).toHaveBeenCalledWith("conn-1");
+  });
+
+  it("returns 404 for a connection in another workspace (not tested)", async () => {
+    mockGetConnection.mockResolvedValue({ id: "conn-1", workspaceId: "ws-other" });
+
+    const res = await app.inject({ method: "POST", url: "/api/connections/conn-1/test" });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockTestConnection).not.toHaveBeenCalled();
   });
 
   it("returns 404 when connection not found", async () => {
@@ -445,6 +455,52 @@ describe("POST /api/connections/:id/assignments", () => {
 
     expect(res.statusCode).toBe(403);
     expect(mockCreateAssignment).not.toHaveBeenCalled();
+  });
+
+  it("a member can't widen the organization's connection (admins only, as PATCH)", async () => {
+    const memberApp = await buildRouteTestApp(connectionRoutes, {
+      user: { id: "user-2", workspaceId: "ws-1", workspaceRole: "member" },
+    });
+    mockGetConnection.mockResolvedValue({ id: "conn-1", workspaceId: "ws-1", ownerUserId: null });
+
+    const res = await memberApp.inject({
+      method: "POST",
+      url: "/api/connections/conn-1/assignments",
+      payload: { repoId: null, permission: "full" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockCreateAssignment).not.toHaveBeenCalled();
+  });
+
+  it("someone else's private connection is a 404 to a member; the owner may assign it", async () => {
+    mockGetConnection.mockResolvedValue({
+      id: "conn-1",
+      workspaceId: "ws-1",
+      ownerUserId: "user-3",
+    });
+    mockCreateAssignment.mockResolvedValue({ id: "asgn-1", connectionId: "conn-1" });
+    const other = await buildRouteTestApp(connectionRoutes, {
+      user: { id: "user-2", workspaceId: "ws-1", workspaceRole: "member" },
+    });
+    const owner = await buildRouteTestApp(connectionRoutes, {
+      user: { id: "user-3", workspaceId: "ws-1", workspaceRole: "member" },
+    });
+
+    const denied = await other.inject({
+      method: "POST",
+      url: "/api/connections/conn-1/assignments",
+      payload: { repoId: "repo-1" },
+    });
+    expect(denied.statusCode).toBe(404);
+    expect(mockCreateAssignment).not.toHaveBeenCalled();
+
+    const allowed = await owner.inject({
+      method: "POST",
+      url: "/api/connections/conn-1/assignments",
+      payload: { repoId: "repo-1" },
+    });
+    expect(allowed.statusCode).toBe(201);
   });
 });
 

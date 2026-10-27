@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { joinWorkspacesByEmailDomain } from "../services/workspace-service.js";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
@@ -30,7 +30,7 @@ import {
 } from "../services/session-service.js";
 import { createApiKey, listApiKeys, revokeApiKey } from "../services/api-key-service.js";
 import { storeUserGitHubTokens } from "../services/github-token-service.js";
-import { SESSION_COOKIE_NAME, requireRole } from "../plugins/auth.js";
+import { SESSION_COOKIE_NAME, requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { getRedisClient } from "../services/event-bus.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { canAccessHost, getHost } from "../services/local-host-service.js";
@@ -41,6 +41,7 @@ import { refreshClaudeTokenFromHost } from "../services/local-auth-refresh-servi
 const ExchangeCodeBodySchema = z
   .object({
     code: z.string().describe("One-time auth code issued by the OAuth callback"),
+    browserVerifier: z.string().min(43).max(128),
   })
   .describe("Body for exchanging a one-time auth code for a session token");
 
@@ -163,42 +164,44 @@ const OAUTH_STATE_TTL_SECS = 600; // 10 minutes
 const AUTH_CODE_PREFIX = "auth_code:";
 const AUTH_CODE_TTL_SECS = 300; // 5 minutes
 
-async function addOAuthState(state: string, provider: string): Promise<void> {
+async function addOAuthState(
+  state: string,
+  provider: string,
+  browserChallenge?: string,
+): Promise<void> {
   const redis = getRedisClient();
   await redis.setex(
     `${OAUTH_STATE_PREFIX}${state}`,
     OAUTH_STATE_TTL_SECS,
-    JSON.stringify({ provider }),
+    JSON.stringify({ provider, browserChallenge }),
   );
 }
 
-async function getOAuthState(state: string): Promise<{ provider: string } | null> {
+async function consumeOAuthState(
+  state: string,
+): Promise<{ provider: string; browserChallenge?: string } | null> {
   const redis = getRedisClient();
-  const raw = await redis.get(`${OAUTH_STATE_PREFIX}${state}`);
+  const raw = await redis.getdel(`${OAUTH_STATE_PREFIX}${state}`);
   if (!raw) return null;
-  return JSON.parse(raw) as { provider: string };
+  return JSON.parse(raw) as { provider: string; browserChallenge?: string };
 }
 
-async function deleteOAuthState(state: string): Promise<void> {
+async function addAuthCode(code: string, token: string, browserChallenge: string): Promise<void> {
   const redis = getRedisClient();
-  await redis.del(`${OAUTH_STATE_PREFIX}${state}`);
+  await redis.setex(
+    `${AUTH_CODE_PREFIX}${code}`,
+    AUTH_CODE_TTL_SECS,
+    JSON.stringify({ token, browserChallenge }),
+  );
 }
 
-async function addAuthCode(code: string, token: string): Promise<void> {
+async function consumeAuthCode(
+  code: string,
+): Promise<{ token: string; browserChallenge: string } | null> {
   const redis = getRedisClient();
-  await redis.setex(`${AUTH_CODE_PREFIX}${code}`, AUTH_CODE_TTL_SECS, JSON.stringify({ token }));
-}
-
-async function getAuthCode(code: string): Promise<{ token: string } | null> {
-  const redis = getRedisClient();
-  const raw = await redis.get(`${AUTH_CODE_PREFIX}${code}`);
+  const raw = await redis.getdel(`${AUTH_CODE_PREFIX}${code}`);
   if (!raw) return null;
-  return JSON.parse(raw) as { token: string };
-}
-
-async function deleteAuthCode(code: string): Promise<void> {
-  const redis = getRedisClient();
-  await redis.del(`${AUTH_CODE_PREFIX}${code}`);
+  return JSON.parse(raw) as { token: string; browserChallenge: string };
 }
 
 // Stricter rate limit for auth endpoints (10 req/min vs 100 req/min global)
@@ -221,7 +224,7 @@ export async function authRoutes(rawApp: FastifyInstance) {
   app.get(
     "/api/auth/claude-token",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         hide: true,
         operationId: "getClaudeToken",
@@ -245,7 +248,7 @@ export async function authRoutes(rawApp: FastifyInstance) {
   app.post(
     "/api/auth/claude-token/refresh-from-host",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "refreshClaudeTokenFromHost",
         summary: "Refresh the Claude OAuth token from a paired machine",
@@ -253,7 +256,7 @@ export async function authRoutes(rawApp: FastifyInstance) {
           "Asks the Optio Local daemon on one of the caller's own machines for " +
           "that machine's Claude Code login (access token only), validates it " +
           "against Anthropic, and stores it as CLAUDE_CODE_OAUTH_TOKEN — the " +
-          "no-copy/paste alternative to the Secrets page. The host must be " +
+          "no-copy/paste alternative to the Secrets page. Requires a deployment admin. The host must be " +
           "online and have advertised `claudeCredentials`.",
         tags: ["Auth & Sessions"],
         body: z.object({ hostId: z.string().uuid() }),
@@ -382,7 +385,7 @@ export async function authRoutes(rawApp: FastifyInstance) {
   app.post(
     "/api/auth/refresh",
     {
-      preHandler: [requireRole("admin")],
+      preHandler: [requireDeploymentAdmin],
       schema: {
         operationId: "refreshAuthCache",
         summary: "Refresh the credential cache",
@@ -455,6 +458,12 @@ export async function authRoutes(rawApp: FastifyInstance) {
         tags: ["Auth & Sessions"],
         security: [],
         params: z.object({ provider: z.string() }),
+        querystring: z.object({
+          browserChallenge: z
+            .string()
+            .regex(/^[A-Za-z0-9_-]{43}$/)
+            .optional(),
+        }),
       },
     },
     async (req, reply) => {
@@ -465,7 +474,11 @@ export async function authRoutes(rawApp: FastifyInstance) {
       }
 
       const state = randomBytes(16).toString("hex");
-      await addOAuthState(state, providerName);
+      const { browserChallenge } = req.query;
+      if (!browserChallenge) {
+        return reply.status(400).send({ error: "Start sign-in from the web app" });
+      }
+      await addOAuthState(state, providerName, browserChallenge);
 
       if (provider.prepare) await provider.prepare();
       const url = provider.authorizeUrl(state);
@@ -510,11 +523,10 @@ export async function authRoutes(rawApp: FastifyInstance) {
       }
 
       // Verify state
-      const storedState = await getOAuthState(state);
+      const storedState = await consumeOAuthState(state);
       if (!storedState || storedState.provider !== providerName) {
         return reply.redirect(`${WEB_URL}/login?error=invalid_state`);
       }
-      await deleteOAuthState(state);
 
       const provider = getOAuthProvider(providerName);
       if (!provider) {
@@ -547,9 +559,12 @@ export async function authRoutes(rawApp: FastifyInstance) {
         // Deployment admins named by the environment, and the first sign-in
         // after the wizard's Sign-in step (it makes this person the deployment
         // admin and their workspace the organization's).
-        await completeSignIn({ id: session.user.id, email: profile.email }).catch((err) =>
-          app.log.warn({ err }, "sign-in completion step failed"),
-        );
+        await completeSignIn({
+          id: session.user.id,
+          email: profile.email,
+          emailVerified: profile.emailVerified === true,
+          provider: providerName,
+        }).catch((err) => app.log.warn({ err }, "sign-in completion step failed"));
 
         // Store GitHub App user tokens for git/API operations
         if (providerName === "github" && tokens.refreshToken && tokens.expiresIn) {
@@ -565,9 +580,8 @@ export async function authRoutes(rawApp: FastifyInstance) {
         if (dotIdx > 0) {
           const cliState = state.slice(dotIdx + 1);
           const redis = getRedisClient();
-          const cliRaw = await redis.get(`cli_flow:${cliState}`);
+          const cliRaw = await redis.getdel(`cli_flow:${cliState}`);
           if (cliRaw) {
-            await redis.del(`cli_flow:${cliState}`);
             const cliFlow = JSON.parse(cliRaw) as {
               callback: string;
               codeChallenge: string;
@@ -599,7 +613,11 @@ export async function authRoutes(rawApp: FastifyInstance) {
         // sets the HttpOnly cookie on its own origin — avoiding cross-origin
         // cookie issues when API and web run on different origins.
         const authCode = randomBytes(32).toString("hex");
-        await addAuthCode(authCode, session.token);
+        if (!storedState.browserChallenge) {
+          await revokeSession(session.token);
+          return reply.redirect(`${WEB_URL}/login?error=invalid_state`);
+        }
+        await addAuthCode(authCode, session.token, storedState.browserChallenge);
         reply.redirect(`${WEB_URL}/auth/callback?code=${authCode}`);
       } catch (err) {
         app.log.error(err, "OAuth callback failed");
@@ -626,13 +644,15 @@ export async function authRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { code } = req.body;
+      const { code, browserVerifier } = req.body;
 
-      const entry = await getAuthCode(code);
-      if (!entry) {
+      const entry = await consumeAuthCode(code);
+      if (
+        !entry ||
+        createHash("sha256").update(browserVerifier).digest("base64url") !== entry.browserChallenge
+      ) {
         return reply.status(400).send({ error: "Invalid or expired code" });
       }
-      await deleteAuthCode(code); // one-time use
 
       const user = await validateSession(entry.token);
       if (!user) {
@@ -867,11 +887,10 @@ export async function authRoutes(rawApp: FastifyInstance) {
 
       // Look up the CLI code entry in Redis
       const redis = getRedisClient();
-      const raw = await redis.get(`${CLI_CODE_PREFIX}${code}`);
+      const raw = await redis.getdel(`${CLI_CODE_PREFIX}${code}`);
       if (!raw) {
         return reply.status(400).send({ error: "Invalid or expired code" });
       }
-      await redis.del(`${CLI_CODE_PREFIX}${code}`); // one-time use
 
       const entry = JSON.parse(raw) as {
         sessionToken: string;
@@ -1018,7 +1037,10 @@ export async function authRoutes(rawApp: FastifyInstance) {
         await revokeSession(token);
       }
 
-      const secure = process.env.NODE_ENV === "production" ? " Secure;" : "";
+      const secure =
+        process.env.PUBLIC_URL?.startsWith("https://") || process.env.NODE_ENV === "production"
+          ? " Secure;"
+          : "";
       reply
         .header(
           "Set-Cookie",

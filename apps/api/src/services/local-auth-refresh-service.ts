@@ -10,8 +10,8 @@
  *    or a capable daemon connects while it is known-expired — the server
  *    refreshes on its own and only shows the paste banner if that fails.
  *
- * Only a host owned by a workspace admin (or any host in auth-disabled dev)
- * may supply a token: it is the same power the Secrets page gates on admin.
+ * Only a host owned by a deployment admin (or any host in auth-disabled dev)
+ * may supply a token: it is the same power the global Secrets page gates on deployment admin.
  *
  * The token never crosses Redis. With several API instances the whole
  * refresh — ask the daemon, validate, store — runs on the instance its
@@ -25,7 +25,11 @@ import * as relay from "./local-relay.js";
 import { HostRequests } from "./local-host-requests.js";
 import { getHost, type LocalHostRow } from "./local-host-service.js";
 import { isAuthDisabled } from "./oauth/index.js";
-import { getUserRole } from "./workspace-service.js";
+import {
+  hasDeploymentAdmin,
+  isDeploymentAdmin,
+  isFoundingWorkspaceAdmin,
+} from "./sign-in-config-service.js";
 import { invalidateCredentialsCache, invalidateUsageCache } from "./auth-service.js";
 import { storeSecret } from "./secret-service.js";
 import { publishEvent } from "./event-bus.js";
@@ -82,9 +86,12 @@ export function deliverCredentialsResult(hostId: string, msg: CredentialsResult)
 
 /** Whether this host's owner is allowed to seed the cluster's Claude token. */
 export async function hostMayRefreshToken(host: LocalHostRow): Promise<boolean> {
-  if (!host.userId) return isAuthDisabled();
-  if (!host.workspaceId) return false;
-  return (await getUserRole(host.workspaceId, host.userId)) === "admin";
+  if (isAuthDisabled()) return true;
+  return (
+    !!host.userId &&
+    ((await isDeploymentAdmin({ id: host.userId })) ||
+      (!(await hasDeploymentAdmin()) && (await isFoundingWorkspaceAdmin(host.userId))))
+  );
 }
 
 /**
@@ -114,6 +121,9 @@ export async function refreshClaudeTokenFromHost(
 async function refreshHere(hostId: string, trigger: "manual" | "auto"): Promise<RefreshOutcome> {
   const host = await getHost(hostId);
   if (!host) return { ok: false, error: "That machine was removed" };
+  if (!(await hostMayRefreshToken(host))) {
+    return { ok: false, error: "Only a deployment admin’s machine may replace the shared token" };
+  }
   const caps = await relay.hostCapabilities(host.id);
   if (!caps?.claudeCredentials) {
     return {

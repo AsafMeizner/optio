@@ -8,6 +8,19 @@ const mockListVisibleSecrets = vi.fn();
 const mockStoreSecret = vi.fn();
 const mockDeleteSecret = vi.fn();
 
+// Deployment-admin checks: the caller is one unless a test says otherwise.
+const mockIsDeploymentAdmin = vi.fn().mockResolvedValue(true);
+vi.mock("../services/sign-in-config-service.js", () => ({
+  isDeploymentAdmin: (...args: unknown[]) => mockIsDeploymentAdmin(...args),
+  hasDeploymentAdmin: vi.fn().mockResolvedValue(true),
+  isFoundingWorkspaceAdmin: vi.fn().mockResolvedValue(false),
+}));
+
+const mockGetUserRole = vi.fn();
+vi.mock("../services/workspace-service.js", () => ({
+  getUserRole: (...args: unknown[]) => mockGetUserRole(...args),
+}));
+
 vi.mock("../services/secret-service.js", () => ({
   listVisibleSecrets: (...args: unknown[]) => mockListVisibleSecrets(...args),
   storeSecret: (...args: unknown[]) => mockStoreSecret(...args),
@@ -235,5 +248,64 @@ describe("DELETE /api/secrets/:name", () => {
     expect(res.statusCode).toBe(204);
     // userId should be set to the caller's id ("user-1") for user-scoped deletion
     expect(mockDeleteSecret).toHaveBeenCalledWith("MY_TOKEN", "user", "ws-1", "user-1");
+  });
+});
+
+describe("deployment-wide and other people's secrets", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockIsDeploymentAdmin.mockResolvedValue(true);
+    app = await buildTestApp();
+  });
+
+  it("refuses a global secret from a workspace admin who isn't a deployment admin", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/secrets",
+      payload: { name: "GITHUB_TOKEN", value: "ghp_attacker" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(mockStoreSecret).not.toHaveBeenCalled();
+
+    const del = await app.inject({ method: "DELETE", url: "/api/secrets/GITHUB_TOKEN" });
+    expect(del.statusCode).toBe(403);
+    expect(mockDeleteSecret).not.toHaveBeenCalled();
+  });
+
+  it("still lets that admin store their own private secret", async () => {
+    mockIsDeploymentAdmin.mockResolvedValue(false);
+    mockStoreSecret.mockResolvedValue(undefined);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/secrets",
+      payload: { name: "MY_TOKEN", value: "v", scope: "user" },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it("lets an admin delete a member's private secret, not a stranger's", async () => {
+    mockDeleteSecret.mockResolvedValue(undefined);
+    mockGetUserRole.mockResolvedValueOnce("member");
+    await app.inject({
+      method: "DELETE",
+      url: "/api/secrets/T?scope=user&userId=00000000-0000-4000-8000-000000000002",
+    });
+    expect(mockDeleteSecret).toHaveBeenLastCalledWith(
+      "T",
+      "user",
+      "ws-1",
+      "00000000-0000-4000-8000-000000000002",
+    );
+
+    mockGetUserRole.mockResolvedValueOnce(null);
+    const stranger = await app.inject({
+      method: "DELETE",
+      url: "/api/secrets/T?scope=user&userId=00000000-0000-4000-8000-000000000009",
+    });
+    expect(stranger.statusCode).toBe(404);
+    expect(mockDeleteSecret).toHaveBeenCalledTimes(1);
   });
 });

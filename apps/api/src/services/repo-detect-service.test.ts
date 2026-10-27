@@ -45,14 +45,14 @@ describe("repo-detect-service", () => {
   });
 
   it("returns base preset for unparseable URLs", async () => {
-    const result = await detectRepoConfig("not-a-url", "token");
+    const result = await detectRepoConfig("not-a-url");
     expect(result).toEqual({ imagePreset: "base", languages: [] });
   });
 
   it("returns base preset when API call fails", async () => {
     mockPlatform.listRepoContents.mockRejectedValue(new Error("API error"));
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result).toEqual({ imagePreset: "base", languages: [] });
   });
 
@@ -62,7 +62,7 @@ describe("repo-detect-service", () => {
       { name: "README.md", type: "file" },
     ]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.imagePreset).toBe("node");
     expect(result.languages).toContain("node");
     expect(result.testCommand).toBe("npm test");
@@ -71,7 +71,7 @@ describe("repo-detect-service", () => {
   it("detects rust project", async () => {
     mockPlatform.listRepoContents.mockResolvedValue([{ name: "Cargo.toml", type: "file" }]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.imagePreset).toBe("rust");
     expect(result.languages).toContain("rust");
     expect(result.testCommand).toBe("cargo test");
@@ -80,7 +80,7 @@ describe("repo-detect-service", () => {
   it("detects go project", async () => {
     mockPlatform.listRepoContents.mockResolvedValue([{ name: "go.mod", type: "file" }]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.imagePreset).toBe("go");
     expect(result.languages).toContain("go");
     expect(result.testCommand).toBe("go test ./...");
@@ -89,7 +89,7 @@ describe("repo-detect-service", () => {
   it("detects python project from pyproject.toml", async () => {
     mockPlatform.listRepoContents.mockResolvedValue([{ name: "pyproject.toml", type: "file" }]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.imagePreset).toBe("python");
     expect(result.languages).toContain("python");
     expect(result.testCommand).toBe("pytest");
@@ -98,14 +98,14 @@ describe("repo-detect-service", () => {
   it("detects python project from requirements.txt", async () => {
     mockPlatform.listRepoContents.mockResolvedValue([{ name: "requirements.txt", type: "file" }]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.imagePreset).toBe("python");
   });
 
   it("detects ruby project", async () => {
     mockPlatform.listRepoContents.mockResolvedValue([{ name: "Gemfile", type: "file" }]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.imagePreset).toBe("ruby");
     expect(result.languages).toContain("ruby");
     expect(result.testCommand).toBe("bundle exec rspec");
@@ -114,7 +114,7 @@ describe("repo-detect-service", () => {
   it("detects dart project", async () => {
     mockPlatform.listRepoContents.mockResolvedValue([{ name: "pubspec.yaml", type: "file" }]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.imagePreset).toBe("dart");
     expect(result.languages).toContain("dart");
     expect(result.testCommand).toBe("dart test");
@@ -126,7 +126,7 @@ describe("repo-detect-service", () => {
       { name: "Cargo.toml", type: "file" },
     ]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.imagePreset).toBe("full");
     expect(result.languages).toContain("node");
     expect(result.languages).toContain("rust");
@@ -138,14 +138,14 @@ describe("repo-detect-service", () => {
       { name: "package.json", type: "file" },
     ]);
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result.testCommand).toBe("cargo test"); // Cargo.toml checked first
   });
 
   it("handles exceptions gracefully", async () => {
     mockGetGitPlatformForRepo.mockRejectedValue(new Error("Network error"));
 
-    const result = await detectRepoConfig("https://github.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://github.com/owner/repo");
     expect(result).toEqual({ imagePreset: "base", languages: [] });
   });
 
@@ -162,7 +162,7 @@ describe("repo-detect-service", () => {
     });
     mockPlatform.listRepoContents.mockResolvedValue([{ name: "package.json", type: "file" }]);
 
-    const result = await detectRepoConfig("https://gitlab.com/owner/repo", "token");
+    const result = await detectRepoConfig("https://gitlab.com/owner/repo");
     expect(result.imagePreset).toBe("node");
   });
 });

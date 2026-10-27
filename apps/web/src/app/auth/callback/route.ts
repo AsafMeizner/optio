@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { authCookieName, secureAuthCookies } from "../../../lib/auth-cookies.js";
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? "http://localhost:4000";
 const PUBLIC_URL = process.env.PUBLIC_URL ?? "http://localhost:3000";
-const SESSION_COOKIE_NAME = "optio_session";
-const IS_SECURE = PUBLIC_URL.startsWith("https://");
 
 /**
  * OAuth callback handler for the BFF (Backend for Frontend) pattern.
@@ -20,16 +19,20 @@ const IS_SECURE = PUBLIC_URL.startsWith("https://");
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
+  const browserVerifier = request.cookies.get(authCookieName("oauth_verifier"))?.value;
 
   if (!code) {
     return NextResponse.redirect(new URL("/login?error=missing_code", PUBLIC_URL));
+  }
+  if (!browserVerifier) {
+    return NextResponse.redirect(new URL("/login?error=invalid_state", PUBLIC_URL));
   }
 
   try {
     const res = await fetch(`${INTERNAL_API_URL}/api/auth/exchange-code`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, browserVerifier }),
     });
 
     if (!res.ok) {
@@ -39,11 +42,18 @@ export async function GET(request: NextRequest) {
     const { token } = (await res.json()) as { token: string };
 
     const response = NextResponse.redirect(new URL("/", PUBLIC_URL));
-    response.cookies.set(SESSION_COOKIE_NAME, token, {
+    response.cookies.set(authCookieName("oauth_verifier"), "", {
       path: "/",
       httpOnly: true,
       sameSite: "lax",
-      secure: IS_SECURE,
+      secure: secureAuthCookies(),
+      maxAge: 0,
+    });
+    response.cookies.set(authCookieName("session"), token, {
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: secureAuthCookies(),
       maxAge: 30 * 24 * 60 * 60, // 30 days
     });
 

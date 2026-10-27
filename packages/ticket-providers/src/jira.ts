@@ -7,8 +7,41 @@ import {
   type TicketComment,
   type TicketProviderConfig,
 } from "@optio/shared";
-import { assertSsrfSafe } from "@optio/shared/ssrf";
+import { guardedFetch } from "@optio/shared/outbound-http";
+import axios, { type AxiosAdapter } from "axios";
 import type { TicketProvider } from "./types.js";
+
+/** Axios handles Jira's query/body serialization; the transport pins vetted DNS
+ * answers and refuses redirects before sending the authenticated request. */
+const guardedJiraAdapter: AxiosAdapter = async (config) => {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(config.headers.toJSON(true))) {
+    if (value != null) headers.set(name, String(value));
+  }
+  const response = await guardedFetch(axios.getUri(config), {
+    method: config.method,
+    headers,
+    body: config.data,
+    signal: config.signal as AbortSignal | undefined,
+    timeoutMs: config.timeout || undefined,
+    redirect: "error",
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`Jira API returned HTTP ${response.status}`);
+  }
+  const responseHeaders: Record<string, string> = {};
+  response.headers.forEach((value, name) => {
+    responseHeaders[name] = value;
+  });
+  return {
+    data: await response.text(),
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders,
+    config,
+  };
+};
 
 /**
  * Convert Atlassian Document Format (ADF) to plaintext.
@@ -60,9 +93,9 @@ export class JiraTicketProvider implements TicketProvider {
 
   async fetchActionableTickets(config: TicketProviderConfig): Promise<Ticket[]> {
     const jiraConfig = asJiraConfig(config);
-    await assertSsrfSafe(jiraConfig.baseUrl);
     const client = new Version3Client({
       host: jiraConfig.baseUrl,
+      baseRequestConfig: { adapter: guardedJiraAdapter },
       authentication: {
         basic: {
           email: jiraConfig.email,
@@ -162,9 +195,9 @@ export class JiraTicketProvider implements TicketProvider {
     config: TicketProviderConfig,
   ): Promise<TicketComment[]> {
     const jiraConfig = asJiraConfig(config);
-    await assertSsrfSafe(jiraConfig.baseUrl);
     const client = new Version3Client({
       host: jiraConfig.baseUrl,
+      baseRequestConfig: { adapter: guardedJiraAdapter },
       authentication: {
         basic: {
           email: jiraConfig.email,
@@ -188,9 +221,9 @@ export class JiraTicketProvider implements TicketProvider {
 
   async addComment(ticketId: string, comment: string, config: TicketProviderConfig): Promise<void> {
     const jiraConfig = asJiraConfig(config);
-    await assertSsrfSafe(jiraConfig.baseUrl);
     const client = new Version3Client({
       host: jiraConfig.baseUrl,
+      baseRequestConfig: { adapter: guardedJiraAdapter },
       authentication: {
         basic: {
           email: jiraConfig.email,
@@ -225,9 +258,9 @@ export class JiraTicketProvider implements TicketProvider {
     config: TicketProviderConfig,
   ): Promise<void> {
     const jiraConfig = asJiraConfig(config);
-    await assertSsrfSafe(jiraConfig.baseUrl);
     const client = new Version3Client({
       host: jiraConfig.baseUrl,
+      baseRequestConfig: { adapter: guardedJiraAdapter },
       authentication: {
         basic: {
           email: jiraConfig.email,

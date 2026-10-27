@@ -154,11 +154,17 @@ const AssignmentResponse = z.object({ assignment: ConnectionAssignmentSchema });
  * foreign connection it sends a 404 (foreign resources are indistinguishable
  * from missing ones) and returns null; otherwise returns the connection.
  * Callers must `return` when null is received.
+ *
+ * `see` follows `GET /api/connections/:id` (someone else's private
+ * connection is a 404 to a member). `change` follows `PATCH`: the
+ * organization's need an admin, a private one its owner — assignments decide
+ * which work gets a connection's credentials, so they change by the same rule.
  */
 async function requireOwnedConnection(
   req: FastifyRequest,
   reply: FastifyReply,
   connectionId: string,
+  access: "see" | "change" = "see",
 ): Promise<Awaited<ReturnType<typeof connectionService.getConnection>>> {
   const conn = await connectionService.getConnection(connectionId);
   if (!conn) {
@@ -169,6 +175,22 @@ async function requireOwnedConnection(
   if (wsId && conn.workspaceId && conn.workspaceId !== wsId) {
     reply.status(404).send({ error: "Connection not found" });
     return null;
+  }
+  const actor = workActor(req);
+  if (conn.ownerUserId && conn.ownerUserId !== actor.userId && !actor.isAdmin) {
+    reply.status(404).send({ error: "Connection not found" });
+    return null;
+  }
+  if (access === "change") {
+    const allowed = conn.ownerUserId ? conn.ownerUserId === actor.userId : actor.isAdmin;
+    if (!allowed) {
+      reply.status(403).send({
+        error: conn.ownerUserId
+          ? "Only its owner can change a personal connection"
+          : "Forbidden: requires admin role",
+      });
+      return null;
+    }
   }
   return conn;
 }
@@ -465,6 +487,10 @@ export async function connectionRoutes(rawApp: FastifyInstance) {
       try {
         const existing = await connectionService.getConnection(req.params.id);
         if (!existing) return reply.status(404).send({ error: "Connection not found" });
+        const wsId = req.user?.workspaceId;
+        if (wsId && existing.workspaceId && existing.workspaceId !== wsId) {
+          return reply.status(404).send({ error: "Connection not found" });
+        }
         const actor = workActor(req);
         const allowed = existing.ownerUserId
           ? existing.ownerUserId === actor.userId || actor.isAdmin
@@ -528,7 +554,7 @@ export async function connectionRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const conn = await requireOwnedConnection(req, reply, req.params.id);
+      const conn = await requireOwnedConnection(req, reply, req.params.id, "change");
       if (!conn) return;
       const assignment = await connectionService.createAssignment(req.params.id, req.body);
       logAction({
@@ -559,7 +585,7 @@ export async function connectionRoutes(rawApp: FastifyInstance) {
     async (req, reply) => {
       const existing = await connectionService.getAssignment(req.params.id);
       if (!existing) return reply.status(404).send({ error: "Assignment not found" });
-      const conn = await requireOwnedConnection(req, reply, existing.connectionId);
+      const conn = await requireOwnedConnection(req, reply, existing.connectionId, "change");
       if (!conn) return;
       const assignment = await connectionService.updateAssignment(req.params.id, req.body);
       logAction({
@@ -590,7 +616,7 @@ export async function connectionRoutes(rawApp: FastifyInstance) {
     async (req, reply) => {
       const existing = await connectionService.getAssignment(req.params.id);
       if (!existing) return reply.status(404).send({ error: "Assignment not found" });
-      const conn = await requireOwnedConnection(req, reply, existing.connectionId);
+      const conn = await requireOwnedConnection(req, reply, existing.connectionId, "change");
       if (!conn) return;
       await connectionService.deleteAssignment(req.params.id);
       logAction({

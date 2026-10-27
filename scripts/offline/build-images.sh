@@ -11,7 +11,7 @@
 #     --presets                 also the language presets
 #     --only <names>            some of api,web,agent-base,agent-dind,agent-<preset>
 #     --agent-clis <list>        all (default) or a comma-separated runtime list
-#     --claude-code-version <v>  override the default 2.1.112
+#     --claude-code-version <v>  override the default 2.1.310
 #     --preinstall-mcp-servers   include the built-in MCP server binaries
 #     --opencode-install-method <script|npm>  default script
 #     --prefix <p>              image name prefix (default optio.local/optio-;
@@ -58,7 +58,7 @@ VERSION=""
 PRESETS=0
 ONLY=""
 AGENT_CLIS="${AGENT_CLIS:-all}"
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.112}"
+CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.310}"
 PREINSTALL_MCP_SERVERS="${PREINSTALL_MCP_SERVERS:-0}"
 OPENCODE_INSTALL_METHOD="${OPENCODE_INSTALL_METHOD:-script}"
 PREFIX=""

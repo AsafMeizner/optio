@@ -89,6 +89,7 @@ vi.mock("../services/pr-review-service.js", () => ({
 
 vi.mock("../plugins/auth.js", () => ({
   requireRole: () => async () => {},
+  requireDeploymentAdmin: async () => {},
 }));
 
 // sessions.ts mocks
