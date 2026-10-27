@@ -110,15 +110,18 @@ export async function logAction(input: LogActionInput): Promise<OptioAction> {
 
   // Publish real-time activity event (non-blocking)
   const [resourceType] = input.action.split(".");
-  publishEvent({
-    type: "activity:new",
-    action: input.action,
-    userId: input.userId,
-    resourceType,
-    resourceId: (input.params?.id ?? input.result?.id) as string | undefined,
-    summary: `${input.action} ${input.success ? "succeeded" : "failed"}`,
-    timestamp: new Date().toISOString(),
-  }).catch(() => {});
+  publishEvent(
+    {
+      type: "activity:new",
+      action: input.action,
+      userId: input.userId,
+      resourceType,
+      resourceId: (input.params?.id ?? input.result?.id) as string | undefined,
+      summary: `${input.action} ${input.success ? "succeeded" : "failed"}`,
+      timestamp: new Date().toISOString(),
+    },
+    { workspaceId: input.workspaceId ?? null, ownerUserId: input.userId ?? null },
+  ).catch(() => {});
 
   return row as unknown as OptioAction;
 }

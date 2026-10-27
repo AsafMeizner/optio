@@ -3,6 +3,7 @@
  * whom, which one is the default, who may store one, and what a run may use.
  */
 import { randomBytes } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { secretCredentialId } from "@optio/shared";
 import { db } from "../db/client.js";
@@ -99,7 +100,7 @@ describe("agent credentials", () => {
     expect((await listAgentCredentials(alice, "codex", "workspace")).credentials).toEqual([]);
   });
 
-  it("members store their own, only admins the organization's, and only known names", async () => {
+  it("members store their own, only deployment admins the shared credentials, and only known names", async () => {
     const mine = await createAgentCredential(alice, {
       agentType: "codex",
       secretName: "OPENAI_API_KEY",
@@ -118,6 +119,16 @@ describe("agent credentials", () => {
         verify: false,
       }),
     ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      createAgentCredential(admin, {
+        agentType: "codex",
+        secretName: "OPENAI_API_KEY",
+        value: "workspace-admin-key",
+        owner: "workspace",
+        verify: false,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    await db.update(users).set({ deploymentAdmin: true }).where(eq(users.id, admin.userId!));
     const org = await createAgentCredential(admin, {
       agentType: "codex",
       secretName: "OPENAI_API_KEY",

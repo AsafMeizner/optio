@@ -8,15 +8,20 @@ FROM node-runtime AS bridge
 RUN npm install -g pnpm@10.34.8
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY patches/ patches/
 COPY packages/mcp-bridge/ packages/mcp-bridge/
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter @optio/mcp-bridge \
     && pnpm --filter @optio/mcp-bridge build
 
-FROM ubuntu:24.04@sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
+ARG AGENT_CLIS=all
+# Security-tested native release; see scripts/smoke-claude-exec.mjs.
+ARG CLAUDE_CODE_VERSION=2.1.310
+
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git curl wget jq unzip \
     ca-certificates gnupg \
     openssh-client python3 \
@@ -43,13 +48,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 libs
     && ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
+ARG NPM_VERSION=12.2.1
+RUN npm install -g npm@"${NPM_VERSION}"
+
 # Verify Node ships OpenSSL >= 3.5 for post-quantum TLS (X25519MLKEM768)
 RUN node -e 'const [maj,min] = process.versions.openssl.split(".").map(Number); if (maj < 3 || (maj === 3 && min < 5)) { console.error("OpenSSL " + process.versions.openssl + " too old; need >= 3.5"); process.exit(1); }'
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN case ",${AGENT_CLIS}," in *,all,*|*,claude-code,*) npm install -g --allow-scripts=@anthropic-ai/claude-code "@anthropic-ai/claude-code${CLAUDE_CODE_VERSION:+@${CLAUDE_CODE_VERSION}}" ;; esac
 
 # OpenAI Codex CLI
-RUN npm install -g @openai/codex
+RUN case ",${AGENT_CLIS}," in *,all,*|*,codex,*) npm install -g @openai/codex ;; esac
 
 # Allow sudo for extra package installation at runtime
 RUN apt-get update && apt-get install -y sudo \
@@ -68,6 +76,12 @@ COPY scripts/optio-git-credential /usr/local/bin/optio-git-credential
 COPY scripts/optio-gh-wrapper /usr/local/bin/optio-gh-wrapper
 COPY scripts/optio-glab-wrapper /usr/local/bin/optio-glab-wrapper
 RUN chmod +x /usr/local/bin/optio-git-credential /usr/local/bin/optio-gh-wrapper /usr/local/bin/optio-glab-wrapper
+
+# npm's bundled dependencies need fixes newer than its release lock.
+RUN npm install --prefix /tmp/optio-npm-fixes --ignore-scripts --no-package-lock --no-audit --no-fund undici@6.29.1 ip-address@10.7.5 \
+    && rm -rf /usr/local/lib/node_modules/npm/node_modules/undici /usr/local/lib/node_modules/npm/node_modules/ip-address \
+    && cp -a /tmp/optio-npm-fixes/node_modules/undici /tmp/optio-npm-fixes/node_modules/ip-address /usr/local/lib/node_modules/npm/node_modules/ \
+    && rm -rf /tmp/optio-npm-fixes /root/.npm
 
 RUN useradd -m -s /bin/bash agent \
     && chown -R agent:agent /workspace \

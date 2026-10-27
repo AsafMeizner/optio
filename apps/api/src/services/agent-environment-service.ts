@@ -40,6 +40,7 @@ import { issueControllerToken } from "./controller-auth.js";
 import { canUse, type Actor } from "./ownership.js";
 import { connectionCatalog } from "./connection-catalog-service.js";
 import { codexMcpConfigToml, OPTIO_CODEX_HOME } from "../utils/codex-config.js";
+import { withOpencodeRules, writesOpencodeRunConfig } from "./opencode-run-setup.js";
 import {
   carriesEnv,
   copilotMcpConfigJson,
@@ -413,7 +414,13 @@ export async function buildAgentEnvironment(
       { servers: servers.length, connections: connections.length },
       "Injecting MCP servers and connections",
     );
+  } else if (writesOpencodeRunConfig(agentType)) {
+    // OpenCode's own config carries its headless permissions, servers
+    // or not (opencode-run-setup.ts).
+    Object.assign(env, harnessMcpFiles(agentType, mcp, setupFiles, input.runId));
   }
+  // And its headless rules, in pods no adapter pre-seeded (opencode-run-setup.ts).
+  withOpencodeRules(agentType, setupFiles);
   if (install.length > 0) env.OPTIO_MCP_INSTALL_COMMANDS = install.join(" && ");
 
   if (skills.length > 0) {

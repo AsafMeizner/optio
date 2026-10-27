@@ -110,7 +110,13 @@ const updateRepoSchema = z
       .optional(),
     slackEnabled: z.boolean().optional(),
     networkPolicy: z.enum(["unrestricted", "restricted"]).optional(),
-    secretProxy: z.boolean().optional(),
+    secretProxy: z
+      .boolean()
+      .refine(
+        (enabled) => !enabled,
+        "Secret proxy is unavailable: credential isolation is not supported",
+      )
+      .optional(),
     offPeakOnly: z.boolean().optional(),
     cpuRequest: z.string().nullable().optional(),
     cpuLimit: z.string().nullable().optional(),
@@ -302,15 +308,13 @@ export async function repoRoutes(rawApp: FastifyInstance) {
 
       try {
         const { detectRepoConfig } = await import("../services/repo-detect-service.js");
-        const githubToken = await getGitHubToken({ userId: req.user!.id }).catch(() => null);
-        if (githubToken) {
-          const detected = await detectRepoConfig(body.repoUrl, githubToken);
-          if (detected.imagePreset !== "base" || detected.testCommand) {
-            await repoService.updateRepo(repo.id, {
-              imagePreset: detected.imagePreset,
-              testCommand: detected.testCommand,
-            });
-          }
+        // The detector checks deployment-approved destinations before resolving credentials.
+        const detected = await detectRepoConfig(body.repoUrl);
+        if (detected.imagePreset !== "base" || detected.testCommand) {
+          await repoService.updateRepo(repo.id, {
+            imagePreset: detected.imagePreset,
+            testCommand: detected.testCommand,
+          });
         }
       } catch {
         /* non-critical */
@@ -493,8 +497,7 @@ export async function repoRoutes(rawApp: FastifyInstance) {
 
       try {
         const { detectRepoConfig } = await import("../services/repo-detect-service.js");
-        const githubToken = await getGitHubToken({ userId: req.user!.id });
-        const detected = await detectRepoConfig(repo.repoUrl, githubToken);
+        const detected = await detectRepoConfig(repo.repoUrl);
         await repoService.updateRepo(id, {
           imagePreset: detected.imagePreset,
           testCommand: detected.testCommand ?? undefined,

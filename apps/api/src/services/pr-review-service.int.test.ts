@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { prReviews } from "../db/schema.js";
-import { findReviewByUrl } from "./pr-review-service.js";
+import { findReviewByUrl, getPrStatus, mergePr } from "./pr-review-service.js";
+import { insertRepo, insertWorkspace } from "../test-utils/integration/fixtures.js";
 
 async function insertReview(prUrl: string, state: string, updatedAt: Date) {
   const [row] = await db
@@ -59,5 +60,26 @@ describe("findReviewByUrl", () => {
       return /pr_reviews_active_pr_url_key/.test(cause?.message ?? (err as Error).message);
     });
     await db.execute(sql`DELETE FROM "pr_reviews" WHERE "pr_url" = ${url}`);
+  });
+});
+
+describe("getPrStatus / mergePr with a caller's workspace", () => {
+  it("refuses a PR whose repo isn't registered in the caller's workspace, before any platform call", async () => {
+    const own = await insertWorkspace();
+    const other = await insertWorkspace();
+    const repo = await insertRepo({ workspaceId: other.id });
+    // Another workspace's repo, and a repo nobody registered: the server
+    // token must not read or merge either on this caller's behalf.
+    for (const prUrl of [
+      `${repo.repoUrl}/pull/7`,
+      "https://github.com/someone-else/private/pull/1",
+    ]) {
+      await expect(getPrStatus(prUrl, { workspaceId: own.id })).rejects.toThrow(
+        /not configured in this workspace/,
+      );
+      await expect(mergePr({ prUrl, mergeMethod: "squash", workspaceId: own.id })).rejects.toThrow(
+        /not configured in this workspace/,
+      );
+    }
   });
 });

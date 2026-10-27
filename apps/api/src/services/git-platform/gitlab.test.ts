@@ -1,3 +1,4 @@
+import { setOutboundDefaults } from "../../utils/outbound-url.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GitLabPlatform } from "./gitlab.js";
 import type { RepoIdentifier } from "@optio/shared";
@@ -16,8 +17,13 @@ const mockFetch = vi.fn();
 describe("GitLabPlatform", () => {
   let platform: GitLabPlatform;
   let originalFetch: typeof globalThis.fetch;
+  let restoreOutbound: () => void;
 
   beforeEach(() => {
+    restoreOutbound = setOutboundDefaults({
+      resolveHost: async () => [{ address: "93.184.216.34", family: 4 }],
+      fetchImpl: mockFetch,
+    });
     originalFetch = globalThis.fetch;
     globalThis.fetch = mockFetch as any;
     platform = new GitLabPlatform("glpat-test123");
@@ -26,6 +32,7 @@ describe("GitLabPlatform", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    restoreOutbound();
   });
 
   function mockJsonResponse(data: any, ok = true, status = 200) {
@@ -340,3 +347,38 @@ describe("GitLabPlatform", () => {
     });
   });
 });
+
+it.each(["getPullRequest", "createLabel"] as const)(
+  "never forwards PRIVATE-TOKEN through a redirect from %s",
+  async (operation) => {
+    const { createServer } = await import("node:http");
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      requests.push(req.url!);
+      res.writeHead(302, { location: `/stolen` });
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as import("node:net").AddressInfo;
+    const restore = setOutboundDefaults({
+      fetchImpl: undefined,
+      resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],
+      policy: { allowPrivate: false, allowAll: false, allowedHosts: ["127.0.0.1"] },
+    });
+    try {
+      const platform = new GitLabPlatform("private-token");
+      const target = { ...ri, apiBaseUrl: `http://gitlab.test:${port}/api/v4` };
+      await expect(
+        operation === "getPullRequest"
+          ? platform.getPullRequest(target, 1)
+          : platform.createLabel(target, { name: "optio", color: "00ff00" }),
+      ).rejects.toThrow();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).not.toBe("/stolen");
+    } finally {
+      restore();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);

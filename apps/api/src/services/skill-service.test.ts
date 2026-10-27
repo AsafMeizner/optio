@@ -405,6 +405,23 @@ describe("skill-service", () => {
       expect(paths.some((p) => p.endsWith("/"))).toBe(false);
     });
 
+    it("leaves out a skill whose name would put its files outside .claude/", () => {
+      const files = buildSkillSetupFiles([
+        { ...baseSkill, id: "s-1", name: "../../../../home/agent/.bashrc", prompt: "x" },
+        {
+          ...baseSkill,
+          id: "s-2",
+          name: "../../../repo/.git",
+          prompt: "x",
+          layout: "skill-dir",
+          files: [{ relativePath: "config", content: "[core]\n\tfsmonitor = id" }],
+        },
+        { ...baseSkill, id: "s-3", name: "..", prompt: "x", layout: "skill-dir" },
+        { ...baseSkill, id: "s-4", name: "Code Review", prompt: "ok" },
+      ]);
+      expect(files.map((f) => f.path)).toEqual([".claude/commands/Code Review.md"]);
+    });
+
     it("mixes layouts in a single batch", () => {
       const files = buildSkillSetupFiles([
         { ...baseSkill, id: "s-1", name: "legacy", prompt: "old style" },

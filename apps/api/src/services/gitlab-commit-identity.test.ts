@@ -1,20 +1,52 @@
+import { setOutboundDefaults } from "../utils/outbound-url.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getGitToken = vi.hoisted(() => vi.fn());
-vi.mock("./git-token-service.js", () => ({ getGitToken }));
+const trustedHost = vi.hoisted(() => vi.fn());
+vi.mock("./git-token-service.js", () => ({ getGitToken, isTrustedGitHost: trustedHost }));
 
 import { fakeGitLab } from "../test-utils/fake-gitlab.js";
 import { gitLabCommitIdentity, resetGitLabCommitIdentityCache } from "./gitlab-commit-identity.js";
 
 describe("gitLabCommitIdentity", () => {
+  let restoreOutbound: () => void;
   beforeEach(() => {
+    trustedHost.mockReset().mockResolvedValue(true);
+    restoreOutbound = setOutboundDefaults({
+      resolveHost: async () => [{ address: "93.184.216.34", family: 4 }],
+      fetchImpl: (input, init) => {
+        expect(init?.redirect).toBe("error");
+        return globalThis.fetch(input, init);
+      },
+    });
     vi.stubEnv("GITLAB_HOSTS", "gitlab.example.test");
     resetGitLabCommitIdentityCache();
     getGitToken.mockReset().mockResolvedValue("glpat-org");
   });
   afterEach(() => {
+    restoreOutbound();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it("does not read a credential for an untrusted GitLab host", async () => {
+    trustedHost.mockResolvedValue(false);
+    expect(await gitLabCommitIdentity("https://gitlab.attacker.test/g/r", null)).toBeNull();
+    expect(getGitToken).not.toHaveBeenCalled();
+  });
+
+  it("does not send a token to a private destination", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const restore = setOutboundDefaults({
+      resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],
+    });
+    try {
+      expect(await gitLabCommitIdentity("https://gitlab.com/g/r", null)).toBeNull();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
   });
 
   it("is the organization token's bot user, with GitLab's private commit email", async () => {

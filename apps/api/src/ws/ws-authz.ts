@@ -9,6 +9,7 @@
 
 import { getUserRole } from "../services/workspace-service.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
+import { canSee, type Actor } from "../services/ownership.js";
 
 /** Minimal WebSocket surface — avoids depending on @types/ws. */
 interface WsSocket {
@@ -42,6 +43,32 @@ export function assertWorkspace(
   const user = userWorkspaceId ?? null;
   const resource = resourceWorkspaceId ?? null;
   if (user !== resource) {
+    socket.close(WS_CLOSE_FORBIDDEN, "Access denied");
+    return false;
+  }
+  return true;
+}
+
+/** Apply the same workspace + private-owner rule as the HTTP work routes. */
+export function wsActor(user: {
+  id: string;
+  workspaceId: string | null;
+  workspaceRole?: string | null;
+}): Actor {
+  return {
+    userId: user.id,
+    workspaceId: user.workspaceId,
+    isAdmin: isAuthDisabled() || user.workspaceRole === "admin",
+  };
+}
+
+export function assertWorkVisible(
+  socket: WsSocket,
+  user: Parameters<typeof wsActor>[0],
+  resource: { workspaceId?: string | null; ownerUserId?: string | null },
+): boolean {
+  if (!assertWorkspace(socket, user.workspaceId, resource.workspaceId)) return false;
+  if (!canSee(resource.ownerUserId, wsActor(user))) {
     socket.close(WS_CLOSE_FORBIDDEN, "Access denied");
     return false;
   }

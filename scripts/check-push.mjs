@@ -87,7 +87,12 @@ export function runChecks(root, commands) {
   writeFileSync(receiptPath(root), "{}\n");
   for (const [command, ...args] of commands) {
     console.log(`\nChecking: ${[command, ...args].join(" ")}`);
-    const result = spawnSync(command, args, { cwd: root, stdio: "inherit" });
+    // Exercise CI-only behavior (including coverage) before the push too.
+    const result = spawnSync(command, args, {
+      cwd: root,
+      stdio: "inherit",
+      env: { ...process.env, CI: "true" },
+    });
     if (result.error) throw result.error;
     if (result.status !== 0)
       throw new Error(
@@ -111,9 +116,12 @@ if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
         ["pnpm", "turbo", "typecheck"],
         ["bash", "scripts/check-swift-types.sh"],
         ["bash", "scripts/check-kotlin-types.sh"],
+        ["pnpm", "security:audit"],
+        ["npm", "audit", "--prefix", "images/openclaw", "--omit=dev", "--audit-level=low"],
+        ["npm", "audit", "--prefix", "images/pi", "--omit=dev", "--audit-level=low"],
         ["pnpm", "turbo", "test"],
         ...(androidChanged(root) ? [["bash", "scripts/check-android.sh"]] : []),
-        ["pnpm", "--filter", "@optio/api", "test:integration"],
+        ["pnpm", "--filter", "@optio/api", "test:coverage"],
         ["pnpm", "--filter", "@optio/api", "test:e2e"],
         ["pnpm", "--filter", "@optio/web", "test:e2e"],
       ]);

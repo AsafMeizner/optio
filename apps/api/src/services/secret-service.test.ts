@@ -355,6 +355,19 @@ describe("secret-service", () => {
       expect(result).toBe("legacy-secret");
     });
 
+    it("rejects a truncated authentication tag", () => {
+      // GCM verifies a tag prefix: without a fixed tag length, a 4-byte
+      // prefix of the real tag decrypts — and is cheap to forge.
+      const aad = Buffer.from("API_KEY|global|global");
+      const blob = encrypt("secret-value", aad);
+      for (const n of [4, 8, 12]) {
+        expect(() => decrypt({ ...blob, authTag: blob.authTag.subarray(0, n) }, aad)).toThrow(
+          /authentication tag length/,
+        );
+      }
+      expect(decrypt(blob, aad)).toBe("secret-value");
+    });
+
     it("encrypts without AAD when none provided", () => {
       const blob = encrypt("no-aad-value");
       expect(blob.iv.length).toBe(12);

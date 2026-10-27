@@ -1,6 +1,16 @@
 import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -297,6 +307,33 @@ describe("WRITE_SETUP_FILES — a repo's own config", () => {
       [...buildEnvExports({ OPTIO_SETUP_FILES: encoded(files) }), ...WRITE_SETUP_FILES].join("\n"),
       dir,
     );
+
+  it("never writes a relative path outside the working directory, through .. or a symlink", () => {
+    const root = mkdtempSync(join(tmpdir(), "optio-escape-"));
+    const dir = join(root, "checkout");
+    const outside = join(root, "outside");
+    try {
+      mkdirSync(dir);
+      mkdirSync(outside);
+      // The checkout's own `.claude` is a symlink out of it.
+      symlinkSync(outside, join(dir, ".claude"));
+      write(
+        [
+          { path: "../escaped.md", content: "x" },
+          { path: ".claude/skills/../../../escaped2.md", content: "x" },
+          { path: ".claude/commands/linked.md", content: "x" },
+          { path: ".optio/task.md", content: "kept" },
+        ],
+        dir,
+      );
+      expect(existsSync(join(root, "escaped.md"))).toBe(false);
+      expect(existsSync(join(root, "escaped2.md"))).toBe(false);
+      expect(existsSync(join(outside, "commands/linked.md"))).toBe(false);
+      expect(readFileSync(join(dir, ".optio/task.md"), "utf8")).toBe("kept");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it("merges a `merge: json` file into the object already there, one level into shared objects", () => {
     const dir = mkdtempSync(join(tmpdir(), "optio-merge-"));

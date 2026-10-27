@@ -1,5 +1,8 @@
 /**
- * Envoy sidecar configuration for secret isolation in agent pods.
+ * Legacy, disabled Envoy sidecar configuration. This does NOT provide secret
+ * isolation: CONNECT does not decrypt client TLS, and per-run exec environments
+ * still contain credentials. Repo admission rejects secretProxy until a working
+ * implementation has end-to-end isolation tests. Do not enable this code.
  *
  * The sidecar acts as an HTTP forward proxy on localhost. The agent container
  * has HTTP_PROXY / HTTPS_PROXY pointed at the sidecar. Envoy intercepts

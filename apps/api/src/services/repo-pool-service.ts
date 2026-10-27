@@ -42,6 +42,7 @@ import {
   gitBotIdentity,
 } from "../utils/pod-env.js";
 import { removeRunHome, runHome } from "../utils/harness-config.js";
+import { restrictedAgentNetworkPolicy } from "../utils/agent-network-policy.js";
 import { resolveSecretsForSetup, workspaceRestrictsPodSecrets } from "./secret-service.js";
 
 /** The run env a repo pod starts with: git sign-in and the repo's setup. */
@@ -87,7 +88,10 @@ export async function repoPodEnv(
   const setupSecrets = await resolveSecretsForSetup(repoUrl, workspaceId, {
     orgSecrets: !(await workspaceRestrictsPodSecrets(workspaceId)),
   });
-  return { ...env, ...setupSecrets };
+  const podEnv = { ...env, ...setupSecrets };
+  const { restrictGitCredentialsToRepo } = await import("./git-access-env.js");
+  await restrictGitCredentialsToRepo(podEnv, repoUrl);
+  return podEnv;
 }
 
 const IDLE_TIMEOUT_MS = parseIntEnv("OPTIO_REPO_POD_IDLE_MS", 600000); // 10 min default
@@ -168,6 +172,15 @@ export async function getOrCreateRepoPod(
     credentialProfile?: unknown;
   },
 ): Promise<RepoPod> {
+  // The legacy CONNECT sidecar does not terminate client TLS or keep per-run
+  // credentials out of the agent's exec environment. Do not claim isolation,
+  // including when an existing pod would otherwise be reused.
+  if (opts?.secretProxy) {
+    throw new Error(
+      "Secret proxy is unavailable: the legacy sidecar does not isolate agent credentials. " +
+        "Disable secretProxy only if the agent is trusted with its configured credentials.",
+    );
+  }
   return withSpan("k8s.pod.get_or_create", { "k8s.repo_url": rawRepoUrl }, async () => {
     const repoUrl = normalizeRepoUrl(rawRepoUrl);
     const createFn = isStatefulSetEnabled() ? createRepoPodViaStatefulSet : createRepoPod;
@@ -405,7 +418,7 @@ spec:
 
     // Add Envoy sidecar containers and volumes when secret proxy is enabled
     if (secretProxy) {
-      const envoyImage = process.env.OPTIO_ENVOY_IMAGE ?? "envoyproxy/envoy:v1.31-latest";
+      const envoyImage = process.env.OPTIO_ENVOY_IMAGE ?? "envoyproxy/envoy:v1.39.5";
       const pullPolicy = (process.env.OPTIO_IMAGE_PULL_POLICY as string) ?? "IfNotPresent";
 
       const proxySecrets: SecretProxySecrets = {
@@ -464,17 +477,10 @@ spec:
       spec.extraVolumeMounts = [...(spec.extraVolumeMounts ?? []), ...cacheVolumeMounts];
     }
 
+    // Install restrictions before the pod starts. A failed policy write must
+    // fail provisioning, never silently launch an unrestricted agent.
+    if (networkPolicy === "restricted") await applyRestrictedNetworkPolicy(podName);
     const handle = await rt.create(spec);
-
-    // Create a K8s NetworkPolicy if restricted mode is enabled
-    if (networkPolicy === "restricted") {
-      await applyRestrictedNetworkPolicy(podName).catch((err) => {
-        logger.warn(
-          { err, podName },
-          "Failed to apply NetworkPolicy — pod will run without egress restrictions",
-        );
-      });
-    }
 
     const ready = await podPool.markPodReady(record.id, {
       podName: handle.name,
@@ -621,7 +627,7 @@ async function createRepoPodViaStatefulSet(
 
     // Add Envoy sidecar if secret proxy is enabled
     if (secretProxy) {
-      const envoyImage = process.env.OPTIO_ENVOY_IMAGE ?? "envoyproxy/envoy:v1.31-latest";
+      const envoyImage = process.env.OPTIO_ENVOY_IMAGE ?? "envoyproxy/envoy:v1.39.5";
       const pullPolicy = (process.env.OPTIO_IMAGE_PULL_POLICY as string) ?? "IfNotPresent";
       const proxySecrets: SecretProxySecrets = {
         githubToken: env.GITHUB_TOKEN,
@@ -722,6 +728,7 @@ async function createRepoPodViaStatefulSet(
       "Calling ensureStatefulSet",
     );
 
+    if (networkPolicy === "restricted") await applyRestrictedNetworkPolicy(podName);
     const sts = await manager.ensureStatefulSet({
       name: stsName,
       spec,
@@ -736,13 +743,6 @@ async function createRepoPodViaStatefulSet(
 
     // Wait for the pod to be running
     await manager.waitForPodRunning(podName);
-
-    // Apply network policy
-    if (networkPolicy === "restricted") {
-      await applyRestrictedNetworkPolicy(podName).catch((err) => {
-        logger.warn({ err, podName }, "Failed to apply NetworkPolicy");
-      });
-    }
 
     // Read pod UID
     const rt = getRuntime();
@@ -808,6 +808,8 @@ function taskSetupLines(
     REPO_INIT_TIMEOUT_SECS: String(Math.ceil(REPO_INIT_TIMEOUT_MS / 1000)),
   });
   const runToken = opts.runToken ?? randomUUID();
+  // A stored string, not checked everywhere it is set: always quoted.
+  const branch = env.OPTIO_REPO_BRANCH ?? "main";
 
   // Build worktree setup commands based on whether we're resetting or creating fresh
   const worktreeSetup = opts.resetWorktree
@@ -822,7 +824,7 @@ function taskSetupLines(
         `else`,
         `  echo "[optio] No existing worktree found, creating fresh..."`,
         `  git branch -D optio/task-${taskId} 2>/dev/null || true`,
-        `  if ! git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/${env.OPTIO_REPO_BRANCH ?? "main"}" 2>/dev/null; then`,
+        `  if ! git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} ${shellQuote(`origin/${branch}`)} 2>/dev/null; then`,
         `    echo "[optio] Cleaning up stale worktree references..."`,
         `    git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true`,
         `    for wt_path in $(git worktree list --porcelain | grep -B1 "branch refs/heads/optio/task-${taskId}$" | grep "^worktree " | cut -d" " -f2-); do`,
@@ -830,7 +832,7 @@ function taskSetupLines(
         `    done`,
         `    git worktree prune`,
         `    git branch -D optio/task-${taskId} 2>/dev/null || true`,
-        `    git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/${env.OPTIO_REPO_BRANCH ?? "main"}"`,
+        `    git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} ${shellQuote(`origin/${branch}`)}`,
         `  fi`,
         `fi`,
       ]
@@ -848,7 +850,7 @@ function taskSetupLines(
         `  git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} origin/optio/task-${taskId}`,
         `else`,
         `  git branch -D optio/task-${taskId} 2>/dev/null || true`,
-        `  if ! git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/${env.OPTIO_REPO_BRANCH ?? "main"}" 2>/dev/null; then`,
+        `  if ! git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} ${shellQuote(`origin/${branch}`)} 2>/dev/null; then`,
         `    echo "[optio] Cleaning up stale worktree references..."`,
         `    git worktree remove --force /workspace/tasks/${taskId}-wt 2>/dev/null || true`,
         `    for wt_path in $(git worktree list --porcelain | grep -B1 "branch refs/heads/optio/task-${taskId}$" | grep "^worktree " | cut -d" " -f2-); do`,
@@ -856,7 +858,7 @@ function taskSetupLines(
         `    done`,
         `    git worktree prune`,
         `    git branch -D optio/task-${taskId} 2>/dev/null || true`,
-        `    git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/${env.OPTIO_REPO_BRANCH ?? "main"}"`,
+        `    git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} ${shellQuote(`origin/${branch}`)}`,
         `  fi`,
         `fi`,
       ];
@@ -904,8 +906,8 @@ function taskSetupLines(
     `echo "[optio] Repo lock acquired"`,
     `cd /workspace/repo`,
     `git fetch origin`,
-    `git checkout "${env.OPTIO_REPO_BRANCH ?? "main"}" 2>/dev/null || true`,
-    `git reset --hard "origin/${env.OPTIO_REPO_BRANCH ?? "main"}"`,
+    `git checkout ${shellQuote(branch)} 2>/dev/null || true`,
+    `git reset --hard ${shellQuote(`origin/${branch}`)}`,
     ...worktreeSetup,
     ...(opts.pruneStaleWorktrees
       ? [
@@ -1187,57 +1189,19 @@ export async function listRepoPodsForRepo(repoUrl: string): Promise<RepoPod[]> {
 
 /**
  * Apply a restricted egress NetworkPolicy to a repo pod.
- * Allows only: DNS (port 53), AI provider APIs, GitHub, and intra-namespace Optio API.
+ * Allows cluster DNS, public HTTPS, and the Optio API port. Standard
+ * NetworkPolicy is IP/port based; it cannot restrict destinations by domain.
  */
 async function applyRestrictedNetworkPolicy(podName: string): Promise<void> {
   const namespace = process.env.OPTIO_NAMESPACE ?? "optio";
   const policyName = `optio-egress-${podName}`;
 
-  const manifest = {
-    apiVersion: "networking.k8s.io/v1",
-    kind: "NetworkPolicy",
-    metadata: {
-      name: policyName,
-      namespace,
-      labels: {
-        "managed-by": "optio",
-        "optio.type": "egress-policy",
-        "optio.pod-name": podName,
-      },
-    },
-    spec: {
-      podSelector: {
-        matchLabels: {
-          "optio.type": "repo-pod",
-          "optio.network-policy": "restricted",
-        },
-      },
-      policyTypes: ["Egress"],
-      egress: [
-        // Allow DNS (kube-dns, port 53 UDP+TCP)
-        {
-          ports: [
-            { protocol: "UDP", port: 53 },
-            { protocol: "TCP", port: 53 },
-          ],
-        },
-        // Allow HTTPS to AI provider APIs and GitHub (port 443)
-        {
-          ports: [{ protocol: "TCP", port: 443 }],
-        },
-        // Allow intra-namespace traffic (Optio API server for callbacks/token refresh)
-        {
-          to: [
-            {
-              namespaceSelector: {
-                matchLabels: { "kubernetes.io/metadata.name": namespace },
-              },
-            },
-          ],
-        },
-      ],
-    },
-  };
+  const manifest = restrictedAgentNetworkPolicy(
+    podName,
+    namespace,
+    Number.parseInt(process.env.API_PORT ?? "4000", 10),
+    JSON.parse(process.env.OPTIO_AGENT_DENIED_EGRESS_CIDRS ?? "[]"),
+  );
 
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");

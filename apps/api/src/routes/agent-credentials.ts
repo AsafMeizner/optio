@@ -65,7 +65,9 @@ const createBodySchema = z
     agentType: AgentTypeSchema,
     secretName: SecretNameSchema,
     value: z.string().min(1).max(100_000).describe("Write-only; never returned"),
-    owner: OwnerSchema.describe("`workspace` needs an admin; `me` any member"),
+    owner: OwnerSchema.describe(
+      "`workspace` stores a deployment-wide credential and needs a deployment admin; `me` any member",
+    ),
     verify: z
       .boolean()
       .optional()
@@ -141,7 +143,7 @@ export async function agentCredentialRoutes(rawApp: FastifyInstance) {
         operationId: "createAgentCredential",
         summary: "Store a sign-in for an agent",
         description:
-          "Stores the value as the named secret — the organization's (admins only) or the " +
+          "Stores the value as the named secret — shared across the deployment (deployment admins only) or the " +
           "caller's own — replacing that owner's existing one, after checking it with the " +
           "service when it can be checked. Returns the credential as the list shows it.",
         tags: ["Setup & Settings"],

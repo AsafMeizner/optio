@@ -7,7 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createSubscriber } from "../services/event-bus.js";
 import { authenticateWs } from "./ws-auth.js";
-import { assertWorkspace } from "./ws-authz.js";
+import { assertWorkVisible } from "./ws-authz.js";
 import {
   getPersistentAgentUnscoped,
   listPersistentAgentTurns,
@@ -32,7 +32,7 @@ export async function persistentAgentStreamWs(app: FastifyInstance) {
     }
 
     // Enforce workspace isolation before streaming the agent's turn output.
-    if (!assertWorkspace(socket, user.workspaceId, agent.workspaceId)) {
+    if (!assertWorkVisible(socket, user, agent)) {
       return conn.discard();
     }
 

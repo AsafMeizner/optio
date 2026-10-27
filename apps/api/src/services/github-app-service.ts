@@ -2,12 +2,14 @@ import type { Signer } from "./crypto/signer.js";
 import { Rs256Signer, MlDsa65Signer } from "./crypto/signer.js";
 import { logger } from "../logger.js";
 
-// A per-instance cache of the installation token (an hour long; GitHub
-// mints as many as are asked for and rotates nothing), so every API
-// instance fetching its own is correct — the lock only folds concurrent
-// callers within this process onto one fetch. Not shared state.
-let cachedToken: { token: string; expiresAt: number } | null = null;
-let installationTokenLock: Promise<string> | null = null;
+// A per-instance cache of installation tokens (an hour long; GitHub mints
+// as many as are asked for and rotates nothing), so every API instance
+// fetching its own is correct — the locks only fold concurrent callers
+// within this process onto one fetch. Not shared state. Keyed by
+// installation and repo: the API's own token (every repo of the
+// installation) and one per repo a pod works in.
+const cachedTokens = new Map<string, { token: string; expiresAt: number }>();
+const installationTokenLocks = new Map<string, Promise<string>>();
 
 const TOKEN_CACHE_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 
@@ -65,30 +67,42 @@ export async function generateJwt(): Promise<string> {
   return `${header}.${payload}.${signature}`;
 }
 
-export async function getInstallationToken(): Promise<string> {
-  if (cachedToken && Date.now() < cachedToken.expiresAt - TOKEN_CACHE_BUFFER_MS) {
-    return cachedToken.token;
-  }
+/** One repository of the installation's account, for a token that reaches only it. */
+export interface InstallationRepo {
+  owner: string;
+  name: string;
+}
+
+/**
+ * An installation token. Without `repo` it reaches every repository the
+ * installation does — for the API's own calls only. With `repo` it reaches
+ * that one repository (`repositories: [name]`): what a pod, whose agent may
+ * be prompt-injected, is given — never the whole installation.
+ */
+export async function getInstallationToken(repo?: InstallationRepo): Promise<string> {
+  const installationId = process.env.GITHUB_APP_INSTALLATION_ID!;
+  const key = `${installationId}:${repo ? `${repo.owner}/${repo.name}`.toLowerCase() : "*"}`;
+  const cached = cachedTokens.get(key);
+  if (cached && Date.now() < cached.expiresAt - TOKEN_CACHE_BUFFER_MS) return cached.token;
 
   // Dedup concurrent requests: if a fetch is already in-flight, reuse it
-  if (installationTokenLock) return installationTokenLock;
+  const inFlight = installationTokenLocks.get(key);
+  if (inFlight) return inFlight;
 
-  const fetchPromise = fetchInstallationToken();
-  installationTokenLock = fetchPromise;
+  const fetchPromise = fetchInstallationToken(installationId, key, repo);
+  installationTokenLocks.set(key, fetchPromise);
   try {
     return await fetchPromise;
   } finally {
-    installationTokenLock = null;
+    installationTokenLocks.delete(key);
   }
 }
 
-async function fetchInstallationToken(): Promise<string> {
-  // Re-check cache after acquiring the lock (another caller may have populated it)
-  if (cachedToken && Date.now() < cachedToken.expiresAt - TOKEN_CACHE_BUFFER_MS) {
-    return cachedToken.token;
-  }
-
-  const installationId = process.env.GITHUB_APP_INSTALLATION_ID!;
+async function fetchInstallationToken(
+  installationId: string,
+  key: string,
+  repo: InstallationRepo | undefined,
+): Promise<string> {
   const jwt = await generateJwt();
 
   const res = await fetch(
@@ -99,7 +113,9 @@ async function fetchInstallationToken(): Promise<string> {
         Authorization: `Bearer ${jwt}`,
         Accept: "application/vnd.github.v3+json",
         "User-Agent": "Optio",
+        ...(repo ? { "Content-Type": "application/json" } : {}),
       },
+      ...(repo ? { body: JSON.stringify({ repositories: [repo.name] }) } : {}),
     },
   );
 
@@ -107,13 +123,26 @@ async function fetchInstallationToken(): Promise<string> {
     throw new Error(`Failed to get installation token: ${res.status} ${res.statusText}`);
   }
 
-  const data = (await res.json()) as { token: string; expires_at: string };
-  cachedToken = { token: data.token, expiresAt: new Date(data.expires_at).getTime() };
+  const data = (await res.json()) as {
+    token: string;
+    expires_at: string;
+    repositories?: { full_name?: string }[];
+  };
+  if (repo) {
+    // `repositories` names a repo of the installation's account: make sure
+    // it is this one (not a same-named repo of another owner), and only it.
+    const want = `${repo.owner}/${repo.name}`.toLowerCase();
+    const got = (data.repositories ?? []).map((r) => r.full_name?.toLowerCase());
+    if (got.length !== 1 || got[0] !== want) {
+      throw new Error(`The GitHub App installation token is not limited to ${want}`);
+    }
+  }
+  cachedTokens.set(key, { token: data.token, expiresAt: new Date(data.expires_at).getTime() });
   return data.token;
 }
 
 export function resetTokenCache(): void {
-  cachedToken = null;
-  installationTokenLock = null;
+  cachedTokens.clear();
+  installationTokenLocks.clear();
   _appSigner = null;
 }

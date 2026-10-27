@@ -1,18 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GitLabTicketProvider } from "./gitlab.js";
 import type { GitLabProviderConfig } from "./gitlab.js";
 
-vi.mock("@optio/shared/ssrf", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@optio/shared/ssrf")>();
-  return {
-    ...actual,
-    assertSsrfSafe: vi.fn(),
-  };
-});
-
-import { assertSsrfSafe, SsrfError } from "@optio/shared/ssrf";
-
-const mockAssertSsrfSafe = assertSsrfSafe as ReturnType<typeof vi.fn>;
+import { setOutboundDefaults } from "@optio/shared/outbound-http";
+import { SsrfError } from "@optio/shared/ssrf";
+const mockResolveHost = vi.fn();
+let restoreOutbound: () => void;
 
 function baseConfig(): GitLabProviderConfig {
   return {
@@ -23,10 +16,16 @@ function baseConfig(): GitLabProviderConfig {
 }
 
 beforeEach(() => {
-  mockAssertSsrfSafe.mockReset();
-  mockAssertSsrfSafe.mockResolvedValue(undefined);
   vi.restoreAllMocks();
+  mockResolveHost.mockReset();
+  mockResolveHost.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  restoreOutbound = setOutboundDefaults({
+    resolveHost: mockResolveHost,
+    fetchImpl: (url, init) => fetch(url, init),
+    policy: { allowPrivate: false, allowAll: false, allowedHosts: [] },
+  });
 });
+afterEach(() => restoreOutbound());
 
 describe("GitLabTicketProvider sign-in", () => {
   it("sends the token as Authorization: Bearer, which takes every GitLab token kind", async () => {
@@ -47,7 +46,7 @@ describe("GitLabTicketProvider sign-in", () => {
 });
 
 describe("GitLabTicketProvider SSRF protection", () => {
-  it("calls assertSsrfSafe before fetching issues", async () => {
+  it("vets and pins DNS before fetching issues", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify([]), {
         status: 200,
@@ -58,14 +57,14 @@ describe("GitLabTicketProvider SSRF protection", () => {
     const provider = new GitLabTicketProvider();
     await provider.fetchActionableTickets(baseConfig());
 
-    expect(mockAssertSsrfSafe).toHaveBeenCalled();
-    const calledUrl = mockAssertSsrfSafe.mock.calls[0][0] as string;
-    expect(calledUrl).toContain("https://gitlab.com/api/v4");
+    expect(mockResolveHost).toHaveBeenCalled();
+    const calledUrl = mockResolveHost.mock.calls[0][0] as string;
+    expect(calledUrl).toBe("gitlab.com");
     fetchSpy.mockRestore();
   });
 
   it("throws SsrfError when host resolves to private address", async () => {
-    mockAssertSsrfSafe.mockRejectedValueOnce(
+    mockResolveHost.mockRejectedValueOnce(
       new SsrfError("DNS resolved evil.example.com to private address 169.254.169.254"),
     );
 
@@ -78,7 +77,7 @@ describe("GitLabTicketProvider SSRF protection", () => {
     await expect(provider.fetchActionableTickets(config)).rejects.toThrow(SsrfError);
   });
 
-  it("calls assertSsrfSafe before adding a comment", async () => {
+  it("vets and pins DNS before adding a comment", async () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 201 }));
@@ -86,11 +85,11 @@ describe("GitLabTicketProvider SSRF protection", () => {
     const provider = new GitLabTicketProvider();
     await provider.addComment("1", "test comment", baseConfig());
 
-    expect(mockAssertSsrfSafe).toHaveBeenCalled();
+    expect(mockResolveHost).toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 
-  it("calls assertSsrfSafe before fetching comments", async () => {
+  it("vets and pins DNS before fetching comments", async () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
@@ -98,11 +97,11 @@ describe("GitLabTicketProvider SSRF protection", () => {
     const provider = new GitLabTicketProvider();
     await provider.fetchTicketComments("1", baseConfig());
 
-    expect(mockAssertSsrfSafe).toHaveBeenCalled();
+    expect(mockResolveHost).toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 
-  it("calls assertSsrfSafe before updating state", async () => {
+  it("vets and pins DNS before updating state", async () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }));
@@ -110,7 +109,7 @@ describe("GitLabTicketProvider SSRF protection", () => {
     const provider = new GitLabTicketProvider();
     await provider.updateState("1", "closed", baseConfig());
 
-    expect(mockAssertSsrfSafe).toHaveBeenCalled();
+    expect(mockResolveHost).toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 
@@ -161,4 +160,28 @@ describe("GitLabTicketProvider basic functionality", () => {
     expect(tickets[0].title).toBe("Test Issue");
     expect(tickets[0].source).toBe("gitlab");
   });
+});
+
+it("blocks a private DNS answer before sending the GitLab token", async () => {
+  mockResolveHost.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+  const fetchSpy = vi.spyOn(globalThis, "fetch");
+  await expect(new GitLabTicketProvider().fetchActionableTickets(baseConfig())).rejects.toThrow(
+    SsrfError,
+  );
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it("rechecks each page and rejects DNS rebinding before the next authenticated request", async () => {
+  mockResolveHost
+    .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
+    .mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(JSON.stringify([{ iid: 1 }]), {
+      headers: { "x-total-pages": "2" },
+    }),
+  );
+  await expect(new GitLabTicketProvider().fetchActionableTickets(baseConfig())).rejects.toThrow(
+    SsrfError,
+  );
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
 });
