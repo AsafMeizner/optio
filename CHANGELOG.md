@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-27
+
+### Added
+
+- Optio Local reads the agent's own status. The daemon's terminal answers the OSC 7501 Program Status Protocol query (the protocol Ghostty 1.4 ships and Claude Code, Pi and Crush emit), so an agent reports `working`, `blocked` (waiting for permission, a question, or a sign-in), `done`, `error` and `idle` itself instead of Optio inferring them from hooks, bells and silence. The "needs you" queue and the terminal cards, on the web, iOS and Android, say what the agent is waiting for.
+
 ## [0.20.0] - 2026-10-25
 
 ### Added
