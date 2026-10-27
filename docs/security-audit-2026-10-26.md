@@ -23,6 +23,13 @@ The new Pi image dependency tree also contained vulnerable Undici 8.10.2. Its
 existing Pi 1.4.0 default now uses an audited lockfile with Undici 8.12.3; optional
 runtime selection and the explicit Pi version override remain available.
 
+The verification pass also exposed a run-handoff clock mismatch: releasing a
+lease used the API clock while claiming it used Postgres time. A fast API clock
+could leave a released lease temporarily unclaimable. Release now uses database
+time; a deterministic clock-skew regression verifies immediate handoff and that
+an old holder cannot release the newer holder's lease. Browser test cleanup also
+drains in-flight mock requests before disposing their response context.
+
 Unrelated unfinished Codex-login and session-UI edits were kept out of this PR.
 Their security guards remain in the original working tree and must accompany
 those features when they are submitted.
