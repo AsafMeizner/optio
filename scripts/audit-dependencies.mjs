@@ -62,7 +62,17 @@ if (unpatched.length || (reported > 0 && localFixes === 0) || ![0, 1].includes(r
 if (!patchApplied) throw new Error("The reviewed Zod patch is missing or has changed.");
 const regression = spawnSync(
   "pnpm",
-  ["--filter", "@optio/api", "exec", "vitest", "run", "src/schemas/collection-limits.test.ts"],
+  [
+    "--filter",
+    "@optio/api",
+    "exec",
+    "vitest",
+    "run",
+    // These tests cover a dependency patch, not the application. Whole-API
+    // coverage thresholds still run in the separate, complete unit-test job.
+    "--coverage.enabled=false",
+    "src/schemas/collection-limits.test.ts",
+  ],
   { cwd: root, stdio: "inherit" },
 );
 if (regression.error || regression.status !== 0) {
