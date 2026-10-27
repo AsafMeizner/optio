@@ -1,9 +1,16 @@
 import type { LocalAttentionState } from "@optio/shared";
+import type { ProgramStatusReport } from "./program-status.js";
 
 /**
  * Per-terminal attention state machine (see docs/optio-local.md).
  *
  * Layered, best signal wins:
+ * 0. Program status (OSC 7501) — the program says so itself: `working`,
+ *    `blocked` (kind: permission / question / auth), `done`, `error`, `idle`.
+ *    Once a terminal's program has reported, it owns the terminal: hooks,
+ *    bells and silence are ignored for it (Claude Code sends both hooks and
+ *    status, and the status is the finer of the two — a `Stop` hook followed
+ *    by `idle` would otherwise leave a stale needs_you).
  * 1. Claude Code hooks — once any hook fires for a terminal, heuristics are
  *    disabled for it.
  * 2. Terminal bell — a BEL that is not an OSC/DCS/APC/PM string terminator.
@@ -60,6 +67,30 @@ export function mapHookEvent(
   }
 }
 
+/**
+ * Map a program's own status report (OSC 7501, root record) onto an
+ * attention transition. `blocked` names why in the reason (`permission`,
+ * `question`, `auth`, or plain `blocked`); `clear` is not a state.
+ */
+export function mapProgramStatus(
+  report: ProgramStatusReport,
+): { state: LocalAttentionState; reason: string } | null {
+  switch (report.state) {
+    case "working":
+      return { state: "working", reason: "status" };
+    case "idle":
+      return { state: "idle", reason: "status" };
+    case "blocked":
+      return { state: "needs_you", reason: report.kind ?? "blocked" };
+    case "done":
+      return { state: "needs_you", reason: "done" };
+    case "error":
+      return { state: "needs_you", reason: "error" };
+    default:
+      return null;
+  }
+}
+
 const ESC = 0x1b;
 const BEL = 0x07;
 
@@ -69,6 +100,8 @@ interface TermAttention {
   /** Agent CLI spawn: silence is read as "waiting on you", not idle. */
   agent: boolean;
   hasHooks: boolean;
+  /** The program reports its own status (OSC 7501): nothing else counts. */
+  hasStatus: boolean;
   producedOutput: boolean;
   /** Inside an OSC/DCS/APC/PM string sequence (survives chunk splits). */
   inString: boolean;
@@ -115,7 +148,7 @@ export class AttentionTracker {
   /** Feed a chunk of PTY output. Returns any synchronous transitions. */
   feed(terminalId: string, chunk: Buffer): AttentionEvent[] {
     const t = this.get(terminalId);
-    if (t.hasHooks) return []; // hooks own this terminal
+    if (t.hasHooks || t.hasStatus) return []; // hooks or the program own this terminal
 
     const events: AttentionEvent[] = [];
     t.producedOutput = true;
@@ -167,6 +200,7 @@ export class AttentionTracker {
   /** A Claude Code hook fired for this terminal. Returns any transition. */
   hookEvent(terminalId: string, hookEventName: string): AttentionEvent[] {
     const t = this.get(terminalId);
+    if (t.hasStatus) return []; // the program reports its own status
     if (!t.hasHooks) {
       t.hasHooks = true;
       this.clearSilenceTimer(t);
@@ -188,6 +222,26 @@ export class AttentionTracker {
   }
 
   /**
+   * The program reported its own status over OSC 7501 (from the screen
+   * model). The first report retires every other signal for the terminal.
+   * Only the root record drives attention: a subagent's record (`id`) says
+   * nothing about whether the program as a whole is waiting on you, and
+   * `clear` removes records without saying what the program is doing.
+   */
+  statusEvent(terminalId: string, report: ProgramStatusReport): AttentionEvent[] {
+    const t = this.get(terminalId);
+    if (!t.hasStatus) {
+      t.hasStatus = true;
+      this.clearSilenceTimer(t);
+    }
+    if (report.id !== null) return [];
+    const mapped = mapProgramStatus(report);
+    if (!mapped) return [];
+    const event = this.transition(t, terminalId, mapped.state, mapped.reason);
+    return event ? [event] : [];
+  }
+
+  /**
    * User input was written to the terminal's PTY — "the human responded".
    * Clears needs_you (and idle) back to working. Hook-owned terminals are
    * untouched: their UserPromptSubmit hook is the authoritative signal.
@@ -198,7 +252,7 @@ export class AttentionTracker {
     // Any keystroke answers a needs_you for staleness purposes, even on a
     // hook-owned terminal (an Enter in a menu fires no UserPromptSubmit).
     this.clearStaleTimer(t);
-    if (t.hasHooks) return []; // hooks own this terminal
+    if (t.hasHooks || t.hasStatus) return []; // hooks or the program own this terminal
     if (t.state !== "needs_you" && t.state !== "idle") return [];
     const event = this.transition(t, terminalId, "working", "input");
     this.resetSilenceTimer(terminalId, t);
@@ -208,6 +262,11 @@ export class AttentionTracker {
   /** Whether hooks have fired for a terminal (heuristics disabled). */
   hasHooks(terminalId: string): boolean {
     return this.terminals.get(terminalId)?.hasHooks ?? false;
+  }
+
+  /** Whether the program reports its own status for a terminal (everything else ignored). */
+  hasStatus(terminalId: string): boolean {
+    return this.terminals.get(terminalId)?.hasStatus ?? false;
   }
 
   /** Forget a terminal (on exit): clears its timer and state. */
@@ -227,6 +286,7 @@ export class AttentionTracker {
         reason: null,
         agent: false,
         hasHooks: false,
+        hasStatus: false,
         producedOutput: false,
         inString: false,
         pendingEsc: false,
@@ -278,7 +338,7 @@ export class AttentionTracker {
       t.silenceTimer = null;
       // Silence is the weakest signal: it only moves a `working` terminal.
       // A needs_you terminal that goes quiet is still waiting on the user.
-      if (t.hasHooks || !t.producedOutput || t.state !== "working") return;
+      if (t.hasHooks || t.hasStatus || !t.producedOutput || t.state !== "working") return;
       if (t.agent) this.transition(t, terminalId, "needs_you", "quiet");
       else if (t.hadInput) this.transition(t, terminalId, "needs_you", "finished");
       else this.transition(t, terminalId, "idle", "silence");

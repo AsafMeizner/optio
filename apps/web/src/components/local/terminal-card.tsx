@@ -278,6 +278,12 @@ const ATTENTION_LABELS: Record<string, string> = {
   exit: "finished — review the result",
   done: "done — review the result",
   stale: "went quiet a while ago",
+  // What the program itself reports (OSC 7501).
+  permission: "waiting for your permission",
+  question: "has a question for you",
+  auth: "needs you to sign in",
+  blocked: "blocked — waiting on you",
+  error: "failed — review the error",
 };
 
 export function attentionLabel(reason: string | null): string {
