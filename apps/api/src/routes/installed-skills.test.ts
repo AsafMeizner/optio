@@ -67,6 +67,16 @@ describe("POST /api/installed-skills", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("rejects a sourceUrl or ref git would read as an option", async () => {
+    for (const payload of [
+      { name: "x", sourceUrl: "--upload-pack=touch /tmp/pwned" },
+      { name: "x", sourceUrl: "https://example.com/x.git", ref: "--output=/tmp/x" },
+    ]) {
+      const res = await app.inject({ method: "POST", url: "/api/installed-skills", payload });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
   it("rejects an invalid skill name", async () => {
     const res = await app.inject({
       method: "POST",

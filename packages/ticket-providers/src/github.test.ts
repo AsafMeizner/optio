@@ -5,11 +5,13 @@ import type { GitHubProviderConfig } from "./github.js";
 // Mock Octokit
 vi.mock("@octokit/rest", () => {
   return {
-    Octokit: vi.fn().mockImplementation(() => ({
-      issues: {
-        listForRepo: vi.fn(),
-      },
-    })),
+    Octokit: vi.fn().mockImplementation(function () {
+      return {
+        issues: {
+          listForRepo: vi.fn(),
+        },
+      };
+    }),
   };
 });
 
@@ -40,9 +42,9 @@ describe("GitHubTicketProvider pagination", () => {
       data: issues,
       headers: { link: "" },
     });
-    vi.mocked(Octokit).mockImplementation(
-      () => ({ issues: { listForRepo } }) as unknown as InstanceType<typeof Octokit>,
-    );
+    vi.mocked(Octokit).mockImplementation(function () {
+      return { issues: { listForRepo } } as unknown as InstanceType<typeof Octokit>;
+    });
 
     const provider = new GitHubTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -69,9 +71,9 @@ describe("GitHubTicketProvider pagination", () => {
         headers: { link: "" },
       });
 
-    vi.mocked(Octokit).mockImplementation(
-      () => ({ issues: { listForRepo } }) as unknown as InstanceType<typeof Octokit>,
-    );
+    vi.mocked(Octokit).mockImplementation(function () {
+      return { issues: { listForRepo } } as unknown as InstanceType<typeof Octokit>;
+    });
 
     const provider = new GitHubTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -91,9 +93,9 @@ describe("GitHubTicketProvider pagination", () => {
       },
     });
 
-    vi.mocked(Octokit).mockImplementation(
-      () => ({ issues: { listForRepo } }) as unknown as InstanceType<typeof Octokit>,
-    );
+    vi.mocked(Octokit).mockImplementation(function () {
+      return { issues: { listForRepo } } as unknown as InstanceType<typeof Octokit>;
+    });
 
     const provider = new GitHubTicketProvider();
     const config: GitHubProviderConfig = { ...baseConfig(), maxPages: 2 };
@@ -109,9 +111,9 @@ describe("GitHubTicketProvider pagination", () => {
       headers: { link: "" },
     });
 
-    vi.mocked(Octokit).mockImplementation(
-      () => ({ issues: { listForRepo } }) as unknown as InstanceType<typeof Octokit>,
-    );
+    vi.mocked(Octokit).mockImplementation(function () {
+      return { issues: { listForRepo } } as unknown as InstanceType<typeof Octokit>;
+    });
 
     const provider = new GitHubTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -131,9 +133,9 @@ describe("GitHubTicketProvider pagination", () => {
       headers: { link: "" },
     });
 
-    vi.mocked(Octokit).mockImplementation(
-      () => ({ issues: { listForRepo } }) as unknown as InstanceType<typeof Octokit>,
-    );
+    vi.mocked(Octokit).mockImplementation(function () {
+      return { issues: { listForRepo } } as unknown as InstanceType<typeof Octokit>;
+    });
 
     const provider = new GitHubTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());

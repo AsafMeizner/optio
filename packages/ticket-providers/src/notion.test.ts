@@ -4,23 +4,25 @@ import type { NotionProviderConfig } from "./notion.js";
 
 vi.mock("@notionhq/client", () => {
   return {
-    Client: vi.fn().mockImplementation(() => ({
-      databases: {
-        query: vi.fn(),
-      },
-      blocks: {
-        children: {
-          list: vi.fn(),
+    Client: vi.fn().mockImplementation(function () {
+      return {
+        databases: {
+          query: vi.fn(),
         },
-      },
-      comments: {
-        list: vi.fn(),
-        create: vi.fn(),
-      },
-      pages: {
-        update: vi.fn(),
-      },
-    })),
+        blocks: {
+          children: {
+            list: vi.fn(),
+          },
+        },
+        comments: {
+          list: vi.fn(),
+          create: vi.fn(),
+        },
+        pages: {
+          update: vi.fn(),
+        },
+      };
+    }),
   };
 });
 
@@ -95,13 +97,12 @@ describe("NotionTicketProvider fetchActionableTickets", () => {
       ],
     });
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          databases: { query },
-          blocks: { children: { list: blocksList } },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        databases: { query },
+        blocks: { children: { list: blocksList } },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -136,13 +137,12 @@ describe("NotionTicketProvider fetchActionableTickets", () => {
       results: [],
     });
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          databases: { query },
-          blocks: { children: { list: blocksList } },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        databases: { query },
+        blocks: { children: { list: blocksList } },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -167,13 +167,12 @@ describe("NotionTicketProvider fetchActionableTickets", () => {
       results: [],
     });
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          databases: { query },
-          blocks: { children: { list: blocksList } },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        databases: { query },
+        blocks: { children: { list: blocksList } },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const config: NotionProviderConfig = { ...baseConfig(), maxPages: 1 };
@@ -191,13 +190,12 @@ describe("NotionTicketProvider fetchActionableTickets", () => {
       next_cursor: null,
     });
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          databases: { query },
-          blocks: { children: { list: vi.fn() } },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        databases: { query },
+        blocks: { children: { list: vi.fn() } },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -222,13 +220,12 @@ describe("NotionTicketProvider fetchActionableTickets", () => {
       results: [],
     });
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          databases: { query },
-          blocks: { children: { list: blocksList } },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        databases: { query },
+        blocks: { children: { list: blocksList } },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -253,13 +250,12 @@ describe("NotionTicketProvider fetchActionableTickets", () => {
       ],
     });
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          databases: { query },
-          blocks: { children: { list: blocksList } },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        databases: { query },
+        blocks: { children: { list: blocksList } },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -286,13 +282,12 @@ describe("NotionTicketProvider fetchActionableTickets", () => {
       next_cursor: null,
     });
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          databases: { query },
-          blocks: { children: { list: vi.fn() } },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        databases: { query },
+        blocks: { children: { list: vi.fn() } },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const config: NotionProviderConfig = {
@@ -334,12 +329,11 @@ describe("NotionTicketProvider fetchTicketComments", () => {
       ],
     });
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          comments: { list: commentsList },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        comments: { list: commentsList },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const comments = await provider.fetchTicketComments("page-123", baseConfig());
@@ -366,12 +360,11 @@ describe("NotionTicketProvider addComment", () => {
   it("creates a comment on a page", async () => {
     const create = vi.fn().mockResolvedValueOnce({});
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          comments: { create },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        comments: { create },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     await provider.addComment("page-123", "Agent completed the task", baseConfig());
@@ -392,12 +385,11 @@ describe("NotionTicketProvider updateState", () => {
   it("updates page status to done value when closing", async () => {
     const update = vi.fn().mockResolvedValueOnce({});
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          pages: { update },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        pages: { update },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     await provider.updateState("page-123", "closed", baseConfig());
@@ -415,12 +407,11 @@ describe("NotionTicketProvider updateState", () => {
   it("updates page status to open value when reopening", async () => {
     const update = vi.fn().mockResolvedValueOnce({});
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          pages: { update },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        pages: { update },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     await provider.updateState("page-123", "open", baseConfig());
@@ -438,12 +429,11 @@ describe("NotionTicketProvider updateState", () => {
   it("uses custom statusProperty and doneValue", async () => {
     const update = vi.fn().mockResolvedValueOnce({});
 
-    vi.mocked(Client).mockImplementation(
-      () =>
-        ({
-          pages: { update },
-        }) as unknown as InstanceType<typeof Client>,
-    );
+    vi.mocked(Client).mockImplementation(function () {
+      return {
+        pages: { update },
+      } as unknown as InstanceType<typeof Client>;
+    });
 
     const provider = new NotionTicketProvider();
     const config: NotionProviderConfig = {

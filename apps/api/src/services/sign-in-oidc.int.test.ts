@@ -149,6 +149,8 @@ describe("OIDC configuration and account links", () => {
       { linkByEmail: true },
     );
     expect(trusted.user.id).not.toBe(tess.id);
+    const [unasserted] = await db.select().from(users).where(eq(users.id, trusted.user.id));
+    expect(unasserted.emailVerified).toBe(false);
     const viaLdap = await createSession("ldap", asLena("ldap-entry"), { linkByEmail: true });
     expect(viaLdap.user.id).toBe(lena.id);
     // The account keeps the identity it was made with; the new one is linked beside it.

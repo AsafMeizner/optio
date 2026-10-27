@@ -3,6 +3,13 @@ export { ClaudeCodeAdapter } from "./claude-code.js";
 export { CodexAdapter } from "./codex.js";
 export { CopilotAdapter } from "./copilot.js";
 export { OpenCodeAdapter, OPENCODE_PLACEHOLDER_KEY, OPENCODE_PROVIDER_KEYS } from "./opencode.js";
+export {
+  OPENCODE_AUTO_APPROVE_FLAG,
+  OPENCODE_GLOBAL_AGENTS_MD,
+  OPENCODE_GLOBAL_AGENTS_MD_PATH,
+  opencodeHeadlessEnabled,
+  opencodeHeadlessPermission,
+} from "./opencode-headless.js";
 export { GeminiAdapter } from "./gemini.js";
 export { OpenClawAdapter } from "./openclaw.js";
 export { PiAdapter, PI_PROVIDER_KEYS } from "./pi.js";

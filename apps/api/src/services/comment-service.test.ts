@@ -142,7 +142,9 @@ describe("updateComment", () => {
       }),
     });
 
-    await expect(updateComment("nonexistent", "new content")).rejects.toThrow("Comment not found");
+    await expect(updateComment("task-1", "nonexistent", "new content")).rejects.toThrow(
+      "Comment not found",
+    );
   });
 
   it("throws when user is not the author", async () => {
@@ -152,7 +154,9 @@ describe("updateComment", () => {
       }),
     });
 
-    await expect(updateComment("c1", "new content", "user-b")).rejects.toThrow("Not authorized");
+    await expect(updateComment("task-1", "c1", "new content", "user-b")).rejects.toThrow(
+      "Not authorized",
+    );
   });
 });
 
@@ -164,7 +168,7 @@ describe("deleteComment", () => {
       }),
     });
 
-    await expect(deleteComment("nonexistent")).rejects.toThrow("Comment not found");
+    await expect(deleteComment("task-1", "nonexistent")).rejects.toThrow("Comment not found");
   });
 
   it("throws when user is not the author", async () => {
@@ -174,6 +178,18 @@ describe("deleteComment", () => {
       }),
     });
 
-    await expect(deleteComment("c1", "user-b")).rejects.toThrow("Not authorized");
+    await expect(deleteComment("task-1", "c1", "user-b")).rejects.toThrow("Not authorized");
   });
+});
+
+it("does not let a signed-in user rewrite or delete an authorless system comment", async () => {
+  (db.select as any).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue([{ id: "system", taskId: "task-1", userId: null }]),
+    }),
+  });
+  await expect(updateComment("task-1", "system", "replacement", "user-1")).rejects.toThrow(
+    "Not authorized",
+  );
+  await expect(deleteComment("task-1", "system", "user-1")).rejects.toThrow("Not authorized");
 });

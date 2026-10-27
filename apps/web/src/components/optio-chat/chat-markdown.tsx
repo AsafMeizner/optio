@@ -82,7 +82,14 @@ interface ChatMarkdownProps {
 export const ChatMarkdown = memo(function ChatMarkdown({ content }: ChatMarkdownProps) {
   return (
     <div className="text-sm leading-relaxed text-text prose-optio">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={components}
+        // Agent output can contain text from untrusted tickets and repositories.
+        // Rendering it must not send requests to URLs embedded in that text.
+        disallowedElements={["img", "iframe", "script", "style", "video", "audio", "embed"]}
+        unwrapDisallowed
+      >
         {content}
       </ReactMarkdown>
     </div>

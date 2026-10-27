@@ -22,32 +22,20 @@ or automatically replay an interrupted request.
 
 ## Where a turn runs
 
-By default a turn runs **in the API pod itself**, as a child process of the API
-(`OPTIO_ASSISTANT_PLACEMENT=api-pod`; Helm `optio.assistant.placement`): the
-assistant is a short turn that only talks to Optio's own controller MCP, so an agent
-pod per conversation was a pod's worth of memory and scheduling for nothing. The API
-image carries Claude Code and Codex for it (and the same MCP bridge bundle as the agent images at `/opt/optio`, so the controller MCP loads), and the chart mounts an agent home
-(`/home/agent`, an emptyDir) where the turn's run home, setup files and harness
-config land as they would in a pod. The process runtime
-(`packages/container-runtime/src/process.ts`) speaks the same run protocol as the
-pod runtimes — the same run-directory files, start / attach / stdin / kill — with
-no detached supervisor: the agent is the API's child, in its own process group,
-and an API restart ends its turn (the next message starts a new one). The API pod
-runs up to `OPTIO_ASSISTANT_IN_POD_MAX` turns at once (default 3).
+Every turn runs in an **isolated agent pod per conversation**, using the same
+harness credentials and scoped controller MCP grants as other pod work. Native
+shell and filesystem tools remain available to a harness, so a prompt or MCP
+allowlist cannot safely confine it inside the API container. The API image no
+longer includes agent harnesses or an agent home.
 
-`agent-pod` keeps the pooled agent pod per conversation: for a deployment that
-wants the assistant isolated from the API (its own CPU and memory, and nothing of
-the API's filesystem or service-account token within reach of a prompt-injected
-harness). A turn goes to an agent pod regardless when the session has a repo
-(checkouts live in pods), when its harness is not in the API image (Copilot,
-Gemini, OpenCode, Cursor), or when the pod already runs its in-pod maximum; the
-API log says which (`Assistant turn runs in an agent pod`, with the reason).
-`services/assistant-placement.ts` holds the rule. Unset, the placement is `api-pod`
-inside Kubernetes only (the chart sets it explicitly): an API on a developer's
-machine, or a test, never runs that machine's real `claude` as its child unless told to.
+The former `api-pod` placement is removed. Existing
+`OPTIO_ASSISTANT_PLACEMENT=api-pod`, `OPTIO_ASSISTANT_IN_POD_MAX`, and Helm
+`optio.assistant.*` settings are ignored; they cannot restore execution in the API
+process. The standalone process runtime remains available to trusted callers,
+but interactive sessions never select it.
 
-The optional legacy dedicated Optio pod (`optio.enabled`) is not used by either
-placement. Pod startup, harness credentials and provider errors appear in the
+The optional legacy dedicated Optio pod (`optio.enabled`) is not used by these
+turns. Pod startup, harness credentials and provider errors appear in the
 conversation. The controller grants expire with their turn and remain restricted
 to its owner and workspace; no user API token is forwarded into the pod.
 

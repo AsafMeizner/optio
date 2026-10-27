@@ -31,6 +31,7 @@ import {
   verifySetupToken,
 } from "./sign-in-config-service.js";
 import { ensureUserHasWorkspace } from "./workspace-service.js";
+import { createSession } from "./session-service.js";
 
 const ENV_KEYS = [
   "GOOGLE_OAUTH_CLIENT_ID",
@@ -54,6 +55,7 @@ async function insertUser(
       provider: "google",
       externalId: randomBytes(6).toString("hex"),
       email,
+      emailVerified: true,
       displayName: name,
     })
     .returning();
@@ -217,5 +219,66 @@ describe("sign-in configuration", () => {
     await addDeploymentAdminByEmail(opsEmail);
     await removeDeploymentAdmin(ada.id, ops.id);
     expect((await listDeploymentAdmins()).map((a) => a.email)).toEqual([opsEmail]);
+  });
+
+  it("never grants email-based privileges to an unverified identity", async () => {
+    const attacker = await insertUser("Unverified");
+    await db.update(users).set({ emailVerified: false }).where(eq(users.id, attacker.id));
+    process.env.OPTIO_DEPLOYMENT_ADMINS = attacker.email;
+    expect(await isDeploymentAdmin(attacker)).toBe(false);
+    expect(await completeSignIn({ ...attacker, emailVerified: false })).toEqual({
+      deploymentAdmin: false,
+      bootstrapped: false,
+    });
+    expect(await listDeploymentAdmins()).toEqual([]);
+    await expect(addDeploymentAdminByEmail(attacker.email)).rejects.toThrow(/verified email/);
+  });
+
+  it("refreshes email verification from the provider on every sign-in", async () => {
+    const profile = {
+      externalId: randomBytes(8).toString("hex"),
+      email: "provider-admin@acme.com",
+      displayName: "Provider admin",
+    };
+    process.env.OPTIO_DEPLOYMENT_ADMINS = profile.email;
+    const first = await createSession("oidc", profile);
+    expect(await isDeploymentAdmin(first.user)).toBe(false);
+    await createSession("oidc", { ...profile, emailVerified: true });
+    expect(await isDeploymentAdmin(first.user)).toBe(true);
+    await createSession("oidc", { ...profile, emailVerified: false });
+    expect(await isDeploymentAdmin(first.user)).toBe(false);
+  });
+
+  it("only the configured provider and verified allowed domain may complete bootstrap", async () => {
+    const person = await insertUser("WrongProvider");
+    await recordBootstrapClaim({
+      provider: "google",
+      organizationName: "Acme",
+      domains: ["acme.com"],
+    });
+    expect(await completeSignIn({ ...person, provider: "oidc" })).toMatchObject({
+      bootstrapped: false,
+    });
+    expect(await completeSignIn({ ...person, emailVerified: false })).toMatchObject({
+      bootstrapped: false,
+    });
+    expect(await completeSignIn({ ...person, email: "outside@example.net" })).toMatchObject({
+      bootstrapped: false,
+    });
+    expect(await isDeploymentAdmin(person)).toBe(false);
+    expect(await pendingBootstrapClaim()).not.toBeNull();
+  });
+
+  it("allows only one simultaneous first sign-in to become the deployment admin", async () => {
+    const alice = await insertUser("ConcurrentAlice");
+    const bob = await insertUser("ConcurrentBob");
+    await recordBootstrapClaim({
+      provider: "google",
+      organizationName: "Acme",
+      domains: ["acme.com"],
+    });
+    const results = await Promise.all([completeSignIn(alice), completeSignIn(bob)]);
+    expect(results.filter((result) => result.bootstrapped)).toHaveLength(1);
+    expect(await listDeploymentAdmins()).toHaveLength(1);
   });
 });

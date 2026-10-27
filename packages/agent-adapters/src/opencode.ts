@@ -2,6 +2,12 @@ import type { AgentTaskInput, AgentContainerConfig, AgentResult } from "@optio/s
 import { TASK_BRANCH_PREFIX } from "@optio/shared";
 import type { AgentAdapter, AgentResultParser } from "./types.js";
 import { firstMatch, parseAllLines } from "./types.js";
+import {
+  OPENCODE_GLOBAL_AGENTS_MD,
+  OPENCODE_GLOBAL_AGENTS_MD_PATH,
+  opencodeHeadlessEnabled,
+  opencodeHeadlessPermission,
+} from "./opencode-headless.js";
 
 /**
  * OpenCode CLI (opencode run --format json) outputs NDJSON events.
@@ -92,11 +98,20 @@ export class OpenCodeAdapter implements AgentAdapter {
       env.OPENAI_API_KEY = OPENCODE_PLACEHOLDER_KEY;
     }
 
-    // Pre-seed a minimal opencode config so the CLI doesn't hit first-run setup
+    // Pre-seed a minimal opencode config so the CLI doesn't hit first-run setup.
+    // With the headless permissions and rules when the deployment turns them
+    // on (opencode-headless.ts, #585).
+    const headless = opencodeHeadlessEnabled();
     setupFiles.push({
       path: "/home/agent/.config/opencode/opencode.json",
-      content: JSON.stringify({ $schema: "https://opencode.ai/config.json" }),
+      content: JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        ...(headless ? { permission: opencodeHeadlessPermission() } : {}),
+      }),
     });
+    if (headless) {
+      setupFiles.push({ path: OPENCODE_GLOBAL_AGENTS_MD_PATH, content: OPENCODE_GLOBAL_AGENTS_MD });
+    }
 
     // Write the task file into the worktree
     if (input.taskFileContent && input.taskFilePath) {

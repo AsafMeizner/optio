@@ -5,6 +5,12 @@ vi.mock("../services/event-bus.js", () => ({
   getRedisClient: () => ({}),
   publishEvent: vi.fn(),
 }));
+// This feature-list test acts as an authorized deployment administrator;
+// deployment-wide credential authorization is covered by the upstream route tests.
+vi.mock("../services/sign-in-config-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/sign-in-config-service.js")>()),
+  isDeploymentAdmin: vi.fn(async () => true),
+}));
 // Every receiver claims the delivery id in the database first
 // (services/inbound-delivery-service.ts); the claim is a set here.
 const claimed = new Set<string>();

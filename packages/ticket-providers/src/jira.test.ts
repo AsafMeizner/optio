@@ -2,28 +2,22 @@ import { describe, it, expect, vi } from "vitest";
 import { JiraTicketProvider } from "./jira.js";
 import type { JiraProviderConfig } from "./jira.js";
 
-vi.mock("@optio/shared/ssrf", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@optio/shared/ssrf")>();
-  return {
-    ...actual,
-    assertSsrfSafe: vi.fn(),
-  };
-});
-
 vi.mock("jira.js", () => {
   return {
-    Version3Client: vi.fn().mockImplementation(() => ({
-      issueSearch: {
-        searchForIssuesUsingJqlEnhancedSearch: vi.fn(),
-      },
-      issueComments: {
-        addComment: vi.fn(),
-      },
-      issues: {
-        getTransitions: vi.fn(),
-        doTransition: vi.fn(),
-      },
-    })),
+    Version3Client: vi.fn().mockImplementation(function () {
+      return {
+        issueSearch: {
+          searchForIssuesUsingJqlEnhancedSearch: vi.fn(),
+        },
+        issueComments: {
+          addComment: vi.fn(),
+        },
+        issues: {
+          getTransitions: vi.fn(),
+          doTransition: vi.fn(),
+        },
+      };
+    }),
   };
 });
 
@@ -87,12 +81,11 @@ describe("JiraTicketProvider pagination", () => {
       issues,
     });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -118,12 +111,11 @@ describe("JiraTicketProvider pagination", () => {
         issues: page2,
       });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -147,12 +139,11 @@ describe("JiraTicketProvider pagination", () => {
       nextPageToken: "nexttoken",
     });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const config: JiraProviderConfig = { ...baseConfig(), maxPages: 2 };
@@ -167,12 +158,11 @@ describe("JiraTicketProvider pagination", () => {
       issues: [],
     });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -186,12 +176,11 @@ describe("JiraTicketProvider pagination", () => {
       issues: [makeJiraIssue("DEV-1", 1)],
     });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const config: JiraProviderConfig = {
@@ -213,12 +202,11 @@ describe("JiraTicketProvider pagination", () => {
       issues: [issue],
     });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -247,12 +235,11 @@ describe("JiraTicketProvider pagination", () => {
       issues: [issue],
     });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -280,12 +267,11 @@ describe("JiraTicketProvider pagination", () => {
       issues: [issue],
     });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -299,12 +285,11 @@ describe("JiraTicketProvider pagination", () => {
       issues: [issue],
     });
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueSearch: { searchForIssuesUsingJqlEnhancedSearch },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -318,12 +303,11 @@ describe("JiraTicketProvider addComment", () => {
   it("adds a comment to an issue", async () => {
     const addComment = vi.fn().mockResolvedValueOnce({});
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issueComments: { addComment },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issueComments: { addComment },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     await provider.addComment("TEST-123", "This is a comment", baseConfig());
@@ -354,12 +338,11 @@ describe("JiraTicketProvider updateState", () => {
     });
     const doTransition = vi.fn().mockResolvedValueOnce({});
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issues: { getTransitions, doTransition },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issues: { getTransitions, doTransition },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     await provider.updateState("TEST-123", "closed", baseConfig());
@@ -380,12 +363,11 @@ describe("JiraTicketProvider updateState", () => {
     });
     const doTransition = vi.fn().mockResolvedValueOnce({});
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issues: { getTransitions, doTransition },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issues: { getTransitions, doTransition },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     const config: JiraProviderConfig = {
@@ -406,12 +388,11 @@ describe("JiraTicketProvider updateState", () => {
     });
     const doTransition = vi.fn();
 
-    vi.mocked(Version3Client).mockImplementation(
-      () =>
-        ({
-          issues: { getTransitions, doTransition },
-        }) as unknown as InstanceType<typeof Version3Client>,
-    );
+    vi.mocked(Version3Client).mockImplementation(function () {
+      return {
+        issues: { getTransitions, doTransition },
+      } as unknown as InstanceType<typeof Version3Client>;
+    });
 
     const provider = new JiraTicketProvider();
     await provider.updateState("TEST-123", "closed", baseConfig());

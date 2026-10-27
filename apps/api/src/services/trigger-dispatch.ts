@@ -204,14 +204,35 @@ export type TicketFireResult = TriggerFireResult & { triggerId: string };
  * Fire every enabled `ticket` trigger whose filters (`source`, any-match
  * `labels`) match the ticket, whatever it targets. Failures are per-trigger:
  * logged, and the sweep goes on.
+ *
+ * Ticket providers are deployment-wide, so `repoUrl` (the repo the ticket
+ * was resolved to) scopes the fan-out like the event ingress does: a ticket
+ * for a repo registered in a workspace never reaches — and never hands its
+ * title and body to — work in another workspace.
  */
-export async function fireTicketTriggers(ticket: TicketFiring): Promise<TicketFireResult[]> {
+export async function fireTicketTriggers(
+  ticket: TicketFiring,
+  opts: { repoUrl?: string } = {},
+): Promise<TicketFireResult[]> {
   const candidates = await listEnabledTriggersOfType("ticket");
   const results: TicketFireResult[] = [];
+  if (candidates.length === 0) return results;
+  const { workspaceOfRepo } = await import("./event-trigger-service.js");
+  const repoWorkspace = await workspaceOfRepo(opts.repoUrl);
   for (const trigger of candidates) {
     if (!ticketTriggerMatches((trigger.config ?? {}) as Record<string, unknown>, ticket)) continue;
     try {
-      const { fireTriggerDurably } = await import("./trigger-delivery.js");
+      const { fireTriggerDurably, deliveryTargetScope } = await import("./trigger-delivery.js");
+      if (repoWorkspace) {
+        const scope = await deliveryTargetScope(trigger.targetId);
+        if (scope?.workspace_id && scope.workspace_id !== repoWorkspace) {
+          logger.info(
+            { triggerId: trigger.id, targetType: trigger.targetType },
+            "Ticket trigger skipped: the ticket's repo belongs to another workspace",
+          );
+          continue;
+        }
+      }
       const fired = await fireTriggerDurably(
         trigger,
         {
