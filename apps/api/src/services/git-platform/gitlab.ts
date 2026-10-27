@@ -1,3 +1,4 @@
+import { guardedFetch } from "../../utils/outbound-url.js";
 import type {
   GitPlatform,
   RepoIdentifier,
@@ -102,7 +103,7 @@ export class GitLabPlatform implements GitPlatform {
   }
 
   private async fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(url, init);
+    const res = await guardedFetch(url, { ...init, redirect: "error" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw GitLabApiError.fromResponse(res, body);
@@ -578,7 +579,8 @@ export class GitLabPlatform implements GitPlatform {
     ri: RepoIdentifier,
     label: { name: string; color: string; description?: string },
   ): Promise<void> {
-    const res = await fetch(this.url(ri, "/labels"), {
+    const res = await guardedFetch(this.url(ri, "/labels"), {
+      redirect: "error",
       method: "POST",
       headers: this.headers(true),
       body: JSON.stringify({

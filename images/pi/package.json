@@ -1,0 +1,12 @@
+{
+  "name": "optio-pi-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pi with audited runtime dependency overrides",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0"
+  },
+  "overrides": {
+    "undici": "8.12.3"
+  }
+}

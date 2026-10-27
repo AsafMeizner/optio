@@ -73,8 +73,8 @@ async function seedAdmin(): Promise<void> {
   try {
     await sql`INSERT INTO workspaces (id, name, slug) VALUES (${WS_ID}, 'Android push e2e', ${`android-e2e-${WS_ID.slice(0, 8)}`})`;
     await sql`
-      INSERT INTO users (id, provider, external_id, email, display_name, default_workspace_id)
-      VALUES (${USER_ID}, 'github', 'android-e2e', 'android@push.e2e', 'Android E2E', ${WS_ID})`;
+      INSERT INTO users (id, provider, external_id, email, display_name, default_workspace_id, deployment_admin)
+      VALUES (${USER_ID}, 'github', 'android-e2e', 'android@push.e2e', 'Android E2E', ${WS_ID}, true)`;
     await sql`INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (${WS_ID}, ${USER_ID}, 'admin')`;
     const tokenHash = createHash("sha256").update(SESSION).digest("hex");
     await sql`

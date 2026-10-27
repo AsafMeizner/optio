@@ -569,7 +569,7 @@ describe("reconcileActiveTaskCounts", () => {
 // ── deleteNetworkPolicy ────────────────────────────────────────────
 
 describe("deleteNetworkPolicy", () => {
-  let mockExecFile: ReturnType<typeof vi.fn>;
+  let mockExecFile: ReturnType<typeof vi.fn<(...args: unknown[]) => Promise<unknown>>>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -605,6 +605,26 @@ describe("deleteNetworkPolicy", () => {
   it("does not throw when deletion fails", async () => {
     // deleteNetworkPolicy has a try/catch that swallows errors
     await expect(deleteNetworkPolicy("nonexistent-pod")).resolves.toBeUndefined();
+  });
+
+  it("fails provisioning before launching a pod when its requested policy cannot be installed", async () => {
+    provisionNewPod();
+    mockExecFile.mockImplementation(async (cmd) => {
+      if (cmd === "bash") throw new Error("NetworkPolicy forbidden");
+      return { stdout: "", stderr: "" };
+    });
+    try {
+      await expect(
+        getOrCreateRepoPod(REPO_URL, "main", {}, undefined, {
+          networkPolicy: "restricted",
+        }),
+      ).rejects.toThrow("NetworkPolicy forbidden");
+      expect(mockRuntimeCreate).not.toHaveBeenCalled();
+      expect(podPool.markPodReady).not.toHaveBeenCalled();
+      expect(podPool.markPodError).toHaveBeenCalled();
+    } finally {
+      mockExecFile.mockResolvedValue({ stdout: "", stderr: "" });
+    }
   });
 });
 
@@ -948,6 +968,17 @@ describe("getOrCreateRepoPod — pod selection via agent-pod-pool", () => {
     (db as any).where.mockReset().mockReturnThis();
   });
 
+  it("rejects unsupported secret isolation before selecting or reusing a pod", async () => {
+    await expect(
+      getOrCreateRepoPod(REPO_URL, "main", { GITHUB_TOKEN: "private" }, undefined, {
+        secretProxy: true,
+        preferredPodId: "existing-proxy-pod",
+      }),
+    ).rejects.toThrow("Secret proxy is unavailable");
+    expect(podPool.pickPod).not.toHaveBeenCalled();
+    expect(mockRuntimeCreate).not.toHaveBeenCalled();
+  });
+
   it("returns the pod pickPod picks from the repo's pool without creating one", async () => {
     const existing = repoPod({ id: "fresh-pod", podName: "fresh-pod-name", activeCount: 0 });
     podPool.pickPod.mockResolvedValueOnce(existing);
@@ -1172,7 +1203,7 @@ describe("the task start script (the run protocol)", () => {
     const script = buildTaskStartScript(taskId, env, agent, { runToken: "tok" });
     expect(script).toContain(`exec 7>'/workspace/.task-${taskId}.lock'`);
     expect(script).toContain(
-      `git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} "origin/main"`,
+      `git worktree add /workspace/tasks/${taskId} -b optio/task-${taskId} 'origin/main'`,
     );
     expect(script).toContain(`cd /workspace/tasks/${taskId}`);
     expect(script).toContain(
@@ -1198,6 +1229,24 @@ describe("the task start script (the run protocol)", () => {
     expect(script).not.toContain(" EXIT");
     expect(script).not.toContain("AGENT_EXIT=$?");
     expect(script.trim().endsWith('echo "__OPTIO_RUN_STARTED__:$_optio_sup"')).toBe(true);
+  });
+
+  it("quotes the branch wherever it reaches the shell", () => {
+    const branch = "$(echo pwned)`echo pwned`";
+    for (const resetWorktree of [false, true]) {
+      const script = buildTaskStartScript(taskId, { ...env, OPTIO_REPO_BRANCH: branch }, agent, {
+        resetWorktree,
+      });
+      // Outside the inert single-quoted export, the branch only ever appears quoted.
+      const unquoted = script
+        .split("\n")
+        .filter((l) => !l.startsWith("export OPTIO_REPO_BRANCH="))
+        .join("\n")
+        .replaceAll(`'${branch}'`, "")
+        .replaceAll(`'origin/${branch}'`, "");
+      expect(unquoted).not.toContain(branch);
+      expect(script).toContain(`git reset --hard 'origin/${branch}'`);
+    }
   });
 
   it("a same-pod retry resets the worktree", () => {

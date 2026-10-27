@@ -1,3 +1,4 @@
+import { actorOf, canSee } from "../services/ownership.js";
 import type { FastifyInstance } from "fastify";
 import { workActor, workChangeError } from "../services/work-ownership.js";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
@@ -92,7 +93,7 @@ export async function messageRoutes(rawApp: FastifyInstance) {
       if (!task) return reply.status(404).send({ error: "Task not found" });
 
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
       {
@@ -270,7 +271,7 @@ export async function messageRoutes(rawApp: FastifyInstance) {
       if (!task) return reply.status(404).send({ error: "Task not found" });
 
       const wsId = req.user?.workspaceId;
-      if (wsId && task.workspaceId !== wsId) {
+      if ((wsId && task.workspaceId !== wsId) || !canSee(task.ownerUserId, actorOf(req))) {
         return reply.status(404).send({ error: "Task not found" });
       }
 

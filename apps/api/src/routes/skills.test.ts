@@ -73,6 +73,18 @@ describe("POST /api/skills", () => {
     );
   });
 
+  it("rejects a name that is a path, not one file name", async () => {
+    for (const name of ["../../../.bashrc", "a/b", "..", "x\ny"]) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/skills",
+        payload: { name, prompt: "p", layout: "skill-dir" },
+      });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(mockCreateSkill).not.toHaveBeenCalled();
+  });
+
   it("rejects missing prompt (Zod throws)", async () => {
     const res = await app.inject({
       method: "POST",

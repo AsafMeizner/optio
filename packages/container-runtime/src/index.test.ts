@@ -1,17 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 
 vi.mock("./docker.js", () => ({
-  DockerContainerRuntime: vi.fn().mockImplementation((opts: any) => ({
-    _type: "docker",
-    _opts: opts,
-  })),
+  DockerContainerRuntime: vi.fn().mockImplementation(function (opts: any) {
+    return { _type: "docker", _opts: opts };
+  }),
 }));
 
 vi.mock("./kubernetes.js", () => ({
-  KubernetesContainerRuntime: vi.fn().mockImplementation((namespace: any) => ({
-    _type: "kubernetes",
-    _namespace: namespace,
-  })),
+  KubernetesContainerRuntime: vi.fn().mockImplementation(function (namespace: any) {
+    return { _type: "kubernetes", _namespace: namespace };
+  }),
 }));
 
 import { createRuntime } from "./index.js";

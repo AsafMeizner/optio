@@ -17,6 +17,7 @@ import {
   REVIEW_TASK_FILE_PATH,
   PR_REVIEW_OUTPUT_PATH,
   renderPromptTemplate,
+  shellSafeTitle,
   normalizeRepoUrl,
   parsePrUrl,
   parseRepoUrl,
@@ -605,7 +606,7 @@ export async function enqueueReviewRun(
       PR_NUMBER: String(review.prNumber),
       TASK_FILE: REVIEW_TASK_FILE_PATH,
       REPO_NAME: fullRepoName,
-      TASK_TITLE: prContext.prTitle,
+      TASK_TITLE: shellSafeTitle(prContext.prTitle),
       TEST_COMMAND: repoConfig.testCommand ?? "",
       OUTPUT_PATH: PR_REVIEW_OUTPUT_PATH,
       GIT_PLATFORM_GITLAB: isGitLab ? "true" : "",
@@ -885,15 +886,33 @@ export async function reReview(
 
 // ── Merge PR ───────────────────────────────────────────────────────────────
 
+/**
+ * A PR URL a caller passes in names any repo on any host, and the platform
+ * call runs with the deployment's token. When the caller has a workspace
+ * (`workspaceId` given, null = auth-disabled default), the PR's repo must be
+ * one registered there — the server token must not read or merge another
+ * workspace's (or anybody's) PRs for them.
+ */
+async function assertPrRepoInWorkspace(repoUrl: string, workspaceId: string | null | undefined) {
+  if (workspaceId === undefined) return;
+  const { getRepoByUrl } = await import("./repo-service.js");
+  if (!(await getRepoByUrl(repoUrl, workspaceId))) {
+    throw new Error("This pull request's repository is not configured in this workspace");
+  }
+}
+
 export async function mergePr(input: {
   prUrl: string;
   mergeMethod: "merge" | "squash" | "rebase";
   userId?: string;
+  /** The caller's workspace: the PR's repo must be registered there. */
+  workspaceId?: string | null;
 }) {
   const parsed = parsePrUrl(input.prUrl);
   if (!parsed) throw new Error("Invalid PR URL");
 
   const repoUrl = `https://${parsed.host}/${parsed.owner}/${parsed.repo}`;
+  await assertPrRepoInWorkspace(repoUrl, input.workspaceId);
   const { platform, ri } = await getGitPlatformForRepo(repoUrl, {
     userId: input.userId,
     server: !input.userId,
@@ -907,11 +926,12 @@ export async function mergePr(input: {
 
 // ── Get PR status (used by /reviews detail + poller) ────────────────────────
 
-export async function getPrStatus(prUrl: string) {
+export async function getPrStatus(prUrl: string, opts: { workspaceId?: string | null } = {}) {
   const parsed = parsePrUrl(prUrl);
   if (!parsed) throw new Error("Invalid PR URL");
 
   const repoUrl = `https://${parsed.host}/${parsed.owner}/${parsed.repo}`;
+  await assertPrRepoInWorkspace(repoUrl, opts.workspaceId);
   const { platform, ri } = await getGitPlatformForRepo(repoUrl, { server: true });
 
   const prData = await platform.getPullRequest(ri, parsed.prNumber);

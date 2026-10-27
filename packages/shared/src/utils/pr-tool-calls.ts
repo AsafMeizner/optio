@@ -485,9 +485,13 @@ export function isPrCreatingToolCall(toolName: string, input: unknown): boolean 
 
 // ── Results ─────────────────────────────────────────────────────────────────
 
-/** A PR / MR / CodeCommit web URL (not an API URL, not `/pull/new/…`). */
+/**
+ * A PR / MR / CodeCommit web URL (not an API URL, not `/pull/new/…`). The
+ * part before the PR path is bounded: unbounded, a long run of `https://a/`
+ * in an agent's tool output took quadratic time on the API's event loop.
+ */
 const PR_URL_RE =
-  /https?:\/\/(?![\w.-]+\/api\/)(?!api\.)[^\s"'<>()`\\]+?\/(?:pull\/\d+|-\/merge_requests\/\d+|merge_requests\/\d+|pull-requests\/\d+)(?![\w/])/g;
+  /https?:\/\/(?![\w.-]+\/api\/)(?!api\.)[^\s"'<>()`\\]{1,512}?\/(?:pull\/\d+|-\/merge_requests\/\d+|merge_requests\/\d+|pull-requests\/\d+)(?![\w/])/g;
 
 const ALREADY_EXISTS_RE = /already exists/i;
 

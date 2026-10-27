@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createSubscriber } from "../services/event-bus.js";
 import { authenticateWs } from "./ws-auth.js";
-import { assertWorkspace } from "./ws-authz.js";
+import { assertWorkVisible } from "./ws-authz.js";
 import { getWorkflow, getWorkflowRun, getWorkflowRunLogs } from "../services/workflow-service.js";
 import { acceptWs } from "./ws-connection.js";
 
@@ -26,7 +26,11 @@ export async function workflowRunLogStreamWs(app: FastifyInstance) {
 
     // Enforce workspace isolation: a run's tenant is its parent workflow's.
     const workflow = await getWorkflow(run.workflowId);
-    if (!assertWorkspace(socket, user.workspaceId, workflow?.workspaceId)) {
+    if (!workflow) {
+      socket.close(4404, "Workflow not found");
+      return conn.discard();
+    }
+    if (!assertWorkVisible(socket, user, workflow)) {
       return conn.discard();
     }
 

@@ -9,6 +9,9 @@ metadata:
     {{- include "optio.labels" . | nindent 4 }}
 spec:
   replicas: 1
+  # Separate Redis instances are not replicas: do not route clients to both.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: redis

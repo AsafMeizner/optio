@@ -11,13 +11,23 @@ function getPublisher(): RedisClient {
   return publisher;
 }
 
-export async function publishEvent(event: WsEvent): Promise<void> {
+/** Explicit audience for events without a resource id (currently audit activity). */
+export interface EventAudience {
+  workspaceId: string | null;
+  ownerUserId: string | null;
+}
+
+export async function publishEvent(event: WsEvent, audience?: EventAudience): Promise<void> {
   const redis = getPublisher();
   const channel = `optio:events`;
 
   // Attach current trace ID for correlation in observability backends
   const traceId = getCurrentTraceId();
-  const enrichedEvent = traceId ? { ...event, traceId } : event;
+  const enrichedEvent = {
+    ...event,
+    ...(traceId ? { traceId } : {}),
+    ...(audience ? { audience } : {}),
+  };
 
   await redis.publish(channel, JSON.stringify(enrichedEvent));
 
@@ -65,9 +75,9 @@ export async function publishPersistentAgentEvent(event: WsEvent): Promise<void>
 
 /**
  * Content-free nudge for Optio Local terminal changes. Published only on the
- * shared `optio:events` channel — that stream is visible to every
- * authenticated user, so no terminal content (previews, output, dirs) may
- * ever ride on it. Clients refetch over REST on receipt.
+ * shared `optio:events` Redis channel; eventsWs verifies the host's workspace
+ * and owner before delivery. No terminal content (previews, output, dirs)
+ * rides on it. Clients refetch over REST on receipt.
  */
 export async function publishLocalChanged(event: {
   /** Null for host-level changes (online/offline) with no specific terminal. */
