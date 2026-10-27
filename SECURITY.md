@@ -5,7 +5,7 @@
 If you discover a security vulnerability in Optio, please report it responsibly:
 
 1. **Do not** open a public GitHub issue for security vulnerabilities.
-2. Email your report to **security@optio.dev** with:
+2. Use GitHub's **private vulnerability reporting** for this repository: open the **Security** tab and choose **Report a vulnerability** (or go directly to <https://github.com/jonwiggins/optio/security/advisories/new>). Include:
    - A description of the vulnerability
    - Steps to reproduce
    - Potential impact
