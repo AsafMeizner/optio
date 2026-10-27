@@ -58,6 +58,14 @@ The unit/scanner/image totals below describe the first audit validation pass.
 The combined branch is additionally checked with the repository's full push gate
 and CI; see the integration PR for those exact results.
 
+Vitest 4's more accurate coverage mapping exposed gaps hidden by the old mapper.
+The follow-up adds shared transport and web-state tests and measures API coverage
+across its unit and real-database integration suites together. All numeric
+coverage thresholds and runtime-source inclusions are retained. The push gate
+now uses CI settings and runs this aggregate API coverage check before allowing
+a push. The standalone Zod patch regression runs without application coverage;
+the complete suites enforce that coverage separately.
+
 ## Confirmed findings and remediation
 
 | Severity | Finding and exploit conditions                                                                                                                                                                                                                | Remediation                                                                                                                                                                                                                                                               |

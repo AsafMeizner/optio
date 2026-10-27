@@ -134,7 +134,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: bash scripts/test-infra.sh start
-      - run: pnpm --filter @optio/api test:integration
+      - name: Measure API coverage across unit and integration tests
+        run: pnpm --filter @optio/api test:coverage
 
   e2e:
     name: E2E Test (fake runtime)
