@@ -10,6 +10,18 @@
 #
 # Install a released chart: helm install optio oci://ghcr.io/jonwiggins/optio
 
+# Independent deployment allowlists. Empty means every supported option.
+features:
+  runtimes: []
+  gitPlatforms: []
+  triggers: []
+  ticketSources: []
+  connectionProviders: []
+
+# Who may create workspaces; an app setting overrides this environment default.
+workspaces:
+  creation: everyone
+
 # ──────────────────────────────────────────────────────────────────────────────
 # API Server
 # ──────────────────────────────────────────────────────────────────────────────

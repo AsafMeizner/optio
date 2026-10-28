@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { sora, ibmPlexMono } from "@/app/fonts";
 import { LayoutShell } from "@/components/layout/layout-shell";
+import { featuresConfig } from "@/lib/features-config";
 import "./globals.css";
 
 export const viewport: Viewport = {
@@ -53,7 +54,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Runtime config for client-side JS (WebSocket URL derivation) */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `window.__OPTIO_CONFIG=${JSON.stringify({ publicApiUrl }).replace(/</g, "\\u003c")}`,
+            __html: `window.__OPTIO_CONFIG=${JSON.stringify({ publicApiUrl, ...featuresConfig() }).replace(/</g, "\\u003c")}`,
           }}
         />
         {/* Inline script to prevent flash of wrong theme */}

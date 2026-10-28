@@ -55,6 +55,8 @@ export * from "./types/config.js";
 export * from "./config/manifest.js";
 export * from "./config/inline.js";
 export * from "./config/stable.js";
+// What this deployment offers: the feature lists (docs/feature-lists.md).
+export * from "./config/features.js";
 
 export * from "./usage/index.js";
 
