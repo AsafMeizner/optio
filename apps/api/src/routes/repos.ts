@@ -8,6 +8,7 @@ import {
   validateRequestLimitPair,
   parseCpuMillicores,
   parseMemoryMi,
+  parseRepoUrl,
   AGENT_TYPES,
 } from "@optio/shared";
 import { modelBelongsToAgent } from "../services/agent-options-service.js";
@@ -16,6 +17,7 @@ import { getGitHubToken } from "../services/github-token-service.js";
 import { browseGitHubRepos } from "../services/github-repo-browse-service.js";
 import { isSsrfSafeUrl } from "../utils/ssrf.js";
 import { logAction } from "../services/optio-action-service.js";
+import { platformRefusal, refineFeature } from "../services/feature-guard.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { RepoSchema } from "../schemas/integration.js";
 import { resolveReviewConfig } from "../services/review-config.js";
@@ -39,7 +41,11 @@ const updateRepoSchema = z
     customDockerfile: z.string().nullable().optional(),
     autoMerge: z.boolean().optional(),
     cautiousMode: z.boolean().optional(),
-    defaultAgentType: z.enum([...AGENT_TYPES] as [string, ...string[]]).optional(),
+    defaultAgentType: z
+      .enum([...AGENT_TYPES] as [string, ...string[]])
+      // A runtime the deployment leaves out is refused (OPTIO_RUNTIMES, config/features.ts).
+      .superRefine(refineFeature("runtimes"))
+      .optional(),
     promptTemplateOverride: z.string().nullable().optional(),
     defaultBranch: z.string().optional(),
     claudeModel: z.string().optional(),
@@ -73,6 +79,7 @@ const updateRepoSchema = z
     testCommand: z.string().optional(),
     reviewAgentType: z
       .enum([...AGENT_TYPES] as [string, ...string[]])
+      .superRefine(refineFeature("runtimes"))
       .nullable()
       .optional()
       .describe("Override the agent used for code reviews. Null = inherit."),
@@ -283,11 +290,13 @@ export async function repoRoutes(rawApp: FastifyInstance) {
         description:
           "Register a new repository with Optio. After creation, an auto-detect " +
           "step populates sensible defaults for image preset and test command " +
-          "based on the repo's language/build system. Requires `admin` role.",
+          "based on the repo's language/build system. A git platform the " +
+          "deployment does not offer (OPTIO_GIT_PLATFORMS) is refused. Requires `admin` role.",
         tags: ["Repos & Integrations"],
         body: createRepoSchema,
         response: {
           201: RepoResponseSchema,
+          400: ErrorResponseSchema,
           409: ErrorResponseSchema,
         },
       },
@@ -295,6 +304,10 @@ export async function repoRoutes(rawApp: FastifyInstance) {
     async (req, reply) => {
       const body = req.body;
       const workspaceId = req.user?.workspaceId ?? null;
+
+      // A git platform the deployment leaves out (OPTIO_GIT_PLATFORMS).
+      const refusal = platformRefusal(parseRepoUrl(body.repoUrl)?.platform);
+      if (refusal) return reply.status(400).send({ error: refusal });
 
       const existing = await repoService.getRepoByUrl(body.repoUrl, workspaceId);
       if (existing) {
