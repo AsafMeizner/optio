@@ -1540,6 +1540,39 @@ data class RepoContent(
     }
 }
 
+/**
+ * A repository the platform credentials can reach, as the "Add repository"
+ * picker lists it (`GitPlatform.browseRepositories`).
+ */
+@Serializable
+data class BrowsableRepository(
+    /** `owner/name` (GitLab: the project's full path, groups included). */
+    val fullName: String,
+    val cloneUrl: String,
+    val htmlUrl: String,
+    val defaultBranch: String,
+    val isPrivate: Boolean,
+    val description: String? = null,
+    /** When it last changed (GitHub: last push; GitLab: last activity). */
+    val pushedAt: String? = null,
+)
+
+/** Where on a platform `browseRepositories` looks: its host and its API root. */
+@Serializable
+data class PlatformLocation(
+    val host: String,
+    val apiBaseUrl: String,
+)
+
+/** A branch of a repository, as the branch pickers list them. */
+@Serializable
+data class Branch(
+    val name: String,
+    /** The repository's default branch (what `getRepoMetadata` reports). */
+    val default: Boolean,
+    val protected: Boolean? = null,
+)
+
 // endregion
 
 // region glance.ts

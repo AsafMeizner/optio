@@ -1759,6 +1759,7 @@ function GitHubTokenManager() {
 
 const TICKET_SOURCES = [
   { value: "github", label: "GitHub Issues" },
+  { value: "gitlab", label: "GitLab Issues" },
   { value: "jira", label: "Jira" },
   { value: "linear", label: "Linear" },
   { value: "notion", label: "Notion" },
@@ -1863,6 +1864,16 @@ function TicketIntegration() {
       { key: "apiKey", label: "Integration Token", type: "password" },
       { key: "databaseId", label: "Database ID" },
     ],
+    gitlab: [
+      { key: "host", label: "GitLab host" },
+      { key: "projectPath", label: "Project (group/project)" },
+      { key: "groupPath", label: "Or a group (all its projects' issues)" },
+      {
+        key: "token",
+        label: "Access token",
+        type: "password",
+      },
+    ],
   };
 
   const label = "Tickets";
@@ -1940,6 +1951,9 @@ function TicketIntegration() {
                           p.config?.databaseId &&
                           `Database: ${p.config.databaseId}`}
                         {p.source === "linear" && p.config?.teamId && `Team: ${p.config.teamId}`}
+                        {p.source === "gitlab" &&
+                          (p.config?.projectPath || p.config?.groupPath) &&
+                          `${p.config.host ?? "gitlab.com"}/${p.config.projectPath ?? p.config.groupPath}`}
                         {p.source === "jira" && p.config?.baseUrl && `${p.config.baseUrl}`}
                       </p>
                     </div>
@@ -1987,7 +2001,7 @@ function TicketIntegration() {
             size="panel"
             icon={Ticket}
             title="No ticket providers"
-            description="Connect GitHub Issues, Jira, Linear, or Notion to turn labeled tickets into work."
+            description="Connect GitHub Issues, GitLab Issues, Jira, Linear, or Notion to turn labeled tickets into work."
             action={
               <button onClick={() => setShowAddProvider(true)} className={BTN_PRIMARY}>
                 <Plus className="w-3.5 h-3.5" />

@@ -90,6 +90,10 @@ describe("getGitPlatformForRepo", () => {
 });
 
 it("MR/API token selection retains the same port as the signed git helper", async () => {
+  process.env.GITLAB_HOSTS = "git.corp.example";
+  await expect(
+    getGitPlatformForRepo("https://git.corp.example:8443/org/repo", { server: true }),
+  ).rejects.toThrow(/Refusing/);
   process.env.GITLAB_HOSTS = "git.corp.example:8443";
   vi.mocked(retrieveSecretWithFallback).mockImplementation(async (name) => {
     if (name === "GITLAB_TOKEN_GIT_CORP_EXAMPLE_8443") return "glpat-host-only";

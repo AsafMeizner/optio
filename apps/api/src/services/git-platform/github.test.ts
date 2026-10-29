@@ -317,6 +317,22 @@ describe("GitHubPlatform", () => {
       });
     });
   });
+  describe("listBranches", () => {
+    it("pages through /branches, filters by name and marks the default branch", async () => {
+      // Page 1 of branches, then the repo (for its default branch).
+      mockJsonResponse([{ name: "feature/a" }, { name: "main" }, { name: "release/1" }]);
+      mockJsonResponse({ full_name: "acme/widgets", default_branch: "main", private: true });
+      const branches = await platform.listBranches(ri, { search: "a", perPage: 10 });
+      expect(String(mockFetch.mock.calls[0][0])).toContain(
+        "/repos/acme/widgets/branches?per_page=100&page=1",
+      );
+      expect(branches).toEqual([
+        { name: "main", default: true },
+        { name: "feature/a", default: false },
+        { name: "release/1", default: false },
+      ]);
+    });
+  });
 });
 
 describe("classifyGitHubFailure", () => {

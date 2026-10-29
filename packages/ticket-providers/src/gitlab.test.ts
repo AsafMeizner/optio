@@ -185,3 +185,60 @@ it("rechecks each page and rejects DNS rebinding before the next authenticated r
   );
   expect(fetchSpy).toHaveBeenCalledTimes(1);
 });
+
+describe("GitLabTicketProvider groups and self-managed hosts", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "x-total-pages": "1" } });
+
+  it("lists a group's issues, each with its own project", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      json([
+        {
+          iid: 3,
+          title: "In a subgroup",
+          web_url: "https://gitlab.corp:8443/platform/tools/app/-/issues/3",
+          references: { full: "platform/tools/app#3" },
+          labels: ["optio"],
+        },
+        {
+          iid: 9,
+          title: "No references",
+          web_url: "https://gitlab.corp:8443/platform/web/-/issues/9",
+          labels: ["optio"],
+        },
+      ]),
+    );
+
+    const tickets = await new GitLabTicketProvider().fetchActionableTickets({
+      token: "t",
+      groupPath: "platform",
+      host: "https://gitlab.corp:8443/",
+    });
+
+    expect(fetchSpy.mock.calls[0][0]).toMatch(
+      /^https:\/\/gitlab\.corp:8443\/api\/v4\/groups\/platform\/issues\?/,
+    );
+    expect(tickets.map((t) => [t.externalId, t.repo])).toEqual([
+      ["3", "platform/tools/app"],
+      ["9", "platform/web"],
+    ]);
+  });
+
+  it("keeps a path prefix in the API base", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(json([]));
+    await new GitLabTicketProvider().fetchActionableTickets({
+      token: "t",
+      projectPath: "g/p",
+      host: "example.com/gitlab",
+    });
+    expect(fetchSpy.mock.calls[0][0]).toMatch(
+      /^https:\/\/example\.com\/gitlab\/api\/v4\/projects\/g%2Fp\/issues\?/,
+    );
+  });
+
+  it("needs a project or a group", async () => {
+    await expect(
+      new GitLabTicketProvider().fetchActionableTickets({ token: "t", host: "gitlab.com" }),
+    ).rejects.toThrow(/projectPath or groupPath/);
+  });
+});

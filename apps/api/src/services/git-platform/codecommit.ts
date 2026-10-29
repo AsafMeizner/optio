@@ -1,3 +1,6 @@
+import { ListBranchesCommand } from "@aws-sdk/client-codecommit";
+import type { Branch } from "@optio/shared";
+import { defaultBranchFirst, filterBranches } from "./pr-search.js";
 import {
   CodeCommitClient,
   GetPullRequestCommand,
@@ -420,6 +423,36 @@ export class CodeCommitPlatform implements GitPlatform {
     const id = res.pullRequest?.revisionId;
     if (!id) throw new Error(`CodeCommit pull request ${prNumber} has no revisionId`);
     return id;
+  }
+  async listBranches(
+    ri: RepoIdentifier,
+    opts?: { search?: string; perPage?: number },
+  ): Promise<Branch[]> {
+    // ListBranches gives names only, paged; the default branch comes from
+    // the repository's metadata. No server-side search: filter here.
+    const client = this.withRegion(ri);
+    const limit = Math.min(opts?.perPage ?? 100, 100);
+    const metadata = client
+      .send(new GetRepositoryCommand({ repositoryName: ri.repo }))
+      .then((r) => r.repositoryMetadata?.defaultBranch ?? "main");
+    const names: string[] = [];
+    let nextToken: string | undefined;
+    let pages = 0;
+    do {
+      const res = await client.send(
+        new ListBranchesCommand({ repositoryName: ri.repo, nextToken }),
+      );
+      names.push(...(res.branches ?? []));
+      nextToken = res.nextToken;
+      pages++;
+    } while (nextToken && pages < 5);
+    const defaultBranch = await metadata;
+    return defaultBranchFirst(
+      filterBranches(
+        names.map((name) => ({ name, default: name === defaultBranch })),
+        opts?.search,
+      ),
+    ).slice(0, limit);
   }
 }
 

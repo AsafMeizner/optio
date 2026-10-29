@@ -41,15 +41,25 @@ const jiraConfigSchema = z.object({
 
 const gitlabConfigSchema = z.object({
   source: z.literal("gitlab"),
-  config: z.object({
-    host: z.string().min(1).refine(isSsrfSafeHost, {
-      message: "Host must not target private or internal addresses",
+  config: z
+    .object({
+      host: z.string().min(1).refine(isSsrfSafeHost, {
+        message: "Host must not target private or internal addresses",
+      }),
+      token: z.string().min(1),
+      projectPath: z.string().min(1).optional(),
+      groupPath: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("A group instead of a project: the issues of all its projects"),
+      label: z.string().optional(),
+      maxPages: z.number().int().positive().optional(),
+    })
+    .refine((c) => !!c.projectPath || !!c.groupPath, {
+      message: "Give a projectPath or a groupPath",
+      path: ["projectPath"],
     }),
-    token: z.string().min(1),
-    projectPath: z.string().min(1),
-    label: z.string().optional(),
-    maxPages: z.number().int().positive().optional(),
-  }),
   enabled: z.boolean().optional(),
 });
 

@@ -47,6 +47,11 @@ vi.mock("../services/github-repo-browse-service.js", () => ({
   browseGitHubRepos: (...args: unknown[]) => mockBrowse(...args),
 }));
 
+const mockGetGitPlatformForRepo = vi.fn();
+vi.mock("../services/git-token-service.js", () => ({
+  getGitPlatformForRepo: (...args: unknown[]) => mockGetGitPlatformForRepo(...args),
+}));
+
 import { repoRoutes } from "./repos.js";
 
 // ─── Helpers ───
@@ -116,6 +121,106 @@ describe("GET /api/repos/:id", () => {
     const res = await app.inject({ method: "GET", url: "/api/repos/repo-1" });
 
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("GET /api/repos/:id/branches", () => {
+  const gitlabRepo = {
+    ...mockRepoData,
+    repoUrl: "https://gitlab.example/group/project",
+    fullName: "group/project",
+    gitPlatform: "gitlab",
+    defaultBranch: "develop",
+  };
+  const ri = {
+    platform: "gitlab",
+    host: "gitlab.example",
+    owner: "group",
+    repo: "project",
+    apiBaseUrl: "https://gitlab.example/api/v4",
+  };
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it("asks the repo's platform (by the stored kind) for branches matching q", async () => {
+    mockGetRepo.mockResolvedValue(gitlabRepo);
+    const listBranches = vi.fn().mockResolvedValue([
+      { name: "develop", default: true, protected: true },
+      { name: "release/1.0", default: false, protected: false },
+    ]);
+    mockGetGitPlatformForRepo.mockResolvedValue({ platform: { listBranches }, ri });
+    const app = await buildRouteTestApp(repoRoutes, {
+      user: { id: "u1", workspaceId: "ws-1", workspaceRole: "member" },
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/repos/repo-1/branches?q=rel&limit=20",
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toEqual({
+      branches: [
+        { name: "develop", default: true, protected: true },
+        { name: "release/1.0", default: false, protected: false },
+      ],
+      defaultBranch: "develop",
+    });
+    expect(mockGetGitPlatformForRepo).toHaveBeenCalledWith("https://gitlab.example/group/project", {
+      server: true,
+      workspaceId: "ws-1",
+      platformHint: "gitlab",
+    });
+    expect(listBranches).toHaveBeenCalledWith(ri, { search: "rel", perPage: 20 });
+  });
+
+  it("lists up to 30 without a query", async () => {
+    mockGetRepo.mockResolvedValue(gitlabRepo);
+    const listBranches = vi.fn().mockResolvedValue([]);
+    mockGetGitPlatformForRepo.mockResolvedValue({ platform: { listBranches }, ri });
+    const app = await buildTestApp();
+
+    const res = await app.inject({ method: "GET", url: "/api/repos/repo-1/branches" });
+
+    expect(res.statusCode).toBe(200);
+    expect(listBranches).toHaveBeenCalledWith(ri, { search: undefined, perPage: 30 });
+  });
+
+  it("answers an empty list with the reason when the platform can't be asked", async () => {
+    mockGetRepo.mockResolvedValue(gitlabRepo);
+    mockGetGitPlatformForRepo.mockRejectedValue(new Error("No GitLab token available"));
+    const app = await buildTestApp();
+
+    const res = await app.inject({ method: "GET", url: "/api/repos/repo-1/branches?q=x" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      branches: [],
+      defaultBranch: "develop",
+      error: "Failed to list branches",
+    });
+  });
+
+  it("returns 404 for a missing repo or one in another workspace", async () => {
+    const app = await buildTestApp();
+    mockGetRepo.mockResolvedValueOnce(null);
+    expect((await app.inject({ method: "GET", url: "/api/repos/nope/branches" })).statusCode).toBe(
+      404,
+    );
+    mockGetRepo.mockResolvedValueOnce({ ...gitlabRepo, workspaceId: "ws-other" });
+    expect(
+      (await app.inject({ method: "GET", url: "/api/repos/repo-1/branches" })).statusCode,
+    ).toBe(404);
+    expect(mockGetGitPlatformForRepo).not.toHaveBeenCalled();
+  });
+
+  it("is closed to viewers", async () => {
+    const app = await buildRouteTestApp(repoRoutes, {
+      user: { id: "u2", workspaceId: "ws-1", workspaceRole: "viewer" },
+    });
+    const res = await app.inject({ method: "GET", url: "/api/repos/repo-1/branches" });
+    expect(res.statusCode).toBe(403);
+    expect(mockGetRepo).not.toHaveBeenCalled();
   });
 });
 

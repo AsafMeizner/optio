@@ -1,3 +1,6 @@
+import { browseGitHubRepos } from "../github-repo-browse-service.js";
+import type { Branch, BrowsableRepository, PlatformLocation } from "@optio/shared";
+import { defaultBranchFirst, filterBranches } from "./pr-search.js";
 import type {
   GitPlatform,
   RepoIdentifier,
@@ -417,6 +420,55 @@ export class GitHubPlatform implements GitPlatform {
       name: item.name ?? "",
       type: item.type === "dir" ? "dir" : "file",
     }));
+  }
+  async listBranches(
+    ri: RepoIdentifier,
+    opts?: { search?: string; perPage?: number },
+  ): Promise<Branch[]> {
+    // REST lists branches alphabetically with no search: page through them
+    // (bounded) and filter here; the default branch comes from the repo.
+    const limit = Math.min(opts?.perPage ?? 100, 100);
+    const search = opts?.search?.trim();
+    const names: string[] = [];
+    for (let page = 1; page <= 3; page++) {
+      const data = await this.fetchJson<any[]>(
+        this.url(ri, `/branches?per_page=100&page=${page}`),
+        { headers: this.headers() },
+      );
+      for (const b of data) {
+        if (typeof b?.name === "string" && b.name) names.push(b.name);
+      }
+      const enough = filterBranches(
+        names.map((name) => ({ name, default: false })),
+        search,
+      ).length;
+      if (data.length < 100 || enough >= limit) break;
+    }
+    const { defaultBranch } = await this.getRepoMetadata(ri);
+    return defaultBranchFirst(
+      filterBranches(
+        names.map((name) => ({ name, default: name === defaultBranch })),
+        search,
+      ),
+    ).slice(0, limit);
+  }
+
+  /**
+   * The repos this token reaches (an App installation's, else the user's
+   * own, collaborator and organization repos), through the same scan the
+   * Add repository picker uses (github-repo-browse-service.ts).
+   */
+
+  async browseRepositories(
+    query: string,
+    _at: PlatformLocation,
+    opts?: { perPage?: number },
+  ): Promise<BrowsableRepository[]> {
+    const { repos } = await browseGitHubRepos(this.token, {
+      q: query.trim() || undefined,
+      perPage: opts?.perPage ?? 50,
+    });
+    return repos;
   }
 }
 

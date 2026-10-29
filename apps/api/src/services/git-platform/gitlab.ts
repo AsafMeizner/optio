@@ -1,4 +1,6 @@
 import { guardedFetch } from "../../utils/outbound-url.js";
+import type { Branch, BrowsableRepository, PlatformLocation } from "@optio/shared";
+import { defaultBranchFirst } from "./pr-search.js";
 import type {
   GitPlatform,
   RepoIdentifier,
@@ -11,6 +13,49 @@ import type {
   RepoMetadata,
   RepoContent,
 } from "@optio/shared";
+
+/**
+ * A non-2xx answer from GitLab's API, with its HTTP status and the rate-limit
+ * headers GitLab sends with it (`Retry-After`, `RateLimit-Remaining`,
+ * `RateLimit-Reset`), so a caller can wait as long as GitLab asks.
+ */
+export class GitLabApiError extends Error {
+  readonly retryAfterMs: number | null;
+  readonly rateLimitRemaining: number | null;
+  readonly rateLimitResetMs: number | null;
+
+  constructor(
+    readonly status: number,
+    body: string,
+    meta: {
+      retryAfterMs?: number | null;
+      rateLimitRemaining?: number | null;
+      rateLimitResetMs?: number | null;
+    } = {},
+  ) {
+    super(`GitLab API error ${status}: ${body}`);
+    this.name = "GitLabApiError";
+    this.retryAfterMs = meta.retryAfterMs ?? null;
+    this.rateLimitRemaining = meta.rateLimitRemaining ?? null;
+    this.rateLimitResetMs = meta.rateLimitResetMs ?? null;
+  }
+
+  static fromResponse(res: Response, body: string): GitLabApiError {
+    const header = (name: string): number | null => {
+      const raw = res.headers?.get?.(name);
+      if (raw == null || raw === "") return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    };
+    const retryAfter = header("retry-after");
+    const reset = header("ratelimit-reset");
+    return new GitLabApiError(res.status, body, {
+      retryAfterMs: retryAfter == null ? null : Math.max(0, retryAfter) * 1000,
+      rateLimitRemaining: header("ratelimit-remaining"),
+      rateLimitResetMs: reset == null ? null : reset * 1000,
+    });
+  }
+}
 
 export class GitLabPlatform implements GitPlatform {
   readonly type = "gitlab" as const;
@@ -41,7 +86,7 @@ export class GitLabPlatform implements GitPlatform {
     const res = await guardedFetch(url, { ...init, redirect: "error" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`GitLab API error ${res.status}: ${body}`);
+      throw GitLabApiError.fromResponse(res, body);
     }
     return (await res.json()) as T;
   }
@@ -351,7 +396,7 @@ export class GitLabPlatform implements GitPlatform {
     // Ignore 409 (label already exists)
     if (!res.ok && res.status !== 409) {
       const body = await res.text().catch(() => "");
-      throw new Error(`GitLab API error ${res.status}: ${body}`);
+      throw GitLabApiError.fromResponse(res, body);
     }
   }
 
@@ -403,6 +448,68 @@ export class GitLabPlatform implements GitPlatform {
       name: item.name ?? "",
       type: item.type === "tree" ? "dir" : "file",
     }));
+  }
+  async listBranches(
+    ri: RepoIdentifier,
+    opts?: { search?: string; perPage?: number },
+  ): Promise<Branch[]> {
+    // GitLab's `search` is a contains-match (`^term` / `term$` anchor it);
+    // branches come back alphabetically, with the default one flagged.
+    const params = new URLSearchParams({ per_page: String(Math.min(opts?.perPage ?? 100, 100)) });
+    const search = opts?.search?.trim();
+    if (search) params.set("search", search);
+    const data = await this.fetchJson<any[]>(this.url(ri, `/repository/branches?${params}`), {
+      headers: this.headers(),
+    });
+    return defaultBranchFirst(
+      data
+        .filter((b: any) => typeof b?.name === "string" && b.name)
+        .map((b: any) => ({
+          name: b.name as string,
+          default: b.default === true,
+          protected: b.protected === true,
+        })),
+    );
+  }
+
+  /**
+   * The projects the token is a member of (`/projects?membership=true`),
+   * most recently active first. GitLab searches name, path and description
+   * server-side; `search_namespaces` lets `group/project` match too.
+   */
+
+  async browseRepositories(
+    query: string,
+    at: PlatformLocation,
+    opts?: { perPage?: number },
+  ): Promise<BrowsableRepository[]> {
+    const params = new URLSearchParams({
+      membership: "true",
+      order_by: "last_activity_at",
+      sort: "desc",
+      per_page: String(Math.min(opts?.perPage ?? 50, 100)),
+    });
+    const search = query.trim();
+    if (search) {
+      params.set("search", search);
+      if (search.includes("/")) params.set("search_namespaces", "true");
+    }
+    const data = await this.fetchJson<any[]>(`${at.apiBaseUrl}/projects?${params}`, {
+      headers: this.headers(),
+    });
+    return data
+      .filter((p: any) => typeof p?.path_with_namespace === "string")
+      .map((p: any) => ({
+        fullName: p.path_with_namespace as string,
+        cloneUrl:
+          p.http_url_to_repo ??
+          `${at.apiBaseUrl.replace(/\/api\/v4$/, "")}/${p.path_with_namespace}.git`,
+        htmlUrl: p.web_url ?? `${at.apiBaseUrl.replace(/\/api\/v4$/, "")}/${p.path_with_namespace}`,
+        defaultBranch: p.default_branch ?? "main",
+        isPrivate: p.visibility !== "public",
+        description: p.description ?? null,
+        pushedAt: p.last_activity_at ?? null,
+      }));
   }
 }
 

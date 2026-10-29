@@ -1,4 +1,5 @@
 "use client";
+import { Combobox } from "@/components/ui/combobox";
 
 import { workHref } from "@/lib/work-href";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -501,6 +502,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
   const kind = deriveKind(draft);
   const effectiveRepoUrl = local ? (localRepoUrl ?? "") : draft.repoUrl;
   const repoRow = repos.find((r: any) => r.id === draft.repoId);
+  const machineRepo = localRepoUrl ? repos.find((r: any) => r.repoUrl === localRepoUrl) : undefined;
   const machine = hosts.find((h) => h.id === draft.location.localHostId);
   const sentenceCtx = { repoName: repoRow?.fullName ?? null, machineName: machine?.name ?? null };
   const sentence = useMemo(() => describe(draft, sentenceCtx), [draft, repoRow, machine]);
@@ -993,18 +995,15 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
                               <label className="block text-sm text-text-muted mb-1.5">
                                 Base branch
                               </label>
-                              <div className="flex items-center gap-2">
-                                <GitBranchIcon className="w-3.5 h-3.5 text-text-muted" />
-                                <input
-                                  type="text"
-                                  value={draft.repoBranch}
-                                  onChange={(e) => setDraft({ repoBranch: e.target.value })}
-                                  className={INPUT_INNER}
-                                />
-                              </div>
+                              <BranchPicker
+                                repoId={machineRepo?.id ?? null}
+                                value={draft.repoBranch}
+                                onChange={(repoBranch) => setDraft({ repoBranch })}
+                              />
                             </div>
                             <p className="text-[11px] text-text-muted/80 sm:pb-2.5">
-                              The agent branches off this in the checkout and opens a PR against it.
+                              The agent branches off this in the checkout and opens a{" "}
+                              {prNoun(machineRepo?.gitPlatform)} against it.
                             </p>
                           </div>
                         ) : (
@@ -1061,15 +1060,11 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
                                 <label className="block text-sm text-text-muted mb-1.5">
                                   Branch
                                 </label>
-                                <div className="flex items-center gap-2">
-                                  <GitBranchIcon className="w-3.5 h-3.5 text-text-muted" />
-                                  <input
-                                    type="text"
-                                    value={draft.repoBranch}
-                                    onChange={(e) => setDraft({ repoBranch: e.target.value })}
-                                    className={INPUT_INNER}
-                                  />
-                                </div>
+                                <BranchPicker
+                                  repoId={draft.repoId || null}
+                                  value={draft.repoBranch}
+                                  onChange={(repoBranch) => setDraft({ repoBranch })}
+                                />
                               </div>
                             </div>
                           ) : (
@@ -2356,4 +2351,91 @@ function EventConfig({
       </p>
     </div>
   );
+}
+
+const BRANCH_LIMIT = 30;
+
+export function BranchPicker({
+  id,
+  repoId,
+  value,
+  onChange,
+}: {
+  id?: string;
+  repoId: string | null;
+  value: string;
+  onChange: (name: string) => void;
+}) {
+  const [branches, setBranches] = useState<
+    Awaited<ReturnType<typeof api.listRepoBranches>>["branches"]
+  >([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  // Drop answers to a search the user has already typed past (or another repo's).
+  const requestId = useRef(0);
+
+  useEffect(() => {
+    requestId.current++;
+    setBranches([]);
+    setError("");
+    setLoading(false);
+  }, [repoId]);
+
+  const search = useCallback(
+    async (q: string) => {
+      const current = ++requestId.current;
+      if (!repoId) return;
+      setLoading(true);
+      try {
+        const res = await api.listRepoBranches(repoId, {
+          q: q.trim() || undefined,
+          limit: BRANCH_LIMIT,
+        });
+        if (current !== requestId.current) return;
+        setBranches(res.branches);
+        setError(res.error ?? "");
+      } catch (err) {
+        if (current !== requestId.current) return;
+        setBranches([]);
+        setError(err instanceof Error ? err.message : "Could not list branches");
+      } finally {
+        if (current === requestId.current) setLoading(false);
+      }
+    },
+    [repoId],
+  );
+
+  return (
+    <Combobox
+      freeText
+      mono
+      id={id}
+      label="Branch"
+      value={value}
+      placeholder="Branch name"
+      icon={<GitBranchIcon />}
+      options={branches.map((b) => ({
+        id: b.name,
+        label: b.name,
+        badge: b.default ? "default" : b.protected ? "protected" : undefined,
+      }))}
+      onSearch={search}
+      onPick={(o) => onChange(o.id)}
+      onCommit={onChange}
+      loading={loading}
+      error={error}
+      emptyMessage={(q) => {
+        const typed = q.trim();
+        if (!typed) return repoId ? "No branches" : "Type a branch name";
+        return repoId
+          ? `No branch matches “${typed}” — press Enter to use it as typed`
+          : `“${typed}” will be used as typed`;
+      }}
+    />
+  );
+}
+
+function prNoun(platform?: string | null): string {
+  if (platform === "gitlab") return "merge request";
+  return platform ? "pull request" : "PR / merge request";
 }

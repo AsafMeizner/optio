@@ -82,6 +82,36 @@ export interface RepoContent {
   type: "file" | "dir";
 }
 
+/**
+ * A repository the platform credentials can reach, as the "Add repository"
+ * picker lists it (`GitPlatform.browseRepositories`).
+ */
+export interface BrowsableRepository {
+  /** `owner/name` (GitLab: the project's full path, groups included). */
+  fullName: string;
+  cloneUrl: string;
+  htmlUrl: string;
+  defaultBranch: string;
+  isPrivate: boolean;
+  description: string | null;
+  /** When it last changed (GitHub: last push; GitLab: last activity). */
+  pushedAt: string | null;
+}
+
+/** Where on a platform `browseRepositories` looks: its host and its API root. */
+export interface PlatformLocation {
+  host: string;
+  apiBaseUrl: string;
+}
+
+/** A branch of a repository, as the branch pickers list them. */
+export interface Branch {
+  name: string;
+  /** The repository's default branch (what `getRepoMetadata` reports). */
+  default: boolean;
+  protected?: boolean;
+}
+
 export interface GitPlatform {
   readonly type: GitPlatformType;
 
@@ -135,4 +165,10 @@ export interface GitPlatform {
   // Repo reads
   getRepoMetadata(ri: RepoIdentifier): Promise<RepoMetadata>;
   listRepoContents(ri: RepoIdentifier, path?: string): Promise<RepoContent[]>;
+  listBranches(ri: RepoIdentifier, opts?: { search?: string; perPage?: number }): Promise<Branch[]>;
+  browseRepositories?(
+    query: string,
+    at: PlatformLocation,
+    opts?: { perPage?: number },
+  ): Promise<BrowsableRepository[]>;
 }
