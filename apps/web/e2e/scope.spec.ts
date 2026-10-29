@@ -125,6 +125,8 @@ test.describe("Scope", () => {
     );
     expect(config.bootstrap).toBe(false);
     expect(config.providers.map((p) => p.provider).sort()).toEqual([
+      "bitbucket",
+      "gitea",
       "github",
       "gitlab",
       "google",

@@ -32,6 +32,7 @@ import {
   SkeletonCard,
 } from "@/components/settings/settings-ui";
 import { cn } from "@/lib/utils";
+import { AdditionalOAuthForm } from "./additional-oauth-form";
 import { OidcForm } from "./oidc-sign-in-form";
 import { SamlForm } from "./saml-sign-in-form";
 
@@ -454,8 +455,16 @@ export function SignInSetupForm({
   const google = config.providers.find((p) => p.provider === "google")!;
   const oidc = config.providers.find((p) => p.provider === "oidc");
   const saml = config.providers.find((p) => p.provider === "saml");
+  const additional = config.providers.filter(
+    (p) => p.provider === "gitea" || p.provider === "bitbucket",
+  );
   const others = config.providers.filter(
-    (p) => p.provider !== "google" && p.provider !== "oidc" && p.provider !== "saml",
+    (p) =>
+      p.provider !== "google" &&
+      p.provider !== "oidc" &&
+      p.provider !== "saml" &&
+      p.provider !== "gitea" &&
+      p.provider !== "bitbucket",
   );
   const canEdit = config.canEdit || (config.bootstrap && setupToken.trim().length > 0);
 
@@ -652,6 +661,46 @@ export function SignInSetupForm({
           )}
         </section>
       )}
+      {additional.map((provider) => (
+        <section
+          key={provider.provider}
+          className="space-y-3"
+          aria-label={`${provider.displayName} sign-in`}
+        >
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">
+              {provider.provider === "gitea" ? "Gitea / Forgejo" : "Bitbucket"}
+            </h3>
+            <Status p={provider} />
+          </div>
+          {canEdit ? (
+            <AdditionalOAuthForm
+              key={provider.updatedAt ?? "new"}
+              view={provider}
+              config={config}
+              mode={mode}
+              setupToken={setupToken}
+              onRemoved={() => void load()}
+              onSaved={(view, bootstrap) => {
+                setConfig((old) =>
+                  old
+                    ? {
+                        ...old,
+                        bootstrap,
+                        providers: old.providers.map((p) =>
+                          p.provider === view.provider ? view : p,
+                        ),
+                      }
+                    : old,
+                );
+                onBootstrapChange?.(bootstrap);
+              }}
+            />
+          ) : (
+            <p className={HELP}>Only a deployment admin can change sign-in settings.</p>
+          )}
+        </section>
+      ))}
       {/* Other providers: environment-configured, read-only here */}
       <ul className={LIST}>
         {others.map((p) => {

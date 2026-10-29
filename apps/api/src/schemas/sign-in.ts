@@ -82,3 +82,30 @@ export const samlSettingsSchema = z
       path: ["metadataUrl"],
     },
   );
+
+export const giteaSettingsSchema = z.object({
+  baseUrl: z
+    .string()
+    .trim()
+    .url()
+    .refine(secureIdentityProviderUrl, { message: "The server URL must start with https://" }),
+  scopes: z.string().trim().max(500).optional(),
+  caPem: pem,
+  insecureSkipVerify: z.literal(false).optional(),
+  linkByEmail: z.boolean().optional(),
+});
+
+export const bitbucketSettingsSchema = z.object({ linkByEmail: z.boolean().optional() });
+
+export function settingsSchemaFor(provider: "oidc" | "saml" | "gitea" | "bitbucket") {
+  switch (provider) {
+    case "oidc":
+      return OidcSettingsSchema;
+    case "saml":
+      return samlSettingsSchema;
+    case "gitea":
+      return giteaSettingsSchema;
+    case "bitbucket":
+      return bitbucketSettingsSchema;
+  }
+}

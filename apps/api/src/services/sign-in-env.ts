@@ -1,4 +1,4 @@
-import type { AnySignInSettings, SamlSettings } from "@optio/shared";
+import type { AnySignInSettings, GiteaSettings, SamlSettings } from "@optio/shared";
 import type { SignInProviderName } from "./sign-in-config-service.js";
 function envBool(name: string): boolean | undefined {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -6,9 +6,12 @@ function envBool(name: string): boolean | undefined {
   return raw === "true" || raw === "1" || raw === "yes";
 }
 
-export function envConfig(
-  provider: SignInProviderName,
-): { clientId: string; clientSecret: string; settings?: AnySignInSettings } | null {
+export function envConfig(provider: SignInProviderName): {
+  clientId: string;
+  clientSecret: string;
+  settings?: AnySignInSettings;
+  displayName?: string;
+} | null {
   const env = process.env;
   switch (provider) {
     case "google":
@@ -32,6 +35,27 @@ export function envConfig(
             clientSecret: env.GITLAB_OAUTH_CLIENT_SECRET ?? "",
           }
         : null;
+    case "bitbucket":
+      return env.BITBUCKET_OAUTH_CLIENT_ID
+        ? {
+            clientId: env.BITBUCKET_OAUTH_CLIENT_ID,
+            clientSecret: env.BITBUCKET_OAUTH_CLIENT_SECRET ?? "",
+            displayName: "Bitbucket",
+            settings: {},
+          }
+        : null;
+    case "gitea":
+      if (!env.GITEA_OAUTH_CLIENT_ID || !env.GITEA_OAUTH_BASE_URL) return null;
+      return {
+        clientId: env.GITEA_OAUTH_CLIENT_ID,
+        clientSecret: env.GITEA_OAUTH_CLIENT_SECRET ?? "",
+        displayName: env.GITEA_DISPLAY_NAME || "Gitea / Forgejo",
+        settings: {
+          baseUrl: env.GITEA_OAUTH_BASE_URL,
+          scopes: env.GITEA_OAUTH_SCOPES || undefined,
+          caPem: env.GITEA_CA_PEM || undefined,
+        } satisfies GiteaSettings,
+      };
     case "oidc":
       if (!env.OIDC_ISSUER_URL) return null;
       return {

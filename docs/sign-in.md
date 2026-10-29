@@ -223,3 +223,31 @@ Environment configuration: `SAML_METADATA_URL` or `SAML_METADATA_XML`,
 These `SAML_*` variables are environment configuration, not dedicated Helm values.
 For Helm installs, configure SAML in Settings → Sign-in or pass these variables
 through the chart's `optio.env` deployment environment map.
+
+## Bitbucket Cloud (`bitbucket`)
+
+Create an OAuth consumer in Bitbucket's workspace settings. Register the
+callback URL displayed by Optio (`<origin>/api/auth/bitbucket/callback`) and
+grant Account, Email and Workspace membership read permissions. Save its
+client ID and secret in Optio, or set `BITBUCKET_OAUTH_CLIENT_ID` and
+`BITBUCKET_OAUTH_CLIENT_SECRET`.
+
+The account's stable identity is its Bitbucket UUID. Only a confirmed primary
+email counts as verified. Workspace slugs are reported as groups.
+
+## Gitea / Forgejo (`gitea`)
+
+Register an OAuth2 application on your server with callback
+`<origin>/api/auth/gitea/callback`. Save its server URL (including any path
+prefix), client ID and secret in Optio. For Forgejo, set the button label to
+“Forgejo”. Environment equivalents are `GITEA_OAUTH_BASE_URL`,
+`GITEA_OAUTH_CLIENT_ID`, `GITEA_OAUTH_CLIENT_SECRET`, `GITEA_DISPLAY_NAME`,
+`GITEA_OAUTH_SCOPES` and `GITEA_CA_PEM`.
+
+The client uses the server's OpenID Connect discovery, PKCE S256, a nonce,
+and JWKS verification. Default scopes are `openid profile email groups`;
+organizations and teams are reported in the `groups` claim.
+Set a private CA certificate when the server needs one.
+
+See the [Gitea OAuth2 provider documentation](https://docs.gitea.com/development/oauth2-provider/)
+for scopes supported by your version and their resource access implications.

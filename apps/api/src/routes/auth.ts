@@ -566,6 +566,12 @@ export async function authRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       const providerName = req.params.provider;
+      if (
+        (providerName === "gitea" || providerName === "bitbucket") &&
+        !(await listEnabledProviders()).some((entry) => entry.name === providerName)
+      ) {
+        return reply.status(404).send({ error: "Sign-in provider is not enabled" });
+      }
       const provider = getOAuthProvider(providerName);
       if (!provider || (providerName === "saml" && !(await resolveProviderConfig("saml")))) {
         return reply.status(404).send({ error: `Unknown provider: ${providerName}` });
