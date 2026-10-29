@@ -16,10 +16,12 @@ import {
 import { getInstallationToken, isGitHubAppConfigured } from "./github-app-service.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
 import { parseRepoUrl } from "@optio/shared";
-import { isTrustedGitHost } from "./git-token-service.js";
+import { getGitToken, isTrustedGitHost } from "./git-token-service.js";
 
 export function requiredGitTokenSecret(platform: GitPlatformType | undefined): string | null {
-  if (platform === "gitlab") return "GITLAB_TOKEN";
+  // Host-scoped secrets and API environment fallback are resolved best effort
+  // below/the signed helper; requiring plain GITLAB_TOKEN breaks both setups.
+  if (platform === "gitlab") return null;
   return isGitHubAppConfigured() ? null : "GITHUB_TOKEN";
 }
 
@@ -65,7 +67,20 @@ export async function applyGitAccess(
   },
 ): Promise<void> {
   if (!(await restrictGitCredentialsToRepo(env, opts.repoUrl))) return;
-  for (const name of ["GITHUB_TOKEN", "GITLAB_TOKEN", "GITLAB_HOST"]) {
+  const repo = opts.repoUrl ? parseRepoUrl(opts.repoUrl) : null;
+  if (repo?.platform === "gitlab" && !env.GITLAB_TOKEN) {
+    const token = await getGitToken("gitlab", {
+      workspaceId: opts.workspaceId,
+      userId: opts.ownerUserId ?? undefined,
+      host: repo.host,
+    }).catch(() => null);
+    if (token) env.GITLAB_TOKEN = token;
+  }
+  for (const name of [
+    "GITHUB_TOKEN",
+    ...(repo?.platform === "gitlab" ? [] : ["GITLAB_TOKEN"]),
+    "GITLAB_HOST",
+  ]) {
     if (env[name]) continue;
     const value = await retrieveSecretWithFallback(
       name,

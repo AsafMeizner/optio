@@ -43,6 +43,11 @@ object LocalPresentation {
             "exit" -> "finished — review the result"
             "done" -> "done — review the result"
             "stale" -> "went quiet a while ago"
+            "permission" -> "waiting for your permission"
+            "question" -> "has a question for you"
+            "auth" -> "needs you to sign in"
+            "blocked" -> "blocked — waiting on you"
+            "error" -> "failed — review the error"
             else -> "needs you"
         }
 

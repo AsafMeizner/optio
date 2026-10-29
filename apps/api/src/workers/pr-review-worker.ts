@@ -246,11 +246,8 @@ export function startPrReviewWorker() {
           (run.metadata as {
             taskFileContent?: string;
             taskFilePath?: string;
-            // Newer field — agent-agnostic. Supersedes claudeModel.
+            // Agent-agnostic model field.
             model?: string;
-            // Legacy field — left in place for one release while in-flight
-            // jobs queued before the agent-aware review change drain.
-            claudeModel?: string;
           } | null) ?? {};
 
         const renderedPrompt = run.prompt ?? "";
@@ -271,7 +268,7 @@ export function startPrReviewWorker() {
         const resolvedReview = resolveReviewConfig({
           repoReviewAgentType: repoConfig.reviewAgentType ?? null,
           repoDefaultAgentType: repoConfig.defaultAgentType ?? null,
-          repoReviewModel: metadata.model ?? metadata.claudeModel ?? repoConfig.reviewModel ?? null,
+          repoReviewModel: metadata.model ?? repoConfig.reviewModel ?? null,
           globalDefaultReviewAgentType: globalSettings?.defaultReviewAgentType ?? null,
           globalDefaultReviewModel: globalSettings?.defaultReviewModel ?? null,
         });

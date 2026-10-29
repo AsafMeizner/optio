@@ -133,6 +133,18 @@ describe("projectWork", () => {
             taskId: "t2",
             spec: { kind: "agent", agent: "claude-code" },
           },
+          {
+            id: "lt3",
+            title: "resumed",
+            state: "exited",
+            exitCode: 0,
+            attentionState: "idle",
+            spawnedBy: "trigger",
+            taskId: null,
+            workflowRunId: null,
+            resumedByTerminalId: "lt4",
+            spec: { kind: "agent", agent: "codex" },
+          },
         ] as unknown as WorkSources["localTerminals"],
         podSessions: [
           {
@@ -170,6 +182,8 @@ describe("projectWork", () => {
     );
 
     expect(rows.map((r) => r.key)).not.toContain("terminal-lt2");
+    // A session that was resumed hands its row to the resume.
+    expect(rows.map((r) => r.key)).not.toContain("terminal-lt3");
     expect(rows.slice(0, 2).map((r) => r.status)).toEqual(["needs_you", "needs_you"]);
     expect(rows[0].key).toBe("terminal-lt1"); // most recent needs-you first
     expect(rows[0]).toMatchObject({
