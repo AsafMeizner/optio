@@ -16,6 +16,14 @@ case "${OPTIO_REPO_URL}" in
   *github*) OPTIO_GIT_HOST="github" ;;
   *)        OPTIO_GIT_HOST="github" ;; # default
 esac
+# A host the deployment names as a GitLab (GITLAB_HOSTS, comma-separated) is
+# GitLab whatever its name, as parse-repo-url decides in the API.
+if [ "${OPTIO_GIT_HOST}" = "github" ] && [ -n "${GITLAB_HOSTS:-}" ]; then
+  _repo_host=$(echo "${OPTIO_REPO_URL}" | sed -E 's|^[a-z+]+://||; s|^[^@/]*@||; s|[:/].*$||')
+  case ",${GITLAB_HOSTS// /}," in
+    *",${_repo_host},"*) OPTIO_GIT_HOST="gitlab" ;;
+  esac
+fi
 echo "[optio] Detected git platform: ${OPTIO_GIT_HOST}"
 
 # Set up git credentials for initial clone.

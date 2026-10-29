@@ -57,9 +57,8 @@ export function knownHostPlatform(host: string): GitPlatformType | null {
 
 function detectPlatform(host: string): GitPlatformType {
   const h = host.toLowerCase();
-  if (GITHUB_HOSTS.has(h)) return "github";
-  if (getGitLabHosts().has(h)) return "gitlab";
-  if (extractCodeCommitRegion(h)) return "codecommit";
+  const known = knownHostPlatform(h);
+  if (known) return known;
   // Unknown hosts: check if the hostname contains "gitlab"
   if (h.includes("gitlab")) return "gitlab";
   // Default to github for unknown hosts (most common case)
@@ -109,7 +108,7 @@ function extractParts(url: string): { host: string; path: string } | null {
     const parsed = new URL(u);
     const path = parsed.pathname.replace(/^\//, "");
     if (!path) return null;
-    return { host: parsed.hostname, path };
+    return { host: parsed.host, path };
   } catch {
     return null;
   }

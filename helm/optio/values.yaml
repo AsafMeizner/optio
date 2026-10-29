@@ -220,6 +220,11 @@ agent:
     maxSizeTotalGi: 200               # Max total cache size across all dirs per repo
   # Repo init timeout (how long to wait for clone to complete)
   repoInitTimeoutMs: 120000           # 2 min default; increase for large repos
+  # Who agents commit as (GIT_BOT_NAME / GIT_BOT_EMAIL on the API, which hands
+  # them to agent pods). Empty preserves the GitHub App bot / Optio Agent default.
+  git:
+    botName: ""   # e.g. "Optio Agent"
+    botEmail: ""  # e.g. optio-agent@gitlab.example.com
 
 # Per-IP API rate limit (requests per minute). The web UI proxies through the
 # Next server, but the iOS app and CLI talk to the API directly and poll several

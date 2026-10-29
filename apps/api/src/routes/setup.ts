@@ -256,7 +256,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
         // The host is typed by the person: vetted and pinned like any
         // outbound URL (utils/outbound-url.ts).
         const res = await guardedFetch(`https://${gitlabHost}/api/v4/user`, {
-          headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" },
+          headers: { Authorization: `Bearer ${token}`, "User-Agent": "Optio" },
           redirect: "error",
         });
         if (!res.ok) {
@@ -629,7 +629,10 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       try {
         const res = await guardedFetch(
           `https://${gitlabHost}/api/v4/projects?membership=true&order_by=last_activity_at&sort=desc&per_page=20`,
-          { headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" }, redirect: "error" },
+          {
+            headers: { Authorization: `Bearer ${token}`, "User-Agent": "Optio" },
+            redirect: "error",
+          },
         );
         if (!res.ok) {
           return reply.send({ repos: [], error: `GitLab returned ${res.status}` });
