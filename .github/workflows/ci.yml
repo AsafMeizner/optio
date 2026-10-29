@@ -120,7 +120,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo test
       - name: Verify push gate
-        run: node --test scripts/check-push.test.mjs
+        run: node --test scripts/*.test.mjs scripts/offline/*.test.mjs
 
   integration:
     name: Integration Test

@@ -32,9 +32,17 @@ spec:
         - {{ .host | quote }}
       secretName: {{ .host | replace "." "-" }}-tls
     {{- end }}
-  {{- else if .Values.ingress.tls }}
+  {{- else }}
+  {{- $tls := list }}
+  {{- range .Values.ingress.tls }}
+  {{- if .secretName }}
+  {{- $tls = append $tls . }}
+  {{- end }}
+  {{- end }}
+  {{- if $tls }}
   tls:
-    {{- toYaml .Values.ingress.tls | nindent 4 }}
+    {{- toYaml $tls | nindent 4 }}
+  {{- end }}
   {{- end }}
   rules:
     {{- range .Values.ingress.hosts }}
