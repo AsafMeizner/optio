@@ -520,8 +520,10 @@ export function projectWork(src: WorkSources): WorkRow[] {
     ...src.definitions.map((d) => definitionRow(d, at)),
     // A terminal running a Task or a Job run is that run, which has its own
     // row above; hand-opened terminals and automation spawns only exist here.
+    // A session that was resumed hands its row to the resume (the same
+    // session, continued).
     ...src.localTerminals
-      .filter((t) => !t.taskId && !t.workflowRunId)
+      .filter((t) => !t.taskId && !t.workflowRunId && !t.resumedByTerminalId)
       .map((t) => terminalRow(t, at)),
     ...src.podSessions.map(podSessionRow),
     ...src.agents.map(agentRow),

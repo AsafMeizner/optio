@@ -68,6 +68,10 @@ class WorkFeedTest {
                 spawnedBy = "manual", lastActivityAt = "2026-09-02T00:00:00Z",
             ),
             TerminalRow(id = "lt2", title = "dup", state = "running", spec = spec("agent", agent = "claude-code"), taskId = "t2"),
+            TerminalRow(
+                id = "lt3", title = "resumed", state = "exited", spec = spec("agent", agent = "codex"),
+                spawnedBy = "trigger", resumedByTerminalId = "lt4",
+            ),
         ),
         localBlueprints = listOf(BlueprintRow(id = "a1", name = "Review PRs", agent = "claude-code", hostId = "h1", enabled = true)),
         podSessions = listOf(PodSessionRow(id = "s1", repoUrl = "https://github.com/acme/app", branch = "session/x", state = "active")),
@@ -84,6 +88,7 @@ class WorkFeedTest {
         val rows = WorkFeed.collect(sources())
 
         assertFalse(rows.any { it.key == "terminal-lt2" }, "a local Task run is already its tasks row")
+        assertFalse(rows.any { it.key == "terminal-lt3" }, "a resumed session hands its row to the resume")
         assertEquals(listOf(WorkStatus.NEEDS_YOU, WorkStatus.NEEDS_YOU), rows.take(2).map { it.status })
         assertEquals("terminal-lt1", rows.first().key, "most recent needs-you first")
 
