@@ -35,6 +35,7 @@
     "@opentelemetry/auto-instrumentations-node": "^0.81.2",
     "@opentelemetry/exporter-logs-otlp-proto": "^0.223.0",
     "@opentelemetry/exporter-metrics-otlp-proto": "^0.223.0",
+    "@opentelemetry/exporter-prometheus": "0.223.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.223.0",
     "@opentelemetry/resources": "^2.12.0",
     "@opentelemetry/sdk-logs": "^0.223.0",
@@ -75,7 +76,7 @@
     "openapi-typescript": "^7.13.0",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.12",
-    "vite": "^7.3.7"
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
   }
 }
