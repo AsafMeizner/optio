@@ -99,6 +99,7 @@ export interface SignInProviderTestResult {
   };
 }
 
+/** Common account linking; group admission is a later split. */
 export interface SignInAccessSettings {
   /** A provider-verified unique email may link to an existing account; disabled by default. */
   linkByEmail?: boolean;
@@ -135,4 +136,23 @@ export interface SamlSettings extends SignInAccessSettings {
   insecureSkipVerify?: boolean;
 }
 
-export type AnySignInSettings = OidcSettings | SamlSettings;
+/** A self-hosted Gitea or Forgejo: an OAuth2 application on it (OpenID Connect underneath). */
+export interface GiteaSettings extends SignInAccessSettings {
+  /** The server's URL, e.g. https://git.example.com */
+  baseUrl: string;
+  /** Space-separated; default "openid profile email groups". */
+  scopes?: string;
+  /** PEM bundle of the CA behind the server's certificate. */
+  caPem?: string | null;
+  insecureSkipVerify?: boolean;
+}
+
+/**
+ * Bitbucket Cloud (an OAuth consumer). The person's groups are the
+ * workspaces they belong to (their slugs), for required and admin groups.
+ */
+export type BitbucketSettings = SignInAccessSettings;
+
+/** Any provider's settings beyond its client ID and secret. */
+
+export type AnySignInSettings = OidcSettings | SamlSettings | GiteaSettings | BitbucketSettings;

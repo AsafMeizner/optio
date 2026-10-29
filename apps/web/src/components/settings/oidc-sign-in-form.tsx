@@ -40,6 +40,8 @@ export const SIGN_IN_PROVIDER_LABEL = {
   github: "GitHub",
   gitlab: "GitLab",
   saml: "SSO (SAML 2.0)",
+  gitea: "Gitea / Forgejo",
+  bitbucket: "Bitbucket",
 };
 type SignInProviderName = keyof typeof SIGN_IN_PROVIDER_LABEL;
 

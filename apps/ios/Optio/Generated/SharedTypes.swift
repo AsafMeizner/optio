@@ -8804,6 +8804,7 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
     }
 }
 
+/// Common account linking; group admission is a later split.
 public struct SignInAccessSettings: Codable, Hashable, Sendable {
     /// A provider-verified unique email may link to an existing account; disabled by default.
     public let linkByEmail: Bool?
@@ -8908,6 +8909,46 @@ public struct SamlSettings: Codable, Hashable, Sendable {
     }
 }
 
+/// A self-hosted Gitea or Forgejo: an OAuth2 application on it (OpenID Connect underneath).
+public struct GiteaSettings: Codable, Hashable, Sendable {
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
+    /// The server's URL, e.g. https://git.example.com
+    public let baseUrl: String
+    /// Space-separated; default "openid profile email groups".
+    public let scopes: String?
+    /// PEM bundle of the CA behind the server's certificate.
+    public let caPem: String?
+    public let insecureSkipVerify: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+        case baseUrl = "baseUrl"
+        case scopes = "scopes"
+        case caPem = "caPem"
+        case insecureSkipVerify = "insecureSkipVerify"
+    }
+
+    public init(
+        linkByEmail: Bool? = nil,
+        baseUrl: String,
+        scopes: String? = nil,
+        caPem: String? = nil,
+        insecureSkipVerify: Bool? = nil
+    ) {
+        self.linkByEmail = linkByEmail
+        self.baseUrl = baseUrl
+        self.scopes = scopes
+        self.caPem = caPem
+        self.insecureSkipVerify = insecureSkipVerify
+    }
+}
+
+/// Bitbucket Cloud (an OAuth consumer). The person's groups are the
+/// workspaces they belong to (their slugs), for required and admin groups.
+public typealias BitbucketSettings = SignInAccessSettings
+
+/// Any provider's settings beyond its client ID and secret.
 public typealias AnySignInSettings = AnyCodable
 
 // MARK: - task.ts

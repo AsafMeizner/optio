@@ -528,6 +528,17 @@ auth:
   # Entra ID, Okta, Zitadel, Authelia, Auth0, …). Set issuerUrl to turn it on. Register the redirect URI <publicUrl>/api/auth/oidc/callback
   # (<web.publicApiUrl>/api/auth/oidc/callback when the API has an origin of
   # its own) with the provider.
+  gitea:
+    baseUrl: ""
+    clientId: ""
+    clientSecret: ""
+    displayName: "Gitea / Forgejo"
+    scopes: "openid profile email groups"
+    caPem: ""
+  bitbucket:
+    clientId: ""
+    clientSecret: ""
+
   oidc:
     issuerUrl: ""       # e.g. https://auth.example.com/realms/optio (serves /.well-known/openid-configuration)
     clientId: ""

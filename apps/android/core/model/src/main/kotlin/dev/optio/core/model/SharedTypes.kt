@@ -4142,6 +4142,7 @@ data class SignInProviderTestResult(
     )
 }
 
+/** Common account linking; group admission is a later split. */
 @Serializable
 data class SignInAccessSettings(
     /** A provider-verified unique email may link to an existing account; disabled by default. */
@@ -4182,6 +4183,27 @@ data class SamlSettings(
     val insecureSkipVerify: Boolean? = null,
 )
 
+/** A self-hosted Gitea or Forgejo: an OAuth2 application on it (OpenID Connect underneath). */
+@Serializable
+data class GiteaSettings(
+    /** A provider-verified unique email may link to an existing account; disabled by default. */
+    val linkByEmail: Boolean? = null,
+    /** The server's URL, e.g. https://git.example.com */
+    val baseUrl: String,
+    /** Space-separated; default "openid profile email groups". */
+    val scopes: String? = null,
+    /** PEM bundle of the CA behind the server's certificate. */
+    val caPem: String? = null,
+    val insecureSkipVerify: Boolean? = null,
+)
+
+/**
+ * Bitbucket Cloud (an OAuth consumer). The person's groups are the
+ * workspaces they belong to (their slugs), for required and admin groups.
+ */
+typealias BitbucketSettings = SignInAccessSettings
+
+/** Any provider's settings beyond its client ID and secret. */
 typealias AnySignInSettings = JsonElement
 
 // endregion

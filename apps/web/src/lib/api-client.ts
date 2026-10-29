@@ -100,7 +100,7 @@ export interface ApiKeyCreated {
 /** What `GET /api/auth/sign-in` says about one provider (never a secret). */
 export interface SignInProviderView {
   settings?: AnySignInSettings;
-  provider: "google" | "github" | "gitlab" | "oidc" | "saml";
+  provider: "google" | "github" | "gitlab" | "oidc" | "saml" | "gitea" | "bitbucket";
   displayName: string;
   configurable: boolean;
   enabled: boolean;
