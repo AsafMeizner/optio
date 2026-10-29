@@ -1,7 +1,6 @@
 import type { PullRequest, Review } from "@optio/shared";
 
-export type AutoMergeBlocker =
-  "pr_draft" | "pr_not_mergeable" | "pr_changes_requested" | "pr_reviews_incomplete";
+export type AutoMergeBlocker = "pr_draft" | "pr_not_mergeable" | "pr_changes_requested";
 
 /**
  * Whether any reviewer's latest say on the PR is "changes requested" — a
@@ -17,21 +16,6 @@ export function hasChangesRequested(reviews: readonly Review[]): boolean {
   return [...latest.values()].includes("CHANGES_REQUESTED");
 }
 
-/**
- * A review list one of whose reads failed (GitLab's getReviews): it may be
- * missing a reviewer's "changes requested", so it never allows a merge.
- */
-export type ReviewList = Review[] & { incomplete?: true };
-
-/** Mark `reviews` as read with a gap (see `ReviewList`). */
-export function markReviewsIncomplete(reviews: Review[]): ReviewList {
-  return Object.assign(reviews, { incomplete: true as const });
-}
-
-export function reviewsIncomplete(reviews: readonly Review[]): boolean {
-  return (reviews as ReviewList).incomplete === true;
-}
-
 /** The PR as the platform has it now, and its reviews. */
 export function pullRequestBlocker(
   pr: Pick<PullRequest, "draft" | "mergeable">,
@@ -40,6 +24,5 @@ export function pullRequestBlocker(
   if (pr.draft) return "pr_draft";
   if (pr.mergeable === false) return "pr_not_mergeable";
   if (hasChangesRequested(reviews)) return "pr_changes_requested";
-  if (reviewsIncomplete(reviews)) return "pr_reviews_incomplete";
   return null;
 }

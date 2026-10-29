@@ -49,6 +49,9 @@ final class WorkFeedTests: XCTestCase {
                               spawnedBy: "manual", lastActivityAt: "2026-09-02T00:00:00Z"),
                 F.TerminalRow(id: "lt2", title: "dup", state: "running",
                               spec: .init(kind: "agent", agent: "claude-code"), taskId: "t2"),
+                F.TerminalRow(id: "lt3", title: "resumed", state: "exited",
+                              spec: .init(kind: "agent", agent: "codex"), spawnedBy: "trigger",
+                              resumedByTerminalId: "lt4"),
             ],
             localBlueprints: [
                 F.BlueprintRow(id: "a1", name: "Review PRs", agent: "claude-code", hostId: "h1", enabled: true),
@@ -68,6 +71,7 @@ final class WorkFeedTests: XCTestCase {
         func row(_ key: String) -> WorkRow? { rows.first { $0.key == key } }
 
         XCTAssertFalse(rows.contains { $0.key == "terminal-lt2" }, "a local Task run is already its tasks row")
+        XCTAssertFalse(rows.contains { $0.key == "terminal-lt3" }, "a resumed session hands its row to the resume")
         XCTAssertEqual(rows.prefix(2).map(\.status), [.needsYou, .needsYou])
         XCTAssertEqual(rows.first?.key, "terminal-lt1", "most recent needs-you first")
 

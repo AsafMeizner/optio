@@ -50,6 +50,72 @@ describe("GitLabPlatform", () => {
     expect(platform.type).toBe("gitlab");
   });
 
+  describe("change-request authority", () => {
+    async function reviews(
+      options: {
+        resolvable?: boolean;
+        assigned?: boolean;
+        own?: boolean;
+        access?: number;
+        memberError?: boolean;
+        authorId?: number;
+      } = {},
+    ) {
+      mockJsonResponse({ approved_by: [] });
+      mockJsonResponse([
+        {
+          id: 1,
+          author: { id: options.authorId ?? 42, username: "same-name" },
+          body: "Changes requested: please change this",
+          resolvable: options.resolvable ?? true,
+          resolved: false,
+          created_at: "2026-10-01",
+        },
+      ]);
+      mockJsonResponse(options.assigned ? [{ user: { id: 42, username: "reviewer" } }] : []);
+      if (options.resolvable !== false && !options.assigned && options.authorId !== 0) {
+        mockJsonResponse({ id: options.own ? 42 : 99, username: "same-name" });
+        if (!options.own)
+          mockJsonResponse(
+            { access_level: options.access ?? 10 },
+            !options.memberError,
+            options.memberError ? 503 : 200,
+          );
+      }
+      return platform.getReviews(ri, 7);
+    }
+    it("ignores a Guest's resolvable request despite a matching token username", async () => {
+      expect((await reviews())[0].state).toBe("COMMENTED");
+      expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/members/all/42"))).toBe(
+        true,
+      );
+    });
+    it("ignores plain notes even from an assigned reviewer", async () => {
+      expect((await reviews({ assigned: true, resolvable: false }))[0].state).toBe("COMMENTED");
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+    it("accepts an assigned reviewer's resolvable thread", async () => {
+      expect((await reviews({ assigned: true }))[0].state).toBe("CHANGES_REQUESTED");
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+    it("accepts the token user's resolvable thread by numeric ID", async () => {
+      expect((await reviews({ own: true }))[0].state).toBe("CHANGES_REQUESTED");
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+    it("accepts a Developer's resolvable thread", async () => {
+      expect((await reviews({ access: 30 }))[0].state).toBe("CHANGES_REQUESTED");
+    });
+    it("rejects authors without a stable numeric ID", async () => {
+      expect((await reviews({ authorId: 0 }))[0].state).toBe("COMMENTED");
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+    it("fails closed when membership authority cannot be read", async () => {
+      await expect(reviews({ memberError: true })).rejects.toThrow(
+        "GitLab review state is incomplete",
+      );
+    });
+  });
+
   describe("getPullRequest", () => {
     it("fetches MR and maps to PullRequest", async () => {
       mockJsonResponse({
@@ -401,7 +467,12 @@ describe("GitLabPlatform", () => {
   });
   describe("a review that requests changes", () => {
     const note = (author: string, body: string, created_at: string, extra: object = {}) => ({
-      author: { username: author },
+      author: {
+        id: author === "carol" ? 201 : author === "optio-bot" ? 202 : 203,
+        username: author,
+      },
+      resolvable: true,
+      resolved: false,
       body,
       created_at,
       system: false,
@@ -422,6 +493,7 @@ describe("GitLabPlatform", () => {
         note("bob", "Looks mostly fine", "2026-01-01T00:00:00Z"),
       ]);
       mockJsonResponse({ message: "404 Not Found" }, false, 404);
+      mockJsonResponse({ id: 202, username: "optio-bot" });
 
       const reviews = await platform.getReviews(ri, 7);
 
@@ -445,7 +517,10 @@ describe("GitLabPlatform", () => {
     it("also reads the bold form submitReview and the review prompts post", async () => {
       mockJsonResponse({ approved_by: [] });
       mockJsonResponse([note("carol", "**Changes Requested:**\n\nFix it", "2026-01-01T00:00:00Z")]);
-      mockJsonResponse([]);
+      mockJsonResponse([
+        { user: { id: 201, username: "carol" } },
+        { user: { id: 202, username: "optio-bot" } },
+      ]);
 
       const [review] = await platform.getReviews(ri, 7);
 
@@ -460,7 +535,10 @@ describe("GitLabPlatform", () => {
           resolved: true,
         }),
       ]);
-      mockJsonResponse([]);
+      mockJsonResponse([
+        { user: { id: 201, username: "carol" } },
+        { user: { id: 202, username: "optio-bot" } },
+      ]);
 
       const reviews = await platform.getReviews(ri, 7);
 
@@ -474,7 +552,10 @@ describe("GitLabPlatform", () => {
         approvedNote("carol", "2026-01-03T00:00:00Z"),
         note("carol", "Changes requested: fix it", "2026-01-02T00:00:00Z"),
       ]);
-      mockJsonResponse([]);
+      mockJsonResponse([
+        { user: { id: 201, username: "carol" } },
+        { user: { id: 202, username: "optio-bot" } },
+      ]);
 
       const reviews = await platform.getReviews(ri, 7);
 
@@ -488,7 +569,10 @@ describe("GitLabPlatform", () => {
         note("carol", "Changes requested: one more thing", "2026-01-03T00:00:00Z"),
         approvedNote("carol", "2026-01-02T00:00:00Z"),
       ]);
-      mockJsonResponse([]);
+      mockJsonResponse([
+        { user: { id: 201, username: "carol" } },
+        { user: { id: 202, username: "optio-bot" } },
+      ]);
 
       const reviews = await platform.getReviews(ri, 7);
 
@@ -511,7 +595,10 @@ describe("GitLabPlatform", () => {
         note("carol", "Changes requested: one more thing", "2026-01-03T00:00:00Z"),
         approvedNote("carol", "2026-01-02T00:00:00Z"),
       ]);
-      mockJsonResponse([]);
+      mockJsonResponse([
+        { user: { id: 201, username: "carol" } },
+        { user: { id: 202, username: "optio-bot" } },
+      ]);
 
       const reviews = await platform.getReviews(ri, 7);
 
@@ -522,7 +609,10 @@ describe("GitLabPlatform", () => {
     it("a note that only mentions changes is a comment", async () => {
       mockJsonResponse({ approved_by: [] });
       mockJsonResponse([note("bob", "The changes requested last week look fine", "2026-01-01")]);
-      mockJsonResponse([]);
+      mockJsonResponse([
+        { user: { id: 201, username: "carol" } },
+        { user: { id: 202, username: "optio-bot" } },
+      ]);
 
       expect((await platform.getReviews(ri, 7)).map((r) => r.state)).toEqual(["COMMENTED"]);
     });
@@ -530,7 +620,10 @@ describe("GitLabPlatform", () => {
     it("a failed notes read leaves the list incomplete, since a change request may be missing", async () => {
       mockJsonResponse({ approved_by: [] });
       mockJsonResponse({ message: "500 Internal Server Error" }, false, 500);
-      mockJsonResponse([]);
+      mockJsonResponse([
+        { user: { id: 201, username: "carol" } },
+        { user: { id: 202, username: "optio-bot" } },
+      ]);
 
       await expect(platform.getReviews(ri, 7)).rejects.toThrow("GitLab review state is incomplete");
     });
@@ -542,7 +635,10 @@ describe("GitLabPlatform", () => {
       mockJsonResponse({ approved_by: [] });
       mockJsonResponse(older);
       mockJsonResponse([note("bob", "oldest", "2025-12-31T00:00:00Z")]);
-      mockJsonResponse([]);
+      mockJsonResponse([
+        { user: { id: 201, username: "carol" } },
+        { user: { id: 202, username: "optio-bot" } },
+      ]);
 
       const reviews = await platform.getReviews(ri, 7);
 

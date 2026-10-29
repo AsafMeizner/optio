@@ -524,6 +524,9 @@ function decideFromPrStatus(snapshot: WorldSnapshot, allowFailComplete: boolean)
     checksOk &&
     pr.state === "open" &&
     snapshot.settings.autoMerge &&
+    !pr.draft &&
+    pr.mergeable !== false &&
+    pr.reviewStatus !== "changes_requested" &&
     !snapshot.settings.cautiousMode &&
     blockingSubtasksComplete(snapshot.blockingSubtasks)
   ) {

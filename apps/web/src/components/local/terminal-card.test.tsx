@@ -47,6 +47,8 @@ describe("attentionLabel", () => {
   it("maps known reasons and falls back", () => {
     expect(attentionLabel("stop")).toBe("waiting for you");
     expect(attentionLabel("bell")).toBe("rang the bell");
+    expect(attentionLabel("permission")).toBe("waiting for your permission");
+    expect(attentionLabel("error")).toBe("failed — review the error");
     expect(attentionLabel(null)).toBe("needs you");
   });
 });

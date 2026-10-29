@@ -1,11 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Review } from "@optio/shared";
-import {
-  hasChangesRequested,
-  markReviewsIncomplete,
-  pullRequestBlocker,
-  reviewsIncomplete,
-} from "./auto-merge-guard.js";
+import { hasChangesRequested, pullRequestBlocker } from "./auto-merge-guard.js";
 const review = (author: string, state: Review["state"]): Review => ({ author, state, body: "" });
 
 describe("pullRequestBlocker", () => {
@@ -26,21 +21,5 @@ describe("pullRequestBlocker", () => {
     expect(pullRequestBlocker({ draft: true, mergeable: true }, [])).toBe("pr_draft");
     expect(pullRequestBlocker({ draft: false, mergeable: false }, [])).toBe("pr_not_mergeable");
     expect(pullRequestBlocker({ draft: false, mergeable: null }, [])).toBeNull();
-  });
-
-  it("an incomplete review read never allows a merge", () => {
-    const partial = markReviewsIncomplete([review("a", "APPROVED")]);
-    expect(reviewsIncomplete(partial)).toBe(true);
-    expect(reviewsIncomplete([review("a", "APPROVED")])).toBe(false);
-    expect(pullRequestBlocker({ draft: false, mergeable: true }, partial)).toBe(
-      "pr_reviews_incomplete",
-    );
-    // A known change request still says so first.
-    expect(
-      pullRequestBlocker(
-        { draft: false, mergeable: true },
-        markReviewsIncomplete([review("b", "CHANGES_REQUESTED")]),
-      ),
-    ).toBe("pr_changes_requested");
   });
 });

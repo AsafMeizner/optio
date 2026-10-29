@@ -10,6 +10,18 @@
 #
 # Install a released chart: helm install optio oci://ghcr.io/jonwiggins/optio
 
+# Independent deployment allowlists. Empty means every supported option.
+features:
+  runtimes: []
+  gitPlatforms: []
+  triggers: []
+  ticketSources: []
+  connectionProviders: []
+
+# Who may create workspaces; an app setting overrides this environment default.
+workspaces:
+  creation: everyone
+
 # ──────────────────────────────────────────────────────────────────────────────
 # API Server
 # ──────────────────────────────────────────────────────────────────────────────
@@ -203,11 +215,9 @@ agent:
   # Shared cache directory PVCs (opt-in per repo).
   # Controls storage class and size limits for cache directories.
   cache:
-    enabled: true                     # Set false to hard-disable the feature
     storageClass: ""                  # Empty = cluster default storage class
     maxSizePerDirectoryGi: 100        # Max size for a single cache directory
     maxSizeTotalGi: 200               # Max total cache size across all dirs per repo
-    defaultSizePerDirectoryGi: 10     # Default size when creating a cache directory
   # Repo init timeout (how long to wait for clone to complete)
   repoInitTimeoutMs: 120000           # 2 min default; increase for large repos
 
@@ -358,6 +368,19 @@ redis:
     # Leave empty to auto-generate a 32-char password at install time.
     # The password is stored in a K8s Secret and persisted across upgrades.
     password: ""
+  # Keep Redis state on a PVC (append-only file) so BullMQ's delayed and
+  # in-flight jobs and short-lived keys survive a Redis pod restart or the
+  # cluster's nodes scaling to zero. Off by default: Redis is then in-memory
+  # only. Runs are recovered from Postgres either way (docs/redis.md).
+  # Turning this on or off replaces the dataset: the first rollout starts from
+  # an empty volume, and turning it off deletes the PVC with its data (no
+  # helm.sh/resource-policy keep). Do it while nothing is running.
+  # Size the volume at >= 2x redis.resources.limits.memory (an AOF rewrite
+  # needs a second copy); a full volume makes Redis refuse writes.
+  persistence:
+    enabled: false
+    storageClass: ""  # Empty = cluster default storage class
+    size: 1Gi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # External services (used when built-in PostgreSQL/Redis are disabled)
@@ -380,6 +403,82 @@ externalRedis:
   # (cluster mode requires a {hash-tag}). Set to share one Redis Cluster
   # between Optio installs, e.g. "{optio-staging}".
   queuePrefix: ""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Database backups (optional; docs/backup.md)
+# A CronJob that dumps Optio's database — the built-in PostgreSQL, or the
+# external one in DATABASE_URL — with `pg_dump -Fc`, reads every dump back
+# with `pg_restore --list` before keeping it, and keeps the newest on a volume
+# (target: pvc) or in an S3-compatible bucket (target: s3: MinIO, Ceph RGW, …).
+# scripts/backup/backup-db.sh takes a dump with it before an upgrade;
+# scripts/backup/restore-db.sh restores one. A dump is useless without the
+# encryption key it was made with (encryption.key / OPTIO_ENCRYPTION_KEY):
+# keep the key with the dumps, apart from the cluster.
+# ──────────────────────────────────────────────────────────────────────────────
+backup:
+  enabled: false
+  # Cron, in timeZone (empty: the controller's, usually UTC).
+  schedule: "15 2 * * *"
+  timeZone: ""          # e.g. "Europe/Berlin"
+  suspend: false        # true: no scheduled runs (dumps before upgrades still run)
+  # Scheduled and by-hand dumps kept (the newest), and, apart from them,
+  # dumps taken before upgrades.
+  keep: 7
+  keepPreUpgrade: 3
+  # Where the dumps go: "pvc" or "s3".
+  target: pvc
+  pvc:
+    # A claim you made (e.g. on other storage than PostgreSQL's); empty: the
+    # chart makes <release>-backup once and never deletes it (it outlives
+    # `helm uninstall`).
+    existingClaim: ""
+    size: 20Gi
+    storageClass: ""    # empty = the cluster's default
+    accessMode: ReadWriteOnce
+  s3:
+    # https://minio.example.com:9000 — its certificate must be one the AWS
+    # CLI image trusts. Empty: AWS's own endpoints.
+    endpoint: ""
+    bucket: ""
+    prefix: "optio/"    # e.g. the environment's name; the dumps go under it
+    region: us-east-1
+    pathStyle: true     # https://endpoint/bucket/key (MinIO, Ceph); false: bucket.endpoint
+    # A Secret in the namespace with the access key (its key names below), or
+    # the two values here (rendered into <release>-backup-s3).
+    existingSecret: ""
+    existingSecretKeys:
+      accessKeyId: AWS_ACCESS_KEY_ID
+      secretAccessKey: AWS_SECRET_ACCESS_KEY
+    accessKeyId: ""
+    secretAccessKey: ""
+    # An image with the AWS CLI for the upload and download (set its
+    # repository to your mirror).
+    image:
+      repository: alpine/k8s
+      tag: "1.34.12"
+    # The pod's scratch space for one dump between pg_dump and the upload.
+    scratchSize: 20Gi
+  # The image pg_dump and pg_restore come from; empty: postgresql.image (16).
+  # An external PostgreSQL newer than 16 needs that version's image here.
+  image:
+    repository: ""
+    tag: ""
+  # More pg_dump arguments, e.g. ["--exclude-table-data=task_logs"].
+  pgDumpArgs: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  backoffLimit: 1
+  activeDeadlineSeconds: 7200      # a dump or a restore that takes longer fails
+  ttlSecondsAfterFinished: 604800  # finished jobs (and their logs) go after 7 days
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  nodeSelector: {}
+  tolerations: []
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Public URL
@@ -624,6 +723,21 @@ resourceQuota:
     limits.memory: 80Gi
     pods: "50"
     persistentvolumeclaims: "30"
+  # Defaults for containers that set no requests/limits of their own. A quota on
+  # cpu/memory makes Kubernetes reject any such container, and most pods Optio
+  # creates (repo, Job, agent and session pods, the chart's Postgres init and
+  # test pods) set none unless configured, so they could never start without
+  # these. `default` is a hard cap per container: a repo pod's main container
+  # hosts maxAgentsPerPod agents, and each defaulted pod counts `default`
+  # against `hard` limits (see docs/production-eks.md).
+  limitRange:
+    enabled: true
+    defaultRequest:
+      cpu: 250m
+      memory: 512Mi
+    default:
+      cpu: "2"
+      memory: 4Gi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # RBAC

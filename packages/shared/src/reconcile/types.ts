@@ -232,6 +232,7 @@ export interface PrStatus {
   number: number;
   state: "open" | "merged" | "closed";
   merged: boolean;
+  draft?: boolean;
   mergeable: boolean | null;
   checksStatus: "none" | "pending" | "passing" | "failing";
   reviewStatus: "none" | "pending" | "approved" | "changes_requested";

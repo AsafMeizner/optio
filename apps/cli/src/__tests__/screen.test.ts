@@ -173,6 +173,45 @@ describe("ScreenModel answers the program's queries", () => {
     );
   });
 
+  it("answers the OSC 7501 program-status query, and relays reports", async () => {
+    const reports: unknown[] = [];
+    const replies: string[] = [];
+    const screen = new ScreenModel(
+      80,
+      24,
+      (r) => replies.push(r),
+      (report) => reports.push(report),
+    );
+    const msg = Buffer.from("Allow Bash?", "utf-8").toString("base64");
+    screen.write(
+      "\x1b]7501;?\x1b\\" +
+        `\x1b]7501;state=blocked:kind=permission:app=claude:msg=${msg}\x07` +
+        "\x1b]7501;state=nonsense\x1b\\",
+    );
+    await screen.flush();
+    screen.dispose();
+    expect(replies).toEqual([
+      "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\",
+    ]);
+    expect(reports).toEqual([
+      {
+        state: "blocked",
+        id: null,
+        kind: "permission",
+        progress: null,
+        app: "claude",
+        title: null,
+        msg: "Allow Bash?",
+      },
+    ]);
+  });
+
+  it("leaves the program-status query unanswered when nobody takes the reports", async () => {
+    // Claude Code reports only once the query is answered; with no receiver
+    // the reports would go nowhere.
+    expect(await answers("\x1b]7501;?\x1b\\")).toBe("");
+  });
+
   it("answers nothing for plain output", async () => {
     expect(await answers("hello \x1b[31mred\x1b[0m\r\n")).toBe("");
   });

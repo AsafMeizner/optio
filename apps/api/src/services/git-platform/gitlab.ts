@@ -149,13 +149,7 @@ export class GitLabPlatform implements GitPlatform {
     return paths;
   }
 
-  /**
-   * Keep the MR's `head_pipeline` for its head SHA, so the CI read that
-   * follows (getCIChecks) uses the pipeline GitLab shows on the MR without
-   * asking for it again. GitLab only returns a head pipeline that ran on
-   * the MR's current head (its own SHA, or its source SHA for a
-   * merged-results pipeline).
-   */
+  /** Open merge requests with fork source paths resolved for review context. */
 
   async listOpenPullRequests(
     ri: RepoIdentifier,
@@ -258,6 +252,54 @@ export class GitLabPlatform implements GitPlatform {
         approvedAt.set(note.author?.username ?? "unknown", note.created_at ?? "");
       }
     }
+    let reviewers: any[] = [];
+    try {
+      reviewers = await this.fetchJson<any[]>(
+        this.url(ri, `/merge_requests/${prNumber}/reviewers`),
+        { headers: this.headers() },
+      );
+    } catch (err) {
+      // Older GitLab has no reviewer states (a 404)
+      if (!notThere(err)) incomplete = true;
+    }
+
+    const assigned = new Set(
+      reviewers.map((r) => r.user?.id).filter((id) => Number.isSafeInteger(id) && id > 0),
+    );
+    let tokenUser: Promise<number | null> | undefined;
+    const access = new Map<number, Promise<boolean>>();
+    const mayRequestChanges = async (note: any): Promise<boolean> => {
+      const id = note.author?.id;
+      if (!Number.isSafeInteger(id) || id <= 0) return false;
+      if (assigned.has(id)) return true;
+      let allowed = access.get(id);
+      if (!allowed) {
+        allowed = (async () => {
+          tokenUser ??= this.fetchJson<{ id: number }>(`${ri.apiBaseUrl}/user`, {
+            headers: this.headers(),
+          })
+            .then((user) => user.id)
+            .catch(() => {
+              incomplete = true;
+              return null;
+            });
+          if ((await tokenUser) === id) return true;
+          try {
+            const member = await this.fetchJson<{ access_level: number }>(
+              this.url(ri, `/members/all/${id}`),
+              { headers: this.headers() },
+            );
+            return member.access_level >= 30;
+          } catch (err) {
+            if (!notThere(err)) incomplete = true;
+            return false;
+          }
+        })();
+        access.set(id, allowed);
+      }
+      return allowed;
+    };
+
     const dated: { at: number; review: Review }[] = [];
     const reviews: Review[] = [];
     for (const author of approvers) {
@@ -269,7 +311,11 @@ export class GitLabPlatform implements GitPlatform {
     for (const note of notes) {
       if (note.system) continue; // Skip system-generated notes
       if (!note.body?.trim()) continue;
-      const requestsChanges = isChangeRequest(note.body) && !(note.resolvable && note.resolved);
+      const requestsChanges =
+        note.resolvable === true &&
+        !note.resolved &&
+        isChangeRequest(note.body) &&
+        (await mayRequestChanges(note));
       dated.push({
         at: Date.parse(note.created_at ?? "") || 0,
         review: {
@@ -283,26 +329,15 @@ export class GitLabPlatform implements GitPlatform {
     dated.sort((a, b) => a.at - b.at);
     reviews.push(...dated.map((d) => d.review));
 
-    // A reviewer's "Request changes" (GitLab 17+): last, so it is that
-    // reviewer's latest say — automatic merging never goes over it.
-    try {
-      const reviewers = await this.fetchJson<any[]>(
-        this.url(ri, `/merge_requests/${prNumber}/reviewers`),
-        { headers: this.headers() },
-      );
-      for (const r of reviewers ?? []) {
-        if (r?.state !== "requested_changes") continue;
-        reviews.push({
-          author: r.user?.username ?? "unknown",
-          state: "CHANGES_REQUESTED",
-          body: "",
-        });
-      }
-    } catch (err) {
-      // Older GitLab has no reviewer states (a 404)
-      if (!notThere(err)) incomplete = true;
+    // GitLab 17+ reviewer state is authoritative and supersedes older notes.
+    for (const r of reviewers ?? []) {
+      if (r?.state !== "requested_changes") continue;
+      reviews.push({
+        author: r.user?.username ?? "unknown",
+        state: "CHANGES_REQUESTED",
+        body: "",
+      });
     }
-
     if (incomplete) throw new Error("GitLab review state is incomplete");
     return reviews;
   }
@@ -338,7 +373,7 @@ export class GitLabPlatform implements GitPlatform {
     return notes.filter((n: any) => !n.system && !n.position).map(toComment);
   }
 
-  /** An issue's newest comments (up to 30), oldest first: what a ticket's prompt carries. */
+  /** The MR's newest conversation notes, in chronological order. */
 
   private mrNotes(ri: RepoIdentifier, prNumber: number): Promise<any[]> {
     return this.newestNotes(ri, `/merge_requests/${prNumber}/notes`);
@@ -369,17 +404,8 @@ export class GitLabPlatform implements GitPlatform {
 
   // ── PR/MR writes ──────────────────────────────────────────────────────────
 
-  /**
-   * Merge the MR. GitLab's merge method (merge commit, semi-linear,
-   * fast-forward) is the project's setting, not a parameter of the merge, so
-   * "rebase" rebases the source branch onto the target first
-   * (`PUT /rebase`, GitLab's own rebase) and then merges what that made.
-   * GitLab answers 405/406 right after a push while it is still checking the
-   * MR: polled until it says, then merged or `GitLabNotReadyError`. An MR
-   * that only needs a rebase (`need_rebase`, a fast-forward project) is
-   * rebased by GitLab rather than handed back as a conflict; when the merge
-   * was guarded by a checked head SHA, the rebase made a new head that CI
-   * must see first, so it comes back as not ready and is merged later.
+  /** Merge with GitLab's project merge method, optionally pinned to the checked head SHA.
+   * Squash is an explicit request flag; this adapter does not initiate a rebase.
    */
 
   async mergePullRequest(

@@ -380,8 +380,6 @@ describe("reconcileRepo — QUEUED", () => {
           hasReviewSubtask: false,
           maxAutoResumes: 10,
           recentAutoResumeCount: 0,
-          maxAutoResumes: 10,
-          recentAutoResumeCount: 0,
         },
       },
     );
@@ -405,8 +403,6 @@ describe("reconcileRepo — QUEUED", () => {
           offPeakOnly: true,
           offPeakActive: false,
           hasReviewSubtask: false,
-          maxAutoResumes: 10,
-          recentAutoResumeCount: 0,
           maxAutoResumes: 10,
           recentAutoResumeCount: 0,
         },
@@ -999,5 +995,43 @@ describe("reconcileRepo — local tasks", () => {
       ),
     );
     expect(action).toMatchObject({ kind: "transition", to: TaskState.PR_OPENED });
+  });
+});
+
+describe("review precedence over auto-merge", () => {
+  function ready(pr: Partial<PrStatus> = {}, autoResume = false) {
+    const s = snapshot(
+      {},
+      {
+        state: TaskState.PR_OPENED,
+        prNumber: 1,
+        prUrl: "https://gitlab.com/acme/repo/-/merge_requests/1",
+        prChecksStatus: "passing",
+      },
+      { pr: makePr({ checksStatus: "passing", ...pr }) },
+    );
+    s.settings = { ...s.settings, autoMerge: true, autoResume };
+    return reconcileRepo(s);
+  }
+  it("resumes the review rather than repeatedly trying to merge", () => {
+    expect(ready({ reviewStatus: "changes_requested" }, true)).toMatchObject({
+      kind: "resumeAgent",
+      resumeReason: "review",
+    });
+  });
+  it("requests attention when review auto-resumption is disabled", () => {
+    expect(ready({ reviewStatus: "changes_requested" })).toMatchObject({
+      kind: "transition",
+      to: TaskState.NEEDS_ATTENTION,
+    });
+  });
+  it.each([{ draft: true }, { mergeable: false }])(
+    "does not attempt to merge an ineligible PR %j",
+    (pr) => {
+      expect(ready(pr).kind).not.toBe("autoMergePr");
+    },
+  );
+  it("still merges an eligible passing PR", () => {
+    expect(ready()).toMatchObject({ kind: "autoMergePr" });
   });
 });

@@ -580,7 +580,7 @@ function buildResumeContext(
       };
     case "review":
       return {
-        prompt: `A reviewer requested changes on the ${ctx.prLabel}. Please address the following feedback:\n\n${ctx.reviewComments || "(no comment text captured — use \`gh pr view --comments\` to read the review)"}`,
+        prompt: `A reviewer requested changes on the ${ctx.prLabel}. Please address the following feedback:\n\n${ctx.reviewComments || "(no comment text captured — open the review and discussion on the repository’s code host)"}`,
         trigger: "review_changes_requested",
         jobSuffix: "review",
         freshSession: false,
