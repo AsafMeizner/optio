@@ -14,11 +14,13 @@
  */
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { acceptTriggerEvent } from "../services/trigger-delivery.js";
 import { logger } from "../logger.js";
 import { claimInboundDelivery, type DeliverySource } from "../services/inbound-delivery-service.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
+import { receiverFor } from "../services/feature-guard.js";
 import {
   normalizeGitLabEvent,
   normalizeJiraEvent,
@@ -64,7 +66,9 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
   const app = rawApp.withTypeProvider<ZodTypeProvider>();
   const rateLimit = { rateLimit: { max: 120, timeWindow: "1 minute" } };
 
-  app.post("/api/webhooks/slack/events", {
+  // A receiver whose trigger the deployment leaves out (OPTIO_TRIGGERS) is
+  // never registered, so a delivery to it answers 404 (config/features.ts).
+  receiverFor(app, "slack").post("/api/webhooks/slack/events", {
     config: rateLimit,
     schema: {
       hide: true,
@@ -109,7 +113,7 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
     },
   });
 
-  app.post("/api/webhooks/linear", {
+  receiverFor(app, "linear").post("/api/webhooks/linear", {
     config: rateLimit,
     schema: {
       hide: true,
@@ -150,7 +154,7 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
     },
   });
 
-  app.post("/api/webhooks/pagerduty", {
+  receiverFor(app, "pagerduty").post("/api/webhooks/pagerduty", {
     config: rateLimit,
     schema: {
       hide: true,
@@ -181,9 +185,13 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
 
       const body = (req.body ?? {}) as Record<string, unknown>;
       const eventObj = (body.event ?? {}) as Record<string, unknown>;
+      // The signature covers the body only, with no timestamp: key the
+      // dedupe on the signed event id, so a captured delivery replayed with
+      // a fresh (unsigned) X-Webhook-Id header is still a duplicate.
       const deliveryId =
+        (typeof eventObj.id === "string" && eventObj.id) ||
         (req.headers["x-webhook-id"] as string | undefined) ||
-        (typeof eventObj.id === "string" ? eventObj.id : "");
+        "";
 
       const event = normalizePagerDutyEvent(body);
       if (!event) return reply.status(200).send({ ok: true });
@@ -193,7 +201,7 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
     },
   });
 
-  app.post("/api/webhooks/gitlab", {
+  receiverFor(app, "gitlab").post("/api/webhooks/gitlab", {
     config: rateLimit,
     schema: {
       hide: true,
@@ -233,7 +241,7 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
     },
   });
 
-  app.post("/api/webhooks/jira", {
+  receiverFor(app, "jira").post("/api/webhooks/jira", {
     config: rateLimit,
     schema: {
       hide: true,
@@ -280,7 +288,7 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
     },
   });
 
-  app.post("/api/webhooks/sentry", {
+  receiverFor(app, "sentry").post("/api/webhooks/sentry", {
     config: rateLimit,
     schema: {
       hide: true,
@@ -313,11 +321,13 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
       const event = normalizeSentryEvent(resource, req.body);
       if (!event) return reply.status(200).send({ ok: true });
 
-      // Sentry sends no delivery id; the resource, action, object and the
-      // delivery's own timestamp name it.
-      const stamp = String(req.headers["sentry-hook-timestamp"] ?? "");
+      // Sentry sends no delivery id, and its signature covers the body only
+      // (not Sentry-Hook-Timestamp or -Resource): the signed bytes name the
+      // delivery, so a captured one replayed with fresh headers is still a
+      // duplicate, while a retry (the same bytes) is dropped as before.
+      const digest = createHash("sha256").update(rawBodyOf(req)).digest("hex");
 
-      const accepted = await acceptTriggerEvent("sentry", `${event.eventId}:${stamp}`, event);
+      const accepted = await acceptTriggerEvent("sentry", `${event.eventId}:${digest}`, event);
       return reply.status(200).send({ ok: true, ...accepted });
     },
   });

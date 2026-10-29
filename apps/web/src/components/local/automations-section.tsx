@@ -31,8 +31,16 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
+import { useFeatures } from "@/hooks/use-features";
 import { triggerTypeIcon } from "@/components/brand-icon";
-import { DATADOG_PAYLOAD_TEMPLATE, isSelfSecretTriggerType } from "@optio/shared";
+import {
+  featureAllows,
+  featureFilter,
+  type DeploymentFeatures,
+  DATADOG_PAYLOAD_TEMPLATE,
+  GITHUB_REVIEW_STATES,
+  isSelfSecretTriggerType,
+} from "@optio/shared";
 import {
   CopyButton,
   SECRET_HEADER,
@@ -42,7 +50,11 @@ import {
 import {
   ALERTMANAGER_KINDS,
   DATADOG_KINDS,
+  GITHUB_ACTOR_KINDS,
+  GITHUB_ALERT_KINDS,
+  GITHUB_COMMENT_KINDS,
   GITHUB_KINDS,
+  type EventKind,
   GITLAB_KINDS,
   JIRA_KINDS,
   LINEAR_KINDS,
@@ -80,6 +92,37 @@ const AGENT_LABELS: Record<string, string> = {
   opencode: "OpenCode",
 };
 const TICKET_SOURCES = ["github", "gitlab", "linear", "jira", "notion"] as const;
+
+/**
+ * The event source a new trigger starts on: GitHub by default, GitLab where
+ * the deployment feature lists offer no GitHub (the restricted deployment).
+ */
+export function defaultEventSource(features: DeploymentFeatures): "github" | "gitlab" {
+  return featureAllows("triggers", "github", features) ? "github" : "gitlab";
+}
+
+/**
+ * What an automation's pickers offer under the deployment features, in
+ * their order: the trigger types, the ticket sources, the agents, and the
+ * starter presets supported by the selected triggers.
+ */
+export function automationChoices(features: DeploymentFeatures): {
+  triggerTypes: TriggerType[];
+  ticketSources: (typeof TICKET_SOURCES)[number][];
+  agents: Agent[];
+  presetIds: string[];
+} {
+  return {
+    triggerTypes: featureFilter("triggers", Object.keys(TRIGGER_META) as TriggerType[], features),
+    ticketSources: featureFilter("ticketSources", TICKET_SOURCES, features),
+    agents: featureFilter("runtimes", AGENTS, features),
+    presetIds: offeredPresets(features).map((p) => p.id),
+  };
+}
+
+function offeredPresets(features: DeploymentFeatures): Preset[] {
+  return PRESETS.filter((p) => !p.trigger || featureAllows("triggers", p.trigger.type, features));
+}
 // The event kinds each checklist offers live beside the trigger details;
 // re-exported here for the callers that always found them in this file.
 export { GITHUB_KINDS, LINEAR_KINDS };
@@ -277,6 +320,9 @@ export function AutomationsSection({
   defaultOpen?: boolean;
 }) {
   const router = useRouter();
+  // Presets on an event source the deployment features doesn't offer are left out.
+  const { features } = useFeatures();
+  const presets = offeredPresets(features);
   const [open, setOpen] = useState(defaultOpen);
   const [blueprints, setBlueprints] = useState<any[]>([]);
   const [triggersById, setTriggersById] = useState<Record<string, any[]>>({});
@@ -445,8 +491,10 @@ export function AutomationsSection({
                 />
               ) : (
                 <div className="space-y-2">
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    {PRESETS.map((preset) => {
+                  <div
+                    className={cn("grid gap-2 sm:grid-cols-3", presets.length === 0 && "hidden")}
+                  >
+                    {presets.map((preset) => {
                       const Icon = preset.icon;
                       return (
                         <button
@@ -796,7 +844,7 @@ export function withoutSecret(trigger: any): {
 
 /** Trigger config editor. Returns the (type, config) pair on submit. */
 function AddTriggerForm({
-  initialType = "github",
+  initialType: initialTypeProp,
   initialConfig,
   onCancel,
   onSubmit,
@@ -808,6 +856,8 @@ function AddTriggerForm({
   onSubmit: (type: TriggerType, config: Record<string, unknown>) => Promise<void>;
   submitLabel?: string;
 }) {
+  const { features } = useFeatures();
+  const initialType = initialTypeProp ?? defaultEventSource(features);
   const [type, setType] = useState<TriggerType>(initialType);
   const [saving, setSaving] = useState(false);
   const c = initialConfig ?? {};
@@ -818,7 +868,7 @@ function AddTriggerForm({
     String(c.path ?? `local-${Math.random().toString(36).slice(2, 10)}`),
   );
   const [source, setSource] = useState<(typeof TICKET_SOURCES)[number]>(
-    (c.source as any) ?? "github",
+    (c.source as any) ?? (featureAllows("ticketSources", "github", features) ? "github" : "gitlab"),
   );
   const [labels, setLabels] = useState(Array.isArray(c.labels) ? c.labels.join(", ") : "");
   // github
@@ -827,6 +877,20 @@ function AddTriggerForm({
   );
   const [ghLogin, setGhLogin] = useState(String(c.login ?? ""));
   const [ghRepos, setGhRepos] = useState(Array.isArray(c.repos) ? c.repos.join(", ") : "");
+  const [ghPostedBy, setGhPostedBy] = useState(
+    c.postedBy === "bots" || c.postedBy === "anyone" ? c.postedBy : "people",
+  );
+  const [ghAuthorOnly, setGhAuthorOnly] = useState(c.authorOnly === true);
+  const [ghIgnoreLogins, setGhIgnoreLogins] = useState(
+    Array.isArray(c.ignoreLogins) ? c.ignoreLogins.join(", ") : "",
+  );
+  const [ghBodyMatches, setGhBodyMatches] = useState(String(c.bodyMatches ?? ""));
+  const [ghReviewStates, setGhReviewStates] = useState<string[]>(
+    Array.isArray(c.reviewStates) ? (c.reviewStates as string[]) : [],
+  );
+  const [ghSeverities, setGhSeverities] = useState(
+    Array.isArray(c.severities) ? c.severities.join(", ") : "",
+  );
   // slack
   const [channelId, setChannelId] = useState(String(c.channelId ?? ""));
   const [keyword, setKeyword] = useState(String(c.keyword ?? ""));
@@ -951,6 +1015,10 @@ function AddTriggerForm({
         const b = list(branches);
         const w = list(workflows);
         const l = list(labels);
+        const actor = ghEvents.some((e) => GITHUB_ACTOR_KINDS.includes(e));
+        const comment = ghEvents.some((e) => GITHUB_COMMENT_KINDS.includes(e));
+        const ignore = list(ghIgnoreLogins);
+        const sev = list(ghSeverities);
         return {
           events: ghEvents,
           ...(ghLogin.trim() ? { login: ghLogin.trim().replace(/^@/, "") } : {}),
@@ -958,6 +1026,16 @@ function AddTriggerForm({
           ...(b.length ? { branches: b } : {}),
           ...(w.length ? { workflows: w } : {}),
           ...(l.length ? { labels: l } : {}),
+          ...(ignore.length ? { ignoreLogins: ignore } : {}),
+          ...(actor && ghPostedBy !== "people" ? { postedBy: ghPostedBy } : {}),
+          ...(actor && ghAuthorOnly ? { authorOnly: true } : {}),
+          ...(comment && ghBodyMatches.trim() ? { bodyMatches: ghBodyMatches.trim() } : {}),
+          ...(ghEvents.includes("pr_review_submitted") && ghReviewStates.length
+            ? { reviewStates: ghReviewStates }
+            : {}),
+          ...(ghEvents.some((e) => GITHUB_ALERT_KINDS.includes(e)) && sev.length
+            ? { severities: sev }
+            : {}),
         };
       }
       case "gitlab": {
@@ -1090,30 +1168,42 @@ function AddTriggerForm({
     setSaving(false);
   };
 
-  const checkboxRow = (
-    kinds: typeof GITHUB_KINDS,
-    selected: string[],
-    set: (next: string[]) => void,
-  ) => (
-    <div className="flex flex-wrap gap-x-3 gap-y-1">
-      {kinds.map((k) => (
-        <label key={k.value} className="flex items-center gap-1.5 text-xs text-text-muted">
-          <input
-            type="checkbox"
-            checked={selected.includes(k.value)}
-            onChange={() => set(toggle(selected, k.value))}
-            className="accent-[#6d28d9]"
-          />
-          {k.label}
-        </label>
-      ))}
-    </div>
+  const checkbox = (k: EventKind, selected: string[], set: (next: string[]) => void) => (
+    <label key={k.value} className="flex items-center gap-1.5 text-xs text-text-muted">
+      <input
+        type="checkbox"
+        checked={selected.includes(k.value)}
+        onChange={() => set(toggle(selected, k.value))}
+        className="accent-[#6d28d9]"
+      />
+      {k.label}
+    </label>
   );
+  // A long checklist (GitHub's) sits under its groups' headings.
+  const checkboxRow = (kinds: EventKind[], selected: string[], set: (next: string[]) => void) => {
+    const groups = [...new Set(kinds.map((k) => k.group).filter((g): g is string => !!g))];
+    return groups.length > 1 ? (
+      <div className="space-y-1.5">
+        {groups.map((group) => (
+          <div key={group}>
+            <p className="text-[11px] font-medium text-text-muted/70 mb-0.5">{group}</p>
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {kinds.filter((k) => k.group === group).map((k) => checkbox(k, selected, set))}
+            </div>
+          </div>
+        ))}
+      </div>
+    ) : (
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {kinds.map((k) => checkbox(k, selected, set))}
+      </div>
+    );
+  };
 
   return (
     <div className="rounded-md border border-border bg-bg p-2.5 space-y-2">
       <div className="flex items-center gap-1 flex-wrap">
-        {(Object.keys(TRIGGER_META) as TriggerType[]).map((t) => {
+        {automationChoices(features).triggerTypes.map((t) => {
           const Icon = TRIGGER_META[t].icon;
           return (
             <button
@@ -1168,7 +1258,7 @@ function AddTriggerForm({
             onChange={(e) => setSource(e.target.value as any)}
             className={cn(smallInput, "w-auto")}
           >
-            {TICKET_SOURCES.map((s) => (
+            {automationChoices(features).ticketSources.map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -1231,12 +1321,83 @@ function AddTriggerForm({
               className={cn(smallInput, "w-40")}
             />
           </div>
+          {ghEvents.some((e) => GITHUB_ACTOR_KINDS.includes(e)) && (
+            <div className="flex gap-2 flex-wrap items-center">
+              <select
+                value={ghPostedBy}
+                onChange={(e) => setGhPostedBy(e.target.value)}
+                className={cn(smallInput, "w-44")}
+                aria-label="Written by"
+              >
+                <option value="people">Written by people</option>
+                <option value="bots">Written by bots</option>
+                <option value="anyone">Written by anyone</option>
+              </select>
+              <label className="flex items-center gap-1.5 text-xs text-text-muted">
+                <input
+                  type="checkbox"
+                  checked={ghAuthorOnly}
+                  onChange={(e) => setGhAuthorOnly(e.target.checked)}
+                  className="accent-[#6d28d9]"
+                />
+                Only when the author replies
+              </label>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={ghIgnoreLogins}
+              onChange={(e) => setGhIgnoreLogins(e.target.value)}
+              placeholder="never from these users, e.g. optio-bot (optional)"
+              className={cn(smallInput, "flex-1 font-mono")}
+            />
+            {ghEvents.some((e) => GITHUB_COMMENT_KINDS.includes(e)) && (
+              <input
+                type="text"
+                value={ghBodyMatches}
+                onChange={(e) => setGhBodyMatches(e.target.value)}
+                placeholder="comment starts with, e.g. /optio retry (optional)"
+                className={cn(smallInput, "flex-1 font-mono")}
+              />
+            )}
+            {ghEvents.some((e) => GITHUB_ALERT_KINDS.includes(e)) && (
+              <input
+                type="text"
+                value={ghSeverities}
+                onChange={(e) => setGhSeverities(e.target.value)}
+                placeholder="severities, e.g. critical, high (optional)"
+                className={cn(smallInput, "w-56")}
+              />
+            )}
+          </div>
+          {ghEvents.includes("pr_review_submitted") && (
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {GITHUB_REVIEW_STATES.map((state) => (
+                <label key={state} className="flex items-center gap-1.5 text-xs text-text-muted">
+                  <input
+                    type="checkbox"
+                    checked={ghReviewStates.includes(state)}
+                    onChange={() => setGhReviewStates(toggle(ghReviewStates, state))}
+                    className="accent-[#6d28d9]"
+                  />
+                  {state === "approved"
+                    ? "Reviews that approve"
+                    : state === "changes_requested"
+                      ? "Reviews that request changes"
+                      : "Reviews that comment"}
+                </label>
+              ))}
+            </div>
+          )}
           <p className="text-[11px] text-text-muted/80 leading-snug">
             Add a repo or org webhook pointing at{" "}
             <code className="font-mono break-all">{origin}/api/webhooks/github</code> with the
             server&apos;s <code className="font-mono">GITHUB_WEBHOOK_SECRET</code>, subscribed to
             Pull requests, Issues, Issue comments, Pull request reviews and review comments — plus
-            Pushes, Releases, Workflow runs and Check suites for those kinds.
+            Pushes, Branch or tag creation / deletion, Releases, Workflow runs, Check suites,
+            Deployment statuses, Repository dispatches, Discussions and the Dependabot / code
+            scanning / secret scanning alerts for those kinds.
           </p>
         </div>
       )}
@@ -1700,8 +1861,11 @@ function AutomationEditor({
     setForm((f) => ({ ...f, [key]: value }));
 
   const host = hosts.find((h) => h.id === form.hostId);
+  const { features } = useFeatures();
   const hintSource: string =
-    trigger?.type ?? (existingTriggers[0]?.type as string | undefined) ?? "github";
+    trigger?.type ??
+    (existingTriggers[0]?.type as string | undefined) ??
+    defaultEventSource(features);
   const hints = useMemo(() => PARAM_HINTS[hintSource] ?? [], [hintSource]);
   const usingTemplate = !!form.agent && !!form.promptTemplateId;
   const selectedTemplate = usingTemplate
@@ -1795,7 +1959,7 @@ function AutomationEditor({
 
       <Section label="Who">
         <div className="flex flex-wrap gap-1">
-          {AGENTS.map((a) => (
+          {automationChoices(features).agents.map((a) => (
             <button
               key={a}
               type="button"

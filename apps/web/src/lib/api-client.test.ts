@@ -5,6 +5,7 @@ describe("api-client", () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
+    fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
     // Stub localStorage
     vi.stubGlobal("localStorage", {
@@ -15,6 +16,7 @@ describe("api-client", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   function mockResponse(data: unknown, status = 200) {

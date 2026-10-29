@@ -8,4 +8,4 @@ With the Prometheus Operator CRDs installed, enable metrics.serviceMonitor.enabl
 
 Enable metrics.grafanaDashboard.enabled to create a dashboard ConfigMap. Set its namespace to the namespace watched by your Grafana sidecar (cattle-dashboards for Rancher Monitoring) and configure its labels as needed. The dashboard uses the release namespace and metrics job, with a selectable Prometheus data source. It includes task/queue/pod activity, task duration and webhook deliveries.
 
-Run helm test <release> --namespace <namespace> to verify the real metrics endpoint from the explicitly permitted test pod. This PR introduces no team, gateway, identity or credential-health schema dependencies; those features add their own series in later PRs.
+Run helm test <release> --namespace <namespace> to verify the real metrics endpoint from the explicitly permitted test pod.

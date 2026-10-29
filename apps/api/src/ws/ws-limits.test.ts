@@ -45,20 +45,20 @@ describe("ws-limits", () => {
       expect(getClientIp(req)).toBe("192.168.1.1");
     });
 
-    it("returns the first IP from x-forwarded-for", () => {
+    it("ignores an untrusted forwarded chain", () => {
       const req = {
         ip: "10.0.0.1",
         headers: { "x-forwarded-for": "203.0.113.50, 70.41.3.18, 150.172.238.178" },
       };
-      expect(getClientIp(req)).toBe("203.0.113.50");
+      expect(getClientIp(req)).toBe("10.0.0.1");
     });
 
-    it("returns the single IP from x-forwarded-for", () => {
+    it("ignores a forged forwarded IP", () => {
       const req = {
         ip: "10.0.0.1",
         headers: { "x-forwarded-for": "203.0.113.50" },
       };
-      expect(getClientIp(req)).toBe("203.0.113.50");
+      expect(getClientIp(req)).toBe("10.0.0.1");
     });
 
     it("falls back to req.ip when x-forwarded-for is an array", () => {
@@ -72,6 +72,20 @@ describe("ws-limits", () => {
   });
 
   describe("trackConnection / releaseConnection", () => {
+    it("cannot evade the connection cap by rotating forwarded headers", () => {
+      for (let n = 0; n < MAX_WS_CONNECTIONS_PER_IP; n++) {
+        expect(
+          trackConnection(
+            getClientIp({ ip: "192.0.2.5", headers: { "x-forwarded-for": `198.51.100.${n}` } }),
+          ),
+        ).toBe(true);
+      }
+      expect(
+        trackConnection(
+          getClientIp({ ip: "192.0.2.5", headers: { "x-forwarded-for": "203.0.113.200" } }),
+        ),
+      ).toBe(false);
+    });
     it("allows connections up to the limit", () => {
       const ip = "192.168.1.1";
       for (let i = 0; i < MAX_WS_CONNECTIONS_PER_IP; i++) {

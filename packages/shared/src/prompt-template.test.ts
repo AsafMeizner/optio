@@ -1,10 +1,42 @@
 import { describe, it, expect } from "vitest";
+import { execFileSync } from "node:child_process";
 import {
   DEFAULT_PROMPT_TEMPLATE,
   renderPromptTemplate,
   renderTaskFile,
+  shellSafeTitle,
   TASK_FILE_PATH,
 } from "./prompt-template.js";
+
+describe("shellSafeTitle", () => {
+  // The title argument the default template tells the agent to run, as bash reads it.
+  const titleAsShellReadsIt = (title: string): string => {
+    const prompt = renderPromptTemplate(DEFAULT_PROMPT_TEMPLATE, {
+      TASK_TITLE: shellSafeTitle(title),
+      BRANCH_NAME: "optio/task-1",
+      TASK_ID: "1",
+    });
+    const line = prompt.split("\n").find((l) => l.includes("pr create --title"))!;
+    const arg = line.slice(line.indexOf("--title ") + "--title ".length, line.indexOf(" --body"));
+    return execFileSync("bash", ["-c", `printf '%s' ${arg}`], { encoding: "utf8" });
+  };
+
+  it("keeps an attacker's title from running in the agent's pr create command", () => {
+    for (const title of [
+      "$(echo pwned)",
+      "`echo pwned`",
+      'Fix "quotes" \\ and $HOME',
+      'x" ; echo pwned ; echo "',
+      "multi\nline\ttitle",
+    ]) {
+      expect(titleAsShellReadsIt(title)).toBe(title.replace(/\s+/g, " ").trim());
+    }
+  });
+
+  it("leaves an ordinary title as it is", () => {
+    expect(shellSafeTitle("Add retry to the PR watcher")).toBe("Add retry to the PR watcher");
+  });
+});
 
 describe("renderPromptTemplate", () => {
   it("replaces simple variables", () => {

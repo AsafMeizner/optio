@@ -7,7 +7,12 @@ on:
     paths:
       - "images/**"
       - "scripts/repo-init.sh"
-      - "scripts/agent-entrypoint.sh"
+      - "scripts/optio-git-credential"
+      - "scripts/optio-gh-wrapper"
+      - "scripts/optio-glab-wrapper"
+      - "scripts/check-preinstalled-mcp.mjs"
+      - "packages/mcp-bridge/**"
+      - "patches/**"
       - ".github/workflows/build-images.yml"
   workflow_dispatch:
 
@@ -131,6 +136,7 @@ jobs:
       fail-fast: false
       matrix:
         preset: [node, python, go, rust, full]
+        platform: [linux/amd64, linux/arm64]
         include:
           - platform: linux/amd64
             runner: ubuntu-latest

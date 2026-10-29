@@ -28,6 +28,25 @@ vi.mock("../services/workspace-service.js", () => ({
   addMember: (...args: unknown[]) => mockAddMember(...args),
   updateMemberRole: (...args: unknown[]) => mockUpdateMemberRole(...args),
   removeMember: (...args: unknown[]) => mockRemoveMember(...args),
+  normalizeAutoJoinDomains: (domains: string[]) => ({
+    domains: [...new Set(domains.map((d) => d.trim().toLowerCase()))].sort(),
+  }),
+  WorkspaceSettingsError: class WorkspaceSettingsError extends Error {},
+}));
+
+const mockIsDeploymentAdmin = vi.fn();
+vi.mock("../services/sign-in-config-service.js", () => ({
+  isDeploymentAdmin: (...args: unknown[]) => mockIsDeploymentAdmin(...args),
+}));
+
+// This route suite exercises the existing default policy; policy storage and
+// failures are exercised separately against PostgreSQL and the failure regression.
+vi.mock("../services/deployment-settings.js", () => ({
+  workspaceCreationPolicy: async () => ({
+    value: "everyone",
+    source: "environment",
+    environment: "everyone",
+  }),
 }));
 
 import { workspaceRoutes } from "./workspaces.js";
@@ -170,6 +189,60 @@ describe("PATCH /api/workspaces/:id", () => {
     });
 
     expect(res.statusCode).toBe(403);
+  });
+
+  describe("auto-join domains", () => {
+    async function asAdmin(email: string) {
+      mockGetUserRole.mockResolvedValue("admin");
+      mockUpdateWorkspace.mockResolvedValue({ id: "ws-1", name: "Mine" });
+      // The route reads the caller's email from req.user.
+      const user = { id: "user-1", workspaceId: "ws-1", workspaceRole: "admin" as const, email };
+      return buildRouteTestApp(workspaceRoutes, { user });
+    }
+
+    it("an admin of their own workspace can't claim another company's domain", async () => {
+      mockIsDeploymentAdmin.mockResolvedValue(false);
+      mockGetWorkspace.mockResolvedValue({ id: "ws-1", autoJoinDomains: [] });
+      const app = await asAdmin("mallory@evil.example");
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/workspaces/ws-1",
+        payload: { autoJoinDomains: ["victim.example"] },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+    });
+
+    it("allows the admin's own domain, and domains already on the list", async () => {
+      mockIsDeploymentAdmin.mockResolvedValue(false);
+      mockGetWorkspace.mockResolvedValue({ id: "ws-1", autoJoinDomains: ["acme.example"] });
+      const app = await asAdmin("ann@corp.example");
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/workspaces/ws-1",
+        payload: { autoJoinDomains: ["acme.example", "CORP.example"] },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockUpdateWorkspace).toHaveBeenCalled();
+    });
+
+    it("a deployment admin may add any domain", async () => {
+      mockIsDeploymentAdmin.mockResolvedValue(true);
+      mockGetWorkspace.mockResolvedValue({ id: "ws-1", autoJoinDomains: [] });
+      const app = await asAdmin("root@ops.example");
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/workspaces/ws-1",
+        payload: { autoJoinDomains: ["acme.example"] },
+      });
+
+      expect(res.statusCode).toBe(200);
+    });
   });
 });
 

@@ -270,6 +270,13 @@ enum LocalPresentation {
         case "bell": return "rang the bell"
         case "quiet": return "gone quiet — probably waiting on you"
         case "exit": return "finished — review the result"
+        case "done": return "done — review the result"
+        case "stale": return "went quiet a while ago"
+        case "permission": return "waiting for your permission"
+        case "question": return "has a question for you"
+        case "auth": return "needs you to sign in"
+        case "blocked": return "blocked — waiting on you"
+        case "error": return "failed — review the error"
         default: return "needs you"
         }
     }

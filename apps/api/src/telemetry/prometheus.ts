@@ -2,12 +2,9 @@
  * A Prometheus endpoint for the deployment's monitoring
  * (docs/prometheus.md "Prometheus endpoint and dashboard").
  *
- * Upstream ships its metrics over OTLP only (telemetry.ts), and a Rancher
- * cluster runs Prometheus with the operator: nothing could scrape Optio.
- * With `OPTIO_METRICS_PORT` set, the API serves the same metrics — and the
- * fork's own (site-metrics.ts) — as Prometheus text on that port at
- * `/metrics`, on its own listener: the chart gives it its own Service, never
- * the ingress, so only what runs in the cluster reaches it.
+ * With `OPTIO_METRICS_PORT` set, the API serves its metrics as Prometheus
+ * text at `/metrics` on a separate listener. The chart exposes it through
+ * a cluster Service and restricts access to the configured monitoring audience.
  *
  *   OPTIO_OTEL_ENABLED=true  → a second metric reader next to the OTLP one
  *                              (`prometheusReader`, one hook in telemetry.ts)
@@ -15,7 +12,7 @@
  *                              (`startPrometheusOnly`): no OTLP collector, no
  *                              traces, no auto-instrumentation
  *
- * Unset (the default), nothing here loads and Optio is upstream's.
+ * Unset (the default), this listener does not load.
  *
  * The OTel packages are imported here only when the endpoint is on, as
  * telemetry.ts does for OTLP.

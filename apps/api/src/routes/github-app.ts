@@ -8,7 +8,11 @@ import {
   resetCredentialSecret,
 } from "../services/credential-secret-service.js";
 import { verifyInternalRequest, verifyHmacSignature } from "../services/hmac-auth-service.js";
-import { parseGitCredentialScope, gitCredentialKey } from "../services/git-credential-scope.js";
+import {
+  parseGitCredentialScope,
+  gitCredentialKey,
+  installationRepoFor,
+} from "../services/git-credential-scope.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
 
 export { getCredentialSecret, resetCredentialSecret };
@@ -86,8 +90,12 @@ export default async function githubAppRoutes(rawApp: FastifyInstance): Promise<
       if (req.query.scope && !scope)
         return reply.status(401).send({ error: "Invalid credential scope" });
       // Unscoped keys once lived in every repo pod and could request any user's
-      // token. Reject them by default, including after an upgrade.
-      if (!scope && process.env.OPTIO_ALLOW_LEGACY_GIT_CREDENTIALS !== "1") {
+      // token; scopes without a repo got an installation token for every repo.
+      // Reject both by default, including after an upgrade.
+      if (
+        (!scope || scope.repo === undefined) &&
+        process.env.OPTIO_ALLOW_LEGACY_GIT_CREDENTIALS !== "1"
+      ) {
         return reply
           .status(401)
           .send({ error: "Legacy credential helper disabled; recreate this pod" });
@@ -117,11 +125,16 @@ export default async function githubAppRoutes(rawApp: FastifyInstance): Promise<
         }
         reply.header("Cache-Control", "no-store");
         const { taskId } = req.query;
+        // The pod's repo bounds its installation token; a repo that isn't on
+        // GitHub has no use for a GitHub token.
+        const repo = scope?.repo ? installationRepoFor(scope.repo) : undefined;
+        if (repo === null)
+          return reply.status(401).send({ error: "This pod's repo is not a GitHub repository" });
         const token = scope
           ? await getGitHubToken(
               scope.ownerUserId
-                ? { userId: scope.ownerUserId, workspaceId: scope.workspaceId }
-                : { server: true, workspaceId: scope.workspaceId },
+                ? { userId: scope.ownerUserId, workspaceId: scope.workspaceId, repo }
+                : { server: true, workspaceId: scope.workspaceId, repo },
             )
           : taskId
             ? await getGitHubToken({ taskId })

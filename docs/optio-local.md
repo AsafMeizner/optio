@@ -76,8 +76,12 @@ server never ships secrets to your machine.
     can be **resumed** later.
 - **Resume** — `POST /api/local/terminals/:id/resume` (the "Resume chat" button on an
   exited agent session) opens a fresh interactive terminal in the same dir with
-  `claude --resume <id>` (or `codex resume <id>`), inheriting the ticket / automation
-  badges; `spawnedBy = "resume"`, so exiting it later goes quiet like a manual shell.
+  `claude --resume <id>` (or `codex resume <id>`). It is the same session continued: it
+  keeps the original's title, `spawnedBy`, trigger, blueprint and ticket (so its badge and
+  icon are the original's) and the two rows point at each other
+  (`resumed_from_terminal_id` / `resumed_by_terminal_id`); the rail shows the latest of
+  the chain in the original's place. Exiting a resume later goes quiet like a manual
+  shell (rows from before v0.23 carry `spawnedBy = "resume"`).
   It runs on the session's own host (the agent's transcript lives there); while that host
   is offline the new terminal waits as `pending` / `host_offline` and its page says so.
   Asking again while a resume of the same session hasn't ended (waiting, starting, or
@@ -99,9 +103,9 @@ over (`services/local-auth-refresh-service.ts`, `cli/src/local/claude-credential
   token against Anthropic, stores it as the global `CLAUDE_CODE_OAUTH_TOKEN` (what the
   validation worker, usage probe, and agent pods read), invalidates the credential / usage
   caches, marks the validation cache good, and publishes `auth:status_changed`.
-- Who may: a host owned by a workspace **admin** (the same gate as the Secrets page), or
+- Who may: a host owned by a **deployment admin** (the same gate as global secrets), or
   any host in auth-disabled dev.
-- **Explicit**: `POST /api/auth/claude-token/refresh-from-host {hostId}` (admin, own host);
+- **Explicit**: `POST /api/auth/claude-token/refresh-from-host {hostId}` (deployment admin, own host);
   the expired-token banner shows a "Refresh from _machine_" button for every online host
   that can, above the copy/paste steps.
 - **Automatic**: when the token-validation worker finds the stored token expired it tries
@@ -200,18 +204,18 @@ Linear workspace / Jira site / Sentry integration), and each trigger's `config` 
 the identity it listens for, so several people's automations can share one ingress. The
 self-secret ones (Pylon, Alertmanager / Grafana, Datadog) are per trigger.
 
-| Source       | Ingress                                                                                                                                                                                                                 | Secret                                                                                          | Trigger `config`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GitHub       | `POST /api/webhooks/github` (the existing receiver, `X-Hub-Signature-256`)                                                                                                                                              | `GITHUB_WEBHOOK_SECRET`                                                                         | `{ events?: ("review_requested" \| "mentioned" \| "assigned" \| "pr_opened" \| "issue_opened" \| "pr_merged" \| "labeled" \| "push" \| "release_published" \| "workflow_succeeded" \| "workflow_failed")[], login?, repos?: ["owner/name"], branches?, workflows?, labels? }`. Params add `labels`, `label`, `ref`, `sha`, `commits`, `compareUrl`, `tag`, `workflow`, `conclusion`, `merged`                                                                                                                                          |
-| GitLab       | `POST /api/webhooks/gitlab` (project / group webhook; `X-Gitlab-Token` = the webhook's secret token; `X-Gitlab-Event-UUID` deduped)                                                                                     | `GITLAB_WEBHOOK_SECRET`                                                                         | `{ events?: ("review_requested" \| "mentioned" \| "assigned" \| "mr_opened" \| "mr_merged" \| "issue_opened" \| "labeled" \| "push" \| "release_published" \| "pipeline_succeeded" \| "pipeline_failed")[], username?, projects?: ["group/project"], branches?, labels? }`. Params: `event`, `kind`, `project`, `projectUrl`, `iid`, `title`, `body`, `url`, `author`, `sourceBranch`, `targetBranch`, `commentBody`, `commentUrl`, `labels`, `label`, `ref`, `sha`, `commits`, `compareUrl`, `tag`, `pipelineStatus`, `action`        |
-| Slack        | `POST /api/webhooks/slack/events` (Events API; answers `url_verification`; `X-Slack-Signature` v0)                                                                                                                      | `SLACK_SIGNING_SECRET`                                                                          | `{ channelId, keyword?, mentionOnly?, includeThreads?, postedBy?: "people" \| "bots" \| "anyone", bot? }`                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Linear       | `POST /api/webhooks/linear` (`Linear-Signature` over the raw body + `webhookTimestamp` ≤ 60 s)                                                                                                                          | `LINEAR_WEBHOOK_SECRET`                                                                         | `{ events?: ("assigned" \| "mentioned" \| "created" \| "labeled")[], user?, labels?, teams?, othersOnly? }`                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Jira         | `POST /api/webhooks/jira` (Jira Cloud webhook with a secret; `X-Hub-Signature: sha256=` over the raw body; a comment delivered twice fires once)                                                                        | `JIRA_WEBHOOK_SECRET`                                                                           | `{ events?: ("assigned" \| "mentioned" \| "created" \| "commented" \| "transitioned" \| "labeled")[], user? (account id, display name or email), projects?: [keys], labels?, issueTypes?, statuses? }`. Params: `event`, `key`, `title`, `description`, `url`, `project`, `projectName`, `status`, `previousStatus`, `assignee`, `priority`, `labels`, `issueType`, `commentBody`, `commentUrl`, `actor`, plus the `ticket*` aliases                                                                                                   |
-| Sentry       | `POST /api/webhooks/sentry` (an internal integration's webhook; `Sentry-Hook-Signature` = hex HMAC over the raw body; `Sentry-Hook-Resource` picks the resource — `issue`, `event_alert`, `metric_alert`)               | `SENTRY_WEBHOOK_SECRET` (the integration's client secret)                                       | `{ events?: ("issue_created" \| "issue_unresolved" \| "issue_resolved" \| "issue_assigned" \| "issue_archived" \| "alert_triggered" \| "metric_alert_critical" \| "metric_alert_warning" \| "metric_alert_resolved")[], projects?: [slugs], environments?, levels? }`. Params: `event`, `resource`, `action`, `issueId`, `shortId`, `title`, `culprit`, `level`, `project`, `projectName`, `url`, `environment`, `status`, `assignee`, `count`, `userCount`, `firstSeen`, `lastSeen`, `actor`, `alertRule`, plus the `ticket*` aliases |
-| Alertmanager | `POST /api/hooks/alertmanager/<trigger id>` (Prometheus Alertmanager `webhook_config`, or a Grafana Alerting webhook contact point; the secret as `Authorization: Bearer`, basic-auth password, or `X-Optio-Secret`)    | per trigger: `config.secret`, minted on create and returned once (`hasSecret: true` afterwards) | `{ events?: ("firing" \| "resolved")[], alertnames?, severities?, receivers? }` — one firing per alert group. Params: `event`, `status`, `receiver`, `groupKey`, `title`, `message`, `alertnames`, `severities`, `count`, `firing`, `resolved`, `externalUrl`, `labels` / `annotations` (JSON), `alerts` (JSON), `payload` (JSON, ≤ 20 000 chars)                                                                                                                                                                                      |
-| Datadog      | `POST /api/hooks/datadog/<trigger id>` (Integrations → Webhooks, a custom header carrying the secret as `X-Optio-Secret` or `Authorization: Bearer`; paste `DATADOG_PAYLOAD_TEMPLATE` as the payload)                   | per trigger: `config.secret`, minted on create and returned once (`hasSecret: true` afterwards) | `{ events?: ("triggered" \| "warning" \| "no_data" \| "recovered")[], priorities?: ["P1"…"P5"], tags?, monitors? }`. Params: `event`, `transition`, `alertType`, `eventId`, `alertId`, `title`, `body`, `link`, `priority`, `status`, `tags`, `hostname`, `query`, `scope`, `metric`, `org`, `date`, `payload` (JSON, ≤ 20 000 chars)                                                                                                                                                                                                  |
-| Pylon        | `POST /api/hooks/pylon/<trigger id>` (Pylon → Settings → Triggers, a webhook action; unsigned, so the delivery carries the trigger's secret as the custom header `X-Optio-Secret`, or `Authorization: Bearer <secret>`) | per trigger: `config.secret`, minted on create and returned once (`hasSecret: true` afterwards) | `{ events?: string[] }` — free-text kinds matched case-insensitively against the payload's `event` / `event_type` / `type` / `trigger` / `data.event`; empty = any. Params: `event`, `issueId`, `issueNumber`, `title`, `body`, `state`, `url`, `account`, `requester`, `assignee`, `tags`, `payload` (the JSON, ≤ 20 000 chars)                                                                                                                                                                                                       |
-| PagerDuty    | `POST /api/webhooks/pagerduty` (Webhooks v3; `X-PagerDuty-Signature` `v1=` HMAC over the raw body, any of several; `X-Webhook-Id` deduped)                                                                              | `PAGERDUTY_WEBHOOK_SECRET`                                                                      | `{ events?: ("incident.triggered" \| "incident.acknowledged" \| "incident.resolved" \| "incident.escalated" \| "incident.reassigned" \| "incident.priority_updated" \| "incident.annotated" \| …)[], services?: [id or name], urgency?: "high" \| "low" }`. Params: `event`, `incidentId`, `incidentNumber`, `title`, `url`, `urgency`, `priority`, `service`, `serviceId`, `status`, `assignees`, plus the `ticket*` aliases                                                                                                          |
+| Source       | Ingress                                                                                                                                                                                                                 | Secret                                                                                          | Trigger `config`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GitHub       | `POST /api/webhooks/github` (the existing receiver, `X-Hub-Signature-256`)                                                                                                                                              | `GITHUB_WEBHOOK_SECRET`                                                                         | `{ events?: GitHubEventKind[] (the 31 kinds in `GITHUB_EVENT_KINDS`: about-me, PR, issue, label, repository, security and discussion kinds — see `docs/tasks.md`), login?, repos?: ["owner/name"], branches?, workflows?, labels?, postedBy?: people \| bots \| anyone, ignoreLogins?, authorOnly?, bodyMatches?, reviewStates?, severities? }`. Params add `actor`, `commentAuthor`, `labels`, `label`, `ref`, `sha`, `commits`, `compareUrl`, `tag`, `workflow`, `conclusion`, `merged`, `changes`, `reviewState`, `environment`, `alertSeverity`, `dispatchType`, `dispatchPayload` |
+| GitLab       | `POST /api/webhooks/gitlab` (project / group webhook; `X-Gitlab-Token` = the webhook's secret token; `X-Gitlab-Event-UUID` deduped)                                                                                     | `GITLAB_WEBHOOK_SECRET`                                                                         | `{ events?: ("review_requested" \| "mentioned" \| "assigned" \| "mr_opened" \| "mr_merged" \| "issue_opened" \| "labeled" \| "push" \| "release_published" \| "pipeline_succeeded" \| "pipeline_failed")[], username?, projects?: ["group/project"], branches?, labels? }`. Params: `event`, `kind`, `project`, `projectUrl`, `iid`, `title`, `body`, `url`, `author`, `sourceBranch`, `targetBranch`, `commentBody`, `commentUrl`, `labels`, `label`, `ref`, `sha`, `commits`, `compareUrl`, `tag`, `pipelineStatus`, `action`                                                        |
+| Slack        | `POST /api/webhooks/slack/events` (Events API; answers `url_verification`; `X-Slack-Signature` v0)                                                                                                                      | `SLACK_SIGNING_SECRET`                                                                          | `{ channelId, keyword?, mentionOnly?, includeThreads?, postedBy?: "people" \| "bots" \| "anyone", bot? }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Linear       | `POST /api/webhooks/linear` (`Linear-Signature` over the raw body + `webhookTimestamp` ≤ 60 s)                                                                                                                          | `LINEAR_WEBHOOK_SECRET`                                                                         | `{ events?: ("assigned" \| "mentioned" \| "created" \| "labeled")[], user?, labels?, teams?, othersOnly? }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Jira         | `POST /api/webhooks/jira` (Jira Cloud webhook with a secret; `X-Hub-Signature: sha256=` over the raw body; a comment delivered twice fires once)                                                                        | `JIRA_WEBHOOK_SECRET`                                                                           | `{ events?: ("assigned" \| "mentioned" \| "created" \| "commented" \| "transitioned" \| "labeled")[], user? (account id, display name or email), projects?: [keys], labels?, issueTypes?, statuses? }`. Params: `event`, `key`, `title`, `description`, `url`, `project`, `projectName`, `status`, `previousStatus`, `assignee`, `priority`, `labels`, `issueType`, `commentBody`, `commentUrl`, `actor`, plus the `ticket*` aliases                                                                                                                                                   |
+| Sentry       | `POST /api/webhooks/sentry` (an internal integration's webhook; `Sentry-Hook-Signature` = hex HMAC over the raw body; `Sentry-Hook-Resource` picks the resource — `issue`, `event_alert`, `metric_alert`)               | `SENTRY_WEBHOOK_SECRET` (the integration's client secret)                                       | `{ events?: ("issue_created" \| "issue_unresolved" \| "issue_resolved" \| "issue_assigned" \| "issue_archived" \| "alert_triggered" \| "metric_alert_critical" \| "metric_alert_warning" \| "metric_alert_resolved")[], projects?: [slugs], environments?, levels? }`. Params: `event`, `resource`, `action`, `issueId`, `shortId`, `title`, `culprit`, `level`, `project`, `projectName`, `url`, `environment`, `status`, `assignee`, `count`, `userCount`, `firstSeen`, `lastSeen`, `actor`, `alertRule`, plus the `ticket*` aliases                                                 |
+| Alertmanager | `POST /api/hooks/alertmanager/<trigger id>` (Prometheus Alertmanager `webhook_config`, or a Grafana Alerting webhook contact point; the secret as `Authorization: Bearer`, basic-auth password, or `X-Optio-Secret`)    | per trigger: `config.secret`, minted on create and returned once (`hasSecret: true` afterwards) | `{ events?: ("firing" \| "resolved")[], alertnames?, severities?, receivers? }` — one firing per alert group. Params: `event`, `status`, `receiver`, `groupKey`, `title`, `message`, `alertnames`, `severities`, `count`, `firing`, `resolved`, `externalUrl`, `labels` / `annotations` (JSON), `alerts` (JSON), `payload` (JSON, ≤ 20 000 chars)                                                                                                                                                                                                                                      |
+| Datadog      | `POST /api/hooks/datadog/<trigger id>` (Integrations → Webhooks, a custom header carrying the secret as `X-Optio-Secret` or `Authorization: Bearer`; paste `DATADOG_PAYLOAD_TEMPLATE` as the payload)                   | per trigger: `config.secret`, minted on create and returned once (`hasSecret: true` afterwards) | `{ events?: ("triggered" \| "warning" \| "no_data" \| "recovered")[], priorities?: ["P1"…"P5"], tags?, monitors? }`. Params: `event`, `transition`, `alertType`, `eventId`, `alertId`, `title`, `body`, `link`, `priority`, `status`, `tags`, `hostname`, `query`, `scope`, `metric`, `org`, `date`, `payload` (JSON, ≤ 20 000 chars)                                                                                                                                                                                                                                                  |
+| Pylon        | `POST /api/hooks/pylon/<trigger id>` (Pylon → Settings → Triggers, a webhook action; unsigned, so the delivery carries the trigger's secret as the custom header `X-Optio-Secret`, or `Authorization: Bearer <secret>`) | per trigger: `config.secret`, minted on create and returned once (`hasSecret: true` afterwards) | `{ events?: string[] }` — free-text kinds matched case-insensitively against the payload's `event` / `event_type` / `type` / `trigger` / `data.event`; empty = any. Params: `event`, `issueId`, `issueNumber`, `title`, `body`, `state`, `url`, `account`, `requester`, `assignee`, `tags`, `payload` (the JSON, ≤ 20 000 chars)                                                                                                                                                                                                                                                       |
+| PagerDuty    | `POST /api/webhooks/pagerduty` (Webhooks v3; `X-PagerDuty-Signature` `v1=` HMAC over the raw body, any of several; `X-Webhook-Id` deduped)                                                                              | `PAGERDUTY_WEBHOOK_SECRET`                                                                      | `{ events?: ("incident.triggered" \| "incident.acknowledged" \| "incident.resolved" \| "incident.escalated" \| "incident.reassigned" \| "incident.priority_updated" \| "incident.annotated" \| …)[], services?: [id or name], urgency?: "high" \| "low" }`. Params: `event`, `incidentId`, `incidentNumber`, `title`, `url`, `urgency`, `priority`, `service`, `serviceId`, `status`, `assignees`, plus the `ticket*` aliases                                                                                                                                                          |
 
 Matching lives in `services/event-trigger-service.ts` as pure functions
 (`normalize*` → one event; `match*` → the matched kind or null); `fireEventTriggers`
@@ -222,6 +226,12 @@ through the shared trigger dispatcher with the event's fields as prompt params. 
 (reviewer, assignee, `@`-mentions, case-insensitive; Linear matches user id, name, display
 name, or the `@handle` in a mention link); `pr_opened` / `issue_opened` / `created` /
 `labeled` need no identity. A comment you wrote that mentions yourself never fires.
+Nothing one of a GitHub trigger's `ignoreLogins` does fires it; its comment / review / edit /
+PR-push kinds (`issue_commented`, `pr_commented`, `pr_review_submitted`, `pr_synchronized`,
+`issue_edited`, `discussion_commented`) fire for people by default (`postedBy`), never for the
+trigger's own `login`, and with `authorOnly` only when the issue's / PR's author is the one
+writing; `bodyMatches` keeps slash commands. The Machines page's trigger editor and
+the Work form both offer these filters.
 Linear's `othersOnly` ("Only tickets from someone else", needs `user`) skips an issue
 `user` created (`creatorId`, or the creator itself when the payload has it) and any change
 `user` made (the webhook's actor, or the person behind an integration's `botActor`): a
@@ -295,6 +305,26 @@ The Automations section on `/machines` ships these three as one-click presets.
 
 Layered, best signal wins per terminal:
 
+0. **Program status, OSC 7501** (the program's own word). The
+   [Program Status Protocol](https://control-codes.page/proposals/osc-7501/) (Ghostty 1.4
+   parses it; Claude Code, Pi and Crush emit it) lets a program tell its terminal
+   `working` / `blocked` / `done` / `error` / `idle`, a `blocked` with a `kind`
+   (`permission` / `question` / `auth`) and a one-line `msg`. The daemon's screen model is
+   the terminal the program talks to, so it answers the capability query
+   (`OSC 7501 ; ?` — Claude Code reports only once something answered; a viewer's xterm.js
+   never does) and hands each report to the tracker (`program-status.ts`,
+   `attention.statusEvent`): `working` → `working`, `idle` → `idle`, `blocked` →
+   `needs_you` with the kind as the reason (`permission`, `question`, `auth`, or `blocked`),
+   `done` → `needs_you` (reason `done`), `error` → `needs_you` (reason `error`). Only the
+   root record counts (a subagent's record says nothing about the whole; `clear` says
+   nothing). Once a program has reported, it owns the terminal: hooks, bells, silence and
+   keystrokes are ignored for it (Claude Code sends both hooks and status, and status is
+   the finer: a `Stop` hook followed by `idle` would otherwise leave a stale needs_you) —
+   with one exception, a Codex turn boundary that ends a `working` status (layer 1).
+   Reports are untrusted output: values are checked against the spec's alphabet and
+   limits, `msg` / `title` must not decode to a control character, and a report over a
+   limit is dropped whole. The daemon must never export `CLAUDE_CODE_DISABLE_TERMINAL_TITLE`
+   to an agent: Claude Code turns program status off with it.
 1. **Claude Code hooks** (exact). For `agent: "claude-code"` spawns the daemon injects a
    settings file (`--settings`) whose `Stop` / `Notification` / `UserPromptSubmit` hooks
    POST to the daemon's localhost hook server (`http://127.0.0.1:$OPTIO_LOCAL_DAEMON_PORT/hook/$OPTIO_LOCAL_TERMINAL_ID`).
@@ -304,7 +334,14 @@ Layered, best signal wins per terminal:
    every turn: `task_started` → `working`, `task_complete` / `turn_aborted` → `needs_you`
    (reason `stop`), read by the transcript poll (`TranscriptTracker.onCodexTurn` →
    `attention.turnEvent`) with the same authority — Codex's TUI keeps repainting after it
-   finishes, so the silence heuristic alone would leave it `working` forever.
+   finishes, so the silence heuristic alone would leave it `working` forever. Codex 0.164+
+   also reports program status (layer 0), which then owns the terminal, but the rollout's
+   turn end still rules on one thing: a `task_complete` / `turn_aborted` while the status
+   says `working` → `needs_you` (reason `stop`). Codex keeps reporting `working` after a
+   turn while a `/goal` is active or a background process it started is alive — even at
+   its prompt, waiting for you — and sends only a status that changed, so nothing would
+   ever correct it. `blocked`, `idle` (your keystroke) and `done` stay the status's call,
+   and a turn end changes nothing when the status is one of those.
 2. **Terminal bell** (generic). A BEL (0x07) in PTY output that is **not** an OSC/DCS/APC
    string terminator → `needs_you` (reason `bell`). The scanner is a small cross-chunk
    state machine (ESC `]`/`P`/`_`/`^` opens a string; BEL or ESC `\` closes it).
@@ -374,8 +411,9 @@ Webhook/Schedule/Ticket triggers ───────────┘        /ws
   with `TERM_PROGRAM=ghostty` Claude Code turns on keyboard protocols xterm.js lacks, and
   `TMUX` makes programs wrap OSC 52 copies for a tmux that isn't there (`TERMINAL_ENV` /
   `OUTER_TERMINAL_ENV` in `terminal-manager.ts`). **The screen model answers the program's
-  queries** — cursor position, device status and attributes, modes, and colors (OSC 4 / 10 /
-  11 / 12, from `TERMINAL_THEME` in `@optio/shared`, the web viewer's theme) — like tmux does:
+  queries** — cursor position, device status and attributes, modes, colors (OSC 4 / 10 /
+  11 / 12, from `TERMINAL_THEME` in `@optio/shared`, the web viewer's theme), and the
+  program-status capability (OSC 7501, see "Attention detection") — like tmux does:
   a PTY has no viewer while nobody watches (Codex asks for the background color as it starts
   and draws no composer band without an answer) and several when a tab and a phone do, each
   of which would answer again into the program's input. The hello says `answersQueries`; the
@@ -874,7 +912,7 @@ before.
   lifecycle + attention folded into a single color — purple working, yellow pulse needs
   you, green completed (exit 0), grey idle/pending/killed/error (`sessionTone` in
   `attention.ts`, shared by card, row, rail and favicon) — with the description on
-  hover. Inside `/local/:id` the favicon shows _that_ session's dot; on `/sessions` it shows the
+  hover. Inside `/work/:id` the favicon shows _that_ session's dot; on `/work` it shows the
   fleet's (yellow beats green beats grey). The `(N)` title badge is always the fleet's
   needs-you count.
 - **Rename in place**: the title in the terminal header is a text box (Enter / blur saves,
@@ -900,16 +938,14 @@ before.
   and URLs, so a session is findable by the PR or ticket it's working on.
 - Issues page (`/issues`) gains **"Work on locally"** next to "Assign to Optio" when an
   online host advertises a dir whose `repoUrl` matches the issue's repo.
-- Sidebar: **Local** under the "Live" group.
+- Sidebar: machines live under **Library → Machines**; Local sessions sit in the one **Work** list.
 - **Overview (`/`)**: the dashboard opens with a cross-concept **Needs you** strip (local
   terminals waiting on you + repo tasks in `needs_attention`, oldest wait first —
   `components/dashboard/needs-you.tsx`), then one stats strip per concept. **Local** gets
   the same strip as the others (needs you / working / idle / finished / hosts online,
   `variant="local"`) plus cards for live terminals and anything finished in the last 24 h.
-  A concept with nothing live folds into the single **Quiet** line (`quiet-sections.tsx`)
-  so the page is only as tall as what's happening; roll-up rules live in
-  `components/dashboard/local-stats.ts`. A paired host with an open terminal counts as
-  "started" — the welcome hero no longer shows just because there are zero repo tasks.
+  A paired host with an open terminal counts as "started" — the welcome hero no longer
+  shows just because there are zero repo tasks.
   Three more overview panels: **Usage limits** (`limits-panel.tsx`) shows Claude's live
   5h / 7d account utilization next to **Codex**'s — the daemon reads Codex's newest
   `rate_limits` snapshot from `~/.codex/sessions/**/rollout-*.jsonl` (no token leaves the
@@ -945,3 +981,70 @@ before.
 - Web push for `needs_you` transitions (in-app only for now).
 - Terminal survival across daemon restarts (PTYs are daemon children; `claude --continue`
   in the same dir is the recovery path).
+
+## Codex ChatGPT login from your machine
+
+Codex pod work can use your machine's ChatGPT login as well as an OpenAI API key.
+In **Who → Signed in with → Add credentials → ChatGPT login**, choose **Use login
+from _machine_**, or export a short-lived token on macOS and paste it in the same
+form:
+
+```sh
+optio local codex-token | pbcopy
+```
+
+On Linux use `wl-copy` instead of `pbcopy`; on Windows use `clip`. The command
+requires an updated Optio CLI and a Codex CLI signed in with `codex login`. It asks
+Codex's stdio app server for `getAuthStatus` with `includeToken` and `refreshToken`,
+so both file and OS keyring logins work. It emits only the access token. Never
+paste it into chat, logs, or an issue. The setup wizard offers the same controls.
+
+An updated Local daemon advertises `codexCredentials` and answers a provider-tagged
+`credentials` request. Older daemons continue to support Claude only. Importing
+selects personal or organization ownership; members can import their own login,
+and only deployment admins can share a login across the deployment. Tokens are stored encrypted as
+`CODEX_AUTH_TOKEN`, with `CODEX_AUTH_MODE=chatgpt`. No refresh token leaves the
+machine. Credentials do not cross Redis: the API instance connected to that daemon
+performs the import and returns only the outcome.
+
+A daemon import remembers its source machine. The token-validation worker refreshes
+that source when the token has less than ten minutes left, and reconnecting the
+source checks again. Automatic refresh does not switch ChatGPT accounts. Manual
+pastes disconnect the source; pasted tokens must be replaced when they expire.
+Removing a credential or switching sign-in methods stops automatic renewal.
+
+Every Codex run writes an access-only `auth.json` with mode 600 inside its private
+`CODEX_HOME`, which is removed with the run home. Concurrent pods never receive the
+machine's rotating refresh token. The integration was checked with Codex CLI
+0.164.0, including a real access-only inference turn. Background refresh requires
+the source machine and its updated daemon to be online.
+
+OpenAI documents local login storage and copying a login cache to headless hosts
+in [Codex authentication](https://learn.chatgpt.com/docs/auth). Optio shares only
+the short-lived access credential and leaves renewal on the source machine.
+
+### One session workspace for local and pod work
+
+The `/work/:id` sidebar uses the Local session rail for both locations. Local
+terminals and pod sessions share search (including agent and location), stable
+ordering, keyboard switching, Live/Finished groups, and the compact workspace
+header. Local pins remain server-backed; pod pins are browser preferences scoped
+to the signed-in user and workspace. Local split groups keep their existing
+behavior; pod terminal panes stay grouped under their own workspace. Cross-location
+rows navigate normally rather than passing a pod id to a local terminal API.
+An explicit Chat/Terminal choice follows navigation within the browser tab where
+supported. Agent-only pods show Chat; ended pods show their saved conversation.
+Pod creation time is labeled **Created**, not elapsed agent execution time.
+
+Repo tasks, standalone Job runs (agents and commands), persistent agents, and PR
+reviews now use the same workspace at `/work/:id`. The session rail includes these
+executions alongside local terminals and interactive pods; saved recurring
+blueprints remain on their management pages. A linked local terminal represents
+its task or Job run once in the rail, with exact attempt links preserved. Task
+PR/pipeline controls, Job output/retry controls, agent turns/configuration, and
+review findings/submission controls remain in their respective workspace content.
+Legacy task, agent, review, and Job-run URLs redirect while preserving query
+parameters and fragments. Non-terminal run pins use the browser's scoped pin
+preferences; only local terminal rows offer local kill/delete/split actions.
+Reviews are read from the workspace-scoped stored review list, including submitted
+history, rather than polling a git provider for every sidebar refresh.

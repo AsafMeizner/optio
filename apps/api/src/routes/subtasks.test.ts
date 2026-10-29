@@ -22,6 +22,13 @@ vi.mock("../services/task-service.js", () => ({
   getTask: (...args: unknown[]) => mockGetTask(...args),
 }));
 
+// Ownership as work-ownership.ts states it, without its display-name lookup.
+vi.mock("../services/work-ownership.js", () => ({
+  workActor: (req: { user?: { id: string } }) => ({ userId: req.user?.id ?? null }),
+  workChangeError: async (owner: string | null, actor: { userId: string | null }) =>
+    owner && owner !== actor.userId ? "Only its owner can run this" : null,
+}));
+
 import { subtaskRoutes } from "./subtasks.js";
 
 // ─── Helpers ───
@@ -134,6 +141,20 @@ describe("POST /api/tasks/:id/subtasks", () => {
     expect(mockQueueSubtask).not.toHaveBeenCalled();
   });
 
+  it("refuses a subtask under someone else's private task", async () => {
+    mockGetTask.mockResolvedValue({ ...mockTaskData, ownerUserId: "someone-else" });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tasks/task-1/subtasks",
+      payload: { title: "Block it", prompt: "x", blocksParent: true },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockCreateSubtask).not.toHaveBeenCalled();
+    expect(mockQueueSubtask).not.toHaveBeenCalled();
+  });
+
   it("rejects missing title (400 from Zod body schema)", async () => {
     mockGetTask.mockResolvedValue(mockTaskData);
 
@@ -171,5 +192,26 @@ describe("GET /api/tasks/:id/subtasks/status", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().allComplete).toBe(false);
     expect(res.json().total).toBe(3);
+  });
+});
+
+describe("private task resource visibility", () => {
+  it.each(["subtasks", "subtasks/status"])("hides %s from a different member", async (resource) => {
+    vi.clearAllMocks();
+    mockGetTask.mockResolvedValue({
+      id: "task-private",
+      workspaceId: "ws-1",
+      ownerUserId: "someone-else",
+    });
+    const app = await buildRouteTestApp(subtaskRoutes, {
+      user: { id: "user-1", workspaceId: "ws-1", workspaceRole: "member" },
+    });
+    try {
+      const res = await app.inject({ method: "GET", url: `/api/tasks/task-private/${resource}` });
+      expect(res.statusCode).toBe(404);
+      expect(mockGetSubtasks).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
   });
 });

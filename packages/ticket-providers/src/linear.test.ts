@@ -5,9 +5,11 @@ import type { LinearProviderConfig } from "./linear.js";
 // Mock Linear SDK
 vi.mock("@linear/sdk", () => {
   return {
-    LinearClient: vi.fn().mockImplementation(() => ({
-      issues: vi.fn(),
-    })),
+    LinearClient: vi.fn().mockImplementation(function () {
+      return {
+        issues: vi.fn(),
+      };
+    }),
   };
 });
 
@@ -37,9 +39,9 @@ describe("LinearTicketProvider pagination", () => {
       pageInfo: { hasNextPage: false, endCursor: null },
     });
 
-    vi.mocked(LinearClient).mockImplementation(
-      () => ({ issues: issuesFn }) as unknown as InstanceType<typeof LinearClient>,
-    );
+    vi.mocked(LinearClient).mockImplementation(function () {
+      return { issues: issuesFn } as unknown as InstanceType<typeof LinearClient>;
+    });
 
     const provider = new LinearTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -65,9 +67,9 @@ describe("LinearTicketProvider pagination", () => {
         pageInfo: { hasNextPage: false, endCursor: null },
       });
 
-    vi.mocked(LinearClient).mockImplementation(
-      () => ({ issues: issuesFn }) as unknown as InstanceType<typeof LinearClient>,
-    );
+    vi.mocked(LinearClient).mockImplementation(function () {
+      return { issues: issuesFn } as unknown as InstanceType<typeof LinearClient>;
+    });
 
     const provider = new LinearTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -86,9 +88,9 @@ describe("LinearTicketProvider pagination", () => {
       pageInfo: { hasNextPage: true, endCursor: "cursor-next" },
     });
 
-    vi.mocked(LinearClient).mockImplementation(
-      () => ({ issues: issuesFn }) as unknown as InstanceType<typeof LinearClient>,
-    );
+    vi.mocked(LinearClient).mockImplementation(function () {
+      return { issues: issuesFn } as unknown as InstanceType<typeof LinearClient>;
+    });
 
     const provider = new LinearTicketProvider();
     const config: LinearProviderConfig = { ...baseConfig(), maxPages: 3 };
@@ -104,9 +106,9 @@ describe("LinearTicketProvider pagination", () => {
       pageInfo: { hasNextPage: false, endCursor: null },
     });
 
-    vi.mocked(LinearClient).mockImplementation(
-      () => ({ issues: issuesFn }) as unknown as InstanceType<typeof LinearClient>,
-    );
+    vi.mocked(LinearClient).mockImplementation(function () {
+      return { issues: issuesFn } as unknown as InstanceType<typeof LinearClient>;
+    });
 
     const provider = new LinearTicketProvider();
     const tickets = await provider.fetchActionableTickets(baseConfig());
@@ -121,9 +123,9 @@ describe("LinearTicketProvider pagination", () => {
       pageInfo: { hasNextPage: false, endCursor: null },
     });
 
-    vi.mocked(LinearClient).mockImplementation(
-      () => ({ issues: issuesFn }) as unknown as InstanceType<typeof LinearClient>,
-    );
+    vi.mocked(LinearClient).mockImplementation(function () {
+      return { issues: issuesFn } as unknown as InstanceType<typeof LinearClient>;
+    });
 
     const provider = new LinearTicketProvider();
     const config: LinearProviderConfig = {

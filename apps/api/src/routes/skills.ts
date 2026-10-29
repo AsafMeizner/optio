@@ -14,6 +14,7 @@ import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { SkillSchema } from "../schemas/integration.js";
 import { requireRole } from "../plugins/auth.js";
 import { withManagedBy } from "../services/config/managed.js";
+import { isSafeSkillName } from "../utils/skill-name.js";
 
 const scopeQuerySchema = z
   .object({
@@ -22,6 +23,12 @@ const scopeQuerySchema = z
   .describe("Query parameters for listing skills");
 
 const skillLayoutSchema = z.enum(["commands", "skill-dir"]);
+
+// The name becomes a file or directory name in the checkout (skill-service).
+const skillNameSchema = z
+  .string()
+  .min(1)
+  .refine(isSafeSkillName, "name must not contain /, \\, or control characters");
 
 const skillFileSchema = z.object({
   relativePath: z
@@ -33,7 +40,7 @@ const skillFileSchema = z.object({
 
 const createSkillSchema = z
   .object({
-    name: z.string().min(1),
+    name: skillNameSchema,
     description: z.string().optional(),
     prompt: z.string().min(1).describe("Skill prompt content (SKILL.md body for skill-dir)"),
     repoUrl: z.string().optional().describe("Optional repo scope; empty means global"),
@@ -62,7 +69,7 @@ const createSkillSchema = z
 
 const updateSkillSchema = z
   .object({
-    name: z.string().min(1).optional(),
+    name: skillNameSchema.optional(),
     description: z.string().nullable().optional(),
     prompt: z.string().min(1).optional(),
     layout: skillLayoutSchema.optional(),

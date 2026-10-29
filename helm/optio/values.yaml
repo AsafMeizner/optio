@@ -10,6 +10,18 @@
 #
 # Install a released chart: helm install optio oci://ghcr.io/jonwiggins/optio
 
+# Independent deployment allowlists. Empty means every supported option.
+features:
+  runtimes: []
+  gitPlatforms: []
+  triggers: []
+  ticketSources: []
+  connectionProviders: []
+
+# Who may create workspaces; an app setting overrides this environment default.
+workspaces:
+  creation: everyone
+
 # ──────────────────────────────────────────────────────────────────────────────
 # API Server
 # ──────────────────────────────────────────────────────────────────────────────
@@ -114,18 +126,6 @@ web:
 # Ask Optio (the assistant)
 # ──────────────────────────────────────────────────────────────────────────────
 optio:
-  assistant:
-    # Where an Ask Optio turn runs:
-    #   api-pod    (default) as a child process of the API, in the API pod —
-    #              no agent pod per conversation. The API image carries Claude
-    #              Code and Codex for it; an assistant on another harness, or
-    #              one with a repo, runs in an agent pod regardless.
-    #   agent-pod  a pooled agent pod per conversation (the assistant isolated
-    #              from the API: its own resources, nothing of the API's
-    #              filesystem or service account within its reach).
-    placement: api-pod
-    # Turns the API pod runs at once; the rest go to agent pods.
-    inPodMax: 3
   # The legacy dedicated assistant pod (below). Off by default: nothing in
   # Optio uses it. Set true to run it.
   enabled: false
@@ -178,7 +178,7 @@ agent:
   envoyProxy:
     image:
       repository: envoyproxy/envoy
-      tag: v1.31-latest
+      tag: v1.39.5
       pullPolicy: IfNotPresent
   # PVC template for repo pod home directories.
   # These PVCs are created dynamically by the API server (one per repo pod
@@ -215,11 +215,9 @@ agent:
   # Shared cache directory PVCs (opt-in per repo).
   # Controls storage class and size limits for cache directories.
   cache:
-    enabled: true                     # Set false to hard-disable the feature
     storageClass: ""                  # Empty = cluster default storage class
     maxSizePerDirectoryGi: 100        # Max size for a single cache directory
     maxSizeTotalGi: 200               # Max total cache size across all dirs per repo
-    defaultSizePerDirectoryGi: 10     # Default size when creating a cache directory
   # Repo init timeout (how long to wait for clone to complete)
   repoInitTimeoutMs: 120000           # 2 min default; increase for large repos
 
@@ -242,13 +240,23 @@ outbound:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Network Policy
-# Default-deny policy for agent (repo) pods. Restricts cluster-internal
-# traffic so compromised pods cannot reach PostgreSQL, Redis, or other
-# services directly. Requires a CNI plugin that supports NetworkPolicy
-# (e.g. Calico, Cilium, Weave Net). Not supported on Docker Desktop.
+# Default-deny policy for every agent pod Optio starts (repo pods, Job pods,
+# persistent-agent pods, assistant agent pods — all labeled managed-by=optio).
+# Restricts cluster-internal traffic so compromised pods cannot reach
+# PostgreSQL, Redis, or other services directly. Requires a CNI plugin that
+# supports NetworkPolicy (e.g. Calico, Cilium, Weave Net). Not supported on
+# Docker Desktop.
 # ──────────────────────────────────────────────────────────────────────────────
 networkPolicy:
   enabled: false  # Set to true when your cluster supports NetworkPolicy
+  # Additional destination CIDRs to deny on public HTTP(S). Private, loopback,
+  # link-local and multicast ranges are always excluded, even if this is [].
+  # Keep this setting for deployment-specific public pod/service CIDRs.
+  deniedEgressCidrs: []
+  # Explicit administrator-authorized access to trusted private Connections
+  # or nonstandard / node-local DNS. These rules apply to every agent pod.
+  # Do not grant access to PostgreSQL, Redis or cloud instance metadata.
+  extraEgress: []
 
 # Marketplace skills (issue #497) are synced into the database
 # (`installed_skill_files`), so every API pod serves them and no volume is
@@ -301,7 +309,7 @@ postgresql:
   enabled: true
   image:
     repository: postgres
-    tag: "16"
+    tag: "16@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97"
   resources:
     requests:
       cpu: 100m
@@ -333,7 +341,7 @@ redis:
   enabled: true
   image:
     repository: redis
-    tag: 7-alpine
+    tag: "7-alpine@sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af"
   # Kubernetes nodeSelector for Redis pods (opt-in).
   nodeSelector: {}
   resources:
@@ -360,6 +368,19 @@ redis:
     # Leave empty to auto-generate a 32-char password at install time.
     # The password is stored in a K8s Secret and persisted across upgrades.
     password: ""
+  # Keep Redis state on a PVC (append-only file) so BullMQ's delayed and
+  # in-flight jobs and short-lived keys survive a Redis pod restart or the
+  # cluster's nodes scaling to zero. Off by default: Redis is then in-memory
+  # only. Runs are recovered from Postgres either way (docs/redis.md).
+  # Turning this on or off replaces the dataset: the first rollout starts from
+  # an empty volume, and turning it off deletes the PVC with its data (no
+  # helm.sh/resource-policy keep). Do it while nothing is running.
+  # Size the volume at >= 2x redis.resources.limits.memory (an AOF rewrite
+  # needs a second copy); a full volume makes Redis refuse writes.
+  persistence:
+    enabled: false
+    storageClass: ""  # Empty = cluster default storage class
+    size: 1Gi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # External services (used when built-in PostgreSQL/Redis are disabled)
@@ -382,6 +403,82 @@ externalRedis:
   # (cluster mode requires a {hash-tag}). Set to share one Redis Cluster
   # between Optio installs, e.g. "{optio-staging}".
   queuePrefix: ""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Database backups (optional; docs/backup.md)
+# A CronJob that dumps Optio's database — the built-in PostgreSQL, or the
+# external one in DATABASE_URL — with `pg_dump -Fc`, reads every dump back
+# with `pg_restore --list` before keeping it, and keeps the newest on a volume
+# (target: pvc) or in an S3-compatible bucket (target: s3: MinIO, Ceph RGW, …).
+# scripts/backup/backup-db.sh takes a dump with it before an upgrade;
+# scripts/backup/restore-db.sh restores one. A dump is useless without the
+# encryption key it was made with (encryption.key / OPTIO_ENCRYPTION_KEY):
+# keep the key with the dumps, apart from the cluster.
+# ──────────────────────────────────────────────────────────────────────────────
+backup:
+  enabled: false
+  # Cron, in timeZone (empty: the controller's, usually UTC).
+  schedule: "15 2 * * *"
+  timeZone: ""          # e.g. "Europe/Berlin"
+  suspend: false        # true: no scheduled runs (dumps before upgrades still run)
+  # Scheduled and by-hand dumps kept (the newest), and, apart from them,
+  # dumps taken before upgrades.
+  keep: 7
+  keepPreUpgrade: 3
+  # Where the dumps go: "pvc" or "s3".
+  target: pvc
+  pvc:
+    # A claim you made (e.g. on other storage than PostgreSQL's); empty: the
+    # chart makes <release>-backup once and never deletes it (it outlives
+    # `helm uninstall`).
+    existingClaim: ""
+    size: 20Gi
+    storageClass: ""    # empty = the cluster's default
+    accessMode: ReadWriteOnce
+  s3:
+    # https://minio.example.com:9000 — its certificate must be one the AWS
+    # CLI image trusts. Empty: AWS's own endpoints.
+    endpoint: ""
+    bucket: ""
+    prefix: "optio/"    # e.g. the environment's name; the dumps go under it
+    region: us-east-1
+    pathStyle: true     # https://endpoint/bucket/key (MinIO, Ceph); false: bucket.endpoint
+    # A Secret in the namespace with the access key (its key names below), or
+    # the two values here (rendered into <release>-backup-s3).
+    existingSecret: ""
+    existingSecretKeys:
+      accessKeyId: AWS_ACCESS_KEY_ID
+      secretAccessKey: AWS_SECRET_ACCESS_KEY
+    accessKeyId: ""
+    secretAccessKey: ""
+    # An image with the AWS CLI for the upload and download (set its
+    # repository to your mirror).
+    image:
+      repository: alpine/k8s
+      tag: "1.34.12"
+    # The pod's scratch space for one dump between pg_dump and the upload.
+    scratchSize: 20Gi
+  # The image pg_dump and pg_restore come from; empty: postgresql.image (16).
+  # An external PostgreSQL newer than 16 needs that version's image here.
+  image:
+    repository: ""
+    tag: ""
+  # More pg_dump arguments, e.g. ["--exclude-table-data=task_logs"].
+  pgDumpArgs: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  backoffLimit: 1
+  activeDeadlineSeconds: 7200      # a dump or a restore that takes longer fails
+  ttlSecondsAfterFinished: 604800  # finished jobs (and their logs) go after 7 days
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  nodeSelector: {}
+  tolerations: []
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Public URL
@@ -626,6 +723,21 @@ resourceQuota:
     limits.memory: 80Gi
     pods: "50"
     persistentvolumeclaims: "30"
+  # Defaults for containers that set no requests/limits of their own. A quota on
+  # cpu/memory makes Kubernetes reject any such container, and most pods Optio
+  # creates (repo, Job, agent and session pods, the chart's Postgres init and
+  # test pods) set none unless configured, so they could never start without
+  # these. `default` is a hard cap per container: a repo pod's main container
+  # hosts maxAgentsPerPod agents, and each defaulted pod counts `default`
+  # against `hard` limits (see docs/production-eks.md).
+  limitRange:
+    enabled: true
+    defaultRequest:
+      cpu: 250m
+      memory: 512Mi
+    default:
+      cpu: "2"
+      memory: 4Gi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # RBAC
@@ -661,6 +773,9 @@ imagePullSecrets: []
 #  - name: my-registry-secret
 
 # Optional Prometheus listener; never exposed by the ingress.
+# Enabling metrics with its default NetworkPolicy installs an ingress policy
+# on the whole API pod. API/web ports (4000/3000) remain open to all sources;
+# the metrics port permits only the monitoring audience and helm-test pod.
 metrics:
   enabled: false
   port: 9464

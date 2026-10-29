@@ -79,10 +79,6 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            # The agent home of the work that runs in this pod (the assistant,
-            # optio.assistant.placement): run homes, setup files, harness config.
-            - name: agent-home
-              mountPath: /home/agent
             {{- if and .Values.configAsCode.enabled (or .Values.configAsCode.configMap .Values.configAsCode.files) }}
             - name: config-manifests
               mountPath: {{ .Values.configAsCode.mountPath | default "/etc/optio-config" }}
@@ -224,6 +220,10 @@ spec:
               value: "http://127.0.0.1:{{ .Values.api.port }}"
             - name: OPTIO_AUTH_DISABLED
               value: {{ .Values.auth.disabled | quote }}
+            {{- range $name, $value := (include "optio.featureSettings" . | fromYaml) }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
             {{- if .Values.publicUrl }}
             - name: PUBLIC_URL
               value: {{ .Values.publicUrl | quote }}
@@ -239,8 +239,6 @@ spec:
             {{- toYaml .Values.web.resources | nindent 12 }}
       volumes:
         - name: tmp
-          emptyDir: {}
-        - name: agent-home
           emptyDir: {}
         - name: web-tmp
           emptyDir: {}

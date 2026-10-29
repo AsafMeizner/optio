@@ -1,12 +1,9 @@
 {{- if and .Values.metrics.enabled .Values.metrics.networkPolicy.enabled }}
 {{- $mp := .Values.metrics.networkPolicy }}
-# who may read the API's Prometheus endpoint (docs/prometheus.md
-# "Monitoring"). It has no sign-in and covers every workspace (team names,
-# spend, ticket hosts, repository URLs), so only Prometheus's namespace
-# (metrics.networkPolicy) and this release's `helm test` pod reach
-# metrics.port. Agent pods (repo, Job and persistent agents' pods alike,
-# whatever networkPolicy.agentEgress says) never do. The API's and the web
-# UI's own ports stay open to every source, as they are without this policy.
+# Metrics have no sign-in and include repository URLs and activity counts.
+# Only the configured monitoring audience and this release's helm-test pod
+# may reach metrics.port. This ingress policy applies to the entire API pod;
+# the API and web ports remain open to every source.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

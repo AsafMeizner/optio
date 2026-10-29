@@ -1,3 +1,4 @@
+import { actorOf, canChange } from "../services/ownership.js";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -49,12 +50,15 @@ export async function bulkRoutes(rawApp: FastifyInstance) {
       const conditions = [eq(tasks.state, "failed")];
       if (workspaceId) conditions.push(eq(tasks.workspaceId, workspaceId));
       const failedTasks = await db
-        .select({ id: tasks.id })
+        .select({ id: tasks.id, ownerUserId: tasks.ownerUserId })
         .from(tasks)
         .where(and(...conditions));
 
+      const permitted = failedTasks.filter((task) =>
+        canChange(task.ownerUserId, actorOf(req), true),
+      );
       let retried = 0;
-      for (const task of failedTasks) {
+      for (const task of permitted) {
         try {
           await taskService.transitionTask(task.id, TaskState.QUEUED, "bulk_retry");
           await taskQueue.add(
@@ -75,10 +79,10 @@ export async function bulkRoutes(rawApp: FastifyInstance) {
         userId: req.user?.id,
         action: "task.bulk_retry",
         params: {},
-        result: { retried, total: failedTasks.length },
+        result: { retried, total: permitted.length },
         success: true,
       }).catch(() => {});
-      reply.send({ retried, total: failedTasks.length });
+      reply.send({ retried, total: permitted.length });
     },
   );
 
@@ -107,16 +111,18 @@ export async function bulkRoutes(rawApp: FastifyInstance) {
         queuedConds.push(eq(tasks.workspaceId, workspaceId));
       }
       const activeTasks = await db
-        .select({ id: tasks.id, state: tasks.state })
+        .select({ id: tasks.id, state: tasks.state, ownerUserId: tasks.ownerUserId })
         .from(tasks)
         .where(and(...runningConds));
 
       const queuedTasks = await db
-        .select({ id: tasks.id, state: tasks.state })
+        .select({ id: tasks.id, state: tasks.state, ownerUserId: tasks.ownerUserId })
         .from(tasks)
         .where(and(...queuedConds));
 
-      const allActive = [...activeTasks, ...queuedTasks];
+      const allActive = [...activeTasks, ...queuedTasks].filter((task) =>
+        canChange(task.ownerUserId, actorOf(req), true),
+      );
       let cancelled = 0;
       for (const task of allActive) {
         try {

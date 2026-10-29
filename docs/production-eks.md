@@ -110,6 +110,26 @@ Back them up if unpushed work matters. Inventory and remove retained claims only
 after confirming their work is no longer needed. Bare pods/pooled Jobs do not
 provide the same workspace persistence as repo StatefulSets.
 
+With `resourceQuota.enabled`, Kubernetes rejects any container that has no
+cpu/memory requests and limits. Most containers Optio creates set none unless
+the repo or Job configures them (repo, Job, agent and session pods, and the
+chart's own Postgres init and `helm test` pods), so the chart also renders a
+LimitRange (`resourceQuota.limitRange`, on by default) whose `defaultRequest`
+and `default` fill in the missing values. A few things to size for:
+
+- `default` is a hard cap per container, and a repo pod's one `main` container
+  hosts `maxAgentsPerPod` agents and their builds. The 2 CPU / 4Gi defaults are
+  a floor for small agents; raise them for heavier work.
+- Every defaulted agent pod counts `default` against `limits.cpu` /
+  `limits.memory` in `resourceQuota.hard`. With the production example (40 CPU /
+  80Gi of limits, minus the chart's own pods), that is roughly 18 agent pods,
+  well short of `pods: "50"`; raise the limits or lower `default` to match.
+- A repo or Job that sets a request above `default` must also set its own
+  limit: the LimitRange fills `default` in as the limit, and Kubernetes rejects
+  a container whose request exceeds its limit.
+- The defaults apply at admission, so pods already running keep their old
+  (unlimited) resources until Optio recreates them.
+
 The API itself needs no volume. Marketplace skills are synced into PostgreSQL
 (`installed_skill_files`) and runs read them from there, so the chart no longer
 has the former `installedSkillsCache` ReadWriteOnce PVC (a value left in an
@@ -126,9 +146,24 @@ should use scoped Connections or a separately isolated deployment. Restrict node
 instance metadata access and node roles accordingly.
 
 Use a CNI that enforces NetworkPolicy; simply installing YAML does not enforce
-network isolation. Review egress requirements for git providers, model APIs,
-connections, DNS and the internal credential endpoint. Apply least-privilege
-network and IAM policies for your environment. Containers share a kernel: pods
+network isolation. The chart's optional policy selects every Optio-created agent
+pod. It allows CoreDNS in `kube-system`, the Optio API port, and public HTTP(S),
+excluding private, loopback, link-local/metadata and multicast ranges. Setting
+`networkPolicy.deniedEgressCidrs` adds exclusions for deployment-specific ranges;
+an empty list does not remove the built-in restrictions. Repo-level `restricted`
+policies allow public HTTPS, CoreDNS and the API port and must be installed before
+the pod starts; a policy-creation error fails provisioning. The chart's
+`networkPolicy.enabled=false` local default does not disable an explicitly
+restricted repo's policy requirement. Docker Desktop does not enforce these rules.
+
+Review egress requirements for git providers, model APIs, Connections, DNS and
+the internal credential endpoint. Private services or nonstandard DNS require
+explicit destination/port rules under `networkPolicy.extraEgress`; those grants
+apply to every agent pod. Do not grant PostgreSQL, Redis or instance metadata.
+Review custom pod/service CIDRs and CNI behavior before production traffic.
+Standard NetworkPolicy is IP/port based and does not enforce a provider-domain
+allowlist. Apply least-privilege network and IAM policies for your environment.
+Containers share a kernel: pods
 are useful process/filesystem boundaries, not a VM boundary against hostile tenants.
 For mutually untrusted tenants, use separate clusters/accounts or an independently
 validated sandbox runtime. See [Kubernetes multi-tenancy](https://kubernetes.io/docs/concepts/security/multi-tenancy/)
@@ -140,6 +175,28 @@ Pin matching API, web and agent image versions. Back up PostgreSQL, encryption
 keys and needed PVC data before the upgrade. Deploy the new agent images too:
 recoverable pod terminals require `tmux`.
 
+The agent images pin Claude Code 2.1.310 to include the worktree, plugin revision
+and edit/write race security fixes. After building an agent image, run
+`node scripts/smoke-claude-exec.mjs <image>` on each deployment CPU architecture
+and kernel family. This network-disabled test exercises `docker exec`, a native
+Bash tool and streamed completion against a local fake provider. `claude --version`
+alone does not exercise the Bun exec/GC crash that prompted the old vulnerable
+2.1.112 pin. Updating an image tag does not replace existing agent pods; drain or
+recreate those pods after preserving active work.
+
+The base image also pins npm and Copilot to audited releases. Experimental
+OpenClaw remains on its Node 22 compatible release; `images/openclaw/package.json`
+and its lockfile override its MCP SDK, Undici and Zod dependencies to fixed
+versions. Audit that separate dependency tree with
+`npm audit --prefix images/openclaw --omit=dev` when updating the agent image.
+Pi also has a separate lockfile at `images/pi`, with its Undici dependency fixed;
+`npm audit --prefix images/pi --omit=dev` checks that tree. The `PI_VERSION` build
+argument still permits explicit overrides, which need their own validation.
+The image uses npm 12, which blocks unapproved dependency install hooks. Repos
+whose setup needs native-module or other install hooks must declare their
+reviewed `allowScripts` policy; the image explicitly approves only the harness
+packages needed during its own build.
+
 Old pods are deliberately **not relabeled** as isolated: their files may contain
 credentials from several owners. New work uses new isolated pools. Existing
 sessions retain their history and expose a legacy-pod recovery notice; a new
@@ -147,6 +204,13 @@ isolated session is required to create a collaboration link. Preserve/commit any
 uncommitted work before ending old sessions. The old deployment-wide Git helper
 key is rejected by default. `OPTIO_ALLOW_LEGACY_GIT_CREDENTIALS=1` re-enables the old
 cross-owner credential capability and should not be used in a secure deployment.
+A pod's helper key is also bound to its one repo: with a GitHub App, the
+installation token it gets is limited to that repository (`repositories: [name]`),
+never the whole installation, and a pod on a non-GitHub repo gets none. Helper keys
+minted before that binding (no repo in the scope) are refused by the same default;
+new runs in an existing repo pod sign in with a fresh key, but a pod's own clone
+credential and older interactive sessions need the pod recreated. Pods with no repo
+keep an installation-wide token.
 Rotate credentials that may already have been exposed; isolation cannot retract
 secrets previously read by a co-resident process.
 

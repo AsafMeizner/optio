@@ -48,7 +48,7 @@
         {
           "expr": "max(optio_active_tasks{namespace=\"$namespace\",job=\"$job\"})",
           "refId": "A",
-          "legendFormat": "{{state}} {{state}} {{success}}"
+          "legendFormat": "Active tasks"
         }
       ]
     },
@@ -70,7 +70,7 @@
         {
           "expr": "max by (state) (optio_queue_depth{namespace=\"$namespace\",job=\"$job\"})",
           "refId": "A",
-          "legendFormat": "{{state}} {{state}} {{success}}"
+          "legendFormat": "{{state}}"
         }
       ]
     },
@@ -92,7 +92,7 @@
         {
           "expr": "max by (state) (optio_pod_count{namespace=\"$namespace\",job=\"$job\"})",
           "refId": "A",
-          "legendFormat": "{{state}} {{state}} {{success}}"
+          "legendFormat": "{{state}}"
         }
       ]
     },
@@ -114,7 +114,7 @@
         {
           "expr": "sum by (state) (rate(optio_tasks_total{namespace=\"$namespace\",job=\"$job\"}[5m]))",
           "refId": "A",
-          "legendFormat": "{{state}} {{state}} {{success}}"
+          "legendFormat": "{{state}}"
         }
       ]
     },
@@ -136,7 +136,7 @@
         {
           "expr": "histogram_quantile(0.95, sum by (le) (rate(optio_task_duration_seconds_bucket{namespace=\"$namespace\",job=\"$job\"}[5m])))",
           "refId": "A",
-          "legendFormat": "{{state}} {{state}} {{success}}"
+          "legendFormat": "p95 seconds"
         }
       ]
     },
@@ -158,7 +158,7 @@
         {
           "expr": "sum by (success) (rate(optio_webhook_deliveries_total{namespace=\"$namespace\",job=\"$job\"}[5m]))",
           "refId": "A",
-          "legendFormat": "{{state}} {{state}} {{success}}"
+          "legendFormat": "{{success}}"
         }
       ]
     }

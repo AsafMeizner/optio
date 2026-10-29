@@ -28,7 +28,9 @@ function render(...settings: string[]) {
   });
 }
 
-describe("Prometheus chart", () => {
+const hasHelm = spawnSync("helm", ["version", "--short"]).status === 0;
+
+describe.skipIf(!hasHelm)("Prometheus chart", () => {
   it("renders no metrics listener or monitoring resources by default", () => {
     const docs = render();
     expect(

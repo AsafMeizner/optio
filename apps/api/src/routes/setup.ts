@@ -9,6 +9,8 @@ import { isGitHubAppConfigured, getInstallationToken } from "../services/github-
 import { isAuthDisabled } from "../services/oauth/index.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
 import { guardedFetch } from "../utils/outbound-url.js";
+import { featureAllows } from "@optio/shared";
+import { requireDeploymentAdmin } from "../plugins/auth.js";
 
 const tokenSchema = z.object({ token: z.string().min(1) }).describe("Body with a required token");
 const gitlabTokenSchema = z
@@ -77,9 +79,9 @@ const SETUP_STATUS_RATE_LIMIT = {
   timeWindow: "1 minute",
 };
 
-const requireAdminWhenAuthenticated = async (req: FastifyRequest, reply: FastifyReply) => {
+const requireSetupAdmin = async (req: FastifyRequest, reply: FastifyReply) => {
   if (isAuthDisabled()) return;
-  if (!req.user) return;
+  if (!req.user) return reply.status(401).send({ error: "Authentication required" });
   if (req.user.workspaceRole !== "admin") {
     return reply.status(403).send({
       error: "Admin role required for setup operations",
@@ -122,10 +124,11 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       // set of stored secret names avoids that read-after-write asymmetry.
       const hasAnthropicKey = secretNames.includes("ANTHROPIC_API_KEY");
       const hasOpenAIKey = secretNames.includes("OPENAI_API_KEY");
+      // Without GitHub offered (OPTIO_GIT_PLATFORMS) only GITLAB_TOKEN counts.
       const hasGitToken =
-        secretNames.includes("GITHUB_TOKEN") ||
-        isGitHubAppConfigured() ||
-        secretNames.includes("GITLAB_TOKEN");
+        (featureAllows("gitPlatforms", "github") &&
+          (secretNames.includes("GITHUB_TOKEN") || isGitHubAppConfigured())) ||
+        (featureAllows("gitPlatforms", "gitlab") && secretNames.includes("GITLAB_TOKEN"));
 
       const usingSubscription = isSubscriptionAvailable();
       const hasOauthToken = secretNames.includes("CLAUDE_CODE_OAUTH_TOKEN");
@@ -199,7 +202,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/validate/github-token",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "validateGitHubToken",
         summary: "Validate a GitHub personal access token",
@@ -236,7 +239,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/validate/gitlab-token",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "validateGitLabToken",
         summary: "Validate a GitLab token",
@@ -254,6 +257,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
         // outbound URL (utils/outbound-url.ts).
         const res = await guardedFetch(`https://${gitlabHost}/api/v4/user`, {
           headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" },
+          redirect: "error",
         });
         if (!res.ok) {
           return reply.send({ valid: false, error: `GitLab returned ${res.status}` });
@@ -274,7 +278,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/validate/aws-credentials",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "validateAwsCredentials",
         summary: "Validate AWS credentials for CodeCommit",
@@ -319,7 +323,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/repos/codecommit",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "listSetupCodeCommitRepos",
         summary: "List CodeCommit repositories for setup",
@@ -380,7 +384,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/validate/anthropic-key",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "validateAnthropicKey",
         summary: "Validate an Anthropic API key",
@@ -417,7 +421,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/validate/copilot-token",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "validateCopilotToken",
         summary: "Validate a GitHub Copilot token",
@@ -461,7 +465,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/validate/openai-key",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "validateOpenAIKey",
         summary: "Validate an OpenAI API key",
@@ -495,7 +499,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/validate/gemini-key",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "validateGeminiKey",
         summary: "Validate a Google Gemini API key",
@@ -529,7 +533,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/repos",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "listSetupGitHubRepos",
         summary: "List GitHub repos available for setup",
@@ -544,6 +548,10 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       const token = req.body.token;
+      if (!token) {
+        await requireDeploymentAdmin(req, reply);
+        if (reply.sent) return;
+      }
 
       let effectiveToken = token || null;
       if (!effectiveToken && isGitHubAppConfigured()) {
@@ -605,7 +613,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/repos/gitlab",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "listSetupGitLabRepos",
         summary: "List GitLab projects available for setup",
@@ -619,9 +627,9 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       const { token, host } = req.body;
       const gitlabHost = host ?? "gitlab.com";
       try {
-        const res = await fetch(
+        const res = await guardedFetch(
           `https://${gitlabHost}/api/v4/projects?membership=true&order_by=last_activity_at&sort=desc&per_page=20`,
-          { headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" } },
+          { headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" }, redirect: "error" },
         );
         if (!res.ok) {
           return reply.send({ repos: [], error: `GitLab returned ${res.status}` });
@@ -660,7 +668,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     "/api/setup/validate/repo",
     {
       config: { rateLimit: SETUP_POST_RATE_LIMIT },
-      preHandler: [requireAdminWhenAuthenticated],
+      preHandler: [requireSetupAdmin],
       schema: {
         operationId: "validateRepoAccess",
         summary: "Validate access to a specific repo",
@@ -674,6 +682,10 @@ export async function setupRoutes(rawApp: FastifyInstance) {
     },
     async (req, reply) => {
       const { repoUrl, token } = req.body;
+      if (!token) {
+        await requireDeploymentAdmin(req, reply);
+        if (reply.sent) return;
+      }
 
       try {
         const parsed = parseRepoUrl(repoUrl);

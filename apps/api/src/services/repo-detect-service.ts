@@ -12,7 +12,7 @@ interface DetectedConfig {
  * Detect the appropriate image preset and test command by checking
  * the git platform API for files in the repo root.
  */
-export async function detectRepoConfig(repoUrl: string, token: string): Promise<DetectedConfig> {
+export async function detectRepoConfig(repoUrl: string): Promise<DetectedConfig> {
   const ri = parseRepoUrl(repoUrl);
   if (!ri) return { imagePreset: "base", languages: [] };
 

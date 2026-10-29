@@ -31,6 +31,8 @@ import {
   insertTaskConfig,
   insertWorkflow,
   insertWorkflowTrigger,
+  insertRepo,
+  insertWorkspace,
 } from "../test-utils/integration/fixtures.js";
 
 // A cron that fires once a day, anchored ~12h from NOW — a fixed time of day
@@ -528,6 +530,45 @@ describe("ticket triggers on Jobs (trigger-dispatch.fireTicketTriggers)", () => 
     expect(after.lastFiredAt).not.toBeNull();
     // The run the worker picks up is removed so it can't run in a later test.
     await db.delete(workflowRuns).where(eq(workflowRuns.id, run.id));
+  });
+
+  it("keeps a ticket for a workspace's repo out of other workspaces' work", async () => {
+    const { fireTicketTriggers } = await import("./trigger-dispatch.js");
+    const own = await insertWorkspace();
+    const other = await insertWorkspace();
+    const repo = await insertRepo({ workspaceId: own.id });
+    const label = `scoped-${Date.now().toString(36)}`;
+    const ownJob = await insertWorkflow({ workspaceId: own.id });
+    const ownTrigger = await insertWorkflowTrigger(ownJob.id, {
+      workflowId: ownJob.id,
+      targetType: "job",
+      type: "ticket",
+      config: { source: "github", labels: [label] },
+    });
+    const otherJob = await insertWorkflow({ workspaceId: other.id });
+    const otherTrigger = await insertWorkflowTrigger(otherJob.id, {
+      workflowId: otherJob.id,
+      targetType: "job",
+      type: "ticket",
+      config: { source: "github", labels: [label] },
+    });
+
+    const fired = await fireTicketTriggers(
+      {
+        source: "github",
+        externalId: "it-org/private#1",
+        title: "Private incident",
+        body: "Confidential details",
+        labels: [label],
+      },
+      { repoUrl: repo.repoUrl },
+    );
+    const ids = fired.map((f) => f.triggerId);
+    expect(ids).toContain(ownTrigger.id);
+    expect(ids).not.toContain(otherTrigger.id);
+    for (const f of fired) {
+      if (f.kind === "workflow_run") await db.delete(workflowRuns).where(eq(workflowRuns.id, f.id));
+    }
   });
 
   it("does not fire when none of the trigger's labels are on the ticket", async () => {

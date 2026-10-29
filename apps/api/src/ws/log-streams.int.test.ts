@@ -16,7 +16,7 @@ import { prReviewRuns, prReviews, taskLogs } from "../db/schema.js";
 import { appendTaskLog } from "../services/task-service.js";
 import { appendRunLog } from "../workers/pr-review-worker.js";
 import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
-import { insertTask, insertWorkspace } from "../test-utils/integration/fixtures.js";
+import { insertTask } from "../test-utils/integration/fixtures.js";
 import { listenWsApp, WsTestClient, type WsFrame } from "../test-utils/integration/ws-client.js";
 import { taskRoutes } from "../routes/tasks.js";
 import { logStreamWs } from "./log-stream.js";
@@ -56,8 +56,7 @@ async function waitSubscribed(client: WsTestClient, channel: string, probe: WsFr
 
 describe("/ws/logs/:taskId", () => {
   it("sends each line live as GET /api/tasks/:id/logs returns it", async () => {
-    const ws = await insertWorkspace();
-    const task = await insertTask({ workspaceId: ws.id, state: "running" });
+    const task = await insertTask({ workspaceId: null, state: "running" });
     await appendTaskLog(task.id, "stored before connect", "stdout", "text");
 
     const client = new WsTestClient(`${wsBase}/ws/logs/${task.id}`);
@@ -76,7 +75,7 @@ describe("/ws/logs/:taskId", () => {
     await client.close();
 
     const rest = await buildRouteTestApp(taskRoutes, {
-      user: { id: "u-it", workspaceId: ws.id, workspaceRole: "admin" },
+      user: { id: "u-it", workspaceId: null, workspaceRole: "admin" },
     });
     const res = await rest.inject({ method: "GET", url: `/api/tasks/${task.id}/logs` });
     expect(res.statusCode, res.body).toBe(200);

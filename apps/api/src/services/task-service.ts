@@ -1,7 +1,7 @@
-import { eq, desc, and, or, ilike, gte, lte, sql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, gte, lte, isNull, sql } from "drizzle-orm";
 import { ensurePrimaryPrRow, prNumberFromUrl } from "./task-pr-service.js";
 import { db } from "../db/client.js";
-import { tasks, taskEvents, taskLogs, users, repos } from "../db/schema.js";
+import { tasks, taskEvents, taskLogs, users, repos, workRuns } from "../db/schema.js";
 import * as runLogService from "./run-log-service.js";
 import {
   TaskState,
@@ -223,19 +223,6 @@ export async function getTaskByPrUrl(prUrl: string) {
   return task ?? null;
 }
 
-/**
- * No-op shim kept for call-site back-compat. External PR reviews moved off
- * the `tasks` table into the `pr_reviews` primitive, so there are no
- * pr_review tasks rows to hydrate anymore. The function returns rows
- * unchanged and exists only so routes that still call it keep typechecking.
- * Safe to delete in a follow-up once callers are migrated.
- */
-export async function hydratePrReviewPrUrls<T extends typeof tasks.$inferSelect>(
-  rows: T[],
-): Promise<T[]> {
-  return rows;
-}
-
 export async function listTasks(opts?: {
   state?: string;
   limit?: number;
@@ -381,8 +368,7 @@ export async function searchTasks(opts: SearchTasksOpts) {
     nextCursor = Buffer.from(`${last.createdAt.toISOString()}|${last.id}`).toString("base64");
   }
 
-  const hydrated = await hydratePrReviewPrUrls(items);
-  return { tasks: hydrated, nextCursor, hasMore };
+  return { tasks: items, nextCursor, hasMore };
 }
 
 /**
@@ -1112,11 +1098,22 @@ export async function getTaskStats(workspaceId?: string | null) {
   return { total, queued, running, ci, review, needsAttention, failed, completed };
 }
 
-/** Fetch the most recent state-change events across all tasks. */
-export async function getRecentEvents(opts?: { limit?: number }) {
-  return db
-    .select()
+/** Catch-up uses current tenant and owner visibility, including auth-disabled dev. */
+export async function getRecentEvents(opts: { limit?: number; actor: Actor }) {
+  const { actor } = opts;
+  const rows = await db
+    .select({ event: taskEvents })
     .from(taskEvents)
+    .innerJoin(workRuns, eq(workRuns.id, taskEvents.taskId))
+    .where(
+      and(
+        actor.workspaceId
+          ? eq(workRuns.workspaceId, actor.workspaceId)
+          : isNull(workRuns.workspaceId),
+        visibleOwner(workRuns.ownerUserId, actor),
+      ),
+    )
     .orderBy(desc(taskEvents.createdAt))
-    .limit(opts?.limit ?? 20);
+    .limit(opts.limit ?? 20);
+  return rows.map(({ event }) => event);
 }

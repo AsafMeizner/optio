@@ -1,11 +1,20 @@
 {{- if .Values.networkPolicy.enabled }}
-# Default-deny NetworkPolicy for agent (repo) pods.
+# Default-deny NetworkPolicy for agent pods: every pod the API starts
+# (repo pods, Job pods, persistent-agent pods, assistant agent pods) carries
+# `managed-by: optio`; the chart's own pods do not.
 # Restricts cluster-internal traffic so a compromised agent pod cannot
 # reach PostgreSQL, Redis, or other services directly. Only the Optio
 # API service is reachable on the cluster network.
 #
 # External egress (GitHub, npm registries, AI providers) is allowed on
-# port 443. DNS resolution is allowed on port 53.
+# ports 443 and 80, excluding private, loopback, metadata and multicast
+# ranges plus deployment-specific deniedEgressCidrs. DNS is limited to CoreDNS.
+{{- $denied := .Values.networkPolicy.deniedEgressCidrs | default list }}
+{{- $v4 := list "0.0.0.0/8" "10.0.0.0/8" "100.64.0.0/10" "127.0.0.0/8" "169.254.0.0/16" "172.16.0.0/12" "192.168.0.0/16" "224.0.0.0/4" "240.0.0.0/4" }}
+{{- $v6 := list "::/128" "::1/128" "::ffff:0:0/96" "64:ff9b::/96" "100::/64" "fc00::/7" "fe80::/10" "fec0::/10" "ff00::/8" }}
+{{- range $denied }}
+{{- if contains ":" . }}{{ $v6 = append $v6 . }}{{ else }}{{ $v4 = append $v4 . }}{{ end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -17,17 +26,24 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      optio.type: repo-pod
+      managed-by: optio
   policyTypes:
     - Ingress
     - Egress
-  # Deny all ingress — repo pods do not serve traffic.
+  # Deny all ingress — agent pods do not serve traffic.
   # The API communicates with them via kubectl exec (through the K8s API
   # server / kubelet), which is not subject to NetworkPolicy.
   ingress: []
   egress:
     # Allow DNS resolution (kube-dns / CoreDNS)
-    - ports:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
@@ -41,11 +57,27 @@ spec:
         - protocol: TCP
           port: {{ .Values.api.port | default 4000 }}
     # Allow HTTPS to external services (GitHub, npm, AI providers, etc.)
+    # and HTTP (some registries, mirrors) — but not the metadata service.
     - ports:
         - protocol: TCP
           port: 443
-    # Allow HTTP to external services (some registries, mirrors)
-    - ports:
         - protocol: TCP
           port: 80
+      to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- if $v4 }}
+            except:
+              {{- toYaml (uniq $v4) | nindent 14 }}
+            {{- end }}
+        - ipBlock:
+            cidr: ::/0
+            {{- if $v6 }}
+            except:
+              {{- toYaml (uniq $v6) | nindent 14 }}
+            {{- end }}
+    # Explicit administrator-authorized private Connections / node-local DNS.
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}
