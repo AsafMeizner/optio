@@ -245,6 +245,8 @@ object WorkFeed {
         val blueprintId: String? = null,
         val workflowRunId: String? = null,
         val taskId: String? = null,
+        /** Set once a resume continues this session: the resume takes its row. */
+        val resumedByTerminalId: String? = null,
         val lastActivityAt: String? = null,
         val updatedAt: String? = null,
         val createdAt: String? = null,
@@ -646,6 +648,8 @@ object WorkFeed {
             // A local Task run already has its `tasks` row above; a local Job run (workflow_runs)
             // and hand-opened terminals only exist here.
             if (!t.taskId.isNullOrEmpty()) continue
+            // A session that was resumed hands its row to the resume (the same session, continued).
+            if (!t.resumedByTerminalId.isNullOrEmpty()) continue
             val id = t.id.orEmpty()
             val (status, statusLabel) = terminalStatus(t)
             val isAgent = t.specKind == "agent"
