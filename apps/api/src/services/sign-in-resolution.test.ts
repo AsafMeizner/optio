@@ -39,6 +39,15 @@ const envKeys = [
   "OIDC_ISSUER_URL",
   "OIDC_CLIENT_ID",
   "OIDC_CLIENT_SECRET",
+  "OIDC_SCOPES",
+  "OIDC_GROUPS_CLAIM",
+  "OIDC_EMAIL_CLAIM",
+  "OIDC_NAME_CLAIM",
+  "OIDC_USERNAME_CLAIM",
+  "OIDC_TRUST_EMAIL",
+  "OIDC_USE_PKCE",
+  "OIDC_CA_PEM",
+  "OIDC_LINK_BY_EMAIL",
 ];
 beforeEach(() => {
   fixtures.rows.clear();
@@ -90,6 +99,22 @@ describe("sign-in provider configuration precedence", () => {
         clientSecret: "client-secret",
         allowedDomains: [],
         source: "environment",
+        ...(provider === "oidc"
+          ? {
+              settings: {
+                issuerUrl: "https://identity.acme.test",
+                scopes: "openid email profile",
+                groupsClaim: undefined,
+                emailClaim: undefined,
+                nameClaim: undefined,
+                usernameClaim: undefined,
+                trustEmail: false,
+                usePkce: false,
+                caPem: undefined,
+                linkByEmail: false,
+              },
+            }
+          : {}),
       });
       vi.stubEnv(secret, undefined);
       expect(await resolveProviderConfig(provider)).toMatchObject({

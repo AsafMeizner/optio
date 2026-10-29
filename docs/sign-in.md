@@ -124,3 +124,53 @@ any agent credentials have been stored. Complete the Sign-in step first.
 list), `services/sign-in-config.int.test.ts` (stored config over env, secret
 sealed, bootstrap mode, the shared token, the first sign-in's bootstrap, the
 deployment-admin rules).
+
+## OpenID Connect (`oidc`)
+
+One OIDC client slot supports these presets; explicit scopes and claim names
+always override a preset. The issuer placeholders are shown in the form.
+
+| Preset                 | Issuer template                                                   | Scopes / groups claim                                                                         |
+| ---------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| ADFS                   | `https://adfs.example.com/adfs`                                   | `openid profile email allatclaims`; `groups` from an issuance rule                            |
+| Auth0                  | `https://{tenant}.{region}.auth0.com/`                            | `openid profile email`; a post-login Action supplies `groups` (or a namespaced claim)         |
+| Authelia               | `https://auth.example.com`                                        | `openid profile email groups`; `groups`                                                       |
+| Authentik              | `https://authentik.example.com/application/o/{application-slug}/` | `openid profile email`; `groups`                                                              |
+| Generic OpenID Connect | `https://sso.example.com`                                         | `openid profile email`; `groups`                                                              |
+| Keycloak               | `https://keycloak.example.com/realms/{realm}`                     | `openid profile email`; `groups` from a Group Membership mapper                               |
+| Microsoft Entra ID     | `https://login.microsoftonline.com/{tenant-id}/v2.0`              | `openid profile email`; `groups` enabled in Token configuration (usually group object IDs)    |
+| Okta                   | `https://{your-org}.okta.com/oauth2/default`                      | `openid profile email groups`; configure a groups claim on the authorization server           |
+| Zitadel                | `https://{instance}.zitadel.cloud`                                | `openid profile email urn:zitadel:iam:org:project:roles`; `urn:zitadel:iam:org:project:roles` |
+
+Set the issuer URL, client ID and secret, and register
+`<origin>/api/auth/oidc/callback`. Default account claims are `email`, `name`
+and `preferred_username`. A dotted groups path such as `realm_access.roles`
+works. Discovery is cached for 24 hours; saving settings invalidates it.
+Test displays discovered endpoints and advertised claims/scopes before saving.
+
+App-configured clients use PKCE S256 and a nonce by default. ID tokens are
+verified against JWKS with issuer, audience and nonce checks; userinfo must
+identify the same subject. The private CA applies to discovery, JWKS, token
+and userinfo requests. Token authentication supports `client_secret_post`
+and `client_secret_basic`.
+
+Issuer and discovered endpoint URLs must use HTTPS. Non-production local
+development may use HTTP only on literal loopback hosts, which must also be
+explicitly permitted by `OPTIO_OUTBOUND_ALLOWED_HOSTS`. Every server-side IdP
+request uses the outbound URL policy and DNS-pinned transport; redirects are
+refused, including token exchanges. For private IdPs configure the outbound host
+allowlist and the IdP's private CA. Disabling TLS verification is rejected unless
+the deployment operator explicitly sets `OPTIO_IDP_ALLOW_INSECURE_TLS=true`;
+stored settings alone cannot enable it. Prefer supplying the CA.
+
+Optional account linking requires both the new provider assertion and the
+existing target account's email to be verified. An unverified existing address
+cannot be used to claim that account or inherit its administrator role.
+
+Environment clients retain their existing flow: `OIDC_ISSUER_URL`,
+`OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_DISPLAY_NAME`, `OIDC_SCOPES`,
+`OIDC_GROUPS_CLAIM`, `OIDC_EMAIL_CLAIM`, `OIDC_NAME_CLAIM`,
+`OIDC_USERNAME_CLAIM`, `OIDC_CA_PEM`; PKCE is enabled with `OIDC_USE_PKCE=true`.
+Move the client into the app to use nonce enforcement. `trustEmail` and
+`OIDC_TRUST_EMAIL` default to **false**. Opting in treats an unverified address
+as verified for domain rules, but never authorizes cross-provider linking.

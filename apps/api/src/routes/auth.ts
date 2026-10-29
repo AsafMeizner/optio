@@ -1,3 +1,4 @@
+import type { OAuthFlowState } from "../services/oauth/provider.js";
 import { createHash, randomBytes } from "node:crypto";
 import { joinWorkspacesByEmailDomain } from "../services/workspace-service.js";
 import type { FastifyInstance } from "fastify";
@@ -24,6 +25,7 @@ const isSignInProvider = (name: string): name is SignInProviderName =>
   (SIGN_IN_PROVIDERS as readonly string[]).includes(name);
 import {
   createSession,
+  linkAccountsByEmailEnabled,
   createWsToken,
   revokeSession,
   validateSession,
@@ -168,22 +170,23 @@ async function addOAuthState(
   state: string,
   provider: string,
   browserChallenge?: string,
+  flow?: OAuthFlowState,
 ): Promise<void> {
   const redis = getRedisClient();
   await redis.setex(
     `${OAUTH_STATE_PREFIX}${state}`,
     OAUTH_STATE_TTL_SECS,
-    JSON.stringify({ provider, browserChallenge }),
+    JSON.stringify({ provider, browserChallenge, flow }),
   );
 }
 
 async function consumeOAuthState(
   state: string,
-): Promise<{ provider: string; browserChallenge?: string } | null> {
+): Promise<{ provider: string; browserChallenge?: string; flow?: OAuthFlowState } | null> {
   const redis = getRedisClient();
   const raw = await redis.getdel(`${OAUTH_STATE_PREFIX}${state}`);
   if (!raw) return null;
-  return JSON.parse(raw) as { provider: string; browserChallenge?: string };
+  return JSON.parse(raw) as { provider: string; browserChallenge?: string; flow?: OAuthFlowState };
 }
 
 async function addAuthCode(code: string, token: string, browserChallenge: string): Promise<void> {
@@ -478,10 +481,11 @@ export async function authRoutes(rawApp: FastifyInstance) {
       if (!browserChallenge) {
         return reply.status(400).send({ error: "Start sign-in from the web app" });
       }
-      await addOAuthState(state, providerName, browserChallenge);
+      const flow = provider.beginFlow?.();
+      await addOAuthState(state, providerName, browserChallenge, flow);
 
       if (provider.prepare) await provider.prepare();
-      const url = provider.authorizeUrl(state);
+      const url = provider.authorizeUrl(state, flow);
       reply.redirect(url);
     },
   );
@@ -534,8 +538,8 @@ export async function authRoutes(rawApp: FastifyInstance) {
       }
 
       try {
-        const tokens = await provider.exchangeCode(code);
-        const profile = await provider.fetchUser(tokens.accessToken);
+        const tokens = await provider.exchangeCode(code, storedState.flow);
+        const profile = await provider.fetchUser(tokens.accessToken, tokens);
         // Who may sign in with this provider (Settings → Sign-in → allowed
         // domains): refused before any account is created.
         const config = isSignInProvider(providerName)
@@ -549,7 +553,9 @@ export async function authRoutes(rawApp: FastifyInstance) {
           );
           return reply.redirect(`${WEB_URL}/login?error=${decision}`);
         }
-        const session = await createSession(providerName, profile);
+        const session = await createSession(providerName, profile, {
+          linkByEmail: config?.settings?.linkByEmail === true || linkAccountsByEmailEnabled(),
+        });
         // Workspaces that let people with this (verified) email domain in.
         await joinWorkspacesByEmailDomain(
           session.user.id,
@@ -562,7 +568,7 @@ export async function authRoutes(rawApp: FastifyInstance) {
         await completeSignIn({
           id: session.user.id,
           email: profile.email,
-          emailVerified: profile.emailVerified === true,
+          emailVerified: (profile.emailVerifiedByProvider ?? profile.emailVerified) === true,
           provider: providerName,
         }).catch((err) => app.log.warn({ err }, "sign-in completion step failed"));
 
@@ -856,10 +862,11 @@ export async function authRoutes(rawApp: FastifyInstance) {
 
       // Create the OAuth state that embeds the CLI state
       const oauthState = randomBytes(16).toString("hex") + "." + cliState;
-      await addOAuthState(oauthState, provider);
+      const flow = oauthProvider.beginFlow?.();
+      await addOAuthState(oauthState, provider, undefined, flow);
 
       if (oauthProvider.prepare) await oauthProvider.prepare();
-      const url = oauthProvider.authorizeUrl(oauthState);
+      const url = oauthProvider.authorizeUrl(oauthState, flow);
       reply.send({ url });
     },
   );

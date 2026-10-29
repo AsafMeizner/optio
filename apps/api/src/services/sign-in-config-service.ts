@@ -1,3 +1,7 @@
+import { envConfig } from "./sign-in-env.js";
+import type { SignInProviderTestResult } from "@optio/shared";
+import type { OidcSettings } from "@optio/shared";
+import { OidcSettingsSchema } from "../schemas/sign-in.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -32,7 +36,7 @@ import { ensureUserHasWorkspace, normalizeAutoJoinDomains } from "./workspace-se
 const isAuthDisabled = () => process.env.OPTIO_AUTH_DISABLED === "true";
 
 /** The providers whose config can be stored in the app. */
-export const CONFIGURABLE_PROVIDERS = ["google"] as const;
+export const CONFIGURABLE_PROVIDERS = ["google", "oidc"] as const;
 export type ConfigurableProvider = (typeof CONFIGURABLE_PROVIDERS)[number];
 
 export const SIGN_IN_PROVIDERS = ["google", "github", "gitlab", "oidc"] as const;
@@ -56,6 +60,7 @@ export interface ResolvedProviderConfig {
   clientSecret: string;
   allowedDomains: string[];
   source: "database" | "environment";
+  settings?: OidcSettings;
 }
 
 /** What the Sign-in page shows for one provider (never the secret). */
@@ -71,6 +76,7 @@ export interface SignInProviderView {
   allowedDomains: string[];
   /** The redirect URI to register with the provider. */
   callbackUrl: string;
+  settings?: OidcSettings;
   updatedAt: string | null;
 }
 
@@ -99,39 +105,6 @@ function openSecret(row: ConfigRow): string | null {
   );
 }
 
-function envConfig(
-  provider: SignInProviderName,
-): { clientId: string; clientSecret: string } | null {
-  const env = process.env;
-  switch (provider) {
-    case "google":
-      return env.GOOGLE_OAUTH_CLIENT_ID
-        ? {
-            clientId: env.GOOGLE_OAUTH_CLIENT_ID,
-            clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET ?? "",
-          }
-        : null;
-    case "github":
-      return env.GITHUB_OAUTH_CLIENT_ID || env.GITHUB_APP_CLIENT_ID
-        ? {
-            clientId: (env.GITHUB_OAUTH_CLIENT_ID ?? env.GITHUB_APP_CLIENT_ID)!,
-            clientSecret: env.GITHUB_OAUTH_CLIENT_SECRET ?? env.GITHUB_APP_CLIENT_SECRET ?? "",
-          }
-        : null;
-    case "gitlab":
-      return env.GITLAB_OAUTH_CLIENT_ID
-        ? {
-            clientId: env.GITLAB_OAUTH_CLIENT_ID,
-            clientSecret: env.GITLAB_OAUTH_CLIENT_SECRET ?? "",
-          }
-        : null;
-    case "oidc":
-      return env.OIDC_ISSUER_URL
-        ? { clientId: env.OIDC_CLIENT_ID ?? "", clientSecret: env.OIDC_CLIENT_SECRET ?? "" }
-        : null;
-  }
-}
-
 export async function getStoredConfig(provider: string): Promise<ConfigRow | null> {
   const [row] = await db
     .select()
@@ -155,6 +128,7 @@ export async function resolveProviderConfig(
       clientSecret: openSecret(stored) ?? "",
       allowedDomains: stored.allowedDomains ?? [],
       source: "database",
+      settings: stored.settings ?? undefined,
     };
   }
   const env = envConfig(provider);
@@ -179,6 +153,10 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
         fromDb || (stored && !env) ? !!stored!.encryptedClientSecret : !!env?.clientSecret,
       allowedDomains: stored?.allowedDomains ?? [],
       callbackUrl: getCallbackUrl(provider),
+      settings:
+        provider === "oidc"
+          ? ((fromDb || (stored && !env) ? stored?.settings : env?.settings) ?? undefined)
+          : undefined,
       updatedAt: stored?.updatedAt.toISOString() ?? null,
     });
   }
@@ -186,6 +164,7 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
 }
 
 export interface SaveSignInConfigInput {
+  settings?: OidcSettings;
   clientId: string;
   /** Replaces the stored secret; absent keeps it; required on first save. */
   clientSecret?: string | null;
@@ -225,8 +204,22 @@ export async function saveSignInConfig(
         };
       })()
     : {};
+  let settings: OidcSettings | null = null;
+  if (provider === "oidc") {
+    const candidate = input.settings ?? existing?.settings;
+    if (!candidate) throw new SignInConfigError("Settings are required");
+    const parsed = OidcSettingsSchema.safeParse(candidate);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new SignInConfigError(
+        (issue?.path.join(".") || "settings") + ": " + (issue?.message ?? "invalid"),
+      );
+    }
+    settings = parsed.data;
+  }
   const values = {
     clientId,
+    settings,
     allowedDomains: input.allowedDomains !== undefined ? domains : (existing?.allowedDomains ?? []),
     enabled: input.enabled ?? existing?.enabled ?? true,
     displayName:
@@ -243,12 +236,16 @@ export async function saveSignInConfig(
   } else {
     await db.insert(authProviderConfigs).values({ provider, ...values });
   }
+  const { resetOAuthProviders } = await import("./oauth/index.js");
+  resetOAuthProviders();
   logger.info({ provider, actorUserId, domains: values.allowedDomains }, "Sign-in provider saved");
   return (await listSignInProviders()).find((p) => p.provider === provider)!;
 }
 
 export async function deleteSignInConfig(provider: string): Promise<void> {
   await db.delete(authProviderConfigs).where(eq(authProviderConfigs.provider, provider));
+  const { resetOAuthProviders } = await import("./oauth/index.js");
+  resetOAuthProviders();
 }
 
 // ── Who may sign in ─────────────────────────────────────────────────────────
@@ -581,4 +578,45 @@ function slugOf(name: string, fallbackId: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return base || `org-${fallbackId.slice(0, 8)}`;
+}
+
+export async function testSignInProvider(
+  provider: string,
+  input: { settings?: OidcSettings },
+): Promise<SignInProviderTestResult> {
+  if (provider !== "oidc") throw new SignInConfigError("This provider has no connection test", 400);
+  const stored = await getStoredConfig(provider);
+  const parsed = OidcSettingsSchema.safeParse(
+    input.settings ?? stored?.settings ?? envConfig("oidc")?.settings,
+  );
+  if (!parsed.success)
+    return { ok: false, error: "Valid OIDC settings and issuer URL are required" };
+  const oidc = parsed.data;
+  const { discoverOidc, effectiveOidcSettings, describeFetchError } =
+    await import("./oauth/oidc.js");
+  try {
+    const doc = await discoverOidc(oidc);
+    const effective = effectiveOidcSettings(oidc);
+    const claims = doc.claims_supported ?? null;
+    return {
+      ok: true,
+      oidc: {
+        issuer: doc.issuer ?? effective.issuerUrl,
+        authorizationEndpoint: doc.authorization_endpoint,
+        tokenEndpoint: doc.token_endpoint,
+        userinfoEndpoint: doc.userinfo_endpoint ?? null,
+        jwksUri: doc.jwks_uri,
+        scopesSupported: doc.scopes_supported ?? [],
+        claimsSupported: claims ?? [],
+        groupsClaimAdvertised: claims
+          ? claims.includes(effective.groupsClaim.split(".")[0]!)
+          : null,
+        pkceSupported: doc.code_challenge_methods_supported
+          ? doc.code_challenge_methods_supported.includes("S256")
+          : null,
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: describeFetchError(err) };
+  }
 }

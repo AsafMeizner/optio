@@ -63,6 +63,8 @@ export * from "./usage/index.js";
 export * from "./controller-tools.js";
 
 export * from "./utils/session-work-links.js";
+
+export * from "./types/sign-in.js";
 export * from "./utils/body-pattern.js";
 
 export { changeRequestAbbrev, isMergeRequest } from "./utils/change-request.js";

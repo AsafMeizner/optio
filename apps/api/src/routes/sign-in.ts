@@ -1,3 +1,4 @@
+import { OidcSettingsSchema } from "../schemas/sign-in.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -16,6 +17,7 @@ import {
   recordBootstrapClaim,
   removeDeploymentAdmin,
   saveSignInConfig,
+  testSignInProvider,
   setupTokenUsable,
   verifySetupToken,
 } from "../services/sign-in-config-service.js";
@@ -43,6 +45,7 @@ import { eq } from "drizzle-orm";
 const SETUP_TOKEN_HEADER = "x-optio-setup-token";
 
 const saveSchema = z.object({
+  settings: OidcSettingsSchema.optional(),
   clientId: z.string().min(1),
   clientSecret: z.string().min(1).optional(),
   allowedDomains: z.array(z.string()).max(20).optional(),
@@ -160,6 +163,31 @@ export async function signInRoutes(rawApp: FastifyInstance) {
           success: true,
         }).catch(() => {});
         reply.send({ provider: view, bootstrap: await isBootstrapMode() });
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.post(
+    "/api/auth/sign-in/:provider/test",
+    {
+      preHandler: [requireDeploymentAdminOrToken],
+      schema: {
+        operationId: "testSignInProvider",
+        summary: "Try a provider's settings before saving them",
+        description:
+          "`oidc`: fetch the issuer's discovery document (through the given CA) and report its " +
+          "endpoints, scopes and claims. Nothing is stored.",
+        tags: ["Auth & Sessions"],
+        params: providerParams,
+        body: saveSchema.partial(),
+        response: { 200: z.unknown(), 403: ErrorResponseSchema, 404: ErrorResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      try {
+        reply.send(await testSignInProvider(req.params.provider, req.body));
       } catch (err) {
         return sendError(reply, err);
       }

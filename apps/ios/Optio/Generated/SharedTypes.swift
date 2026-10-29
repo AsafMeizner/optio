@@ -8506,6 +8506,185 @@ public struct SessionChatEvent: Codable, Hashable, Sendable {
     }
 }
 
+// MARK: - sign-in.ts
+
+public enum OidcPreset: String, Codable, Hashable, Sendable, CaseIterable {
+    case adfs = "adfs"
+    case auth0 = "auth0"
+    case authelia = "authelia"
+    case authentik = "authentik"
+    case entra = "entra"
+    case generic = "generic"
+    case keycloak = "keycloak"
+    case okta = "okta"
+    case zitadel = "zitadel"
+    /// Fallback for raw values this client does not know about yet.
+    case unknown = "__unknown__"
+
+    public static let allCases: [OidcPreset] = [.adfs, .auth0, .authelia, .authentik, .entra, .generic, .keycloak, .okta, .zitadel]
+
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = OidcPreset(rawValue: raw) ?? .unknown
+    }
+}
+
+public struct OidcSettings: Codable, Hashable, Sendable {
+    public enum TokenAuthMethod: String, Codable, Hashable, Sendable, CaseIterable {
+        case clientSecretPost = "client_secret_post"
+        case clientSecretBasic = "client_secret_basic"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [TokenAuthMethod] = [.clientSecretPost, .clientSecretBasic]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = TokenAuthMethod(rawValue: raw) ?? .unknown
+        }
+    }
+
+    /// Link only a unique, provider-verified email; disabled by default.
+    public let linkByEmail: Bool?
+    public let preset: OidcPreset?
+    /// The issuer: `<issuerUrl>/.well-known/openid-configuration` must exist.
+    public let issuerUrl: String
+    /// Space-separated; default "openid profile email" plus the preset's groups scope.
+    public let scopes: String?
+    /// The claim that carries the person's groups (default "groups").
+    public let groupsClaim: String?
+    /// Claims used for the account (defaults: email, name, preferred_username).
+    public let emailClaim: String?
+    public let nameClaim: String?
+    public let usernameClaim: String?
+    /// Treat the email as verified when the provider sends no `email_verified`
+    /// claim (default false). An explicit
+    /// `email_verified: false` is never overridden, and it never links an
+    /// account to another by email.
+    public let trustEmail: Bool?
+    /// PKCE (S256) on the authorization request (default true when set up in
+    /// the app; the environment's OIDC uses it with `OIDC_USE_PKCE=true`).
+    public let usePkce: Bool?
+    /// How the client secret is sent to the token endpoint (default post).
+    public let tokenAuthMethod: TokenAuthMethod?
+    /// PEM bundle of the CA that signed the provider's certificate, when it's a private one.
+    public let caPem: String?
+    /// Skip certificate verification (test labs only).
+    public let insecureSkipVerify: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+        case preset = "preset"
+        case issuerUrl = "issuerUrl"
+        case scopes = "scopes"
+        case groupsClaim = "groupsClaim"
+        case emailClaim = "emailClaim"
+        case nameClaim = "nameClaim"
+        case usernameClaim = "usernameClaim"
+        case trustEmail = "trustEmail"
+        case usePkce = "usePkce"
+        case tokenAuthMethod = "tokenAuthMethod"
+        case caPem = "caPem"
+        case insecureSkipVerify = "insecureSkipVerify"
+    }
+
+    public init(
+        linkByEmail: Bool? = nil,
+        preset: OidcPreset? = nil,
+        issuerUrl: String,
+        scopes: String? = nil,
+        groupsClaim: String? = nil,
+        emailClaim: String? = nil,
+        nameClaim: String? = nil,
+        usernameClaim: String? = nil,
+        trustEmail: Bool? = nil,
+        usePkce: Bool? = nil,
+        tokenAuthMethod: TokenAuthMethod? = nil,
+        caPem: String? = nil,
+        insecureSkipVerify: Bool? = nil
+    ) {
+        self.linkByEmail = linkByEmail
+        self.preset = preset
+        self.issuerUrl = issuerUrl
+        self.scopes = scopes
+        self.groupsClaim = groupsClaim
+        self.emailClaim = emailClaim
+        self.nameClaim = nameClaim
+        self.usernameClaim = usernameClaim
+        self.trustEmail = trustEmail
+        self.usePkce = usePkce
+        self.tokenAuthMethod = tokenAuthMethod
+        self.caPem = caPem
+        self.insecureSkipVerify = insecureSkipVerify
+    }
+}
+
+public struct SignInProviderTestResult: Codable, Hashable, Sendable {
+    public struct Oidc: Codable, Hashable, Sendable {
+        public let issuer: String
+        public let authorizationEndpoint: String
+        public let tokenEndpoint: String
+        public let userinfoEndpoint: String?
+        public let jwksUri: String
+        public let scopesSupported: [String]
+        public let claimsSupported: [String]
+        /// Whether the configured groups claim is advertised (null when the server lists no claims).
+        public let groupsClaimAdvertised: Bool?
+        public let pkceSupported: Bool?
+
+        private enum CodingKeys: String, CodingKey {
+            case issuer = "issuer"
+            case authorizationEndpoint = "authorizationEndpoint"
+            case tokenEndpoint = "tokenEndpoint"
+            case userinfoEndpoint = "userinfoEndpoint"
+            case jwksUri = "jwksUri"
+            case scopesSupported = "scopesSupported"
+            case claimsSupported = "claimsSupported"
+            case groupsClaimAdvertised = "groupsClaimAdvertised"
+            case pkceSupported = "pkceSupported"
+        }
+
+        public init(
+            issuer: String,
+            authorizationEndpoint: String,
+            tokenEndpoint: String,
+            userinfoEndpoint: String? = nil,
+            jwksUri: String,
+            scopesSupported: [String],
+            claimsSupported: [String],
+            groupsClaimAdvertised: Bool? = nil,
+            pkceSupported: Bool? = nil
+        ) {
+            self.issuer = issuer
+            self.authorizationEndpoint = authorizationEndpoint
+            self.tokenEndpoint = tokenEndpoint
+            self.userinfoEndpoint = userinfoEndpoint
+            self.jwksUri = jwksUri
+            self.scopesSupported = scopesSupported
+            self.claimsSupported = claimsSupported
+            self.groupsClaimAdvertised = groupsClaimAdvertised
+            self.pkceSupported = pkceSupported
+        }
+    }
+
+    public let ok: Bool
+    public let error: String?
+    /// OIDC: what discovery found.
+    public let oidc: Oidc?
+
+    private enum CodingKeys: String, CodingKey {
+        case ok = "ok"
+        case error = "error"
+        case oidc = "oidc"
+    }
+
+    public init(ok: Bool, error: String? = nil, oidc: Oidc? = nil) {
+        self.ok = ok
+        self.error = error
+        self.oidc = oidc
+    }
+}
+
 // MARK: - task.ts
 
 public enum TaskState: String, Codable, Hashable, Sendable, CaseIterable {

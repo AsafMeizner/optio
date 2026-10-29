@@ -15,6 +15,11 @@ export function getOAuthProvider(name: string): OAuthProvider | undefined {
   return providers[name];
 }
 
+/** Forget cached OIDC discovery after the sign-in settings changed. */
+export function resetOAuthProviders(): void {
+  (providers.oidc as GenericOIDCProvider).reset();
+}
+
 export interface EnabledProvider {
   name: string;
   displayName: string;
