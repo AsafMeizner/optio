@@ -115,7 +115,7 @@ describe("GitLab optional token resolution", () => {
   it.each([true, false])(
     "uses a host-only token without requiring the plain secret (helper=%s)",
     async (helper) => {
-      vi.stubEnv("GITLAB_HOSTS", "git.corp.example:8443");
+      vi.stubEnv("GITLAB_HOSTS", "git.corp.example:8443,other.example:9443");
       vi.mocked(retrieveSecretWithFallback).mockImplementation(async (name) => {
         if (name === "GITLAB_TOKEN_GIT_CORP_EXAMPLE_8443") return "glpat-host-only";
         throw new Error("no plain token");
@@ -127,6 +127,8 @@ describe("GitLab optional token resolution", () => {
         helper,
       });
       expect(env.GITLAB_TOKEN).toBe("glpat-host-only");
+      expect(env.GITLAB_HOST).toBe("git.corp.example:8443");
+      expect(env.GITLAB_HOSTS).toBe("git.corp.example:8443");
     },
   );
   it("uses the API environment token when no stored token exists", async () => {

@@ -62,6 +62,18 @@ describe.skipIf(!hasTools)("optio-git-credential", () => {
     expect(out).not.toContain("ghs-installation");
   });
 
+  it("keeps a host-specific static fallback token on its resolved host and port", () => {
+    const env = {
+      GITLAB_TOKEN: "glpat-host-only",
+      GITLAB_HOST: "git.corp.example:8443",
+      GITLAB_HOSTS: "git.corp.example:8443",
+    };
+    expect(helper("git.corp.example:8443", {}, env)).toContain("password=glpat-host-only");
+    expect(helper("git.corp.example:9443", {}, env)).toBe("");
+    expect(helper("other.example:9443", {}, env)).toBe("");
+    expect(helper("gitlab.com", {}, env)).toBe("");
+  });
+
   it("asks github.com's token the way it always has", () => {
     const out = helper("github.com", { token: "ghs-installation" });
     expect(out).toBe(

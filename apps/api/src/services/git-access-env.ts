@@ -74,7 +74,13 @@ export async function applyGitAccess(
       userId: opts.ownerUserId ?? undefined,
       host: repo.host,
     }).catch(() => null);
-    if (token) env.GITLAB_TOKEN = token;
+    if (token) {
+      env.GITLAB_TOKEN = token;
+      // This token was resolved for one repository host. The shell fallback
+      // must not offer it to other operator-listed hosts if the API is down.
+      env.GITLAB_HOST = repo.host;
+      env.GITLAB_HOSTS = repo.host;
+    }
   }
   for (const name of [
     "GITHUB_TOKEN",
