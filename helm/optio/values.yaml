@@ -697,3 +697,12 @@ serviceAccount:
 # ──────────────────────────────────────────────────────────────────────────────
 imagePullSecrets: []
 #  - name: my-registry-secret
+
+# Starter prompts are added only on demand unless enabled here.
+prompts:
+  starters: false
+
+# Optional ticket/run metadata in pull requests and commit trailers.
+tickets:
+  traceability: false
+  # commitTrailers: true

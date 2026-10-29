@@ -12,7 +12,8 @@
 import {
   PrReviewState,
   PrReviewRunState,
-  DEFAULT_PR_REVIEW_PROMPT_TEMPLATE,
+  builtinPromptTemplates,
+  resolveRepoPlatform,
   REVIEW_TASK_FILE_PATH,
   PR_REVIEW_OUTPUT_PATH,
   renderPromptTemplate,
@@ -560,6 +561,7 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
 // Just the fields enqueueReviewRun reads from the repo config. Accepts
 // both RepoRecord (from getRepoByUrl) and raw DB row shapes.
 interface RepoConfigLike {
+  gitPlatform?: string | null;
   defaultBranch: string;
   reviewPromptTemplate?: string | null;
   reviewModel?: string | null;
@@ -621,9 +623,14 @@ export async function enqueueReviewRun(
       opts.prContext ?? (await fetchPrContext(review.repoUrl, review.prNumber, opts.createdBy));
     headSha = prContext.headSha || headSha;
 
-    const template = repoConfig.reviewPromptTemplate ?? DEFAULT_PR_REVIEW_PROMPT_TEMPLATE;
+    const template =
+      repoConfig.reviewPromptTemplate ??
+      builtinPromptTemplates(resolveRepoPlatform(review.repoUrl, repoConfig.gitPlatform)).prReview;
     const fullRepoName = `${review.repoOwner}/${review.repoName}`;
-    const parsedRepoUrl = parseRepoUrl(review.repoUrl);
+    const parsedRepoUrl = parseRepoUrl(
+      review.repoUrl,
+      resolveRepoPlatform(review.repoUrl, repoConfig.gitPlatform) ?? undefined,
+    );
     const isGitLab = parsedRepoUrl?.platform === "gitlab";
     const isCodeCommit = parsedRepoUrl?.platform === "codecommit";
 

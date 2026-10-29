@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   DEFAULT_PROMPT_TEMPLATE,
+  DEFAULT_REVIEW_PROMPT_TEMPLATE,
   renderPromptTemplate,
   renderTaskFile,
   shellSafeTitle,
@@ -271,5 +272,21 @@ describe("TASK_FILE_PATH", () => {
   it("is a relative path", () => {
     expect(TASK_FILE_PATH).not.toMatch(/^\//);
     expect(TASK_FILE_PATH).toContain(".optio/");
+  });
+});
+
+describe("DEFAULT_REVIEW_PROMPT_TEMPLATE approvals", () => {
+  it("on GitLab, gives an approval already given again, so it counts after a later change request", () => {
+    const out = renderPromptTemplate(DEFAULT_REVIEW_PROMPT_TEMPLATE, {
+      PR_NUMBER: "12",
+      GIT_PLATFORM_GITLAB: "true",
+    });
+    expect(out).toContain("glab mr approve 12 || (glab mr revoke 12 && glab mr approve 12)");
+  });
+
+  it("on GitHub, approves with gh as before", () => {
+    const out = renderPromptTemplate(DEFAULT_REVIEW_PROMPT_TEMPLATE, { PR_NUMBER: "12" });
+    expect(out).toContain("gh pr review 12 --approve");
+    expect(out).not.toContain("glab");
   });
 });

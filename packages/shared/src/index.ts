@@ -15,6 +15,7 @@ export * from "./utils/dag.js";
 export * from "./utils/k8s-resources.js";
 export * from "./constants.js";
 export * from "./prompt-template.js";
+export * from "./work-traceability.js";
 export * from "./types/image.js";
 export * from "./error-classifier.js";
 export * from "./types/session.js";

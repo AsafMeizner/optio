@@ -1,3 +1,4 @@
+import { workTraceability } from "../services/work-traceability.js";
 import { piCommand } from "../utils/pi-command.js";
 import { piProviderSecrets } from "../services/pi-provider-secrets.js";
 import { runBudgetHold } from "../services/usage-budget-service.js";
@@ -20,6 +21,7 @@ import {
   msUntilOffPeak,
   classifyError,
   parseRepoUrl,
+  resolveRepoPlatform,
   parseIntEnv,
   PrToolCallTracker,
   shellQuote,
@@ -421,7 +423,10 @@ export function startTaskWorker() {
 
         // repoConfig already loaded above for concurrency check
 
-        const parsedRepo = parseRepoUrl(task.repoUrl);
+        const parsedRepo = parseRepoUrl(
+          task.repoUrl,
+          resolveRepoPlatform(task.repoUrl, repoConfig?.gitPlatform) ?? undefined,
+        );
         const repoName = parsedRepo ? `${parsedRepo.owner}/${parsedRepo.repo}` : task.repoUrl;
         const isGitLab = parsedRepo?.platform === "gitlab";
         const isCodeCommit = parsedRepo?.platform === "codecommit";
@@ -434,6 +439,7 @@ export function startTaskWorker() {
 
         // Draft PRs when the repo or the task's own settings ask for them.
         const cautious = task.settings?.cautiousMode === true || !!promptConfig.cautiousMode;
+        const trace = await workTraceability(task);
         const renderedPrompt = renderPromptTemplate(promptConfig.template, {
           TASK_FILE: taskFilePath,
           BRANCH_NAME: branchName,
@@ -450,6 +456,7 @@ export function startTaskWorker() {
           CODECOMMIT_REPO: isCodeCommit ? (parsedRepo?.repo ?? "") : "",
           BASE_BRANCH: task.repoBranch ?? repoConfig?.defaultBranch ?? "main",
           PLANNING_MODE: isPlanningRun ? "true" : "",
+          ...trace.promptVars,
         });
 
         const taskFileContent = renderTaskFile({
@@ -617,6 +624,7 @@ export function startTaskWorker() {
             settings: task.settings,
           })),
         };
+        Object.assign(allEnv, trace.env);
 
         // Git sign-in (platform tokens are infra-level, not adapter secrets).
         await applyGitAccess(allEnv, {

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { resolveRepoPlatform } from "./parse-repo-url.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { parseRepoUrl, parsePrUrl } from "./parse-repo-url.js";
 
 describe("parseRepoUrl", () => {
@@ -292,5 +293,21 @@ describe("parsePrUrl", () => {
 
   it("returns null for empty string", () => {
     expect(parsePrUrl("")).toBeNull();
+  });
+});
+
+describe("resolveRepoPlatform", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("takes a known host's platform over what is recorded", () => {
+    expect(resolveRepoPlatform("https://github.com/acme/gitlab-tools", "gitlab")).toBe("github");
+    expect(resolveRepoPlatform("https://gitlab.com/acme/app", "github")).toBe("gitlab");
+  });
+
+  it("takes the recorded platform for a host nothing names", () => {
+    expect(resolveRepoPlatform("https://git.example.com/acme/app", "gitlab")).toBe("gitlab");
+    expect(resolveRepoPlatform("https://git.example.com/acme/app", null)).toBe("github");
+    expect(resolveRepoPlatform("https://git.example.com/acme/app", "bogus")).toBe("github");
+    expect(resolveRepoPlatform("not a url", null)).toBeNull();
   });
 });

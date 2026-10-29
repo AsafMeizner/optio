@@ -46,6 +46,11 @@ vi.mock("@optio/shared", () => ({
   DEFAULT_REVIEW_PROMPT_TEMPLATE: "Default review template",
 }));
 
+const mockSeedStarterPrompts = vi.fn();
+vi.mock("../services/starter-prompts.js", () => ({
+  seedStarterPrompts: (...args: unknown[]) => mockSeedStarterPrompts(...args),
+}));
+
 import { promptTemplateRoutes } from "./prompt-templates.js";
 
 // ─── Helpers ───
@@ -182,5 +187,40 @@ describe("POST /api/prompt-templates", () => {
     });
 
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("POST /api/prompt-templates/seed", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    app = await buildTestApp();
+  });
+
+  it("restores the starter prompts and reports what changed", async () => {
+    mockSeedStarterPrompts.mockResolvedValueOnce({ created: 2, restored: 1, unchanged: 10 });
+    const res = await app.inject({ method: "POST", url: "/api/prompt-templates/seed" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ created: 2, restored: 1, unchanged: 10 });
+    expect(mockSeedStarterPrompts).toHaveBeenCalledWith({ restore: true });
+  });
+});
+
+describe("starter prompts administration", () => {
+  it.each(["member", "viewer"] as const)("refuses %s before seeding", async (role) => {
+    vi.clearAllMocks();
+    vi.stubEnv("OPTIO_AUTH_DISABLED", "false");
+    const app = await buildRouteTestApp(promptTemplateRoutes, {
+      user: { id: "user-1", workspaceId: "ws-1", workspaceRole: role },
+    });
+    try {
+      const result = await app.inject({ method: "POST", url: "/api/prompt-templates/seed" });
+      expect(result.statusCode).toBe(403);
+      expect(mockSeedStarterPrompts).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+      vi.unstubAllEnvs();
+    }
   });
 });

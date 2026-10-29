@@ -247,3 +247,12 @@ export function featureNarrowed(
 ): boolean {
   return ALL_FEATURES[feature].some((v) => !features[feature].includes(v));
 }
+
+/**
+ * A deployment that offers GitLab and not GitHub: where upstream assumes
+ * GitHub (an unknown host, the default prompts, the token a failure names),
+ * GitLab is meant instead. False by default (every platform offered).
+ */
+export function gitlabOnlyDeployment(features: DeploymentFeatures = currentFeatures()): boolean {
+  return features.gitPlatforms.length === 1 && features.gitPlatforms[0] === "gitlab";
+}

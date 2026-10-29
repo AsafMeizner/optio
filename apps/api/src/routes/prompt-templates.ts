@@ -1,3 +1,4 @@
+import { seedStarterPrompts } from "../services/starter-prompts.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -217,6 +218,29 @@ export async function promptTemplateRoutes(rawApp: FastifyInstance) {
         await saveDefaultPromptTemplate(body.template, body.autoMerge ?? false);
       }
       reply.status(201).send({ ok: true });
+    },
+  );
+
+  app.post(
+    "/api/prompt-templates/seed",
+    {
+      preHandler: [requireRole("admin")],
+      schema: {
+        operationId: "seedStarterPrompts",
+        summary: "Restore the starter prompts",
+        description:
+          "Add the organization's starter prompts (Create a Claude Code skill, Code " +
+          "review, Write a README, …) that are missing, and put edited ones back to " +
+          "their text. Never duplicates, and never touches a prompt of someone's own " +
+          "that shares a starter's name. Requires `admin` role.",
+        tags: ["Repos & Integrations"],
+        response: {
+          200: z.object({ created: z.number(), restored: z.number(), unchanged: z.number() }),
+        },
+      },
+    },
+    async (_req, reply) => {
+      reply.send(await seedStarterPrompts({ restore: true }));
     },
   );
 

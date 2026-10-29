@@ -1,6 +1,7 @@
 import {
   TaskState,
-  DEFAULT_REVIEW_PROMPT_TEMPLATE,
+  builtinPromptTemplates,
+  resolveRepoPlatform,
   REVIEW_TASK_FILE_PATH,
   renderPromptTemplate,
   shellSafeTitle,
@@ -133,10 +134,15 @@ export async function launchReview(parentTaskId: string): Promise<string> {
   const reviewTask = subtask;
 
   // Build the review prompt
-  const reviewTemplate = repoConfig?.reviewPromptTemplate ?? DEFAULT_REVIEW_PROMPT_TEMPLATE;
+  const reviewTemplate =
+    repoConfig?.reviewPromptTemplate ??
+    builtinPromptTemplates(resolveRepoPlatform(parentTask.repoUrl, repoConfig?.gitPlatform)).review;
   const repoName = `${owner}/${repo}`;
 
-  const parsedRepo = parseRepoUrl(parentTask.repoUrl);
+  const parsedRepo = parseRepoUrl(
+    parentTask.repoUrl,
+    resolveRepoPlatform(parentTask.repoUrl, repoConfig?.gitPlatform) ?? undefined,
+  );
   const isGitLab = parsedRepo?.platform === "gitlab";
   const isCodeCommit = parsedRepo?.platform === "codecommit";
 
