@@ -1,3 +1,5 @@
+import { setOutboundDefaults } from "../../utils/outbound-url.js";
+let restoreOutbound: (() => void) | undefined;
 /**
  * OpenID Connect set up in the app (Settings → Sign-in): presets, a private
  * CA, PKCE and a nonce, claims mapping and groups. The environment-configured
@@ -11,6 +13,12 @@ const fetchMock = vi.fn();
 vi.mock("undici", () => ({
   Agent: class {
     constructor(public opts: unknown) {}
+    close() {
+      return Promise.resolve();
+    }
+    destroy() {
+      return Promise.resolve();
+    }
   },
   fetch: (...args: unknown[]) => fetchMock(...args),
 }));
@@ -82,11 +90,15 @@ beforeEach(async () => {
   jwks = { keys: [{ ...(await exportJWK(keys.publicKey)), kid: "k1", alg: "RS256", use: "sig" }] };
   vi.stubEnv("PUBLIC_URL", "https://optio.example.com");
   fetchMock.mockReset();
+  restoreOutbound = setOutboundDefaults({
+    resolveHost: async () => [{ address: "93.184.216.34", family: 4 }],
+  });
   // Without a private CA the provider uses the global fetch (jose's JWKS too).
   vi.stubGlobal("fetch", (...args: unknown[]) => fetchMock(...args));
 });
 
 afterEach(() => {
+  restoreOutbound?.();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -141,8 +153,10 @@ describe("effectiveOidcSettings and presets", () => {
         message: "unable to verify the first certificate",
       },
     });
-    expect(describeFetchError(err)).toMatch(/paste its CA/);
-    expect(describeFetchError(new Error("boom"))).toBe("boom");
+    expect(describeFetchError(err)).toMatch(/certificate authority/);
+    expect(describeFetchError(new Error("boom"))).toBe(
+      "Could not connect to the identity provider",
+    );
   });
 });
 

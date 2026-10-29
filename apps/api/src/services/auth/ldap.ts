@@ -1,16 +1,6 @@
 import type { ConnectionOptions as TlsConnectionOptions } from "node:tls";
-import {
-  AndFilter,
-  Client,
-  EqualityFilter,
-  FilterParser,
-  InvalidCredentialsError,
-  NoSuchObjectError,
-  OrFilter,
-  ResultCodeError,
-  SizeLimitExceededError,
-} from "ldapts";
-import type { Entry, Filter } from "ldapts";
+import { Client, FilterParser, InvalidCredentialsError, ResultCodeError } from "ldapts";
+import type { Entry } from "ldapts";
 
 /**
  * LDAP / Active Directory sign-in for self-hosted deployments — the
@@ -483,75 +473,6 @@ class LdapSession {
     }
   }
 
-  /**
-   * The directory sync's lookup by identity: the one entry under the user
-   * base DN whose `attribute` equals `value`, else null. A directory that
-   * rejects the attribute (it isn't in its schema) answers null too.
-   */
-  async findByAttribute(
-    attribute: string,
-    value: string | Buffer,
-    extraAttributes: string[],
-  ): Promise<Entry | null> {
-    const { settings } = this;
-    let entries: Entry[];
-    try {
-      const result = await this.client.search(settings.userBaseDn, {
-        scope: "sub",
-        filter: new EqualityFilter({ attribute, value }),
-        attributes: this.userAttributes(extraAttributes),
-        explicitBufferAttributes: ["objectGUID"],
-        sizeLimit: 2,
-      });
-      entries = result.searchEntries;
-    } catch (err) {
-      if (err instanceof ResultCodeError) return null;
-      throw mapError(err, settings.url, "userSearch");
-    }
-    if (entries.length > 1) {
-      throw new LdapAuthError(
-        `Two directory entries have the ${attribute} ${String(value)}`,
-        "config",
-      );
-    }
-    return entries[0] ?? null;
-  }
-
-  /** The entry at `dn` (a base read), else null; only under the user base DN, where a sign-in looks. */
-  async readEntry(dn: string, extraAttributes: string[]): Promise<Entry | null> {
-    const { settings } = this;
-    if (!dnWithin(dn, settings.userBaseDn)) return null;
-    try {
-      const result = await this.client.search(dn, {
-        scope: "base",
-        filter: "(objectClass=*)",
-        attributes: this.userAttributes(extraAttributes),
-        explicitBufferAttributes: ["objectGUID"],
-      });
-      return result.searchEntries[0] ?? null;
-    } catch (err) {
-      if (err instanceof NoSuchObjectError) return null;
-      throw mapError(err, settings.url, "userSearch");
-    }
-  }
-
-  /** Whether the user filter, run with `username` as a sign-in runs it, selects the entry at `dn`. */
-  async selects(dn: string, username: string): Promise<boolean> {
-    const { settings } = this;
-    const filter = compileFilter("user", settings.userFilter, { username });
-    try {
-      const result = await this.client.search(dn, {
-        scope: "base",
-        filter,
-        attributes: ["1.1"],
-      });
-      return result.searchEntries.length > 0;
-    } catch (err) {
-      if (err instanceof NoSuchObjectError) return false;
-      throw mapError(err, settings.url, "userSearch");
-    }
-  }
-
   /** Group entries for groupMode "search" (cn + dn only, capped at 500). */
   async findGroups(userDn: string, username: string): Promise<Entry[]> {
     const { settings } = this;
@@ -565,38 +486,6 @@ class LdapSession {
       });
       return result.searchEntries;
     } catch (err) {
-      throw mapError(err, settings.url, "groupSearch");
-    }
-  }
-
-  /**
-   * Group entries whose name contains `q` (every group when `q` is empty),
-   * for the group pickers: AD's `group`, and the RFC groups other
-   * directories use. Under the group base DN (the user base DN when none is
-   * set), capped at `limit` — the server answers the first `limit` it finds,
-   * so a short `q` on a big directory is a sample, not the whole list.
-   */
-  async searchGroups(q: string, limit: number): Promise<Entry[]> {
-    const { settings } = this;
-    const name = q.trim() ? `(cn=*${escapeLdapFilterValue(q.trim())}*)` : "(cn=*)";
-    const filter = `(&(|(objectClass=group)(objectClass=groupOfNames)(objectClass=groupOfUniqueNames)(objectClass=posixGroup))${name})`;
-    try {
-      const result = await this.client.search(settings.groupBaseDn, {
-        scope: "sub",
-        filter,
-        attributes: ["cn"],
-        sizeLimit: limit,
-      });
-      return result.searchEntries;
-    } catch (err) {
-      // The directory found more than `limit`: ldapts drops what it had, so
-      // the only useful answer is "narrow it down".
-      if (err instanceof SizeLimitExceededError) {
-        throw new LdapAuthError(
-          `More than ${limit} groups match — type more of the name`,
-          "config",
-        );
-      }
       throw mapError(err, settings.url, "groupSearch");
     }
   }
@@ -770,21 +659,3 @@ export async function ldapTest(
     await session?.close();
   }
 }
-
-/** What a group search answers: the group's name (its `cn`) and its DN. */
-
-function normalizeDn(dn: string): string {
-  return dn
-    .trim()
-    .toLowerCase()
-    .replace(/\s*,\s*/g, ",");
-}
-
-/** `dn` is `base` or below it. */
-function dnWithin(dn: string, base: string): boolean {
-  const d = normalizeDn(dn);
-  const b = normalizeDn(base);
-  return d === b || d.endsWith("," + b);
-}
-
-/** Where the user filter puts the sign-in name: `(attribute=<prefix>{{username}}<suffix>)`. */

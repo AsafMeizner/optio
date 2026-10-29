@@ -608,6 +608,21 @@ export async function testSignInProvider(
     );
     if (!parsed.success) return { ok: false, error: "Valid LDAP settings are required" };
     const ldap = parsed.data as LdapSignInSettings;
+    const environment = envConfig("ldap");
+    // A test may inspect a new server, but must never send another server's
+    // saved password to it. The request must supply credentials for a new URL.
+    const bindPassword =
+      input.clientSecret?.trim() ||
+      (stored && ldapSettingsSchema.safeParse(stored.settings).data?.url === ldap.url
+        ? openSecret(stored)
+        : null) ||
+      (ldapSettingsSchema.safeParse(environment?.settings).data?.url === ldap.url
+        ? environment?.clientSecret
+        : null) ||
+      "";
+    if (ldap.bindDn && !bindPassword)
+      return { ok: false, error: "Supply the bind password when testing a different LDAP URL" };
+
     const { ldapTest } = await import("./auth/ldap.js");
     const result = await ldapTest(
       {
@@ -616,11 +631,7 @@ export async function testSignInProvider(
         caPem: ldap.caPem,
         insecureSkipVerify: ldap.insecureSkipVerify,
         bindDn: ldap.bindDn,
-        bindPassword:
-          input.clientSecret?.trim() ||
-          (stored ? openSecret(stored) : null) ||
-          envConfig("ldap")?.clientSecret ||
-          "",
+        bindPassword,
         userBaseDn: ldap.userBaseDn,
         userFilter: ldap.userFilter,
         usernameAttribute: ldap.usernameAttribute,
@@ -648,7 +659,8 @@ export async function testSignInProvider(
   if (!parsed.success)
     return { ok: false, error: "Valid OIDC settings and issuer URL are required" };
   const oidc = parsed.data;
-  const { discoverOidc, effectiveOidcSettings } = await import("./oauth/oidc.js");
+  const { discoverOidc, effectiveOidcSettings, describeFetchError } =
+    await import("./oauth/oidc.js");
   try {
     const doc = await discoverOidc(oidc);
     const effective = effectiveOidcSettings(oidc);
@@ -672,6 +684,6 @@ export async function testSignInProvider(
       },
     };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: describeFetchError(err) };
   }
 }

@@ -95,7 +95,7 @@ export async function createSession(
       .from(users)
       .where(sql`lower(${users.email}) = ${profile.email.toLowerCase()}`)
       .limit(2);
-    if (sameEmail.length === 1) {
+    if (sameEmail.length === 1 && sameEmail[0].emailVerified === true) {
       await linkIdentity(sameEmail[0].id, provider, profile);
       existing = sameEmail;
     }

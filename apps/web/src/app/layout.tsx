@@ -1,19 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import { Sora, IBM_Plex_Mono } from "next/font/google";
+import { sora, ibmPlexMono } from "@/app/fonts";
 import { LayoutShell } from "@/components/layout/layout-shell";
 import { featuresConfig } from "@/lib/features-config";
 import "./globals.css";
-
-const sora = Sora({
-  subsets: ["latin"],
-  variable: "--font-sora",
-});
-
-const ibmPlexMono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-ibm-mono",
-});
 
 export const viewport: Viewport = {
   width: "device-width",

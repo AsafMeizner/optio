@@ -40,6 +40,8 @@ class LocalPresentationTest {
         assertEquals("done — review the result", LocalPresentation.attentionLabel("done"))
         assertEquals("command finished", LocalPresentation.attentionLabel("finished"))
         assertEquals("went quiet a while ago", LocalPresentation.attentionLabel("stale"))
+        assertEquals("waiting for your permission", LocalPresentation.attentionLabel("permission"))
+        assertEquals("failed — review the error", LocalPresentation.attentionLabel("error"))
         assertEquals("needs you", LocalPresentation.attentionLabel(null))
         assertEquals("needs you", LocalPresentation.attentionLabel("something-new"))
     }

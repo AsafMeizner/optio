@@ -154,6 +154,19 @@ identify the same subject. The private CA applies to discovery, JWKS, token
 and userinfo requests. Token authentication supports `client_secret_post`
 and `client_secret_basic`.
 
+Issuer and discovered endpoint URLs must use HTTPS. Non-production local
+development may use HTTP only on literal loopback hosts, which must also be
+explicitly permitted by `OPTIO_OUTBOUND_ALLOWED_HOSTS`. Every server-side IdP
+request uses the outbound URL policy and DNS-pinned transport; redirects are
+refused, including token exchanges. For private IdPs configure the outbound host
+allowlist and the IdP's private CA. Disabling TLS verification is rejected unless
+the deployment operator explicitly sets `OPTIO_IDP_ALLOW_INSECURE_TLS=true`;
+stored settings alone cannot enable it. Prefer supplying the CA.
+
+Optional account linking requires both the new provider assertion and the
+existing target account's email to be verified. An unverified existing address
+cannot be used to claim that account or inherit its administrator role.
+
 Environment clients retain their existing flow: `OIDC_ISSUER_URL`,
 `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_DISPLAY_NAME`, `OIDC_SCOPES`,
 `OIDC_GROUPS_CLAIM`, `OIDC_EMAIL_CLAIM`, `OIDC_NAME_CLAIM`,
@@ -178,15 +191,20 @@ then `entryUUID`, then the DN. A directory-supplied email counts as verified.
 
 Groups come from `memberOf`, or a group search with base DN and filter
 (default `(|(member={{dn}})(uniqueMember={{dn}})(memberUid={{username}}))`).
-Both full group DNs and their CNs are available to the rules below.
+Both full group DNs and their CNs are returned as provider claims; this split does not grant roles from groups.
 Environment configuration uses `LDAP_URL`, `LDAP_USER_BASE_DN`,
 `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD`, `LDAP_START_TLS`, `LDAP_CA_PEM`,
 `LDAP_USER_FILTER`, `LDAP_USERNAME_ATTRIBUTE`, `LDAP_EMAIL_ATTRIBUTE`,
 `LDAP_DISPLAY_NAME_ATTRIBUTE`, `LDAP_GROUP_MODE`, `LDAP_GROUP_BASE_DN`,
-`LDAP_GROUP_FILTER`, `LDAP_ADMIN_GROUPS`, `LDAP_REQUIRED_GROUPS` and
+`LDAP_GROUP_FILTER` and
 `LDAP_DISPLAY_NAME`. The username field's label is set in the app.
 
 `POST /api/auth/ldap/login` takes `{ username, password }` and returns a
 one-time browser auth code; `cli: true` returns a personal access token.
 Wrong credentials receive the same 401 response. Operations time out after
-10 seconds. For ongoing access checks, enable [LDAP directory sync](directory-sync.md).
+10 seconds. Requests have a per-IP rate limit; configure the directory's own
+per-account lockout policy as well. Unknown usernames return before a password
+bind, so response timing can reveal directory membership. Prefer LDAPS or
+STARTTLS; plain LDAP without STARTTLS sends credentials without encryption.
+The connection test reuses saved credentials only for their configured URL;
+testing a different URL with a bind DN requires an explicit password.

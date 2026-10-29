@@ -107,9 +107,6 @@ vi.mock("../logger.js", () => ({
   },
 }));
 
-// Load the real check-status module during collection, before per-case timers start.
-import "../workers/pr-watcher-worker.js";
-
 // Import AFTER mocks
 import { executeAction } from "./reconcile-executor.js";
 import { GitHubApiError } from "./git-platform/github.js";

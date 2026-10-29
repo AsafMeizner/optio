@@ -33,11 +33,7 @@ export interface OAuthUser {
    * compares it (see services/sign-in-config-service.ts).
    */
   hostedDomain?: string | null;
-  /**
-   * The groups the provider reports for the person — the OIDC groups claim,
-   * an LDAP `memberOf`. Admin groups, required groups and team membership
-   * are decided from them (services/sign-in-config-service.ts).
-   */
+  /** Provider-asserted group claims; authorization rules are added in the groups split. */
   groups?: string[];
 }
 

@@ -1,1 +1,349 @@
-CLAUDE.md
+# AGENTS.md
+
+Context and conventions for AI assistants working on the Optio codebase.
+
+## What is Optio?
+
+Optio is an orchestration system for AI coding agents. Think of it as "CI/CD where the build step is an AI agent." One primary user-facing concept (Tasks) with one attribute (has a repo) flipping the pipeline, plus shared primitives:
+
+**Tasks** — a configured unit of agent work. A Task has a **Who** (agent type), **What** (prompt or template), **When** (trigger: manual / schedule / webhook / ticket), **Where** (optional repo + branch, plus a run location: an Optio pod or a directory on the user's own machine via Optio Local), and **Why** (description). Tasks come in three flavors:
+
+- **Repo Task** — `Where` is set. The agent clones the repo into a worktree and opens a PR:
+  1. Spins up an isolated Kubernetes pod for the repository (pod-per-repo)
+  2. Creates a git worktree for the task (multiple run concurrently per repo)
+  3. Runs Claude Code, OpenAI Codex, GitHub Copilot, Google Gemini, OpenCode, or Cursor with the prompt
+  4. Streams structured logs back to a web UI in real time
+  5. Agent stops after opening a PR (no CI blocking)
+  6. PR watcher tracks CI checks, review status, and merge state
+  7. Auto-triggers code review agent on CI pass or PR open (if enabled)
+  8. Auto-resumes agent when reviewer requests changes (if enabled)
+  9. Auto-completes on merge, auto-fails on close
+
+  Supported git platforms: **GitHub**, **GitLab** (incl. self-hosted via `GITLAB_HOSTS`), and **AWS CodeCommit**. CodeCommit auths via AWS access keys (or IRSA / instance profile when running on EKS) and uses the AWS CLI credential helper for clones; PR ops go through `@aws-sdk/client-codecommit`. CodeCommit has no native CI or issues — `getCIChecks` returns `[]` (auto-merge still fires on `checksStatus="none"`), `listIssues` returns `[]`, and `reviewTrigger="on_pr"` is recommended over the default `on_ci_pass` for CodeCommit repos.
+
+- **Standalone Task** — no `Where`. The agent runs in an isolated pod with no repo checkout, producing logs and side effects (e.g., queries Slack, posts to a database). Scheduled/webhook-driven runs of this flavor are the common case.
+
+- **Persistent Agent** — long-lived, named, message-driven agent process that does _not_ terminate after running. Halts after each turn and waits to be re-woken by a user message, an agent message, a webhook, a cron tick, or a ticket event. Addressable by other agents in the same workspace via the inter-agent HTTP API (`/api/internal/persistent-agents/*`). Three configurable pod lifecycle modes: `always-on`, `sticky` (default, with idle warm window), and `on-demand`. UI at `/agents`. Schema: `persistent_agents`, `persistent_agent_turns`, `persistent_agent_messages` (pods in `agent_pods`, turn logs in `task_logs`). See `docs/persistent-agents.md` and the demo in `examples/persistent-agents/forge/`.
+
+**Scheduled (Task Configs)** — a saved Task blueprint that spawns fresh Tasks on a trigger firing. Stored in `work_definitions` (`kind = 'repo-blueprint'`). Each firing calls `instantiateTask()` which goes through the full Repo Task pipeline. Managed from `/work?view=recurring` (detail at `/tasks/scheduled/:id`). Standalone equivalents (Jobs) and Local automations are the same table's other kinds (see backend-naming note below).
+
+**Triggers** — polymorphic table `workflow_triggers` keyed by `(target_type, target_id)`: `job` (Jobs), `task_config` (scheduled Tasks), `local_blueprint` (Local automations), `persistent_agent`, `pr_review`. The same fourteen types attach to any target: `manual`, `schedule` (cron), `webhook`, `ticket`, and the `github` / `gitlab` / `slack` / `linear` / `jira` / `pylon` / `pagerduty` / `sentry` / `alertmanager` / `datadog` events. Seven of the event sources have one signed workspace-wide receiver with a deployment secret (`/api/webhooks/github` `GITHUB_WEBHOOK_SECRET`, `/gitlab` `GITLAB_WEBHOOK_SECRET` (GitLab's `X-Gitlab-Token`), `/slack/events`, `/linear`, `/jira` `JIRA_WEBHOOK_SECRET` (`X-Hub-Signature`), `/pagerduty` `PAGERDUTY_WEBHOOK_SECRET`, `/sentry` `SENTRY_WEBHOOK_SECRET` (`Sentry-Hook-Signature`)); the three **self-secret** sources — Pylon, Alertmanager (Prometheus / Grafana) and Datadog — can't sign, so each such trigger carries its own shared secret (minted on create, returned once, `hasSecret: true` afterwards — `publicTrigger`) and its own URL `/api/hooks/<type>/:triggerId`, checked against `X-Optio-Secret`, a Bearer token, or a basic-auth password (`SELF_SECRET_TRIGGER_TYPES` in `@optio/shared`). GitHub triggers also take the repo-level kinds `push`, `release_published`, `workflow_succeeded` / `workflow_failed` (workflow runs and external check suites), `pr_merged` and `labeled`, with `branches` / `workflows` / `labels` filters; GitLab mirrors them in its own words (`mr_opened`, `pipeline_failed`, …). One CRUD (`services/trigger-service.ts`) and one dispatcher (`services/trigger-dispatch.ts`, `fireTrigger`) serve every route and every firing path — the schedule poller, `/api/hooks/:path`, the ticket sweep, and the event ingress.
+
+**Templates** — reusable prompt templates in `prompt_templates` with a `kind` discriminator (`prompt` / `review` / `job` / `task`). Supports `{{param}}` substitution and `{{#if param}}...{{/if}}` blocks. Rendered lazily on trigger firing so params from the trigger payload substitute into the prompt.
+
+**Connections** — a named account at a service ("Jon's AWS", "Acme Linear") a piece of work is connected to, made of parts: credentials (encrypted, never returned), tools (an MCP server in the pod), shell env (vars exported into the agent's own shell so CLIs and SDKs are signed in), and a note (a skill telling the agent how to use it). Built-in providers: Notion, GitHub, Slack, Linear, PostgreSQL, Sentry, Filesystem, AWS, Pylon, PagerDuty, any HTTP API (through the REST bridge in the agent image), any MCP server. Bare secrets and hand-written MCP servers are connections too ("credentials only" / "tools only") and are listed with them. Fine-grained access control (per-repo, per-agent-type). See `docs/connections.md`.
+
+**Backend-naming note.** For historical reasons the tables are `tasks` (Repo Tasks' one-time runs), `work_definitions` (every saved, re-runnable definition: `kind` = `repo-blueprint` (scheduled Task, was `task_configs`) | `standalone` (Job, was `workflows`) | `local-blueprint` (Local automation, was `local_blueprints`); one CRUD in `work-definition-service.ts`, and the legacy services project rows back to their old API shapes), and `workflow_triggers` (the shared trigger surface). `tasks` holds **every run** — `kind` = `repo` (a Repo Task) | `standalone` (a Job run) — and code about one kind goes through a view: `repo_tasks` (the schema's `tasks`, every column of the repo runs) or `workflow_runs` (the schema's `workflowRuns`, Job runs under their old column names); `workRuns` is the table itself (see the Drizzle convention below). The v0.4 UI settled on these user-facing names:
+
+- **Tasks** — Repo Tasks (formerly "Repo Tasks" in copy; now just "Tasks")
+- **Jobs** — Standalone Tasks (matches the `/api/jobs` URL and `/jobs/*` web routes)
+- **Reviews** — code-review subtasks + external PR reviews (formerly "PR Reviews"; promoted out of `/tasks` into its own top-level slot)
+- **Issues** — GitHub Issues queue (promoted to its own top-level nav item)
+- **Agents** — Persistent Agents (the third tier; long-lived, message-driven)
+- **Prompts** — reusable prompt templates (was "Templates" in the Library)
+
+**v0.6 — one noun: Work.** The UI presents every one of these as **work** with five attributes — **When** (what starts it), **Where** (pod / your machine), **Who** (a terminal or an agent runtime + its parameters), **What** (the prompt), and **Then** (exit conditions: exits when done / waits for me / persistent agent) — plus a name. Work can be a one-time terminal on a pod or a machine, a one-off agent run, an agent handling a PR, or a recurring definition with prior runs and a history. The sidebar's top level is **Overview · Work · Reviews · Inbox**, then **Library** (Prompts · Repos · Machines · Connections); iOS has a Work tab with All / Reviews / Inbox under it. `/work` is the unified list (rows from `GET /api/work`, projected server-side in `services/work-service.ts`; views: Active / Recurring / Agents / History; `GET /api/work/:id` resolves an id of any kind); `/work/new` is the one creation form (`components/work-form/`: `model.ts` derives which row to create — `deriveKind` — from the attributes, `submit.ts` builds a `WorkSpec` — the five attributes, `packages/shared/src/work/spec.ts` — and `POST`s it to `/api/work`, which derives the kind with the same rule (`kindOfSpec`) and writes the row and its trigger in one transaction, so a rejected trigger leaves nothing behind). **Every When works with every Where**: a GitHub / Slack / Linear event can start a Job or a scheduled Task in a pod as well as an automation on a machine; the form attaches the same trigger row whatever the kind. **Every Who works with every When and Where it fits**: a Terminal is a shell you open (a pod session; a terminal on your machine, by hand or on a trigger) or a **command that runs and exits** — a Job with no agent (`who.runtime: null`, stored `agent_type` null, `agentRuntime: "shell"` in /api/jobs), in a pod or on a machine, on any trigger, its `{{param}}`s passed as shell variables (`renderCommandTemplate`: each value is assigned single-quoted on the first line and every `{{param}}` only references it, so a payload is never parsed as shell code, even inside quotes) and its exit status settling the run (`services/command-run.ts`). A **persistent agent can have a repo** (one of its workspace's): its turns work in one checkout of it (`/workspace/repo`, cloned once, fetched each turn, following a new repo or branch — `CHECKOUT_REPO` in `utils/pod-env.ts`), signed in with a short-lived installation token rather than the credential helper (`applyGitAccess(env, { helper: false })` in `services/git-access-env.ts`). What stays apart is what doesn't make sense: "works until merged" needs an agent and a repo, a pod terminal needs a repo and a person (an agent session can run without a repo), a persistent agent lives in a pod. `/tasks/new`, `/jobs/new`, `/agents/new`, and the v0.5 `/sessions`, `/sessions/new`, `/sessions/:id/edit` redirect to their `/work` equivalents. `apps/web/e2e/work-form.spec.ts` drives every kind through the form against the real API. The per-kind **list** pages (`/tasks`, `/jobs`, `/agents`, `/local`, `/tasks/scheduled`) are gone — each redirects to the matching Work view — while Tasks and Local sessions share **`/work/:id`** (`components/work-detail/`). Legacy `/tasks/:id` and `/local/:id` redirect there, preserving split state; a task URL follows its current attempt, and `?session=<terminal-id>` selects an exact attempt through retries. Standalone Local sessions use their terminal id. Pod sessions also open at `/work/:id`; legacy `/sessions/:id` redirects there, preserving terminal panes and fragments. Other detail pages (`/jobs/:id`, `/tasks/scheduled/:id`, `/agents/:id`) remain and link back to `/work`. **Recurring work is edited in the same form.** A Recurring row opens the page _about_ the definition (stats, triggers, prior runs: `/tasks/scheduled/:id`, `/jobs/:id`, or `/local/automations/:id` for Local automations) and carries a pencil to `/work/:id/edit` (`components/work-form/load.ts` resolves the id with `GET /api/work/:id` and turns the stored `work_definitions` row back into a draft — one mapping for every kind; `submit.ts`'s `updateWork` sends the spec to `PATCH /api/work/:id`, which keeps the kind and moves the edited trigger in the same transaction). The saved kind is locked while editing (`kindLock` in `model.ts`): answers that would move the row to another table are disabled with a reason. `/jobs/:id/edit` redirects there; the Machines automations list and the `/tasks/scheduled/:id` page link there for edits. Legacy `/tasks?tab=...` URLs redirect to `/work?view=recurring`, `/issues`, `/reviews`. "Session" keeps only its narrow meaning: an interactive pod session (`/sessions/:id`, `interactive_sessions`).
+
+For the long-form explanation of how the two flavors map to the three internal types, the polymorphic HTTP layer, and how the UI presents them, see `docs/tasks.md`.
+
+**Unified `/api/tasks` HTTP layer.** All three kinds (`repo-task`, `repo-blueprint`, `standalone`) are reachable through one polymorphic HTTP resource:
+
+- `GET /api/tasks?type=repo-task|repo-blueprint|standalone|all` — unified list
+- `POST /api/tasks` — body takes `{ type, ... }`; dispatches to taskService, taskConfigService, or workflowService based on type
+- `GET /api/tasks/:id` — resolves the id across all three tables; returns native row tagged with `type` discriminator
+- `GET/POST /api/tasks/:id/runs[/:runId]` — polymorphic runs (spawned `tasks` for blueprints, `workflow_runs` for standalone, 405 for ad-hoc)
+- `GET/POST/PATCH/DELETE /api/tasks/:id/triggers[/:triggerId]` — polymorphic triggers (405 for ad-hoc repo-task)
+- Resolver: `unified-task-service.resolveAnyTaskById()` checks tasks → work definitions (scheduled Tasks, Jobs) → PR reviews; UUIDs are globally unique so no collision. `/api/work` (below) is the newer resource over every kind.
+
+Legacy `/api/jobs/*` and `/api/task-configs/*` endpoints still work as thin aliases for back-compat.
+
+**`/api/work` — every kind of work as one resource** (`routes/work.ts`). `GET /api/work` is the Work list (rows projected server-side in `services/work-service.ts`); `GET /api/work/:id` resolves any id; `POST /api/work` creates from a `WorkSpec` (the five attributes, `packages/shared/src/work/spec.ts`): the server derives the kind (`kindOfSpec`), plans owner and pod secrets (`work-ownership.ts`), and writes a definition or persistent agent and its trigger in one transaction — a Job started now gets its first run (`services/work-write-service.ts`). `PATCH /api/work/:id` saves a definition (kind fixed, the edited trigger follows When), `DELETE` removes one, `/runs` lists what a definition started, `/triggers` manages its triggers. 409s carry `details: "name_taken" | "webhook_path_taken"`. Every legacy endpoint keeps its exact response shape (the iOS / Android apps and the CLI call them).
+
+**Where → Environment: per-work settings over the repo's** (`WorkSettings`, `packages/shared/src/work/settings.ts`; `settings` jsonb on `tasks`, `work_definitions`, `persistent_agents`). The repo's and the workspace's settings are the defaults; a piece of pod work can switch connections, MCP servers, and skills on or off by id (`{ add, remove }`), run its own setup commands (`OPTIO_WORK_SETUP_COMMANDS`, before the agent), pick its pod secrets, and — when it opens a PR — be **more careful** than its repo, never less: ask for a code review, open draft PRs (cautious mode), or resume fewer times (`effectivePrSettings` in the shared settings: the repo's settings are admin-only, so a member's work can't loosen them). Only changes are stored (`cleanWorkSettings`; null = follow the repo). `services/agent-environment-service.ts` (`buildAgentEnvironment`) turns defaults + settings into `.mcp.json`, skill files, and env for **every** pod worker — task, PR review, Job, persistent agent — so Jobs and agents get connections, MCP servers, and skills like Repo Tasks do (a command Job gets only its setup commands; a PR-review pod, which reads untrusted diffs, gets connections without their credentials); the one setup-file writer is `WRITE_SETUP_FILES` in `utils/pod-env.ts` (sensitive files chmod 600, everything it writes into a checkout added to `.git/info/exclude`, a tracked file it merged into marked `skip-worktree`, `merge: "json"` files merged into the JSON object already there); only Claude Code reads `.mcp.json`, so **every other runtime gets the same servers in the file it reads** (`utils/harness-config.ts`, which documents the sources): **Codex** as `[mcp_servers.*]` TOML in its own `CODEX_HOME` (`utils/codex-config.ts`, `OPTIO_CODEX_HOME`), **Gemini** as `mcpServers` in the user `settings.json` of its own `GEMINI_CLI_HOME` (`OPTIO_GEMINI_HOME`, the adapter's settings merged in), **OpenCode** as `mcp` entries in an `OPENCODE_CONFIG` file (`OPTIO_OPENCODE_CONFIG`), **Copilot** as `--additional-mcp-config @<file>` (`OPTIO_COPILOT_MCP_CONFIG`), and **Cursor** as `.cursor/mcp.json` in the working directory (merged into the repo's own) with `--approve-mcps`; the per-run files live in the **run home** `/home/agent/optio/runs/<run id>` (`OPTIO_RUN_HOME`, `runHome(runId)`), named after the task / Job run / agent turn and removed by the exec scripts' EXIT trap (`REMOVE_RUN_HOME`) and with the task's worktree (`removeRunHome`); and `RUN_WORK_SETUP_COMMANDS` runs the MCP servers' install commands (a failure only warns) and then the work's setup commands. The reconciler's snapshot reads the PR settings over the repo's; a scheduled Task copies its settings into each task it spawns; a Job run reads its Job's. `GET /api/work/environment?repoUrl=&agentType=&owner=` lists what the form can toggle, defaults marked. Work on a machine takes none of it (the machine's own CLI config).
+
+**Ask Optio placement** — every assistant turn runs in an isolated agent pod per conversation (`services/session-harness-service.ts`). User-controlled harnesses must never run as API children: their native tools can read API secrets and its Kubernetes identity. The former `OPTIO_ASSISTANT_PLACEMENT=api-pod`, `OPTIO_ASSISTANT_IN_POD_MAX`, and Helm `optio.assistant.*` settings are ignored. The API image carries no agent harnesses or agent home. The process runtime remains for trusted callers only. See `docs/optio-assistant.md`.
+
+**Controller MCP** — `/api/mcp` exposes work discovery/creation/editing, schedules (cron + IANA timezone), run results/logs and messaging among persistent agents and active task/Job agents through stateless Streamable HTTP. External clients use PATs; pod work opts in with `settings.controllerAccess` (`off` / `read` / `manage`). `services/controller-auth.ts` issues expiring per-run credentials (Redis attempt nonce + live state/owner checks); `controller-service.ts` uses exact workspace/owner checks before calling the existing work/trigger/run services, `controller-collaboration.ts` supplies the common agent directory and inbox routing, and `controller-mcp.ts` registers the tools. Persistent recipients wake; task/Job agents poll their own MCP inbox (`task_messages`, with authenticated sender attribution and reply addresses); sending never restarts a finished run. `packages/mcp-bridge` also builds `/opt/optio/controller-mcp.js`, a stdio adapter injected through `buildAgentEnvironment` for all six supported harnesses. Persistent-agent HTTP messaging now uses separate signed turn credentials, never public agent UUIDs. See `docs/controller-mcp.md`.
+
+## Architecture
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────────────────────┐
+│   Web UI    │────→│  API Server  │────→│   K8s Pods                  │
+│  Next.js    │     │   Fastify    │     │                             │
+│  :30310     │     │   :30400     │     │  ┌─ Repo Pod A ──────────┐  │
+│             │←ws──│              │     │  │ clone + sleep          │  │
+│  Run        │     │ - BullMQ     │     │  │ ├─ worktree 1          │  │
+│   Tasks     │     │ - Drizzle    │     │  │ ├─ worktree 2          │  │
+│   Jobs      │     │ - WebSocket  │     │  │ └─ worktree N          │  │
+│   Reviews   │     │ - PR Watcher │     │  └────────────────────────┘  │
+│   Issues    │     │ - Workflow Q │     │  ┌─ Job Pod ─────────────┐  │
+│   Scheduled │     │ - PA Worker  │     │  │ isolated agent         │  │
+│  Live       │     │ - Reconciler │     │  └────────────────────────┘  │
+│   Agents    │     │ - Health Mon │     │  ┌─ Persistent Agent Pod ┐  │
+│   Sessions  │     │ - Connection │     │  │ long-lived; turns      │  │
+│             │     │   Service    │     │  │ wake on messages       │  │
+└─────────────┘     └──────┬───────┘     │  └────────────────────────┘  │
+                           │             └──────────────────────────────┘
+                    ┌──────┴───────┐
+                    │  Postgres    │  State, logs, workflows, persistent agents,
+                    │              │  inboxes, connections, secrets
+                    │  Redis       │  Job queue, pub/sub
+                    └──────────────┘
+
+All services run in Kubernetes (including API and web). Local dev uses
+Docker Desktop K8s with Helm. See setup-local.sh.
+```
+
+### Pod-per-repo with worktrees
+
+Central optimization. Instead of one pod per task (slow, wasteful), long-lived pods per repository **and execution boundary** (workspace, owner, purpose and explicit work access settings):
+
+- Pod clones repo once, runs `sleep infinity`. Tasks `exec` in: `git worktree add` → run agent → cleanup
+- Multiple tasks run concurrently per pod (one per worktree)
+- Pods use persistent volumes; idle for 10 min (`OPTIO_REPO_POD_IDLE_MS`) before cleanup
+- Entrypoint: `scripts/repo-init.sh` (pod)
+
+**Multi-pod scaling**: repos can have multiple pod instances for higher throughput.
+
+- `maxPodInstances` (default 1, max 20) — pod replicas per repo
+- `maxAgentsPerPod` (default 2, max 50) — concurrent agents per pod
+- Total capacity = `maxPodInstances × maxAgentsPerPod`
+- Pod scheduling: same-pod retry affinity → least-loaded → dynamic scale-up → queue overflow
+- LIFO scaling: higher-index pods removed first on idle cleanup
+
+New interactive sessions get a dedicated pod, with org-authenticated collaboration links; legacy shared pods cannot be shared. See `docs/security-review-2026-10.md` and `docs/production-eks.md`. The combined API/web deployment may run any number of replicas on one Postgres and one Redis (`api.replicas` or `api.autoscaling`), with Recreate upgrades (migrations at boot); coordination is Postgres leases and claims, live frames go over Redis pub/sub (session bus, Local bus), and only caches and the per-address WebSocket cap are per pod (`docs/plans/scale-out.md`, `docs/production-eks.md`). Uncertain executions are preserved for explicit recovery rather than automatically replayed.
+
+### Worktree lifecycle
+
+Tasks track worktree state via `tasks.worktreeState`: `active`, `dirty`, `reset`, `preserved`, `removed`. `tasks.lastPodId` enables same-pod retry affinity. See `repo-cleanup-worker` for cleanup rules.
+
+### Task lifecycle (state machine)
+
+```
+pending → queued → provisioning → running → pr_opened → completed
+                                    ↓  ↑        ↓  ↑
+                               needs_attention   needs_attention
+                                    ↓                ↓
+                                 cancelled         cancelled
+                               running → failed → queued (retry)
+```
+
+State machine in `packages/shared/src/utils/state-machine.ts`. All transitions validated — invalid ones throw `InvalidTransitionError`. Always use `taskService.transitionTask()`.
+
+### Priority queue and concurrency
+
+Tasks have integer `priority` (lower = higher). Two concurrency limits:
+
+1. **Global**: `OPTIO_MAX_CONCURRENT` (default 5) — total running/provisioning tasks
+2. **Per-repo**: `repos.maxConcurrentTasks` (default 2) — effective limit is `max(maxConcurrentTasks, maxPodInstances × maxAgentsPerPod)`
+
+When a limit is hit, task is re-queued with 10s delay.
+
+### Authentication
+
+**Web UI**: Multi-provider OAuth (GitHub, Google, GitLab, generic OIDC). Enable by setting `<PROVIDER>_OAUTH_CLIENT_ID` + `<PROVIDER>_OAUTH_CLIENT_SECRET` (or `OIDC_ISSUER_URL` + `OIDC_CLIENT_ID` + `OIDC_CLIENT_SECRET` for generic OIDC) — or, for **Google**, in the app: Settings → Access → **Sign-in** stores the OAuth client (secret encrypted on the row in `auth_provider_configs`, precedence over env) with **allowed domains** (Google Workspace `hd` + verified email, `domainDecision`). Only **deployment admins** (`users.deployment_admin`, or `OPTIO_DEPLOYMENT_ADMINS`) may change it. A fresh install with no provider is in **bootstrap mode**: `/login` → `/setup`, whose first step (Sign-in) is unlocked by the one-time **setup token** (`OPTIO_SETUP_TOKEN`, else generated, shared via Redis and printed in the API log); the first person to sign in becomes the deployment admin and their workspace the organization's (`completeSignIn`). Code: `services/sign-in-config-service.ts`, `routes/sign-in.ts`; see `docs/sign-in.md`. Sessions use SHA256-hashed tokens (30-day TTL). Local dev bypass: `OPTIO_AUTH_DISABLED=true`.
+
+**Claude Code** (four modes, selected in setup wizard):
+
+- **API Key**: `ANTHROPIC_API_KEY` env var injected into agent pods
+- **OAuth Token** (recommended for k8s): `CLAUDE_CODE_OAUTH_TOKEN` encrypted secret injected into pods
+- **Vertex AI** (GCP workloads): Routes through Google Cloud Vertex AI. Uses `CLAUDE_VERTEX_PROJECT_ID`, `CLAUDE_VERTEX_REGION`, and optional `CLAUDE_VERTEX_SERVICE_ACCOUNT_KEY` (encrypted, global scope). Falls back to workload identity when no service account key provided. Service account keys written to `/home/agent/.config/gcloud/gsa-key.json` with chmod 600
+- **Max Subscription** (legacy, local dev only): reads from host macOS Keychain
+
+### Key subsystems
+
+These are well-documented in code; read the relevant service files for details:
+
+- **PR watcher** (`pr-watcher-worker.ts`): polls PRs every 30s, tracks CI/review, triggers reviews, auto-resumes, handles merge/close
+- **Code review agent** (`review-service.ts`): launches review as blocking subtask, uses `repos.reviewModel` (defaults to sonnet)
+- **Subtask system**: three types (child, step, review) via `parentTaskId`, with `blocksParent` for synchronization
+- **Prompt templates**: `{{VARIABLE}}` + `{{#if VAR}}...{{/if}}` syntax. Priority: repo override → global default → hardcoded fallback
+- **Shared cache directories**: per-repo persistent PVCs for tool caches (npm, pip, cargo, etc.), managed via `/api/repos/:id/shared-directories`
+- **Interactive sessions**: persistent workspaces with terminal + agent chat, opened at `/work/:id`
+- **Workspaces**: multi-tenancy via `workspaceId` column. Roles (admin/member/viewer) enforced API-wide: a default-deny baseline in `plugins/auth.ts` makes viewers read-only on all mutating `/api` routes (self-scoped allowlist: logout, own PATs, workspace create/switch, notification prefs, own comments, ending own sessions); `requireRole("member"|"admin")` preHandlers gate routes explicitly (admin: repos, secrets, cluster, connections, MCP servers, ticket providers, shared directories, Optio settings, auth refresh, claude-token proxy); mutating WebSockets (session terminal/chat, Optio chat) enforce `requireWsRole` in `ws/ws-authz.ts`
+- **Standalone Tasks / Jobs** (`workflow-service.ts`, `workflow-worker.ts`): listed in `/work?view=recurring` (detail at `/jobs/:id`, runs at `/jobs/:id/runs/:runId`). Agent runs (or shell commands, with no agent) with no repo, `{{PARAM}}` prompt templates, every trigger type, pooled pod execution, real-time log streaming, auto-retry with exponential backoff. Pods are **shared across runs within a workflow**, keyed on `(workflow_id, instance_index)` (`agent_pods` rows with `pool = 'standalone'`): each Job has `maxPodInstances` pod replicas (default 1, max 20) and `maxAgentsPerPod` concurrent runs per pod (default 2, max 50) — mirrors repo pod scaling. Runs track their assigned pod via `workflow_runs.pod_id` and remember it for retry affinity via `last_pod_id`. Schema: `work_definitions` (`kind = 'standalone'`), `workflow_triggers`, `tasks` rows with `kind = 'standalone'` (read and written through the `workflow_runs` view), logs in `task_logs`, `agent_pods`
+- **Repo Task Configs** (`task-config-service.ts`, routes in `task-configs.ts`): reusable Repo Task blueprints that spawn tasks when triggers fire. `instantiateTask(configId, { triggerId, params })` creates a task with rendered prompt + title, transitions it to QUEUED, and enqueues the BullMQ job. UI at `/work?view=recurring` + `/tasks/scheduled/:id`. Schema: `work_definitions` (`kind = 'repo-blueprint'`); a spawned task points back with `tasks.work_id`
+- **Triggers** (`trigger-service.ts`, `trigger-dispatch.ts`, `event-trigger-service.ts`, `workflow-trigger-worker.ts`, shared bodies in `schemas/trigger.ts`): polymorphic trigger table (`workflow_triggers`) keyed by `(target_type, target_id)`. `trigger-service` is the one CRUD every route uses (`listTriggers` / `createTrigger` / `updateTrigger` / `deleteTrigger`, `validateTriggerConfig`, webhook-path uniqueness, schedule `next_fire_at`); `TRIGGER_TYPES_FOR_TARGET` in `@optio/shared` says which types a target takes (all fourteen for `job` / `task_config` / `local_blueprint` / `persistent_agent`, `schedule` only for `pr_review`). `trigger-dispatch.fireTrigger(trigger, firing)` starts what the target starts (`createWorkflowRun` / `instantiateTask` / `spawnFromBlueprint` / `wakeAgent` / `reReview`) and stamps `last_fired_at`; the schedule worker (polls every 60s, `OPTIO_WORKFLOW_TRIGGER_INTERVAL`), the webhook ingress, `fireTicketTriggers` (ticket sweep), and `fireEventTriggers` (the GitHub / GitLab / Slack / Linear / Jira / PagerDuty / Sentry ingress, and the per-trigger Pylon / Alertmanager / Datadog receivers through `firingFor`; matching in `event-trigger-service.ts`) all go through it. A scheduled Task with a `github` trigger and no `repos` filter (or a `gitlab` trigger and no `projects` filter) listens to its own repo; a task started by a PR / issue event is not ticket-linked (that would auto-close the issue).
+- **Prompts / Templates** (`prompt-template-service.ts`, routes in `prompt-templates.ts`): reusable prompt templates with `kind` discriminator (`prompt` / `review` / `job` / `task`). `renderTemplateString(template, params)` handles `{{param}}` substitution + `{{#if}}` blocks. UI at `/templates` (labeled **Prompts** in the Library nav as of v0.4 — the "Templates" name was freed for other use).
+- **Persistent Agents** (`persistent-agent-service.ts`, worker `persistent-agent-worker.ts`, routes in `persistent-agents.ts` and `persistent-agent-internal.ts`): the third Task tier — long-lived, named, message-driven. Cyclic state machine (`idle → queued → provisioning → running → idle`), per-agent pod lifecycle modes (`always-on` / `sticky` / `on-demand`). Wake sources: user/agent messages, webhook, cron tick, ticket event, system. Inter-agent HTTP API at `/api/internal/persistent-agents/*` (auth via `X-Optio-Agent-Token`). UI at `/work?view=agents`. Schema: `persistent_agents`, `persistent_agent_turns`, `persistent_agent_messages` (pods in `agent_pods`, turn logs in `task_logs`). See `docs/persistent-agents.md` and the demo in `examples/persistent-agents/forge/`.
+- **Agent pods** (`agent-pod-pool.ts`, table `agent_pods`): every pod Optio runs agents in — a repo's pods, a Job's pooled pods, a persistent agent's pod — is one row keyed by `(pool, pool_key, isolation_key, instance_index)` (`pool` = `repo` / `standalone` / `persistent-agent`; `pool_key` = the normalized repo URL / the Job's id / the agent's id). `pickPod` is the one selection (retry affinity → least-loaded → reap dead / errored / stuck rows → scale out at the lowest free index), plus slots (`acquireSlot` / `releaseSlot`) and count repair; `repo-pool-service` (StatefulSets, PVCs, sidecars), `workflow-pool-service` (Jobs), and `persistent-agent-pool-service` (warm windows) keep only what is theirs. The cluster API still serves repo pods in their old shape (`repoPodView`)
+- **Redis** (`services/redis-config.ts`, `docs/redis.md`): the one module that builds Redis clients — `REDIS_MODE=standalone` (default, one server) or `cluster` (ElastiCache Serverless, any Redis Cluster; `REDIS_URL` is a comma-separated seed list with TLS + auth). `getBullMQOptions()` gives every Queue / Worker / maintenance call the same `{ connection, prefix }`: cluster mode shares one `ioredis.Cluster` and puts every queue under a hash-tagged prefix (`OPTIO_QUEUE_PREFIX`, default `{optio}`) so BullMQ's multi-key scripts never CROSSSLOT. `createRedisClient()` is the pub/sub, rate-limit and general client (`event-bus.getRedisClient()` is the shared one); a bus that relies on publish order (the session bus, the Local bus) goes through `publishOrdered` / `createOrderedSubscriber` (sharded pub/sub, `SPUBLISH` / `SSUBSCRIBE`, in cluster mode); ad-hoc keys stay single-key, and pattern deletes go through `redisScanKeys` / `redisDeleteKeys` (no `KEYS`, no multi-key `DEL`). Boot logs the mode and each node's eviction policy. `pnpm --filter @optio/api redis:smoke` exercises a target Redis before deploying on it
+- **Usage and delivery accounting**: `docs/usage.md` documents the atomic `usage_ledger`, the people/shared-work leaderboard at `/usage`, and monthly budget admission in `usage-budget-service.ts`. `docs/trigger-delivery.md` documents `trigger_events` / `trigger_occurrences`, durable ingress, schedule transactions, recovery identities, and `/work/deliveries`. Keep those docs in step with semantics and retention.
+- **Run logs and spend** (`run-log-service.ts`, `run-usage.ts`): `task_logs` is the one log table for every run (Repo Tasks and Job runs), PR-review runs, and persistent-agent turns. Spend is added in SQL (`addUsage` / `plusCost`, exact `numeric`, atomic), so a retried or resumed run sums its attempts
+- **Connections** (`connection-service.ts`, `docs/connections.md`): a named account at a service ("Jon's AWS") made of **parts** — credentials (encrypted on the row, never returned; `secretFields` names them), tools (an MCP server), shell env (vars exported into the agent's own shell, `shellEnv` templates), and a note (a skill file). Built-in providers: Notion, GitHub, Slack, Linear, PostgreSQL, Sentry, Filesystem, AWS (keys or the pod's IAM role as shell env; optional `awslabs` tools), Pylon and PagerDuty (tokens on the **REST bridge**, `packages/mcp-bridge` baked into the images at `/opt/optio/mcp-bridge.js`), HTTP API (any REST API on the bridge), Custom MCP Server. Bare secrets and hand-written MCP servers are connections too ("credentials only" / "tools only"): the **catalog** (`connection-catalog-service.ts`, `GET /api/connections/catalog`, `catalog` in `GET /api/work/environment`) lists all three kinds as `WorkEnvironmentEntry` rows whose `kind` says which setting a toggle changes; deployment secrets (`isDeploymentSecret`) are left out. Three-layer model: providers (catalog, `BUILT_IN_PROVIDERS`, re-seeded at boot) → connections → assignments (per-repo/agent-type). Injected into every agent pod by `agent-environment-service.buildAgentEnvironment` (`.mcp.json` sensitive, Codex TOML, note skills) plus `connectionShellEnv`, which the workers spread **last** so a connection's `AWS_*` beats the deployment's; a PR-review pod gets neither credentials nor shell env. `POST /api/connections/:id/test` runs the provider's `healthCheck` (`connection-health.ts`); `PATCH` merges config (blank secret = keep, null = clear) and can replace assignments
+- **Reconciliation control plane** (`workers/reconcile-worker.ts`, `services/reconcile-{snapshot,executor,queue}.ts`, `packages/shared/src/reconcile/`): K8s-style reconciler with four `RunKind`s — `repo` (Repo Task runs in `tasks`), `standalone` (Job runs: `tasks` rows with `kind = 'standalone'`, through the `workflow_runs` view), `pr-review` (external PR reviews), and `persistent-agent` (Persistent Agents in `persistent_agents`). Pure decision functions consume a frozen `WorldSnapshot` and return a typed `Action`; the executor applies it under CAS so concurrent passes can't trample each other. Producers — `taskService.transitionTask`, `workflow-service`'s `transitionWorkflowRunCas`, `pr-watcher` poll cycle, `repo-cleanup` pod-health detection, `wakeAgent()` (PA inbox + trigger dispatch) — wake the reconciler via `enqueueReconcile`. Periodic resync (`OPTIO_RECONCILE_RESYNC_INTERVAL`, 5 min) catches anything missed. The reconciler owns: PR-driven transitions (auto-merge, complete-on-merge, fail-on-close), auto-resume on CI/conflict/review (capped by `OPTIO_MAX_AUTO_RESUMES`), review launch, stall + pod-death detection, control-intent (cancel/retry/resume/restart), and the Persistent Agent turn cycle. Schema: `control_intent`, `reconcile_backoff_until`, `reconcile_attempts` columns on `tasks` (every run) and `persistent_agents`. See `docs/reconciliation.md`
+- **Optio Local** (`local-host-service.ts`, `local-terminal-service.ts`, `local-blueprint-service.ts`, `local-relay.ts`, ws in `ws/local-daemon.ts` + `ws/local-terminal-stream.ts`, routes in `routes/local.ts`, daemon in `apps/cli/src/local/`): terminals on the **user's own machine**, managed from the web UI at `/work` and Library → Machines. The CLI daemon (`optio local up`) makes one outbound WS to `/ws/local/daemon` (PAT auth), advertises a dir allowlist (kept in the machine's `local.json`; the Machines page and the New work form add / remove dirs through the daemon — a `dirs` frame, `local-dirs-service.ts` — unless it runs with `--no-remote-dirs`), and runs node-pty PTYs; the relay (`local-relay.ts`) routes frames to browser viewers on `/ws/local/terminals/:id/stream` (binary = terminal bytes, JSON = control) — across API instances too: the instance a daemon connects to owns the host by the lease `local-host:<id>` (per connection, newest daemon wins, `host-taken`), capabilities go on `local_hosts.capabilities`, and viewers, spawn / kill / dirs / limits / credentials / backfill on other instances reach it over the Local bus (`local-bus.ts`: `optio:local:host:<id>:in`, `optio:local:term:<id>:out`, `optio:local:reply:<instance>`; see "Several API instances" in `docs/optio-local.md`); which viewer's screen the PTY is sized for is decided there too (`local-grid.ts`: the screen in use, from the viewers' `view` reports). Attention detection is daemon-side and layered: Claude Code hooks (Stop/Notification/UserPromptSubmit via a localhost hook server) → OSC-aware bell scanner → silence heuristic; persisted as `attention_state` (`working`/`needs_you`/`idle`) driving the cockpit's "needs you" queue. **Local Automations** (`work_definitions` rows with `kind = 'local-blueprint'`, "blueprints" in code) are agent / terminal specs spawned by `workflow_triggers` with `target_type="local_blueprint"`: any of the fourteen trigger types incl. the events `github` / `gitlab` / `slack` / `linear` / `jira` / `pylon` / `pagerduty` / `sentry` / `alertmanager` / `datadog` (signed ingress in `routes/event-ingress.ts` + the existing GitHub receiver; matching in `event-trigger-service.ts`, the same path that fires pod-side Jobs and scheduled Tasks). `sessionMode` picks `interactive` (agent halts at its prompt for chat) or `headless` (`claude -p` etc., exits when done); the daemon reports the agent's `session_id` so an exited run can be resumed (`POST /api/local/terminals/:id/resume`). Trigger params reach a command through `renderCommandTemplate` (shell variables, never spliced in) — payloads can never inject commands. Hosts are per-user (never workspace compute); local agents use the machine's own CLI auth (no server secrets ship to laptops). The daemon launches agents with their permission checks skipped (`claude --dangerously-skip-permissions`, `codex --yolo`) unless the spawn's `permissionMode` says `auto` or `default` (a headless `claude -p` without a flag would deny everything that needs approval), passes `effort`, and reports the models its Codex offers (`codex debug models`, an `agent-models` frame, merged into `GET /api/agents/openai/options`); see `cli/src/local/agent-command.ts` and `cli-probes.ts`. **Local runs** (`local-run-service.ts`): every Task, Job, and scheduled-Task blueprint has a run location (`run_target` = `cluster` | `local`, plus `local_host_id` / `local_dir` / `local_session_mode`) picked with the shared `components/run-location-picker.tsx`; the task / workflow workers dispatch `local` runs to the daemon as an agent terminal (`spawned_by = "job" | "task"`, `local_terminal_id` on the run) instead of a pod, and the terminal's frames drive the run's state (`syncLinkedRun`: running, usage → cost, PR link → `pr_opened`, exit → completed / failed). The reconciler skips capacity / stall / pod checks for local runs; the machine's own limit is `local_hosts.max_concurrent_agents` (default 3, Machines page / `PATCH /api/local/hosts/:id`): agent terminals that automations, Jobs, Tasks and tickets start past it wait in `pending` / `capacity` and start as agents finish (`claimAgentSlot` locks the host row; `flushCapacityTerminals`), a session a person opens by hand always starts but counts, shells and commands never count. Schema: `local_hosts`, `local_terminals`, `work_definitions`. See `docs/optio-local.md`
+- **Organization and private scope** (`services/ownership.ts`; the work-specific rules in `work-ownership.ts`): every scoped resource — secrets, connections, model providers, MCP servers, skills, prompts, and work of every kind — is the **organization's** (`owner_user_id` null; everyone in the workspace sees it) or one person's **private** one (visible to its owner alone, **read-only to workspace admins**, who see it named with its owner and may delete it; changing / running / using it is a 403 for everyone else, admins included). `visibleOwner` is the SQL term every list uses, `canSee` / `canChange` the row forms, `usableBy` what a piece of work may be given (the organization's rows plus its owner's own). A member fetching someone else's private row gets a 404. Private work is hidden from other members everywhere (Work list, per-kind lists and details, recent runs, the events socket); a private agent is addressable only by its owner's agents. Private secrets (`scope = "user"`) are stored without a workspace (a boot-time heal re-binds older rows). UI vocabulary is fixed: pickers **Organization / Private**, sections **Organization / Private / Other people's**, chip **Private** (`lib/owner.ts`, `hooks/use-current-user.ts`, `components/ui/{owner-segments,scoped-list,owner-picker,owner-chip}.tsx`; the Secrets page is the exemplar). See `docs/scope.md`
+- **Config as code** (`services/config/`, `routes/config.ts`, `workers/config-sync-worker.ts`, schemas in `schemas/config.ts`, shared types in `packages/shared/src/config/`): every Job, scheduled Task, persistent agent, prompt, repo, MCP server, skill and connection can be a YAML **manifest** (`apiVersion: optio/v1`, `kind`, `metadata.name` = identity, `spec`; references by **name**, secrets by name or `${{SECRET_NAME}}`, never values). A cluster mounts a directory of them (`OPTIO_CONFIG_DIR`; Helm `configAsCode.*`) that the sync worker reads every `OPTIO_CONFIG_INTERVAL` and **applies** to one workspace (`OPTIO_CONFIG_WORKSPACE` slug, default the oldest): create / adopt / update (a managed row edited in the UI is **put back** and reported as reverted) / replace / prune (`OPTIO_CONFIG_PRUNE`, default on), each manifest its own error. One handler per kind in `services/config/kinds/*.ts` (desire / find / diff / create / update / remove / export); the engine is `apply.ts`. Managed rows carry `managedBy` (`withManagedBy` / `withManagedWork`, nothing is managed unless `OPTIO_CONFIG_DIR` is set) and show a **Managed** chip and banner; **Detach** stops it. `GET /api/config/schema.json` (public) is the JSON Schema; `GET /api/config/export[.yaml]` exports; `POST /api/config/apply` is what `optio apply -f` posts (a plain upsert: manages nothing, never prunes); `optio export -o DIR` writes one file per resource. Settings → Config as code shows the directory's last sync. See `docs/config-as-code.md`
+- **Model providers, owners, pod secrets** (`model-provider-service.ts`, `work-ownership.ts`, routes in `model-providers.ts`, `bedrockRuntime` in `@optio/shared`): Settings → Model providers saves Amazon Bedrock for Claude Code / Codex (region, per-agent model ids, a machine AWS profile, encrypted pod credentials or the pod's IAM role); work picks one with `agentOptions.modelProvider`. Providers, secrets, connections and work have an owner — the organization (`owner_user_id` null) or one person: private work runs with its owner's secrets / providers / connections and only its owner changes or runs it; organization work only uses organization resources. `podSecrets` is the list of secrets a piece of work gives its pod (`GET /api/secrets/pickable`). Workspaces can auto-join people by verified email domain. See `docs/model-providers.md`
+- **Agent credentials** (`agent-credential-service.ts`, routes in `agent-credentials.ts`): the Who section's "Signed in with" row. `GET /api/agents/credentials?agentType=&owner=` lists the agent's sign-in secrets by well-known name (the organization's and the owner's own; `default` marks what the deployment's `*_AUTH_MODE` would pick) plus the model providers that serve it, and `POST /api/agents/credentials` stores one (verified against the service where possible; organization rows need an admin). Work picks a secret with `agentOptions.credential = "secret:<id>"` (a provider stays `modelProvider`; never both), checked next to the provider pick in `work-ownership.ts`, and the run gets the value and the auth mode it implies over the deployment's default (`task-worker.ts`, `pooled-agent-env.ts`; machine work takes none). See `docs/model-providers.md`
+- **Task dependencies**: `task_dependencies` table for multi-step pipelines
+- **Cost tracking**: `GET /api/analytics/costs` with daily/repo/type breakdowns, UI at `/usage`
+- **Error classification**: `packages/shared/src/error-classifier.ts` pattern-matches errors into categories with remedies
+
+## iOS app
+
+Native SwiftUI client at `apps/ios/` (see `apps/ios/README.md`). Models are generated from `packages/shared/src/types` by `pnpm gen:swift` into `apps/ios/Optio/Generated/SharedTypes.swift`; CI fails if that file is stale. Auth is a PAT over HTTP bearer + WebSocket subprotocol, same as the CLI. Build with `cd apps/ios && make build` (needs Xcode + `brew install xcodegen`).
+
+## Android app
+
+Native Kotlin + Jetpack Compose (Material 3) client at `apps/android/`, at parity with the iOS app, whose Swift source is its spec (see `apps/android/README.md`; the dev lab is in `apps/android/e2e/README.md`). Models are generated from `packages/shared/src/types` by `pnpm gen:kotlin` into `apps/android/core/model/src/main/kotlin/dev/optio/core/model/SharedTypes.kt`: never hand-edit it; CI "Kotlin Types In Sync" (`scripts/check-kotlin-types.sh`) fails if it is stale. Auth is the same PAT as iOS and the CLI.
+
+- **Build/test** from `apps/android` with `JAVA_HOME` set to Android Studio's JBR (`/Applications/Android Studio.app/Contents/jbr/Contents/Home`; any JDK 17–25 works): `./gradlew assembleDebug`, `./gradlew testDebugUnitTest :core:model:test :core:network:test` (the two plain-JVM modules use `test`), `./gradlew :<module>:recordRoborazziDebug` for screenshots (`<module>/build/outputs/roborazzi/`). Live tests skip unless `OPTIO_TEST_API_URL` points at a test API. Never run `./gradlew --stop` (it kills every Gradle daemon on the machine).
+- **Modules**: `:app` → `:feature:*` → `:core:*` (`model`, `network`, `data`, `navigation`, `ui`, `terminal`, `testing`, `workfeed`, `glance`). Features never depend on another feature: they push route keys from `:core:navigation`. Convention plugins in `build-logic/`, versions in `gradle/libs.versions.toml`.
+- **Dev lab** (`apps/android/scripts/`): `test-api.sh` (hermetic API with the fake runtime and seeded data: shared 4961, `--auth` 4980, private 4962–4979), `emu.sh` (headless read-only emulators on even console ports 5554–5680; exits 75 when `OPTIO_EMU_MAX`, default 3, are running), `test-daemon.sh` (isolated Optio Local daemon). Never use 30400/30310 (the real Optio) or 4931/3131 (web e2e). Install with `adb install -r -g`: Android 17 needs `ACCESS_LOCAL_NETWORK` to reach `10.0.2.2` or LAN hosts, or requests silently time out.
+- **Push**: FCM is optional. A Firebase `google-services.json` in `apps/android/app/` (git-ignored) makes the build apply the google-services plugin; without it the app uses its on-device baseline (WorkManager check, "Keep watching"). Server side: `docs/android-push.md`.
+- **CI**: job "Android (build + unit tests)" runs `./gradlew assembleDebug testDebugUnitTest :core:model:test :core:network:test` on Temurin 21.
+
+## Tech Stack
+
+| Layer      | Technology                       | Notes                                                                          |
+| ---------- | -------------------------------- | ------------------------------------------------------------------------------ |
+| Monorepo   | Turborepo + pnpm 10              | 9 workspace packages (4 apps + 5 packages)                                     |
+| API        | Fastify 5                        | Plugins, schema validation, WebSocket                                          |
+| ORM        | Drizzle                          | PostgreSQL, migrations in `apps/api/src/db/migrations/`                        |
+| Queue      | BullMQ + Redis                   | Also used for pub/sub (log streaming to WebSocket clients)                     |
+| Web        | Next.js 15 App Router            | Tailwind CSS v4, Zustand, Lucide icons, sonner toasts, Recharts                |
+| K8s client | @kubernetes/client-node          | Pod lifecycle, exec, log streaming, metrics                                    |
+| Validation | Zod                              | API request schemas                                                            |
+| Testing    | Vitest                           | Test files across shared + api                                                 |
+| CI         | GitHub Actions                   | Format, typecheck, test, build-web, build-image                                |
+| Deploy     | Helm                             | Chart at `helm/optio/`, local dev via `setup-local.sh`                         |
+| Hooks      | Husky + lint-staged + commitlint | Pre-commit: lint-staged + format + typecheck. Commit-msg: conventional commits |
+
+## Commands
+
+```bash
+# Setup (first time — builds everything, deploys to local k8s via Helm)
+./scripts/setup-local.sh
+
+# Update (pull + rebuild + redeploy)
+./scripts/update-local.sh
+
+# Manual rebuild + redeploy
+docker build -t optio-api:latest -f Dockerfile.api .
+docker build -t optio-web:latest -f Dockerfile.web .
+kubectl rollout restart deployment/optio-api -n optio   # API + web share one pod
+
+# Quality (these are what CI runs, and pre-commit hooks mirror them)
+pnpm format:check                     # Check formatting (Prettier)
+pnpm turbo typecheck                  # Typecheck every workspace package
+pnpm turbo test                       # Run unit tests (Vitest, all mocked, no infra)
+cd apps/web && npx next build         # Verify production build
+
+# Deeper test tiers (see "Testing" section below)
+pnpm --filter @optio/api test:integration  # Real Postgres+Redis service tests
+pnpm --filter @optio/api test:e2e          # Full pipeline e2e (real server, fake pods)
+pnpm --filter @optio/web test:e2e          # Playwright browser e2e (seeded stack)
+bash scripts/smoke-e2e.sh                  # LIVE cluster smoke incl. one real LLM run
+
+# Database
+cd apps/api && npx drizzle-kit generate  # Generate migration after schema change
+cd apps/api && npx tsx src/db/migrate.ts  # Apply migrations (standalone runner)
+bash scripts/check-migration-prefixes.sh  # Check for duplicate prefixes
+
+# Agent images
+./images/build.sh                     # Build all presets (base, node, python, go, rust, full)
+
+# Helm
+helm lint helm/optio --set encryption.key=test
+helm upgrade optio helm/optio -n optio --reuse-values
+
+# Teardown
+helm uninstall optio -n optio
+```
+
+## Testing
+
+Five tiers. The first four are deterministic (no cluster, no LLM calls, no cost) and run in CI; the live tier is local-only. **A change is not done until the tiers covering it pass.** Pick tiers by what you touched:
+
+| Tier         | Command                                         | Covers                                                                                                                                                                            | Run when you change                                                                 |
+| ------------ | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Unit         | `pnpm turbo test`                               | Pure logic, routes with mocked services                                                                                                                                           | Anything (always)                                                                   |
+| Integration  | `pnpm --filter @optio/api test:integration`     | Services against **real Postgres + Redis**: state machines, reconciler CAS, triggers, secrets crypto, migrations-built schema                                                     | DB schema, services, reconciler, workers' DB logic                                  |
+| Pipeline e2e | `pnpm --filter @optio/api test:e2e`             | The **real API server** (all its workers) driven over HTTP with a fake container runtime: task/job/persistent-agent lifecycles, boot + migrations from empty DB, WS log streaming | Workers, routes, pipeline, boot, reconciler behavior                                |
+| Web e2e      | `pnpm --filter @optio/web test:e2e`             | Playwright against `next dev` + real API + seeded data: every top-level page, task/job/agent flows                                                                                | Web UI                                                                              |
+| Live         | `/live-e2e` skill → `bash scripts/smoke-e2e.sh` | Real K8s pods + real agent auth + one real LLM run (~$0.01)                                                                                                                       | Pod lifecycle, images, Helm, agent adapters — final check; **local only, never CI** |
+
+Mechanics (integration + e2e tiers):
+
+- Throwaway infra containers (`optio-test-postgres` :54329, `optio-test-redis` :63790, and a three-master Redis Cluster `optio-test-redis-cluster` :63791–63793 for the `REDIS_MODE=cluster` tests) auto-start via `scripts/test-infra.sh` — needs Docker running. `stop` to clean up.
+- Each test FILE gets a private database cloned from a migrated template plus a leased Redis logical DB — concurrent runs are safe. GlobalSetup sweeps leftovers from crashed runs. Cluster-mode tests (`redis-cluster.int.test.ts`, `redis-cluster.e2e.test.ts`; helper `test-utils/redis-cluster.ts`) isolate by a per-file hash-tagged key prefix instead (a cluster has only db 0) and skip themselves when the cluster is unreachable.
+- Integration tests: name `*.int.test.ts` under `apps/api/src/`, exemplar `apps/api/src/db/harness.int.test.ts`, row factories in `apps/api/src/test-utils/integration/fixtures.ts`. Import services normally — env already points at the private DB.
+- Pipeline e2e tests: `apps/api/e2e/*.e2e.test.ts`, exemplar `standalone-job.e2e.test.ts`; `startApiServer()` from `src/test-utils/e2e/api-server.ts` spawns the real server (`OPTIO_RUNTIME=fake`, `OPTIO_STATEFULSET_ENABLED=false`, auth disabled).
+- The fake runtime (`packages/container-runtime/src/fake.ts`) plays agents by speaking claude stream-json; script it with prompt directives: `[[mock:pr]]` (emit PR URL → pr_opened), `[[mock:fail]]`, `[[mock:silent]]` (no output), `[[mock:sleep:MS]]`, `[[mock:hang]]`, `[[mock:cost:X]]`. Default = success, cost 0.0123. Repo tasks need `ANTHROPIC_API_KEY` + `GITHUB_TOKEN` secrets seeded (dummy values fine) or provisioning retries forever.
+- Playwright: specs in `apps/web/e2e/*.spec.ts`; `e2e/launch-stack.ts` boots API + `next dev` (ports 4931/3131) and seeds a repo, tasks, a job run, a template, and an agent. First run: `cd apps/web && npx playwright install chromium firefox`. Assistant UI tests run in both browsers; the rest use Chromium.
+
+After changing backend code, ALWAYS rebuild + redeploy the local cluster and verify live (see the `/live-e2e` skill; per standing user preference, deploy after backend changes).
+
+### Push and release verification
+
+- Let the commit and push hooks run; do not bypass them to ship. After committing, run `pnpm check:push` (formatting, types, generated Swift/Kotlin types, unit tests, API integration/end-to-end tests, and the full browser suite against the isolated fake-runtime stack), then `git push`. Pre-push verifies a local receipt tied to the commit, file contents (including untracked, non-ignored files), and Node environment. A source change invalidates it. Long checks run before opening the remote connection so it cannot time out during the suites. These checks run even for native-only changes, matching CI, and need Docker and Playwright Chromium. Allow time for them.
+- When Android files (including generated Kotlin models) differ from the upstream branch, `check:push` also runs the full Android build and unit suites, not just `core:model`. This needs the Android SDK and JDK; `scripts/check-android.sh` uses Android Studio’s bundled JDK on macOS when `JAVA_HOME` is unset. Without an upstream, it runs conservatively.
+- Run the additional suites in the testing matrix for the changed code (including native builds/tests for native changes). Passing hooks does not mean every CI job has passed.
+- After every push, find the **CI** workflow for the exact pushed SHA (`gh run list --workflow CI --commit <sha>`), then wait for its result (`gh run watch <run-id> --exit-status`). Do not report CI success or publish a release, including TestFlight, while that run is pending or failed.
+- On failure, inspect the failed job, reproduce it, and fix its cause before the next release. Preserve assertions; do not mask failures with extra retries or skips. If a failure is environmental or still unresolved, report that explicitly rather than calling the push verified.
+
+## Conventions
+
+- **ESM everywhere**: all packages use `"type": "module"` with `.js` extensions in imports (TypeScript resolves them to `.ts`)
+- **Conventional commits**: enforced by commitlint (e.g., `feat:`, `fix:`, `refactor:`)
+- **Pre-commit hooks**: lint-staged (eslint + prettier), then `pnpm format:check` and `pnpm turbo typecheck`
+- **Tailwind CSS v4**: `@import "tailwindcss"` + `@theme` block in CSS, no `tailwind.config` file
+- **Drizzle ORM**: schema in `apps/api/src/db/schema.ts`, run `drizzle-kit generate` after changes. **New migrations use unix-timestamp prefixes** (`migrations.prefix: "unix"` in `drizzle.config.ts`). Existing `00xx_*` files are frozen — never rename them. Migrations are hand-written SQL (the drizzle-kit snapshots stopped at `0012`). **Run columns**: add them to `tasks` as always (`ALTER TABLE "tasks" ...`) and to `runColumns()` in `schema.ts` (the table `workRuns` and the view `tasks` = `repo_tasks` both use it); `migrate-safe.ts` drops the run views before every migration and remakes them after (`db/run-views.ts`), so `repo_tasks` picks the column up by itself. A column Job runs need goes in `workflow_runs`'s list in `run-views.ts` too, and in `workflowRuns` in the schema
+- **Zustand**: use `useStore.getState()` in callbacks/effects, not hook selectors (avoids infinite re-renders)
+- **Next.js webpack**: `extensionAlias` in `next.config.ts` resolves `.js` → `.ts` for workspace packages
+- **State transitions**: always go through `taskService.transitionTask()` — validates, updates DB, records event, publishes WebSocket. Its in-transaction form is `claimTransitionIn(claim, …)` inside `withClaimLock` (`services/claim-lock.ts`): the write runs on the claim's transaction and the announcement is registered with `claim.afterCommit`, so it runs only once the transaction commits
+- **Secrets**: never log or return secret values. Encrypted at rest with AES-256-GCM
+- **Cost tracking**: stored as string (`costUsd`) to avoid float precision issues
+- **K8s RBAC**: namespace-scoped Role (pods, exec, secrets, PVCs) + ClusterRole (nodes, namespaces, metrics)
+
+## Helm Chart
+
+Key `values.yaml` settings:
+
+- Image defaults point to GHCR (`ghcr.io/jonwiggins/optio-*`). Set `agent.image.prefix` to `optio-` for local dev
+- `postgresql.enabled` / `redis.enabled` — set to `false` for managed services; use `existingSecrets.DATABASE_URL` / `existingSecrets.REDIS_URL` references (or inline `externalDatabase.url` / `externalRedis.url`)
+- `encryption.key` — **required** unless supplied with `existingSecrets.OPTIO_ENCRYPTION_KEY`; generate with `openssl rand -hex 32`
+- `existingSecrets` — environment variable names mapped to `{ name, key }` references, including database, Redis, encryption and OAuth configuration
+- `serviceAccount.name` / `serviceAccount.annotations` — API/web identity with control-plane RBAC; `agent.serviceAccount.*` is a separate workload identity with no API RBAC or automounted Kubernetes token
+- `api.replicas` may be any number (or `api.autoscaling.enabled`, which then owns the count); the combined API/web pod always rolls out with Recreate (migrations at boot). Per pod: caches and the WebSocket cap per client address
+- Local dev overrides in `helm/optio/values.local.yaml` (`setup-local.sh` applies automatically)
+
+## Troubleshooting
+
+**Pod won't start**: check `kubectl get pods -n optio`, verify agent image exists (`docker images | grep optio-agent`), check `OPTIO_IMAGE_PULL_POLICY=Never` for local images.
+
+**Auth errors**: verify `CLAUDE_AUTH_MODE` secret, check `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` exists, check `GET /api/auth/status`.
+
+**Tasks stuck in `queued`**: check concurrency limits (`OPTIO_MAX_CONCURRENT`, per-repo `maxConcurrentTasks`), look for stuck provisioning/running tasks.
+
+**WebSocket drops**: ensure Redis is running, check `REDIS_URL` and `INTERNAL_API_URL` config.
+
+**Pod OOM/crash**: check `pod_health_events`, increase resource limits. Cleanup worker auto-detects and fails associated tasks.
+
+**OAuth login fails**: verify `PUBLIC_URL` matches deployment URL, check provider callback URLs are registered.
+
+**Migration errors**: migrations auto-run on startup. Historical duplicate prefixes (0016, 0018, 0019, 0026, 0039, 0042) are allowlisted. New migrations use unix-timestamp prefixes.
+
+**Repo init timeout**: large repos may exceed 120s default. Increase `OPTIO_REPO_INIT_TIMEOUT_MS`.
+
+**429 Too Many Requests in the UI / iOS / Android app**: the API has a per-IP global limiter (`OPTIO_RATE_LIMIT_MAX`, default 600/min; auth routes have their own stricter limits). The web proxies through the Next server, but the iOS and Android apps talk to the API directly and poll several endpoints, so a low limit shows up there first.
+
+## Production Deployment Checklist
+
+1. Generate encryption key: `openssl rand -hex 32`
+2. Configure an OAuth provider (`*_CLIENT_ID` + `*_CLIENT_SECRET`), or leave none and configure the organization's Google sign-in from the setup wizard's Sign-in step (setup token from the API log; `docs/sign-in.md`)
+3. Ensure `OPTIO_AUTH_DISABLED` is NOT set
+4. Use managed PostgreSQL/Redis (`externalDatabase.url`, `externalRedis.url`)
+5. Set `PUBLIC_URL` to actual deployment URL
+6. Enable ingress with TLS
+7. Set `GITHUB_TOKEN` secret for PR watching, issue sync, repo detection
+8. Install `metrics-server` in cluster
+9. Optional: keep the workspace's Jobs, agents, prompts, repos and integrations in a repo as manifests and mount them (`configAsCode.*`; `docs/config-as-code.md`)
+
+## Known Issues
+
+- API container runs via `tsx` rather than compiled JS (workspace packages export `./src/index.ts`)
+- OAuth tokens from `claude setup-token` have limited scopes vs Keychain-extracted tokens
