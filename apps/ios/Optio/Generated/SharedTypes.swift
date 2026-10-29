@@ -3605,6 +3605,84 @@ public struct RepoContent: Codable, Hashable, Sendable {
     }
 }
 
+/// A repository the platform credentials can reach, as the "Add repository"
+/// picker lists it (`GitPlatform.browseRepositories`).
+public struct BrowsableRepository: Codable, Hashable, Sendable {
+    /// `owner/name` (GitLab: the project's full path, groups included).
+    public let fullName: String
+    public let cloneUrl: String
+    public let htmlUrl: String
+    public let defaultBranch: String
+    public let isPrivate: Bool
+    public let description: String?
+    /// When it last changed (GitHub: last push; GitLab: last activity).
+    public let pushedAt: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case fullName = "fullName"
+        case cloneUrl = "cloneUrl"
+        case htmlUrl = "htmlUrl"
+        case defaultBranch = "defaultBranch"
+        case isPrivate = "isPrivate"
+        case description = "description"
+        case pushedAt = "pushedAt"
+    }
+
+    public init(
+        fullName: String,
+        cloneUrl: String,
+        htmlUrl: String,
+        defaultBranch: String,
+        isPrivate: Bool,
+        description: String? = nil,
+        pushedAt: String? = nil
+    ) {
+        self.fullName = fullName
+        self.cloneUrl = cloneUrl
+        self.htmlUrl = htmlUrl
+        self.defaultBranch = defaultBranch
+        self.isPrivate = isPrivate
+        self.description = description
+        self.pushedAt = pushedAt
+    }
+}
+
+/// Where on a platform `browseRepositories` looks: its host and its API root.
+public struct PlatformLocation: Codable, Hashable, Sendable {
+    public let host: String
+    public let apiBaseUrl: String
+
+    private enum CodingKeys: String, CodingKey {
+        case host = "host"
+        case apiBaseUrl = "apiBaseUrl"
+    }
+
+    public init(host: String, apiBaseUrl: String) {
+        self.host = host
+        self.apiBaseUrl = apiBaseUrl
+    }
+}
+
+/// A branch of a repository, as the branch pickers list them.
+public struct Branch: Codable, Hashable, Sendable {
+    public let name: String
+    /// The repository's default branch (what `getRepoMetadata` reports).
+    public let `default`: Bool
+    public let protected: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case name = "name"
+        case `default` = "default"
+        case protected = "protected"
+    }
+
+    public init(name: String, `default`: Bool, protected: Bool? = nil) {
+        self.name = name
+        self.`default` = `default`
+        self.protected = protected
+    }
+}
+
 // MARK: - image.ts
 
 public enum PresetImageId: String, Codable, Hashable, Sendable, CaseIterable {

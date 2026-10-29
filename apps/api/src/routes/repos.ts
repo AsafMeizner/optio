@@ -1,3 +1,11 @@
+import type { GitPlatformType, PlatformLocation } from "@optio/shared";
+import {
+  getGitPlatformForRepo,
+  getGitToken,
+  isTrustedGitHost,
+} from "../services/git-token-service.js";
+import { createGitPlatform } from "../services/git-platform/index.js";
+import { retrieveSecretWithFallback } from "../services/secret-service.js";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -171,7 +179,81 @@ const BrowseResponseSchema = z
   })
   .describe("GitHub repositories the server's credentials can access");
 
+const RepoBrowseQuerySchema = z
+  .object({
+    q: z.string().max(200).optional().describe("Filter by path, name or description"),
+    platform: z
+      .enum(["github", "gitlab", "codecommit"])
+      .optional()
+      .describe("The git platform to list; defaults to github"),
+  })
+  .describe("Search for the platform-neutral Add repository picker");
+
+const RepoBrowseResponseSchema = z
+  .object({
+    repos: BrowseResponseSchema.shape.repos,
+    platform: z.enum(["github", "gitlab", "codecommit"]),
+    host: z.string().nullable().describe("The platform host that was listed"),
+    error: z.string().optional().describe("Why the list is empty; a pasted URL still works"),
+  })
+  .describe("Repositories the person's (else the organization's) git credentials can access");
+
+/**
+ * Where `GET /api/repos/browse` lists a platform. GitLab: the GITLAB_HOST
+ * secret the setup wizard saves, else the first self-managed host in
+ * GITLAB_HOSTS, else the host of a GitLab repo the workspace already has,
+ * else gitlab.com.
+ */
+async function browseLocation(
+  platform: GitPlatformType,
+  workspaceId: string | null,
+): Promise<PlatformLocation> {
+  if (platform === "github") return { host: "github.com", apiBaseUrl: "https://api.github.com" };
+  let host = await retrieveSecretWithFallback("GITLAB_HOST", "global", workspaceId).catch(() => "");
+  if (!host) {
+    const env = process.env.GITLAB_HOSTS ?? process.env.OPTIO_GITLAB_HOSTS ?? "";
+    host =
+      env
+        .split(",")
+        .map((h) => h.trim())
+        .find((h) => h && h.toLowerCase() !== "gitlab.com") ?? "";
+  }
+  if (!host) {
+    const repos = await repoService.listRepos(workspaceId).catch(() => []);
+    const gitlab = repos.find((r: { gitPlatform?: string | null }) => r.gitPlatform === "gitlab");
+    if (gitlab) host = parseRepoUrl(gitlab.repoUrl)?.host ?? "";
+  }
+  host = (host || "gitlab.com").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return { host, apiBaseUrl: `https://${host}/api/v4` };
+}
+
 const DetectResponseSchema = z.object({ detected: z.unknown() });
+
+const BranchesQuerySchema = z
+  .object({
+    q: z.string().max(200).optional().describe("Only branches whose name contains this"),
+    limit: z.coerce.number().int().min(1).max(100).optional().default(30),
+  })
+  .describe("Search for the branch picker");
+
+const BranchesResponseSchema = z
+  .object({
+    branches: z.array(
+      z.object({
+        name: z.string(),
+        default: z.boolean().describe("The repo's default branch"),
+        protected: z.boolean().optional(),
+      }),
+    ),
+    defaultBranch: z.string().nullable().describe("The branch the repo is configured with"),
+    error: z
+      .string()
+      .optional()
+      .describe(
+        "Why the list is empty (no credentials, the platform refused); a typed name still works",
+      ),
+  })
+  .describe("Branches of a repository, the default branch first");
 
 export async function repoRoutes(rawApp: FastifyInstance) {
   const app = rawApp.withTypeProvider<ZodTypeProvider>();
@@ -217,7 +299,88 @@ export async function repoRoutes(rawApp: FastifyInstance) {
           page,
           perPage,
           hasMore: false,
-          error: err instanceof Error ? err.message : "Failed to list repositories",
+          error: "Failed to list repositories",
+        });
+      }
+    },
+  );
+
+  app.get(
+    "/api/repos/browse",
+    {
+      preHandler: [requireRole("member")],
+      schema: {
+        operationId: "browseAccessibleRepos",
+        summary: "Browse repos the git credentials can access",
+        description:
+          "List the repositories on a git platform the person's own token (else " +
+          "the organization's) can reach, for the Add repository picker: GitLab " +
+          "projects the token is a member of (`/projects?membership=true`), GitHub " +
+          "repos as `/api/repos/github/accessible` lists them. `q` searches " +
+          "server-side. Requires `member` role.",
+        tags: ["Repos & Integrations"],
+        querystring: RepoBrowseQuerySchema,
+        response: { 200: RepoBrowseResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      const platform: GitPlatformType = req.query.platform ?? "github";
+      const workspaceId = req.user?.workspaceId ?? null;
+      if (platform === "codecommit")
+        return reply.send({
+          repos: [],
+          platform,
+          host: "",
+          error: "Listing CodeCommit repositories is not supported — paste the URL instead.",
+        });
+      const at = await browseLocation(platform, workspaceId);
+      if (!(await isTrustedGitHost({ host: at.host, platform }))) {
+        return reply.send({
+          repos: [],
+          platform,
+          host: at.host,
+          error:
+            "A deployment operator must list this host in GITHUB_HOSTS / GITLAB_HOSTS before using stored credentials.",
+        });
+      }
+      let token: string;
+      try {
+        token = await getGitToken(
+          platform,
+          platform === "github"
+            ? { server: true, workspaceId }
+            : { userId: req.user?.id, workspaceId, host: at.host },
+        );
+      } catch {
+        return reply.send({
+          repos: [],
+          platform,
+          host: at.host,
+          error:
+            platform === "gitlab"
+              ? "No GitLab token — add your own GITLAB_TOKEN under Settings, or ask an admin for the organization's."
+              : `No ${platform} credentials configured.`,
+        });
+      }
+      const git = createGitPlatform(platform, token);
+      if (!git.browseRepositories) {
+        return reply.send({
+          repos: [],
+          platform,
+          host: at.host,
+          error: `Listing ${platform} repositories is not supported — paste the URL instead.`,
+        });
+      }
+      try {
+        const repos = await git.browseRepositories(req.query.q ?? "", at, { perPage: 50 });
+        reply.send({ repos, platform, host: at.host });
+      } catch (err) {
+        req.log.warn({ err, platform, host: at.host }, "Browsing accessible repos failed");
+        reply.send({
+          repos: [],
+          platform,
+          host: at.host,
+          error: "Failed to list repositories",
         });
       }
     },
@@ -284,6 +447,58 @@ export async function repoRoutes(rawApp: FastifyInstance) {
           effectiveReviewModel: resolved.model,
         },
       });
+    },
+  );
+
+  app.get(
+    "/api/repos/:id/branches",
+    {
+      preHandler: [requireRole("member")],
+      schema: {
+        operationId: "listRepoBranches",
+        summary: "List a repository's branches",
+        description:
+          "The branches of a configured repository from its git platform " +
+          "(GitHub, GitLab or CodeCommit), the default branch first, narrowed " +
+          "by `q` (a name that contains it). For the branch picker in the New " +
+          "work form. When the platform cannot be asked (no credentials, an " +
+          "error) the list is empty and `error` says why, so a typed branch " +
+          "name still goes through. Requires `member` role.",
+        tags: ["Repos & Integrations"],
+        params: IdParamsSchema,
+        querystring: BranchesQuerySchema,
+        response: { 200: BranchesResponseSchema, 404: ErrorResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+      const { q, limit } = req.query;
+      const repo = await repoService.getRepo(id);
+      if (!repo) return reply.status(404).send({ error: "Repo not found" });
+      const wsId = req.user?.workspaceId;
+      if (wsId && repo.workspaceId !== wsId) {
+        return reply.status(404).send({ error: "Repo not found" });
+      }
+      const defaultBranch = repo.defaultBranch ?? null;
+      try {
+        const { platform, ri } = await getGitPlatformForRepo(repo.repoUrl, {
+          server: true,
+          workspaceId: repo.workspaceId ?? wsId ?? null,
+          platformHint: (repo.gitPlatform as GitPlatformType | undefined) ?? undefined,
+        });
+        const branches = await platform.listBranches(ri, {
+          search: q?.trim() || undefined,
+          perPage: limit,
+        });
+        reply.send({ branches, defaultBranch });
+      } catch (err) {
+        req.log.warn({ err, repoId: id }, "Listing repo branches failed");
+        reply.send({
+          branches: [],
+          defaultBranch,
+          error: "Failed to list branches",
+        });
+      }
     },
   );
 

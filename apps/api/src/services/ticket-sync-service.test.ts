@@ -76,7 +76,7 @@ import { taskQueue } from "../workers/task-worker.js";
 import { retrieveSecret } from "./secret-service.js";
 import { getGitHubToken } from "./github-token-service.js";
 import { getRepoByUrl } from "./repo-service.js";
-import { syncAllTickets } from "./ticket-sync-service.js";
+import { syncAllTickets, ticketCallConfig } from "./ticket-sync-service.js";
 import { logger } from "../logger.js";
 
 /**
@@ -924,5 +924,16 @@ describe("ticket-sync-service", () => {
       expect(taskQueue.add).toHaveBeenCalledTimes(1);
       expect(provider.addComment).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe("GitLab group ticket calls", () => {
+  it("sends a group's ticket calls to the ticket's own project", () => {
+    expect(
+      ticketCallConfig({ source: "gitlab", repo: "platform/tools/app" }, { groupPath: "platform" }),
+    ).toEqual({ groupPath: "platform", projectPath: "platform/tools/app" });
+    const projectConfig = { projectPath: "g/p" };
+    expect(ticketCallConfig({ source: "gitlab", repo: "g/p" }, projectConfig)).toBe(projectConfig);
+    expect(ticketCallConfig({ source: "github", repo: "a/b" }, {})).toEqual({});
   });
 });

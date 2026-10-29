@@ -1,5 +1,13 @@
+import { and, eq, isNull } from "drizzle-orm";
+import { db } from "../db/client.js";
+import { repos } from "../db/schema.js";
 import type { GitPlatform, GitPlatformType, RepoIdentifier } from "@optio/shared";
-import { parseRepoUrl } from "@optio/shared";
+import {
+  parseRepoUrl,
+  knownHostPlatform,
+  normalizeRepoUrl,
+  resolveRepoPlatform,
+} from "@optio/shared";
 import { getGitHubToken } from "./github-token-service.js";
 import { retrieveSecret, retrieveSecretWithFallback } from "./secret-service.js";
 import { getCodeCommitCredentials } from "./codecommit-credential-service.js";
@@ -119,20 +127,44 @@ export async function isTrustedGitHost(
   return isListedGitHost(ri.host);
 }
 
-/**
- * Parse a repo URL, resolve the appropriate token, and create a GitPlatform instance.
- * This is the primary entry point for consumers that need to interact with a git platform.
- * Throws for a host the deployment's credentials must not go to (`isTrustedGitHost`).
- */
+/** The saved platform for an added repo on an otherwise unknown host. */
+async function recordedRepoPlatform(
+  repoUrl: string,
+  workspaceId?: string | null,
+): Promise<string | null> {
+  const ri = parseRepoUrl(repoUrl);
+  if (!ri || knownHostPlatform(ri.host)) return null;
+  try {
+    const [row] = await db
+      .select({ gitPlatform: repos.gitPlatform })
+      .from(repos)
+      .where(
+        and(
+          eq(repos.repoUrl, normalizeRepoUrl(repoUrl)),
+          workspaceId ? eq(repos.workspaceId, workspaceId) : isNull(repos.workspaceId),
+        ),
+      )
+      .limit(1);
+    return row?.gitPlatform ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse the repository and resolve credentials in the caller's scope. */
 export async function getGitPlatformForRepo(
   repoUrl: string,
-  context: GitTokenContext & { platformHint?: GitPlatformType },
+  context: GitTokenContext & {
+    platformHint?: GitPlatformType;
+  },
 ): Promise<{ platform: GitPlatform; ri: RepoIdentifier }> {
-  const ri = parseRepoUrl(repoUrl);
+  const { platformHint, ...tokenContext } = context;
+  const platformType = resolveRepoPlatform(
+    repoUrl,
+    platformHint ?? (await recordedRepoPlatform(repoUrl, context.workspaceId)),
+  );
+  const ri = platformType ? parseRepoUrl(repoUrl, platformType) : null;
   if (!ri) throw new Error(`Cannot parse repo URL: ${repoUrl}`);
-
-  // Allow callers with a repo record to skip URL-based platform detection
-  if (context.platformHint) ri.platform = context.platformHint;
 
   if (!(await isTrustedGitHost(ri))) {
     throw new Error(
@@ -143,7 +175,7 @@ export async function getGitPlatformForRepo(
 
   const token = await getGitToken(
     ri.platform,
-    ri.platform === "gitlab" ? { ...context, host: ri.host } : context,
+    ri.platform === "gitlab" ? { ...tokenContext, host: ri.host } : tokenContext,
   );
   const platform = createGitPlatform(ri.platform, token);
 

@@ -488,11 +488,33 @@ export const api = {
     }>(`/api/repos/github/accessible${query ? `?${query}` : ""}`);
   },
 
+  browseRepos: (params: { q?: string; platform?: "github" | "gitlab" | "codecommit" } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.platform) qs.set("platform", params.platform);
+    const query = qs.toString();
+    return request<{
+      repos: Array<{
+        fullName: string;
+        cloneUrl: string;
+        htmlUrl: string;
+        defaultBranch: string;
+        isPrivate: boolean;
+        description: string | null;
+        pushedAt: string | null;
+      }>;
+      platform: "github" | "gitlab" | "codecommit";
+      host: string | null;
+      error?: string;
+    }>(`/api/repos/browse${query ? `?${query}` : ""}`);
+  },
+
   createRepoConfig: (data: {
     repoUrl: string;
     fullName: string;
     defaultBranch?: string;
     isPrivate?: boolean;
+    gitPlatform?: "github" | "gitlab" | "codecommit";
   }) => request<{ repo: any }>("/api/repos", { method: "POST", body: JSON.stringify(data) }),
 
   updateRepo: (id: string, data: Record<string, unknown>) =>
@@ -675,14 +697,14 @@ export const api = {
       body: JSON.stringify({ key }),
     }),
 
-  validateRepo: (repoUrl: string, token?: string) =>
+  validateRepo: (repoUrl: string, token?: string, gitPlatform?: "github" | "gitlab") =>
     request<{
       valid: boolean;
       error?: string;
       repo?: { fullName: string; defaultBranch: string; isPrivate: boolean };
     }>("/api/setup/validate/repo", {
       method: "POST",
-      body: JSON.stringify({ repoUrl, token }),
+      body: JSON.stringify({ repoUrl, token, gitPlatform }),
     }),
 
   getAuthStatus: () =>
@@ -1404,6 +1426,18 @@ export const api = {
     }),
 
   // PR Reviews — canonical endpoints live under /api/pr-reviews.
+  listRepoBranches: (repoId: string, params: { q?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q?.trim()) qs.set("q", params.q.trim());
+    if (params.limit) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    return request<{
+      branches: Array<{ name: string; default: boolean; protected?: boolean }>;
+      defaultBranch: string | null;
+      error?: string;
+    }>(`/api/repos/${repoId}/branches${query ? `?${query}` : ""}`);
+  },
+
   listPullRequests: (params?: { repoId?: string }) => {
     const qs = new URLSearchParams();
     if (params?.repoId) qs.set("repoId", params.repoId);
