@@ -154,6 +154,19 @@ identify the same subject. The private CA applies to discovery, JWKS, token
 and userinfo requests. Token authentication supports `client_secret_post`
 and `client_secret_basic`.
 
+Issuer and discovered endpoint URLs must use HTTPS. Non-production local
+development may use HTTP only on literal loopback hosts, which must also be
+explicitly permitted by `OPTIO_OUTBOUND_ALLOWED_HOSTS`. Every server-side IdP
+request uses the outbound URL policy and DNS-pinned transport; redirects are
+refused, including token exchanges. For private IdPs configure the outbound host
+allowlist and the IdP's private CA. Disabling TLS verification is rejected unless
+the deployment operator explicitly sets `OPTIO_IDP_ALLOW_INSECURE_TLS=true`;
+stored settings alone cannot enable it. Prefer supplying the CA.
+
+Optional account linking requires both the new provider assertion and the
+existing target account's email to be verified. An unverified existing address
+cannot be used to claim that account or inherit its administrator role.
+
 Environment clients retain their existing flow: `OIDC_ISSUER_URL`,
 `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_DISPLAY_NAME`, `OIDC_SCOPES`,
 `OIDC_GROUPS_CLAIM`, `OIDC_EMAIL_CLAIM`, `OIDC_NAME_CLAIM`,

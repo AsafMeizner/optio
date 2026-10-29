@@ -30,6 +30,13 @@ const createRepoSchema = z
     fullName: z.string().min(1).describe("owner/repo slug"),
     defaultBranch: z.string().optional().describe("Default branch name (e.g. `main`)"),
     isPrivate: z.boolean().optional(),
+    gitPlatform: z
+      .enum(["github", "gitlab", "codecommit"])
+      .optional()
+      .describe(
+        "The repository's git platform, for a host Optio cannot tell from the URL " +
+          "(a self-hosted GitLab). A known host's own platform wins.",
+      ),
   })
   .describe("Body for adding a repository to Optio");
 

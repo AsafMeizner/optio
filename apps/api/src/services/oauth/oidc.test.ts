@@ -1,3 +1,5 @@
+import { setOutboundDefaults } from "../../utils/outbound-url.js";
+let restoreOutbound: (() => void) | undefined;
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as jose from "jose";
 
@@ -26,6 +28,7 @@ async function generateTestKeyAndToken(
   claims: Record<string, unknown>,
   issuer: string,
   audience: string,
+  expires = "1h",
 ) {
   const { publicKey, privateKey } = await jose.generateKeyPair("RS256");
   const jwk = await jose.exportJWK(publicKey);
@@ -37,7 +40,7 @@ async function generateTestKeyAndToken(
     .setProtectedHeader({ alg: "RS256", kid: "test-key-1" })
     .setIssuer(issuer)
     .setAudience(audience)
-    .setExpirationTime("1h")
+    .setExpirationTime(expires)
     .setIssuedAt()
     .sign(privateKey);
 
@@ -54,10 +57,35 @@ describe("GenericOIDCProvider", () => {
     process.env.OIDC_CLIENT_ID = "test-client-id";
     process.env.OIDC_CLIENT_SECRET = "test-client-secret";
     vi.restoreAllMocks();
+    restoreOutbound = setOutboundDefaults({
+      resolveHost: async () => [{ address: "93.184.216.34", family: 4 }],
+      fetchImpl: (url, init) => globalThis.fetch(url, init),
+    });
   });
 
   afterEach(() => {
+    restoreOutbound?.();
     process.env = { ...originalEnv };
+  });
+
+  it.each([
+    { audience: "another-client", expires: "1h", reason: "audience" },
+    { audience: "test-client-id", expires: "-1h", reason: "expired" },
+  ])("rejects a correctly signed token with invalid $reason", async ({ audience, expires }) => {
+    const { jwk, token } = await generateTestKeyAndToken(
+      { sub: "victim" },
+      ISSUER_URL,
+      audience,
+      expires,
+    );
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(DISCOVERY_DOC)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "at", id_token: token })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ keys: [jwk] })));
+    const provider = await createProvider();
+    await expect(provider.exchangeCode("code")).rejects.toThrow(
+      "OIDC ID token verification failed",
+    );
   });
 
   // Import fresh each test to reset cached state
@@ -77,7 +105,10 @@ describe("GenericOIDCProvider", () => {
       const provider = await createProvider();
       const doc = await provider.discover();
 
-      expect(fetchSpy).toHaveBeenCalledWith(`${ISSUER_URL}/.well-known/openid-configuration`);
+      expect(fetchSpy).toHaveBeenCalledWith(`${ISSUER_URL}/.well-known/openid-configuration`, {
+        redirect: "error",
+        signal: expect.any(AbortSignal),
+      });
       expect(doc.authorization_endpoint).toBe(DISCOVERY_DOC.authorization_endpoint);
       expect(doc.token_endpoint).toBe(DISCOVERY_DOC.token_endpoint);
       expect(doc.userinfo_endpoint).toBe(DISCOVERY_DOC.userinfo_endpoint);
@@ -343,8 +374,13 @@ describe("OIDC provider registration", () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
+    restoreOutbound?.();
     process.env = { ...originalEnv };
     vi.restoreAllMocks();
+    restoreOutbound = setOutboundDefaults({
+      resolveHost: async () => [{ address: "93.184.216.34", family: 4 }],
+      fetchImpl: (url, init) => globalThis.fetch(url, init),
+    });
   });
 
   it("includes oidc provider when OIDC_ISSUER_URL is set", async () => {

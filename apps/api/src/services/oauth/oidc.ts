@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { Agent, fetch as undiciFetch } from "undici";
+import { guardedFetch } from "../../utils/outbound-url.js";
+import {
+  secureIdentityProviderUrl,
+  insecureIdentityProviderTlsAllowed,
+} from "../../utils/idp-url.js";
 import { createRemoteJWKSet, customFetch, decodeJwt, jwtVerify } from "jose";
 import type { OidcPreset, OidcSettings } from "@optio/shared";
 import type { OAuthFlowState, OAuthProvider, OAuthTokens, OAuthUser } from "./provider.js";
@@ -25,9 +29,9 @@ import { envConfig } from "../sign-in-env.js";
  *   userinfo); a role claim shaped like Keycloak's `realm_access.roles` is
  *   read with a dotted path.
  * - A private CA (`caPem`) is trusted for discovery, JWKS, token and userinfo
- *   requests through a dedicated undici agent, so the deployment-wide
+ *   requests through the DNS-pinned outbound transport, so the deployment-wide
  *   `NODE_EXTRA_CA_CERTS` isn't required for the identity provider alone.
- *   Without one, requests go through the global `fetch`.
+ *   Every request obeys the outbound policy and refuses redirects.
  */
 
 export interface OidcDiscoveryDocument {
@@ -165,24 +169,26 @@ function claimAsString(claims: Record<string, unknown>, path: string): string | 
 export function oidcFetch(
   settings: Pick<OidcSettings, "caPem" | "insecureSkipVerify">,
 ): ((input: string | URL, init?: RequestInit) => Promise<Response>) | null {
-  if (!settings.caPem?.trim() && !settings.insecureSkipVerify) return null;
-  const connect: Record<string, unknown> = { timeout: REQUEST_TIMEOUT_MS };
-  if (settings.caPem?.trim()) connect.ca = settings.caPem;
-  if (settings.insecureSkipVerify) connect.rejectUnauthorized = false;
-  const agent = new Agent({ connect: connect as Agent.Options["connect"] });
-  return (input: string | URL, init?: RequestInit): Promise<Response> =>
-    undiciFetch(input, {
-      ...(init as Parameters<typeof undiciFetch>[1]),
-      dispatcher: agent,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    }) as unknown as Promise<Response>;
+  if (settings.insecureSkipVerify && !insecureIdentityProviderTlsAllowed()) {
+    throw new Error("Insecure identity-provider TLS is disabled by deployment policy");
+  }
+  const tls = {
+    ...(settings.caPem?.trim() ? { ca: settings.caPem } : {}),
+    ...(settings.insecureSkipVerify ? { rejectUnauthorized: false } : {}),
+  };
+  return (input: string | URL, init?: RequestInit): Promise<Response> => {
+    if (!secureIdentityProviderUrl(input.toString()))
+      throw new Error("Identity-provider endpoints must use https://");
+    return guardedFetch(input, { ...init, tls, redirect: "error", timeoutMs: REQUEST_TIMEOUT_MS });
+  };
 }
 
 export async function discoverOidc(
   settings: Pick<OidcSettings, "issuerUrl" | "caPem" | "insecureSkipVerify">,
 ): Promise<OidcDiscoveryDocument> {
   const issuer = settings.issuerUrl.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\//.test(issuer)) throw new Error("The issuer URL must start with https://");
+  if (!secureIdentityProviderUrl(issuer))
+    throw new Error("The issuer URL must start with https://");
   const tlsFetch = oidcFetch(settings);
   const url = `${issuer}/.well-known/openid-configuration`;
   let res: Response;
@@ -198,29 +204,38 @@ export async function discoverOidc(
       "OIDC discovery document missing required endpoints (authorization_endpoint, token_endpoint, jwks_uri)",
     );
   }
-  if (doc.issuer && doc.issuer.replace(/\/+$/, "") !== issuer) {
+  if (!doc.issuer) throw new Error("OIDC discovery document missing required issuer");
+  if (doc.issuer.replace(/\/+$/, "") !== issuer) {
     throw new Error(
       `The provider says its issuer is ${doc.issuer}, not ${issuer} — use that exact URL`,
     );
+  }
+  for (const endpoint of [
+    doc.authorization_endpoint,
+    doc.token_endpoint,
+    doc.userinfo_endpoint,
+    doc.jwks_uri,
+  ]) {
+    if (endpoint && !secureIdentityProviderUrl(endpoint))
+      throw new Error("Identity-provider endpoints must use https://");
   }
   return doc as OidcDiscoveryDocument;
 }
 
 /** The underlying cause of a failed fetch, for the admin (a TLS error names the fix). */
 export function describeFetchError(err: unknown): string {
-  const cause = (err as { cause?: unknown })?.cause as
-    { code?: string; message?: string } | undefined;
-  const message = cause?.message ?? (err instanceof Error ? err.message : String(err));
+  const cause = (err as { cause?: { code?: string } })?.cause;
   const code = cause?.code ?? "";
+  const message = err instanceof Error ? err.message : "";
   if (
-    /self[- ]signed|unable to verify|certificate|CERT_|UNABLE_TO_GET_ISSUER/i.test(
+    /CERT_|UNABLE_TO_GET_ISSUER|UNABLE_TO_VERIFY_LEAF_SIGNATURE|certificate|self.signed/i.test(
       `${code} ${message}`,
     )
-  ) {
-    return `${message} — the provider uses a certificate this deployment doesn't trust; paste its CA under "Certificate authority"`;
-  }
-  if (/timeout|aborted/i.test(`${code} ${message}`)) return "timed out after 15 s";
-  return message;
+  )
+    return "The identity provider's TLS certificate is not trusted; configure its certificate authority";
+  if (/timeout|aborted/i.test(`${code} ${message}`))
+    return "The identity provider request timed out";
+  return "Could not connect to the identity provider";
 }
 
 export class GenericOIDCProvider implements OAuthProvider {
@@ -375,7 +390,7 @@ export class GenericOIDCProvider implements OAuthProvider {
     nonce: string | undefined,
   ): Promise<void> {
     if (!this.jwks || this.jwks.uri !== discovery.jwks_uri) {
-      const tlsFetch = oidcFetch(settings);
+      const tlsFetch = oidcFetch(settings)!;
       this.jwks = {
         uri: discovery.jwks_uri,
         getter: createRemoteJWKSet(

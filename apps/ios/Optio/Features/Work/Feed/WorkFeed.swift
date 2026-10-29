@@ -265,6 +265,8 @@ enum WorkFeed {
         var blueprintId: String?
         var workflowRunId: String?
         var taskId: String?
+        /// Set once a resume continues this session: the resume takes its row.
+        var resumedByTerminalId: String?
         var ticketSource: String?
         var ticketUrl: String?
         var ticketExternalId: String?
@@ -598,6 +600,9 @@ enum WorkFeed {
             // A local Task run already has its `tasks` row above; a local Job run
             // (workflow_runs) and hand-opened terminals only exist here.
             if let taskId = t.taskId, !taskId.isEmpty { continue }
+            // A session that was resumed hands its row to the resume (the same
+            // session, continued).
+            if let by = t.resumedByTerminalId, !by.isEmpty { continue }
             let id = t.id ?? ""
             let (status, statusLabel) = terminalStatus(t)
             let isAgent = t.spec?.kind == "agent"

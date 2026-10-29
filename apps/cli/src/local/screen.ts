@@ -8,6 +8,12 @@ import {
   xParseColor,
   type Rgb,
 } from "@optio/shared";
+import {
+  PROGRAM_STATUS_QUERY_REPLY,
+  isProgramStatusQuery,
+  parseProgramStatus,
+  type ProgramStatusReport,
+} from "./program-status.js";
 
 /**
  * A headless terminal emulator fed the same bytes as the PTY, so the daemon
@@ -75,9 +81,16 @@ export class ScreenModel {
   /**
    * `reply` receives the terminal's answers to the program's queries, in the
    * order they were asked (write them to the PTY). Without it, nothing is
-   * answered.
+   * answered. `onProgramStatus` receives what the program reports about
+   * itself over OSC 7501 (see `program-status.ts`); the capability query is
+   * answered only when there is someone to receive the reports.
    */
-  constructor(cols: number, rows: number, reply?: (data: string) => void) {
+  constructor(
+    cols: number,
+    rows: number,
+    reply?: (data: string) => void,
+    onProgramStatus?: (report: ProgramStatusReport) => void,
+  ) {
     this.term = new Terminal({
       cols,
       rows,
@@ -96,6 +109,28 @@ export class ScreenModel {
       // emulator's own handling.
       this.answerColorQueries(() => {});
     }
+    this.handleProgramStatus(reply && onProgramStatus ? reply : undefined, onProgramStatus);
+  }
+
+  /**
+   * OSC 7501, program status: answer the capability query (Claude Code
+   * reports only once something answered it, and a viewer's xterm.js never
+   * does) and pass each report on. A program's status is its own business,
+   * so the sequence never reaches the emulator (which would ignore it).
+   */
+  private handleProgramStatus(
+    reply: ((data: string) => void) | undefined,
+    onProgramStatus: ((report: ProgramStatusReport) => void) | undefined,
+  ): void {
+    this.term.parser.registerOscHandler(7501, (data) => {
+      if (isProgramStatusQuery(data)) {
+        reply?.(PROGRAM_STATUS_QUERY_REPLY);
+        return true;
+      }
+      const report = parseProgramStatus(data);
+      if (report) onProgramStatus?.(report);
+      return true;
+    });
   }
 
   /**

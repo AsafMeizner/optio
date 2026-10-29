@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Twenty more GitHub trigger kinds** (#687). Work can now start when an issue is commented on, edited, reopened or closed, when a label is removed, when a PR is commented on, gets a review, gets new commits, or is closed without merging, when a tag is pushed or a branch created or deleted, when a deployment succeeds or fails, on a `repository_dispatch`, on a Dependabot / code scanning / secret scanning alert, and when a discussion is started or commented on — on the web, iOS and Android, grouped in the form. New filters say who and what: **Written by** (people by default, so an agent's own comment, review or PR push as a GitHub App never wakes it again; bots; anyone), **Never from these users** (nothing those accounts do fires the trigger, whatever the kind — name an agent that works with a personal token here; the trigger's own username is always skipped for comments, reviews, edits and PR pushes), **Only when the author replies** (the reporter answering a triage question, not a bystander), **Comment starts with** (a slash command like `/optio retry`, or a `/regex/i` — one that can't backtrack catastrophically), the review states a submitted review must be in, and the severities a security alert must have. Prompts get `{{commentAuthor}}`, `{{actor}}`, `{{changes}}` (what an edit changed), `{{reviewState}}`, `{{environment}}`, `{{alertSeverity}}`, `{{dispatchType}}` and `{{dispatchPayload}}`. The triage flow — an agent asks for details and labels the issue `needs-info`, the reporter replies, the agent wakes and re-checks — is `events: issue_commented + issue_edited, labels: needs-info, authorOnly`.
+
+### Changed
+
+- A GitHub comment that @-mentions the trigger's username is skipped when that username wrote it (it used to be skipped when the issue's author matched instead, which also dropped other people's mentions on that person's own issues).
+- A GitHub trigger saved with no event kinds meant "every kind". Existing such triggers are pinned to the eleven kinds that existed when they were saved (a migration), so the twenty new kinds don't start them on every comment, edit, push to a PR, close, branch and alert. New triggers always say their kinds.
+- A GitHub review in state "commented" with no text no longer counts as a review: GitHub sends one around every single inline comment, which already arrives as a PR comment, so a trigger listening for both fired twice.
+
+## [0.22.0] - 2026-10-27
+
+### Added
+
+- **The built-in Redis can keep its data.** `redis.persistence.enabled=true` gives the chart's Redis a ReadWriteOnce volume (`redis.persistence.size`, `redis.persistence.storageClass`) and runs it with an append-only file, so BullMQ's delayed and in-flight jobs and short-lived keys survive a pod restart or a node pool scaled to zero (runs are recovered from Postgres either way). An init container owns the volume for Redis on storage drivers that do not apply `fsGroup`. Off by default; turning it on or off replaces the dataset. See `docs/redis.md`. (#688, thanks @travis-burmaster)
+
+### Changed
+
+- Project instructions for coding agents live in `AGENTS.md`; `CLAUDE.md` imports it and holds only Claude-Code-specific notes.
+- Security vulnerabilities are reported through GitHub's private vulnerability reporting for the repository (`SECURITY.md`), not by email.
+
+### Fixed
+
+- **Repo pods could never start under the resource quota.** With `resourceQuota.enabled` (as `values.production.yaml` sets it), Kubernetes rejected every container without its own cpu/memory requests and limits, and tasks sat in `provisioning`. The chart now also renders a LimitRange (`resourceQuota.limitRange`, on by default: 250m / 512Mi requested, 2 CPU / 4Gi limits) that fills them in for every container Optio creates without its own settings — repo, Job, agent and session pods, and the chart's own Postgres init and test pods. `default` is a hard cap per container and counts against the quota's `limits.*`; `docs/production-eks.md` says how to size it. (#685, thanks @travis-burmaster)
+
+## [0.21.0] - 2026-10-27
+
+### Added
+
+- Optio Local reads the agent's own status. The daemon's terminal answers the OSC 7501 Program Status Protocol query (the protocol Ghostty 1.4 ships and Claude Code, Pi and Crush emit), so an agent reports `working`, `blocked` (waiting for permission, a question, or a sign-in), `done`, `error` and `idle` itself instead of Optio inferring them from hooks, bells and silence. The "needs you" queue and the terminal cards, on the web, iOS and Android, say what the agent is waiting for.
+
 ## [0.20.0] - 2026-10-25
 
 ### Added

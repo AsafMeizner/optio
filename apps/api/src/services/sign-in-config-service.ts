@@ -592,7 +592,8 @@ export async function testSignInProvider(
   if (!parsed.success)
     return { ok: false, error: "Valid OIDC settings and issuer URL are required" };
   const oidc = parsed.data;
-  const { discoverOidc, effectiveOidcSettings } = await import("./oauth/oidc.js");
+  const { discoverOidc, effectiveOidcSettings, describeFetchError } =
+    await import("./oauth/oidc.js");
   try {
     const doc = await discoverOidc(oidc);
     const effective = effectiveOidcSettings(oidc);
@@ -616,6 +617,6 @@ export async function testSignInProvider(
       },
     };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: describeFetchError(err) };
   }
 }

@@ -1,3 +1,4 @@
+import { secureIdentityProviderUrl, insecureIdentityProviderTlsAllowed } from "../utils/idp-url.js";
 import { z } from "zod";
 import { OIDC_PRESETS } from "@optio/shared";
 
@@ -16,7 +17,7 @@ export const OidcSettingsSchema = z.object({
     .string()
     .trim()
     .url()
-    .refine((u) => /^https?:\/\//.test(u), { message: "The issuer URL must start with https://" }),
+    .refine(secureIdentityProviderUrl, { message: "The issuer URL must start with https://" }),
   scopes: z.string().trim().max(500).optional(),
   groupsClaim: z.string().trim().max(200).optional(),
   emailClaim: z.string().trim().max(100).optional(),
@@ -26,6 +27,12 @@ export const OidcSettingsSchema = z.object({
   usePkce: z.boolean().optional(),
   tokenAuthMethod: z.enum(["client_secret_post", "client_secret_basic"]).optional(),
   caPem: pem,
-  insecureSkipVerify: z.boolean().optional(),
+  insecureSkipVerify: z
+    .boolean()
+    .optional()
+    .refine((value) => !value || insecureIdentityProviderTlsAllowed(), {
+      message:
+        "Insecure identity-provider TLS requires OPTIO_IDP_ALLOW_INSECURE_TLS=true on the deployment",
+    }),
   linkByEmail: z.boolean().optional(),
 });

@@ -2209,6 +2209,12 @@ export const localTerminals = pgTable(
     // The agent CLI's own session id (Claude Code hooks' `session_id`), so an
     // exited run can be resumed as an interactive chat (`claude --resume`).
     agentSessionId: text("agent_session_id"),
+    // Resume lineage (soft pointers): the session this one continues
+    // (`claude --resume` of its agent session) and the resume that continues
+    // this one. A resume keeps the original's spawn source, so its badge and
+    // icon carry over; lists show the latest of a chain in the original's place.
+    resumedFromTerminalId: uuid("resumed_from_terminal_id"),
+    resumedByTerminalId: uuid("resumed_by_terminal_id"),
     preview: text("preview"),
     // PR / ticket links the daemon extracted from the output, first-seen order.
     links: jsonb("links")

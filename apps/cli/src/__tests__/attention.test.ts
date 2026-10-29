@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   AttentionTracker,
+  STALE_MS,
   mapHookEvent,
+  mapProgramStatus,
   type AttentionEvent,
   type AttentionScheduler,
 } from "../local/attention.js";
@@ -357,5 +359,128 @@ describe("hook mapping", () => {
     tracker.hookEvent(T, "Stop");
     const other = tracker.feed("term-2", Buffer.from("\x07"));
     expect(other.at(-1)).toEqual({ terminalId: "term-2", state: "needs_you", reason: "bell" });
+  });
+});
+
+describe("program status (OSC 7501)", () => {
+  const report = (
+    state: "idle" | "working" | "done" | "blocked" | "error" | "clear",
+    extra: Partial<{ id: string | null; kind: "permission" | "question" | "auth" | null }> = {},
+  ) => ({
+    state,
+    id: null,
+    kind: null,
+    progress: null,
+    app: "claude",
+    title: null,
+    msg: null,
+    ...extra,
+  });
+
+  it("maps the five states; blocked names its kind", () => {
+    expect(mapProgramStatus(report("working"))).toEqual({ state: "working", reason: "status" });
+    expect(mapProgramStatus(report("idle"))).toEqual({ state: "idle", reason: "status" });
+    expect(mapProgramStatus(report("done"))).toEqual({ state: "needs_you", reason: "done" });
+    expect(mapProgramStatus(report("error"))).toEqual({ state: "needs_you", reason: "error" });
+    expect(mapProgramStatus(report("blocked"))).toEqual({ state: "needs_you", reason: "blocked" });
+    expect(mapProgramStatus(report("blocked", { kind: "permission" }))).toEqual({
+      state: "needs_you",
+      reason: "permission",
+    });
+    expect(mapProgramStatus(report("clear"))).toBeNull();
+  });
+
+  it("a report transitions the terminal and retires bells, silence and input", () => {
+    const { events, scheduler, tracker } = setup();
+    tracker.markAgent(T);
+    tracker.feed(T, Buffer.from("starting"));
+    expect(tracker.statusEvent(T, report("blocked", { kind: "permission" }))).toEqual([
+      { terminalId: T, state: "needs_you", reason: "permission" },
+    ]);
+    expect(tracker.hasStatus(T)).toBe(true);
+    // The silence timer is gone; only the stale decay is pending.
+    scheduler.fireAll();
+    expect(events.at(-1)).toEqual({ terminalId: T, state: "needs_you", reason: "permission" });
+    // A bell or a keystroke changes nothing: the program will say.
+    expect(tracker.feed(T, Buffer.from("\x07"))).toEqual([]);
+    expect(tracker.onInput(T)).toEqual([]);
+    expect(tracker.statusEvent(T, report("working"))).toEqual([
+      { terminalId: T, state: "working", reason: "status" },
+    ]);
+  });
+
+  it("outranks hooks once the program has reported; a Codex turn starting still counts", () => {
+    const { tracker } = setup();
+    tracker.hookEvent(T, "UserPromptSubmit");
+    expect(tracker.statusEvent(T, report("done"))).toEqual([
+      { terminalId: T, state: "needs_you", reason: "done" },
+    ]);
+    expect(tracker.hookEvent(T, "Stop")).toEqual([]);
+    expect(tracker.turnEvent(T, "started")).toEqual([
+      { terminalId: T, state: "working", reason: "prompt" },
+    ]);
+    expect(tracker.statusEvent(T, report("idle"))).toEqual([
+      { terminalId: T, state: "idle", reason: "status" },
+    ]);
+  });
+
+  it("a Codex turn ending still halts a status that says working (active goal, background process)", () => {
+    const { events, scheduler, tracker } = setup();
+    tracker.markAgent(T);
+    tracker.feed(T, Buffer.from("› Ask Codex to do anything"));
+    expect(tracker.statusEvent(T, report("working"))).toHaveLength(1);
+    expect(tracker.turnEvent(T, "started")).toEqual([]); // already working
+    // The rollout's task_complete lands while Codex still says working
+    // ("Pursuing goal"): it is at its prompt, waiting on you.
+    expect(tracker.turnEvent(T, "complete")).toEqual([
+      { terminalId: T, state: "needs_you", reason: "stop" },
+    ]);
+    // Silence and keystrokes stay retired; the stale decay is still armed.
+    expect(tracker.feed(T, Buffer.from("\x07 repaint"))).toEqual([]);
+    scheduler.fireAll();
+    expect(events.at(-1)).toEqual({ terminalId: T, state: "needs_you", reason: "stop" });
+    expect(tracker.onInput(T)).toEqual([]);
+    // Codex does send done once nothing keeps it working: a finer label.
+    expect(tracker.statusEvent(T, report("done"))).toEqual([
+      { terminalId: T, state: "needs_you", reason: "done" },
+    ]);
+    expect(tracker.turnEvent(T, "complete")).toEqual([]);
+    // The next turn: whichever of the rollout and the status arrives first.
+    expect(tracker.turnEvent(T, "started")).toEqual([
+      { terminalId: T, state: "working", reason: "prompt" },
+    ]);
+    expect(tracker.statusEvent(T, report("working"))).toEqual([
+      { terminalId: T, state: "working", reason: "status" },
+    ]);
+    // Idle (you pressed a key) and blocked are the program's to say: a turn
+    // ending then adds nothing.
+    expect(tracker.statusEvent(T, report("idle"))).toHaveLength(1);
+    expect(tracker.turnEvent(T, "complete")).toEqual([]);
+    expect(tracker.turnEvent(T, "aborted")).toEqual([]);
+    expect(tracker.statusEvent(T, report("blocked", { kind: "permission" }))).toHaveLength(1);
+    expect(tracker.turnEvent(T, "complete")).toEqual([]);
+  });
+
+  it("only the root record drives attention; a subagent's record and clear do not", () => {
+    const { tracker } = setup();
+    expect(tracker.statusEvent(T, report("working"))).toHaveLength(1);
+    expect(
+      tracker.statusEvent(T, report("blocked", { id: "agents/explore", kind: "question" })),
+    ).toEqual([]);
+    expect(tracker.statusEvent(T, report("clear"))).toEqual([]);
+    expect(tracker.hasStatus(T)).toBe(true);
+  });
+
+  it("a needs_you from the program still decays when nobody responds", () => {
+    const { events, scheduler, tracker } = setup();
+    tracker.statusEvent(T, report("done"));
+    scheduler.fireUpTo(STALE_MS);
+    expect(events.at(-1)).toEqual({ terminalId: T, state: "idle", reason: "stale" });
+  });
+
+  it("does not re-emit an unchanged status", () => {
+    const { tracker } = setup();
+    tracker.statusEvent(T, report("working"));
+    expect(tracker.statusEvent(T, report("working"))).toEqual([]);
   });
 });

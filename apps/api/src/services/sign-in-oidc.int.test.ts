@@ -8,11 +8,19 @@ import {
   saveSignInConfig,
   resolveProviderConfig,
   deleteSignInConfig,
+  testSignInProvider,
 } from "./sign-in-config-service.js";
-const ENV_KEYS = ["OIDC_ISSUER_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"];
+import { setOutboundDefaults } from "../utils/outbound-url.js";
+const ENV_KEYS = [
+  "OIDC_ISSUER_URL",
+  "OIDC_CLIENT_ID",
+  "OIDC_CLIENT_SECRET",
+  "OPTIO_DEPLOYMENT_ADMINS",
+];
 async function insertUser(
   name: string,
   email = `${name.toLowerCase()}-${randomBytes(3).toString("hex")}@acme.com`,
+  emailVerified = true,
 ) {
   const [row] = await db
     .insert(users)
@@ -20,6 +28,7 @@ async function insertUser(
       provider: "oidc",
       externalId: randomBytes(6).toString("hex"),
       email,
+      emailVerified,
       displayName: name,
     })
     .returning();
@@ -42,6 +51,20 @@ describe("OIDC configuration and account links", () => {
     }
   });
   const oidc = { issuerUrl: "https://sso.example.com/realms/optio" };
+  it("does not return a discovery response's internal details from the admin test", async () => {
+    const restore = setOutboundDefaults({
+      resolveHost: async () => [{ address: "93.184.216.34", family: 4 }],
+      fetchImpl: async () => new Response("internal-peer:127.0.0.1 client-secret=hidden"),
+    });
+    try {
+      expect(await testSignInProvider("oidc", { settings: oidc })).toEqual({
+        ok: false,
+        error: "Could not connect to the identity provider",
+      });
+    } finally {
+      restore();
+    }
+  });
   it("stores an OIDC client encrypted, resolves it over the environment, and never returns the secret", async () => {
     process.env.OIDC_ISSUER_URL = "https://env.example";
     process.env.OIDC_CLIENT_ID = "env-id";
@@ -115,6 +138,28 @@ describe("OIDC configuration and account links", () => {
         null,
       ),
     ).rejects.toThrow(/Anyone can get a gmail.com address/);
+  });
+
+  it("never links a verified identity into an unverified target, including an environment-admin email", async () => {
+    const { createSession } = await import("./session-service.js");
+    const { isDeploymentAdmin } = await import("./sign-in-config-service.js");
+    const email = `victim-${randomBytes(6).toString("hex")}@acme.com`;
+    const attacker = await insertUser("Unverified attacker", email, false);
+    process.env.OPTIO_DEPLOYMENT_ADMINS = email;
+    const victim = await createSession(
+      "google",
+      { externalId: "verified-victim", email, emailVerified: true, displayName: "Victim" },
+      { linkByEmail: true },
+    );
+    expect(victim.user.id).not.toBe(attacker.id);
+    expect(await isDeploymentAdmin(victim.user)).toBe(true);
+    expect(await isDeploymentAdmin(attacker)).toBe(false);
+    const [unchanged] = await db.select().from(users).where(eq(users.id, attacker.id));
+    expect(unchanged.emailVerified).toBe(false);
+    expect(unchanged.externalId).toBe(attacker.externalId);
+    expect(
+      await db.select().from(userIdentities).where(eq(userIdentities.userId, attacker.id)),
+    ).toHaveLength(0);
   });
 
   it("links a sign-in to an existing account by email only when switched on, never re-keying it", async () => {
