@@ -74,6 +74,14 @@ export interface OidcSettings {
 }
 
 export interface SignInProviderTestResult {
+  /** SAML: what the metadata (or the settings) say about the identity provider. */
+  saml?: {
+    entityId: string | null;
+    entryPoint: string | null;
+    /** The signing certificates: subject and expiry, never the key. */
+    certificates: Array<{ subject: string; notAfter: string; fingerprint256: string }>;
+  };
+
   ok: boolean;
   error?: string;
   /** OIDC: what discovery found. */
@@ -90,3 +98,41 @@ export interface SignInProviderTestResult {
     pkceSupported: boolean | null;
   };
 }
+
+export interface SignInAccessSettings {
+  /** A provider-verified unique email may link to an existing account; disabled by default. */
+  linkByEmail?: boolean;
+}
+
+export interface SamlSettings extends SignInAccessSettings {
+  /** The identity provider's metadata URL (entry point, entity ID, certificates). */
+  metadataUrl?: string | null;
+  /** Or its metadata XML, pasted in. */
+  metadataXml?: string | null;
+  /** The single sign-on URL (HTTP-Redirect binding); from the metadata when empty. */
+  entryPoint?: string | null;
+  /** The identity provider's entity ID (the response's Issuer, checked); from the metadata when empty. */
+  idpEntityId?: string | null;
+  /** PEM certificate(s) the identity provider signs with; from the metadata when empty. */
+  idpCert?: string | null;
+  /** Optio's entity ID, the audience (default `<API origin>/api/auth/saml/metadata`). */
+  spEntityId?: string | null;
+  /** The NameID format to ask for (default: none, the identity provider picks). */
+  nameIdFormat?: string | null;
+  /** The attribute holding a stable ID (default: the NameID). */
+  idAttribute?: string | null;
+  /** Attribute names; empty: the common names (email, mail, the WS-Fed claim URIs, the OIDs). */
+  emailAttribute?: string | null;
+  nameAttribute?: string | null;
+  usernameAttribute?: string | null;
+  groupsAttribute?: string | null;
+  /** Require the whole response to be signed too (default false: the assertion must be). */
+  wantAuthnResponseSigned?: boolean;
+  /** Require the assertion to be signed (default true). */
+  wantAssertionsSigned?: true;
+  /** PEM bundle of the CA behind the metadata URL's certificate. */
+  caPem?: string | null;
+  insecureSkipVerify?: boolean;
+}
+
+export type AnySignInSettings = OidcSettings | SamlSettings;

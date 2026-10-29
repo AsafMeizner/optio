@@ -8620,6 +8620,43 @@ public struct OidcSettings: Codable, Hashable, Sendable {
 }
 
 public struct SignInProviderTestResult: Codable, Hashable, Sendable {
+    public struct Saml: Codable, Hashable, Sendable {
+        public struct Certificate: Codable, Hashable, Sendable {
+            public let subject: String
+            public let notAfter: String
+            public let fingerprint256: String
+
+            private enum CodingKeys: String, CodingKey {
+                case subject = "subject"
+                case notAfter = "notAfter"
+                case fingerprint256 = "fingerprint256"
+            }
+
+            public init(subject: String, notAfter: String, fingerprint256: String) {
+                self.subject = subject
+                self.notAfter = notAfter
+                self.fingerprint256 = fingerprint256
+            }
+        }
+
+        public let entityId: String?
+        public let entryPoint: String?
+        /// The signing certificates: subject and expiry, never the key.
+        public let certificates: [Certificate]
+
+        private enum CodingKeys: String, CodingKey {
+            case entityId = "entityId"
+            case entryPoint = "entryPoint"
+            case certificates = "certificates"
+        }
+
+        public init(entityId: String? = nil, entryPoint: String? = nil, certificates: [Certificate]) {
+            self.entityId = entityId
+            self.entryPoint = entryPoint
+            self.certificates = certificates
+        }
+    }
+
     public struct Oidc: Codable, Hashable, Sendable {
         public let issuer: String
         public let authorizationEndpoint: String
@@ -8667,23 +8704,133 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
         }
     }
 
+    /// SAML: what the metadata (or the settings) say about the identity provider.
+    public let saml: Saml?
     public let ok: Bool
     public let error: String?
     /// OIDC: what discovery found.
     public let oidc: Oidc?
 
     private enum CodingKeys: String, CodingKey {
+        case saml = "saml"
         case ok = "ok"
         case error = "error"
         case oidc = "oidc"
     }
 
-    public init(ok: Bool, error: String? = nil, oidc: Oidc? = nil) {
+    public init(saml: Saml? = nil, ok: Bool, error: String? = nil, oidc: Oidc? = nil) {
+        self.saml = saml
         self.ok = ok
         self.error = error
         self.oidc = oidc
     }
 }
+
+public struct SignInAccessSettings: Codable, Hashable, Sendable {
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+    }
+
+    public init(linkByEmail: Bool? = nil) {
+        self.linkByEmail = linkByEmail
+    }
+}
+
+public struct SamlSettings: Codable, Hashable, Sendable {
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
+    /// The identity provider's metadata URL (entry point, entity ID, certificates).
+    public let metadataUrl: String?
+    /// Or its metadata XML, pasted in.
+    public let metadataXml: String?
+    /// The single sign-on URL (HTTP-Redirect binding); from the metadata when empty.
+    public let entryPoint: String?
+    /// The identity provider's entity ID (the response's Issuer, checked); from the metadata when empty.
+    public let idpEntityId: String?
+    /// PEM certificate(s) the identity provider signs with; from the metadata when empty.
+    public let idpCert: String?
+    /// Optio's entity ID, the audience (default `<API origin>/api/auth/saml/metadata`).
+    public let spEntityId: String?
+    /// The NameID format to ask for (default: none, the identity provider picks).
+    public let nameIdFormat: String?
+    /// The attribute holding a stable ID (default: the NameID).
+    public let idAttribute: String?
+    /// Attribute names; empty: the common names (email, mail, the WS-Fed claim URIs, the OIDs).
+    public let emailAttribute: String?
+    public let nameAttribute: String?
+    public let usernameAttribute: String?
+    public let groupsAttribute: String?
+    /// Require the whole response to be signed too (default false: the assertion must be).
+    public let wantAuthnResponseSigned: Bool?
+    /// Require the assertion to be signed (default true).
+    public let wantAssertionsSigned: Bool?
+    /// PEM bundle of the CA behind the metadata URL's certificate.
+    public let caPem: String?
+    public let insecureSkipVerify: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+        case metadataUrl = "metadataUrl"
+        case metadataXml = "metadataXml"
+        case entryPoint = "entryPoint"
+        case idpEntityId = "idpEntityId"
+        case idpCert = "idpCert"
+        case spEntityId = "spEntityId"
+        case nameIdFormat = "nameIdFormat"
+        case idAttribute = "idAttribute"
+        case emailAttribute = "emailAttribute"
+        case nameAttribute = "nameAttribute"
+        case usernameAttribute = "usernameAttribute"
+        case groupsAttribute = "groupsAttribute"
+        case wantAuthnResponseSigned = "wantAuthnResponseSigned"
+        case wantAssertionsSigned = "wantAssertionsSigned"
+        case caPem = "caPem"
+        case insecureSkipVerify = "insecureSkipVerify"
+    }
+
+    public init(
+        linkByEmail: Bool? = nil,
+        metadataUrl: String? = nil,
+        metadataXml: String? = nil,
+        entryPoint: String? = nil,
+        idpEntityId: String? = nil,
+        idpCert: String? = nil,
+        spEntityId: String? = nil,
+        nameIdFormat: String? = nil,
+        idAttribute: String? = nil,
+        emailAttribute: String? = nil,
+        nameAttribute: String? = nil,
+        usernameAttribute: String? = nil,
+        groupsAttribute: String? = nil,
+        wantAuthnResponseSigned: Bool? = nil,
+        wantAssertionsSigned: Bool? = nil,
+        caPem: String? = nil,
+        insecureSkipVerify: Bool? = nil
+    ) {
+        self.linkByEmail = linkByEmail
+        self.metadataUrl = metadataUrl
+        self.metadataXml = metadataXml
+        self.entryPoint = entryPoint
+        self.idpEntityId = idpEntityId
+        self.idpCert = idpCert
+        self.spEntityId = spEntityId
+        self.nameIdFormat = nameIdFormat
+        self.idAttribute = idAttribute
+        self.emailAttribute = emailAttribute
+        self.nameAttribute = nameAttribute
+        self.usernameAttribute = usernameAttribute
+        self.groupsAttribute = groupsAttribute
+        self.wantAuthnResponseSigned = wantAuthnResponseSigned
+        self.wantAssertionsSigned = wantAssertionsSigned
+        self.caPem = caPem
+        self.insecureSkipVerify = insecureSkipVerify
+    }
+}
+
+public typealias AnySignInSettings = AnyCodable
 
 // MARK: - task.ts
 

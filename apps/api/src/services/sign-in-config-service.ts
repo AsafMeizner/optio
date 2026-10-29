@@ -1,7 +1,7 @@
 import { envConfig } from "./sign-in-env.js";
 import type { SignInProviderTestResult } from "@optio/shared";
-import type { OidcSettings } from "@optio/shared";
-import { OidcSettingsSchema } from "../schemas/sign-in.js";
+import type { OidcSettings, SamlSettings, AnySignInSettings } from "@optio/shared";
+import { OidcSettingsSchema, samlSettingsSchema } from "../schemas/sign-in.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -9,7 +9,7 @@ import { authProviderConfigs, users, workspaceMembers, workspaces } from "../db/
 import { logger } from "../logger.js";
 import { decrypt, encrypt } from "./secret-service.js";
 import { getRedisClient } from "./event-bus.js";
-import { getCallbackUrl } from "./oauth/provider.js";
+import { getCallbackUrl, publicApiOrigin } from "./oauth/provider.js";
 import { ensureUserHasWorkspace, normalizeAutoJoinDomains } from "./workspace-service.js";
 
 /**
@@ -36,10 +36,10 @@ import { ensureUserHasWorkspace, normalizeAutoJoinDomains } from "./workspace-se
 const isAuthDisabled = () => process.env.OPTIO_AUTH_DISABLED === "true";
 
 /** The providers whose config can be stored in the app. */
-export const CONFIGURABLE_PROVIDERS = ["google", "oidc"] as const;
+export const CONFIGURABLE_PROVIDERS = ["google", "oidc", "saml"] as const;
 export type ConfigurableProvider = (typeof CONFIGURABLE_PROVIDERS)[number];
 
-export const SIGN_IN_PROVIDERS = ["google", "github", "gitlab", "oidc"] as const;
+export const SIGN_IN_PROVIDERS = ["google", "github", "gitlab", "oidc", "saml"] as const;
 export type SignInProviderName = (typeof SIGN_IN_PROVIDERS)[number];
 
 export class SignInConfigError extends Error {
@@ -60,7 +60,7 @@ export interface ResolvedProviderConfig {
   clientSecret: string;
   allowedDomains: string[];
   source: "database" | "environment";
-  settings?: OidcSettings;
+  settings?: AnySignInSettings;
 }
 
 /** What the Sign-in page shows for one provider (never the secret). */
@@ -76,7 +76,8 @@ export interface SignInProviderView {
   allowedDomains: string[];
   /** The redirect URI to register with the provider. */
   callbackUrl: string;
-  settings?: OidcSettings;
+  metadataUrl?: string | null;
+  settings?: AnySignInSettings;
   updatedAt: string | null;
 }
 
@@ -85,6 +86,7 @@ const DISPLAY: Record<SignInProviderName, string> = {
   github: "GitHub",
   gitlab: "GitLab",
   oidc: process.env.OIDC_DISPLAY_NAME || "SSO",
+  saml: process.env.SAML_DISPLAY_NAME || "SSO (SAML 2.0)",
 };
 
 function secretAAD(provider: string): Buffer {
@@ -148,13 +150,19 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
       configurable: (CONFIGURABLE_PROVIDERS as readonly string[]).includes(provider),
       enabled: fromDb || !!env,
       source: fromDb ? "database" : env ? "environment" : stored ? "database" : "none",
-      clientId: fromDb || (stored && !env) ? stored!.clientId : (env?.clientId ?? null),
+      clientId:
+        provider === "saml"
+          ? null
+          : fromDb || (stored && !env)
+            ? stored!.clientId
+            : (env?.clientId ?? null),
       hasClientSecret:
         fromDb || (stored && !env) ? !!stored!.encryptedClientSecret : !!env?.clientSecret,
       allowedDomains: stored?.allowedDomains ?? [],
       callbackUrl: getCallbackUrl(provider),
+      metadataUrl: provider === "saml" ? publicApiOrigin() + "/api/auth/saml/metadata" : null,
       settings:
-        provider === "oidc"
+        provider === "oidc" || provider === "saml"
           ? ((fromDb || (stored && !env) ? stored?.settings : env?.settings) ?? undefined)
           : undefined,
       updatedAt: stored?.updatedAt.toISOString() ?? null,
@@ -164,8 +172,8 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
 }
 
 export interface SaveSignInConfigInput {
-  settings?: OidcSettings;
-  clientId: string;
+  settings?: AnySignInSettings;
+  clientId?: string;
   /** Replaces the stored secret; absent keeps it; required on first save. */
   clientSecret?: string | null;
   allowedDomains?: string[];
@@ -182,8 +190,8 @@ export async function saveSignInConfig(
   if (!(CONFIGURABLE_PROVIDERS as readonly string[]).includes(provider)) {
     throw new SignInConfigError(`${provider} can only be configured by environment variables`, 400);
   }
-  const clientId = input.clientId.trim();
-  if (!clientId) throw new SignInConfigError("A client ID is required");
+  const clientId = provider === "saml" ? "" : (input.clientId ?? "").trim();
+  if (!clientId && provider !== "saml") throw new SignInConfigError("A client ID is required");
   let domains: string[] = [];
   if (input.allowedDomains !== undefined) {
     const normalized = normalizeAutoJoinDomains(input.allowedDomains);
@@ -191,8 +199,9 @@ export async function saveSignInConfig(
     domains = normalized.domains;
   }
   const existing = await getStoredConfig(provider);
-  const secret = input.clientSecret?.trim();
-  if (!existing && !secret) throw new SignInConfigError("A client secret is required");
+  const secret = provider === "saml" ? undefined : input.clientSecret?.trim();
+  if (!existing && !secret && provider !== "saml")
+    throw new SignInConfigError("A client secret is required");
 
   const sealed = secret
     ? (() => {
@@ -204,11 +213,13 @@ export async function saveSignInConfig(
         };
       })()
     : {};
-  let settings: OidcSettings | null = null;
-  if (provider === "oidc") {
+  let settings: AnySignInSettings | null = null;
+  if (provider === "oidc" || provider === "saml") {
     const candidate = input.settings ?? existing?.settings;
     if (!candidate) throw new SignInConfigError("Settings are required");
-    const parsed = OidcSettingsSchema.safeParse(candidate);
+    const parsed = (provider === "saml" ? samlSettingsSchema : OidcSettingsSchema).safeParse(
+      candidate,
+    );
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       throw new SignInConfigError(
@@ -217,6 +228,17 @@ export async function saveSignInConfig(
     }
     settings = parsed.data;
   }
+  if (provider === "saml") {
+    // The identity provider must be reachable now: its metadata, or the
+    // single sign-on URL and certificate typed in.
+    const { resolveSamlIdp } = await import("./oauth/saml.js");
+    try {
+      await resolveSamlIdp(settings as SamlSettings, { fresh: true });
+    } catch (err) {
+      throw new SignInConfigError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   const values = {
     clientId,
     settings,
@@ -582,8 +604,22 @@ function slugOf(name: string, fallbackId: string): string {
 
 export async function testSignInProvider(
   provider: string,
-  input: { settings?: OidcSettings },
+  input: { settings?: AnySignInSettings },
 ): Promise<SignInProviderTestResult> {
+  if (provider === "saml") {
+    const stored = await getStoredConfig(provider);
+    const parsed = samlSettingsSchema.safeParse(
+      input.settings ?? stored?.settings ?? envConfig("saml")?.settings,
+    );
+    if (!parsed.success)
+      return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid SAML settings" };
+    const { describeSamlIdp } = await import("./oauth/saml.js");
+    try {
+      return { ok: true, saml: await describeSamlIdp(parsed.data) };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
   if (provider !== "oidc") throw new SignInConfigError("This provider has no connection test", 400);
   const stored = await getStoredConfig(provider);
   const parsed = OidcSettingsSchema.safeParse(

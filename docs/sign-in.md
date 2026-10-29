@@ -174,3 +174,52 @@ Environment clients retain their existing flow: `OIDC_ISSUER_URL`,
 Move the client into the app to use nonce enforcement. `trustEmail` and
 `OIDC_TRUST_EMAIL` default to **false**. Opting in treats an unverified address
 as verified for domain rules, but never authorizes cross-provider linking.
+
+## SAML 2.0 (`saml`)
+
+Configure the identity provider's **metadata URL** or paste its **metadata
+XML**. Alternatively enter its single sign-on URL (HTTP-Redirect), entity ID
+and signing certificate (PEM). Explicit fields override metadata. URL metadata
+is cached per API replica for 24 hours; Test and Save fetch it afresh on the
+replica handling that request. After revoking a signing certificate, restart all
+API replicas or wait for every cache to expire. A private CA is supported.
+Metadata and single sign-on URLs require HTTPS (literal localhost HTTP is allowed
+only outside production). Metadata requests obey the deployment outbound allowlist,
+refuse redirects and stop reading after 2 MB. Disabling TLS verification requires
+`OPTIO_IDP_ALLOW_INSECURE_TLS=true` on the deployment; prefer a private CA.
+
+Give your IdP Optio's service-provider metadata at
+`<origin>/api/auth/saml/metadata`. It contains the SP entity ID (default: that
+metadata URL) and the assertion consumer service (ACS):
+`<origin>/api/auth/saml/callback`. The IdP sends an HTTP-POST `SAMLResponse`
+and echoes `RelayState`. Initiate sign-in from Optio; unsolicited IdP-initiated
+responses are refused.
+
+Assertions **must be signed** with the configured IdP certificate. Optio uses
+`@node-saml/node-saml` to verify signatures, audience, validity and request
+correlation; it also checks the signed assertion's issuer and callback
+recipient. Requests expire after 10 minutes, permit 60 seconds of clock skew,
+and cannot be replayed. Optionally require the entire response to be signed.
+The signature library also accepts SHA-1 signatures/digests from a trusted IdP;
+Optio cannot restrict these verification algorithms through node-saml 5's API.
+Configure the IdP to sign with SHA-256 or stronger.
+
+Map the **email**, **name**, **username**, **groups** and **stable ID**
+attributes. Defaults accept common attribute names, LDAP OIDs and Microsoft
+claim URIs. The default stable ID is NameID; for a transient NameID, email
+is the fallback. Prefer a persistent NameID or a configured stable ID attribute
+so changing a person's email does not create a new account. Signed email
+attributes count as verified. Enable email-based account linking only when people
+cannot change their own email at the IdP. An email address is required; a missing
+configured stable ID attribute rejects sign-in instead of falling back to NameID.
+Groups are read from the assertion; group authorization is added in its separate split.
+
+Environment configuration: `SAML_METADATA_URL` or `SAML_METADATA_XML`,
+`SAML_ENTRY_POINT`, `SAML_IDP_ENTITY_ID`, `SAML_IDP_CERT`, `SAML_SP_ENTITY_ID`,
+`SAML_DISPLAY_NAME`, `SAML_EMAIL_ATTRIBUTE`, `SAML_NAME_ATTRIBUTE`,
+`SAML_USERNAME_ATTRIBUTE`, `SAML_GROUPS_ATTRIBUTE`, `SAML_ID_ATTRIBUTE`,
+`SAML_CA_PEM`, `SAML_WANT_AUTHN_RESPONSE_SIGNED`.
+
+These `SAML_*` variables are environment configuration, not dedicated Helm values.
+For Helm installs, configure SAML in Settings → Sign-in or pass these variables
+through the chart's `optio.env` deployment environment map.

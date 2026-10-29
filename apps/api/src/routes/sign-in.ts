@@ -1,4 +1,4 @@
-import { OidcSettingsSchema } from "../schemas/sign-in.js";
+import { OidcSettingsSchema, samlSettingsSchema } from "../schemas/sign-in.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -45,8 +45,8 @@ import { eq } from "drizzle-orm";
 const SETUP_TOKEN_HEADER = "x-optio-setup-token";
 
 const saveSchema = z.object({
-  settings: OidcSettingsSchema.optional(),
-  clientId: z.string().min(1),
+  settings: z.union([OidcSettingsSchema, samlSettingsSchema]).optional(),
+  clientId: z.string().trim().max(500).optional(),
   clientSecret: z.string().min(1).optional(),
   allowedDomains: z.array(z.string()).max(20).optional(),
   enabled: z.boolean().optional(),

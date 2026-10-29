@@ -522,7 +522,9 @@ describe("three servers", () => {
   it("(2) when the attached server is killed, another attaches within 10 s and the run completes", async () => {
     await withLogs(cluster, async () => {
       await replenish();
-      const N = 80;
+      // Keep streaming beyond the full 10 s takeover window. An 8 s run can
+      // settle and clear its lease before polling observes the new holder.
+      const N = 200;
       const taskId = await createTask(cluster.client(0), REPO_A, `[[mock:pr]] ${ticks(N)}`);
       const row = await waitStreaming(() => workRun(taskId), "task");
       const attached = holder(cluster, row);

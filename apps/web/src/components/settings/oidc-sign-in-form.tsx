@@ -34,27 +34,28 @@ import { cn } from "@/lib/utils";
 type Mode = "settings" | "wizard";
 const CHECK = "mt-0.5 shrink-0";
 const DEFAULT_DISPLAY_NAME = { oidc: "SSO" };
-const SIGN_IN_PROVIDER_LABEL = {
+export const SIGN_IN_PROVIDER_LABEL = {
   oidc: "SSO (OpenID Connect)",
   google: "Google",
   github: "GitHub",
   gitlab: "GitLab",
+  saml: "SSO (SAML 2.0)",
 };
 type SignInProviderName = keyof typeof SIGN_IN_PROVIDER_LABEL;
 
-interface AccessDraft {
+export interface AccessDraft {
   linkByEmail: boolean;
   allowedDomains: string;
   enabled: boolean;
 }
-function accessDraftOf(view: SignInProviderView): AccessDraft {
+export function accessDraftOf(view: SignInProviderView): AccessDraft {
   return {
     linkByEmail: view.settings?.linkByEmail ?? false,
     allowedDomains: view.allowedDomains.join(", "),
     enabled: view.source === "none" ? true : view.enabled,
   };
 }
-function accessSettingsOf(d: AccessDraft) {
+export function accessSettingsOf(d: AccessDraft) {
   return { linkByEmail: d.linkByEmail };
 }
 
@@ -84,7 +85,7 @@ const OIDC_PRESET_NOTE: Partial<Record<OidcPreset, string>> = {
   okta: "Add a groups claim to the authorization server (filter the groups to expose) and the groups scope.",
 };
 
-function parseDomains(raw: string): string[] {
+export function parseDomains(raw: string): string[] {
   return [
     ...new Set(
       raw
@@ -101,16 +102,16 @@ function opt(value: string): string | undefined {
   return v ? v : undefined;
 }
 
-function orNull(value: string): string | null {
+export function orNull(value: string): string | null {
   const v = value.trim();
   return v ? v : null;
 }
 
-function errorMessage(err: unknown): string {
+export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function CopyField({ label, value }: { label: string; value: string }) {
+export function CopyField({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <span className={LABEL}>{label}</span>
@@ -137,7 +138,7 @@ function CopyField({ label, value }: { label: string; value: string }) {
 }
 
 /** A label wired to the single control inside it, with optional help below. */
-function Labeled({
+export function Labeled({
   label,
   help,
   className,
@@ -160,7 +161,7 @@ function Labeled({
   );
 }
 
-function Checkbox({
+export function Checkbox({
   checked,
   onChange,
   label,
@@ -194,7 +195,7 @@ function Checkbox({
   );
 }
 
-function AccessSection({
+export function AccessSection({
   draft,
   onChange,
   bootstrap,
@@ -270,7 +271,7 @@ function YesNo({ value, unknown }: { value: boolean | null; unknown: string }) {
   );
 }
 
-function TestResultView({ result }: { result: SignInProviderTestResult }) {
+export function TestResultView({ result }: { result: SignInProviderTestResult }) {
   if (!result.ok) {
     return (
       <div
@@ -295,6 +296,18 @@ function TestResultView({ result }: { result: SignInProviderTestResult }) {
       role="status"
       className="p-3 rounded-lg bg-success/5 border border-success/20 text-xs space-y-2"
     >
+      {result.saml && (
+        <>
+          <p className="font-medium">SAML identity provider verified</p>
+          <p>{result.saml.entityId}</p>
+          <p>{result.saml.entryPoint}</p>
+          {result.saml.certificates.map((c) => (
+            <p key={c.fingerprint256}>
+              {c.subject} · expires {c.notAfter}
+            </p>
+          ))}
+        </>
+      )}
       {result.oidc && (
         <>
           <p className="flex items-center gap-1.5 text-success font-medium">
@@ -341,7 +354,7 @@ function TestResultView({ result }: { result: SignInProviderTestResult }) {
 
 // ── Shared form plumbing ──────────────────────────────────────────────────
 
-interface ProviderFormProps {
+export interface ProviderFormProps {
   view: SignInProviderView;
   config: SignInConfig;
   setupToken: string;
@@ -350,7 +363,7 @@ interface ProviderFormProps {
   onRemoved: () => void;
 }
 
-function RemoveButton({
+export function RemoveButton({
   provider,
   view,
   setupToken,

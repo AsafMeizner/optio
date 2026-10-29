@@ -1,7 +1,9 @@
+import type { OAuthTokens, OAuthUser } from "../services/oauth/provider.js";
+import { getSamlProvider } from "../services/oauth/index.js";
 import type { OAuthFlowState } from "../services/oauth/provider.js";
 import { createHash, randomBytes } from "node:crypto";
 import { joinWorkspacesByEmailDomain } from "../services/workspace-service.js";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import {
@@ -219,6 +221,99 @@ const AUTH_RATE_LIMIT = {
 
 export async function authRoutes(rawApp: FastifyInstance) {
   const app = rawApp.withTypeProvider<ZodTypeProvider>();
+
+  async function completeRedirectSignIn(
+    reply: FastifyReply,
+    providerName: string,
+    state: string,
+    profile: OAuthUser,
+    tokens?: OAuthTokens,
+    browserChallenge?: string,
+  ) {
+    const config = isSignInProvider(providerName)
+      ? await resolveProviderConfig(providerName)
+      : null;
+    const decision = domainDecision(profile, config?.allowedDomains ?? []);
+    if (decision !== "allowed") {
+      app.log.info(
+        { provider: providerName, domain: profile.email.split("@")[1], decision },
+        "Sign-in refused by allowed domains",
+      );
+      return reply.redirect(`${WEB_URL}/login?error=${decision}`);
+    }
+    const session = await createSession(providerName, profile, {
+      linkByEmail: config?.settings?.linkByEmail === true || linkAccountsByEmailEnabled(),
+    });
+    // Workspaces that let people with this (verified) email domain in.
+    await joinWorkspacesByEmailDomain(
+      session.user.id,
+      profile.email,
+      profile.emailVerified === true,
+    ).catch((err) => app.log.warn({ err }, "auto-join by email domain failed"));
+    // Deployment admins named by the environment, and the first sign-in
+    // after the wizard's Sign-in step (it makes this person the deployment
+    // admin and their workspace the organization's).
+    await completeSignIn({
+      id: session.user.id,
+      email: profile.email,
+      emailVerified: (profile.emailVerifiedByProvider ?? profile.emailVerified) === true,
+      provider: providerName,
+    }).catch((err) => app.log.warn({ err }, "sign-in completion step failed"));
+
+    // Store GitHub App user tokens for git/API operations
+    if (providerName === "github" && tokens?.refreshToken && tokens.expiresIn) {
+      await storeUserGitHubTokens(session.user.id, {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresIn: tokens.expiresIn,
+      });
+    }
+
+    // Check if this is a CLI flow (state contains a dot separator with cliState suffix)
+    const dotIdx = state.indexOf(".");
+    if (dotIdx > 0) {
+      const cliState = state.slice(dotIdx + 1);
+      const redis = getRedisClient();
+      const cliRaw = await redis.getdel(`cli_flow:${cliState}`);
+      if (cliRaw) {
+        const cliFlow = JSON.parse(cliRaw) as {
+          callback: string;
+          codeChallenge: string;
+          codeChallengeMethod: string;
+        };
+
+        // Mint a one-time CLI auth code
+        const cliCode = randomBytes(32).toString("hex");
+        await redis.setex(
+          `cli_code:${cliCode}`,
+          300, // 5 minutes
+          JSON.stringify({
+            sessionToken: session.token,
+            codeChallenge: cliFlow.codeChallenge,
+            codeChallengeMethod: cliFlow.codeChallengeMethod,
+          }),
+        );
+
+        // Redirect to the CLI's loopback callback
+        const callbackUrl = new URL(cliFlow.callback);
+        callbackUrl.searchParams.set("code", cliCode);
+        callbackUrl.searchParams.set("state", cliState);
+        return reply.redirect(callbackUrl.toString());
+      }
+    }
+
+    // Standard web flow: generate a short-lived auth code and redirect to the web app's callback.
+    // The web app exchanges the code for the session token server-side and
+    // sets the HttpOnly cookie on its own origin — avoiding cross-origin
+    // cookie issues when API and web run on different origins.
+    const authCode = randomBytes(32).toString("hex");
+    if (!browserChallenge) {
+      await revokeSession(session.token);
+      return reply.redirect(`${WEB_URL}/login?error=invalid_state`);
+    }
+    await addAuthCode(authCode, session.token, browserChallenge);
+    reply.redirect(`${WEB_URL}/auth/callback?code=${authCode}`);
+  }
 
   // ─── Existing Claude auth endpoints ───
 
@@ -472,7 +567,7 @@ export async function authRoutes(rawApp: FastifyInstance) {
     async (req, reply) => {
       const providerName = req.params.provider;
       const provider = getOAuthProvider(providerName);
-      if (!provider) {
+      if (!provider || (providerName === "saml" && !(await resolveProviderConfig("saml")))) {
         return reply.status(404).send({ error: `Unknown provider: ${providerName}` });
       }
 
@@ -485,7 +580,7 @@ export async function authRoutes(rawApp: FastifyInstance) {
       await addOAuthState(state, providerName, browserChallenge, flow);
 
       if (provider.prepare) await provider.prepare();
-      const url = provider.authorizeUrl(state, flow);
+      const url = await provider.authorizeUrl(state, flow);
       reply.redirect(url);
     },
   );
@@ -542,93 +637,87 @@ export async function authRoutes(rawApp: FastifyInstance) {
         const profile = await provider.fetchUser(tokens.accessToken, tokens);
         // Who may sign in with this provider (Settings → Sign-in → allowed
         // domains): refused before any account is created.
-        const config = isSignInProvider(providerName)
-          ? await resolveProviderConfig(providerName)
-          : null;
-        const decision = domainDecision(profile, config?.allowedDomains ?? []);
-        if (decision !== "allowed") {
-          app.log.info(
-            { provider: providerName, domain: profile.email.split("@")[1], decision },
-            "Sign-in refused by allowed domains",
-          );
-          return reply.redirect(`${WEB_URL}/login?error=${decision}`);
-        }
-        const session = await createSession(providerName, profile, {
-          linkByEmail: config?.settings?.linkByEmail === true || linkAccountsByEmailEnabled(),
-        });
-        // Workspaces that let people with this (verified) email domain in.
-        await joinWorkspacesByEmailDomain(
-          session.user.id,
-          profile.email,
-          profile.emailVerified === true,
-        ).catch((err) => app.log.warn({ err }, "auto-join by email domain failed"));
-        // Deployment admins named by the environment, and the first sign-in
-        // after the wizard's Sign-in step (it makes this person the deployment
-        // admin and their workspace the organization's).
-        await completeSignIn({
-          id: session.user.id,
-          email: profile.email,
-          emailVerified: (profile.emailVerifiedByProvider ?? profile.emailVerified) === true,
-          provider: providerName,
-        }).catch((err) => app.log.warn({ err }, "sign-in completion step failed"));
-
-        // Store GitHub App user tokens for git/API operations
-        if (providerName === "github" && tokens.refreshToken && tokens.expiresIn) {
-          await storeUserGitHubTokens(session.user.id, {
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            expiresIn: tokens.expiresIn,
-          });
-        }
-
-        // Check if this is a CLI flow (state contains a dot separator with cliState suffix)
-        const dotIdx = state.indexOf(".");
-        if (dotIdx > 0) {
-          const cliState = state.slice(dotIdx + 1);
-          const redis = getRedisClient();
-          const cliRaw = await redis.getdel(`cli_flow:${cliState}`);
-          if (cliRaw) {
-            const cliFlow = JSON.parse(cliRaw) as {
-              callback: string;
-              codeChallenge: string;
-              codeChallengeMethod: string;
-            };
-
-            // Mint a one-time CLI auth code
-            const cliCode = randomBytes(32).toString("hex");
-            await redis.setex(
-              `cli_code:${cliCode}`,
-              300, // 5 minutes
-              JSON.stringify({
-                sessionToken: session.token,
-                codeChallenge: cliFlow.codeChallenge,
-                codeChallengeMethod: cliFlow.codeChallengeMethod,
-              }),
-            );
-
-            // Redirect to the CLI's loopback callback
-            const callbackUrl = new URL(cliFlow.callback);
-            callbackUrl.searchParams.set("code", cliCode);
-            callbackUrl.searchParams.set("state", cliState);
-            return reply.redirect(callbackUrl.toString());
-          }
-        }
-
-        // Standard web flow: generate a short-lived auth code and redirect to the web app's callback.
-        // The web app exchanges the code for the session token server-side and
-        // sets the HttpOnly cookie on its own origin — avoiding cross-origin
-        // cookie issues when API and web run on different origins.
-        const authCode = randomBytes(32).toString("hex");
-        if (!storedState.browserChallenge) {
-          await revokeSession(session.token);
-          return reply.redirect(`${WEB_URL}/login?error=invalid_state`);
-        }
-        await addAuthCode(authCode, session.token, storedState.browserChallenge);
-        reply.redirect(`${WEB_URL}/auth/callback?code=${authCode}`);
+        return await completeRedirectSignIn(
+          reply,
+          providerName,
+          state,
+          profile,
+          tokens,
+          storedState.browserChallenge,
+        );
       } catch (err) {
         app.log.error(err, "OAuth callback failed");
         reply.redirect(`${WEB_URL}/login?error=auth_failed`);
       }
+    },
+  );
+
+  /**
+   * SAML's assertion consumer service: the identity provider posts the
+   * SAMLResponse here with the sign-in's state as RelayState
+   * (services/oauth/saml.ts checks the signature, the request it answers,
+   * the audience and the validity window).
+   */
+  app.post(
+    "/api/auth/saml/callback",
+    {
+      ...AUTH_RATE_LIMIT,
+      schema: {
+        hide: true,
+        operationId: "samlCallback",
+        summary: "SAML assertion consumer service (redirects to web UI)",
+        tags: ["Auth & Sessions"],
+        security: [],
+        body: z.object({
+          SAMLResponse: z.string().min(1).max(1_000_000),
+          RelayState: z.string().max(200).optional(),
+        }),
+      },
+    },
+    async (req, reply) => {
+      const state = req.body.RelayState;
+      if (!state) {
+        return reply.redirect(`${WEB_URL}/login?error=missing_params`);
+      }
+      const storedState = await consumeOAuthState(state);
+      if (!storedState || storedState.provider !== "saml") {
+        return reply.redirect(`${WEB_URL}/login?error=invalid_state`);
+      }
+      try {
+        const profile = await getSamlProvider().validateResponse(req.body.SAMLResponse, state);
+        return await completeRedirectSignIn(
+          reply,
+          "saml",
+          state,
+          profile,
+          undefined,
+          storedState.browserChallenge,
+        );
+      } catch (err) {
+        app.log.error(err, "SAML sign-in failed");
+        return reply.redirect(`${WEB_URL}/login?error=auth_failed`);
+      }
+    },
+  );
+
+  /** Optio's SAML service-provider metadata, for the identity provider. */
+  app.get(
+    "/api/auth/saml/metadata",
+    {
+      schema: {
+        hide: true,
+        operationId: "samlMetadata",
+        summary: "SAML service-provider metadata (XML)",
+        tags: ["Auth & Sessions"],
+        security: [],
+      },
+    },
+    async (_req, reply) => {
+      const xml = await getSamlProvider()
+        .metadata()
+        .catch(() => null);
+      if (!xml) return reply.status(404).send({ error: "SAML sign-in isn't configured" });
+      reply.type("application/samlmetadata+xml").send(xml);
     },
   );
 
@@ -866,7 +955,7 @@ export async function authRoutes(rawApp: FastifyInstance) {
       await addOAuthState(oauthState, provider, undefined, flow);
 
       if (oauthProvider.prepare) await oauthProvider.prepare();
-      const url = oauthProvider.authorizeUrl(oauthState, flow);
+      const url = await oauthProvider.authorizeUrl(oauthState, flow);
       reply.send({ url });
     },
   );

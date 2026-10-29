@@ -4072,11 +4072,28 @@ data class OidcSettings(
 
 @Serializable
 data class SignInProviderTestResult(
+    /** SAML: what the metadata (or the settings) say about the identity provider. */
+    val saml: Saml? = null,
     val ok: Boolean,
     val error: String? = null,
     /** OIDC: what discovery found. */
     val oidc: Oidc? = null,
 ) {
+    @Serializable
+    data class Saml(
+        val entityId: String? = null,
+        val entryPoint: String? = null,
+        /** The signing certificates: subject and expiry, never the key. */
+        val certificates: List<Certificate>,
+    ) {
+        @Serializable
+        data class Certificate(
+            val subject: String,
+            val notAfter: String,
+            val fingerprint256: String,
+        )
+    }
+
     @Serializable
     data class Oidc(
         val issuer: String,
@@ -4091,6 +4108,48 @@ data class SignInProviderTestResult(
         val pkceSupported: Boolean? = null,
     )
 }
+
+@Serializable
+data class SignInAccessSettings(
+    /** A provider-verified unique email may link to an existing account; disabled by default. */
+    val linkByEmail: Boolean? = null,
+)
+
+@Serializable
+data class SamlSettings(
+    /** A provider-verified unique email may link to an existing account; disabled by default. */
+    val linkByEmail: Boolean? = null,
+    /** The identity provider's metadata URL (entry point, entity ID, certificates). */
+    val metadataUrl: String? = null,
+    /** Or its metadata XML, pasted in. */
+    val metadataXml: String? = null,
+    /** The single sign-on URL (HTTP-Redirect binding); from the metadata when empty. */
+    val entryPoint: String? = null,
+    /** The identity provider's entity ID (the response's Issuer, checked); from the metadata when empty. */
+    val idpEntityId: String? = null,
+    /** PEM certificate(s) the identity provider signs with; from the metadata when empty. */
+    val idpCert: String? = null,
+    /** Optio's entity ID, the audience (default `<API origin>/api/auth/saml/metadata`). */
+    val spEntityId: String? = null,
+    /** The NameID format to ask for (default: none, the identity provider picks). */
+    val nameIdFormat: String? = null,
+    /** The attribute holding a stable ID (default: the NameID). */
+    val idAttribute: String? = null,
+    /** Attribute names; empty: the common names (email, mail, the WS-Fed claim URIs, the OIDs). */
+    val emailAttribute: String? = null,
+    val nameAttribute: String? = null,
+    val usernameAttribute: String? = null,
+    val groupsAttribute: String? = null,
+    /** Require the whole response to be signed too (default false: the assertion must be). */
+    val wantAuthnResponseSigned: Boolean? = null,
+    /** Require the assertion to be signed (default true). */
+    val wantAssertionsSigned: Boolean? = null,
+    /** PEM bundle of the CA behind the metadata URL's certificate. */
+    val caPem: String? = null,
+    val insecureSkipVerify: Boolean? = null,
+)
+
+typealias AnySignInSettings = JsonElement
 
 // endregion
 
