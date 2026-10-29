@@ -1,3 +1,4 @@
+import { SamlProvider, resetSamlMetadataCache } from "./saml.js";
 import type { OAuthProvider } from "./provider.js";
 import { GitHubOAuthProvider } from "./github.js";
 import { GoogleOAuthProvider } from "./google.js";
@@ -9,6 +10,7 @@ const providers: Record<string, OAuthProvider> = {
   google: new GoogleOAuthProvider(),
   gitlab: new GitLabOAuthProvider(),
   oidc: new GenericOIDCProvider(),
+  saml: new SamlProvider(),
 };
 
 export function getOAuthProvider(name: string): OAuthProvider | undefined {
@@ -18,6 +20,11 @@ export function getOAuthProvider(name: string): OAuthProvider | undefined {
 /** Forget cached OIDC discovery after the sign-in settings changed. */
 export function resetOAuthProviders(): void {
   (providers.oidc as GenericOIDCProvider).reset();
+  resetSamlMetadataCache();
+}
+
+export function getSamlProvider(): SamlProvider {
+  return providers.saml as SamlProvider;
 }
 
 export interface EnabledProvider {
@@ -33,7 +40,7 @@ export async function listEnabledProviders(): Promise<EnabledProvider[]> {
   const { listSignInProviders } = await import("../sign-in-config-service.js");
   const views = await listSignInProviders();
   const out: EnabledProvider[] = [];
-  for (const name of ["github", "google", "gitlab", "oidc"] as const) {
+  for (const name of ["github", "google", "gitlab", "oidc", "saml"] as const) {
     const view = views.find((v) => v.provider === name);
     if (view?.enabled) out.push({ name, displayName: view.displayName });
   }

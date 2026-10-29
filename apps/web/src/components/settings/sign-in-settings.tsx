@@ -33,6 +33,7 @@ import {
 } from "@/components/settings/settings-ui";
 import { cn } from "@/lib/utils";
 import { OidcForm } from "./oidc-sign-in-form";
+import { SamlForm } from "./saml-sign-in-form";
 
 /**
  * How everyone signs in — the Settings → Access → Sign-in card and the setup
@@ -452,7 +453,10 @@ export function SignInSetupForm({
 
   const google = config.providers.find((p) => p.provider === "google")!;
   const oidc = config.providers.find((p) => p.provider === "oidc");
-  const others = config.providers.filter((p) => p.provider !== "google" && p.provider !== "oidc");
+  const saml = config.providers.find((p) => p.provider === "saml");
+  const others = config.providers.filter(
+    (p) => p.provider !== "google" && p.provider !== "oidc" && p.provider !== "saml",
+  );
   const canEdit = config.canEdit || (config.bootstrap && setupToken.trim().length > 0);
 
   return (
@@ -613,6 +617,38 @@ export function SignInSetupForm({
             />
           ) : (
             <p className={HELP}>Only a deployment admin can change OpenID Connect settings.</p>
+          )}
+        </section>
+      )}
+      {saml && (
+        <section className="space-y-3" aria-label="SAML sign-in">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">SSO (SAML 2.0)</h3>
+            <Status p={saml} />
+          </div>
+          {canEdit ? (
+            <SamlForm
+              key={saml.updatedAt ?? "new"}
+              view={saml}
+              config={config}
+              mode={mode}
+              setupToken={setupToken}
+              onRemoved={() => void load()}
+              onSaved={(view, bootstrap) => {
+                setConfig((old) =>
+                  old
+                    ? {
+                        ...old,
+                        bootstrap,
+                        providers: old.providers.map((p) => (p.provider === "saml" ? view : p)),
+                      }
+                    : old,
+                );
+                onBootstrapChange?.(bootstrap);
+              }}
+            />
+          ) : (
+            <p className={HELP}>Only a deployment admin can change SAML settings.</p>
           )}
         </section>
       )}

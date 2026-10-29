@@ -1,4 +1,4 @@
-import type { OidcSettings } from "@optio/shared";
+import type { AnySignInSettings, SamlSettings } from "@optio/shared";
 import type { SignInProviderName } from "./sign-in-config-service.js";
 function envBool(name: string): boolean | undefined {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -8,7 +8,7 @@ function envBool(name: string): boolean | undefined {
 
 export function envConfig(
   provider: SignInProviderName,
-): { clientId: string; clientSecret: string; settings?: OidcSettings } | null {
+): { clientId: string; clientSecret: string; settings?: AnySignInSettings } | null {
   const env = process.env;
   switch (provider) {
     case "google":
@@ -49,6 +49,27 @@ export function envConfig(
           caPem: env.OIDC_CA_PEM || undefined,
           linkByEmail: envBool("OIDC_LINK_BY_EMAIL") ?? false,
         },
+      };
+    case "saml":
+      if (!env.SAML_METADATA_URL && !env.SAML_METADATA_XML && !env.SAML_ENTRY_POINT) return null;
+      return {
+        clientId: "",
+        clientSecret: "",
+        settings: {
+          metadataUrl: env.SAML_METADATA_URL || undefined,
+          metadataXml: env.SAML_METADATA_XML || undefined,
+          entryPoint: env.SAML_ENTRY_POINT || undefined,
+          idpEntityId: env.SAML_IDP_ENTITY_ID || undefined,
+          idpCert: env.SAML_IDP_CERT || undefined,
+          spEntityId: env.SAML_SP_ENTITY_ID || undefined,
+          emailAttribute: env.SAML_EMAIL_ATTRIBUTE || undefined,
+          nameAttribute: env.SAML_NAME_ATTRIBUTE || undefined,
+          usernameAttribute: env.SAML_USERNAME_ATTRIBUTE || undefined,
+          idAttribute: env.SAML_ID_ATTRIBUTE || undefined,
+          wantAuthnResponseSigned: envBool("SAML_WANT_AUTHN_RESPONSE_SIGNED") ?? false,
+          groupsAttribute: env.SAML_GROUPS_ATTRIBUTE || undefined,
+          caPem: env.SAML_CA_PEM || undefined,
+        } satisfies SamlSettings,
       };
   }
 }

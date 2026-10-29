@@ -608,6 +608,11 @@ describe("the shared front end", { timeout: PROGRAM_TIMEOUT_MS }, () => {
     expect(kotlinNames(kotlin).filter((n) => !glanceNames.has(n))).toEqual(swiftNames(swift));
     expect(kotlin).toContain("data class OptioTask(");
     expect(kotlin).toContain("sealed interface WsEvent {");
-    expect(warnings).toHaveLength(8);
+    const settingsWarning =
+      "src/types/sign-in.ts: AnySignInSettings: object union without a common string-literal discriminator (`kind` / `type`); emitted as JsonElement";
+    expect(warnings.filter((warning) => warning === settingsWarning)).toEqual([settingsWarning]);
+    expect(warnings.filter((warning) => warning !== settingsWarning)).toHaveLength(8);
+    expect(kotlin).toContain("typealias AnySignInSettings = JsonElement");
+    expect(block(kotlin, "SamlSettings")).toContain("val linkByEmail: Boolean? = null");
   });
 });

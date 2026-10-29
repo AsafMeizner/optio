@@ -52,7 +52,7 @@ export interface OAuthProvider {
   /** The flow state to keep for `state` (PKCE, nonce); none for providers that need none. */
   beginFlow?(): OAuthFlowState;
   /** The browser authorization URL. */
-  authorizeUrl(state: string, flow?: OAuthFlowState): string;
+  authorizeUrl(state: string, flow?: OAuthFlowState): string | Promise<string>;
   exchangeCode(code: string, flow?: OAuthFlowState): Promise<OAuthTokens>;
   /** `tokens`: all the exchange returned, for a provider that reads the ID token too. */
   fetchUser(accessToken: string, tokens?: OAuthTokens): Promise<OAuthUser>;

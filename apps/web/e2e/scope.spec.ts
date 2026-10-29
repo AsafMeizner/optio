@@ -129,6 +129,7 @@ test.describe("Scope", () => {
       "gitlab",
       "google",
       "oidc",
+      "saml",
     ]);
   });
 });

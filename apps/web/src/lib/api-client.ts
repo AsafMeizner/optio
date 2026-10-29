@@ -1,4 +1,4 @@
-import type { OidcSettings, SignInProviderTestResult } from "@optio/shared";
+import type { AnySignInSettings, SignInProviderTestResult } from "@optio/shared";
 /**
  * All API requests are routed through the Next.js BFF proxy at /api/[...path].
  * The proxy reads the HttpOnly session cookie server-side and forwards it as a
@@ -99,8 +99,8 @@ export interface ApiKeyCreated {
 
 /** What `GET /api/auth/sign-in` says about one provider (never a secret). */
 export interface SignInProviderView {
-  settings?: OidcSettings;
-  provider: "google" | "github" | "gitlab" | "oidc";
+  settings?: AnySignInSettings;
+  provider: "google" | "github" | "gitlab" | "oidc" | "saml";
   displayName: string;
   configurable: boolean;
   enabled: boolean;
@@ -109,6 +109,7 @@ export interface SignInProviderView {
   hasClientSecret: boolean;
   allowedDomains: string[];
   callbackUrl: string;
+  metadataUrl?: string | null;
   updatedAt: string | null;
 }
 
@@ -1051,13 +1052,13 @@ export const api = {
   saveSignInProvider: (
     provider: string,
     data: {
-      clientId: string;
+      clientId?: string;
       clientSecret?: string;
       allowedDomains?: string[];
       enabled?: boolean;
       displayName?: string | null;
       organizationName?: string;
-      settings?: OidcSettings;
+      settings?: AnySignInSettings;
     },
     setupToken?: string,
   ) =>
@@ -1068,7 +1069,7 @@ export const api = {
     }),
   testSignInProvider: (
     provider: string,
-    data: { clientId?: string; clientSecret?: string; settings?: OidcSettings },
+    data: { clientId?: string; clientSecret?: string; settings?: AnySignInSettings },
     setupToken?: string,
   ) =>
     request<SignInProviderTestResult>(`/api/auth/sign-in/${provider}/test`, {
