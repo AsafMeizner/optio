@@ -19,11 +19,11 @@ describe("requiredGitTokenSecret", () => {
     mockIsGitHubAppConfigured.mockReset();
   });
 
-  it("requires GitLab's token for a GitLab repo, GitHub App or not", () => {
+  it("leaves GitLab tokens optional for host-only and environment setups, GitHub App or not", () => {
     mockIsGitHubAppConfigured.mockReturnValue(false);
-    expect(requiredGitTokenSecret("gitlab")).toBe("GITLAB_TOKEN");
+    expect(requiredGitTokenSecret("gitlab")).toBeNull();
     mockIsGitHubAppConfigured.mockReturnValue(true);
-    expect(requiredGitTokenSecret("gitlab")).toBe("GITLAB_TOKEN");
+    expect(requiredGitTokenSecret("gitlab")).toBeNull();
   });
 
   it("requires GitHub's token for a GitHub repo without a GitHub App", () => {
