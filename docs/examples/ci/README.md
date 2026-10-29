@@ -4,7 +4,9 @@ Copy `github-actions.yml` into `.github/workflows/` or `gitlab-ci.yml` to
 `.gitlab-ci.yml` in a repository where you want these jobs to run. They are
 examples, and are inactive in this repository. Both check and test the
 workspace, build and push the same images, and deploy manually to a namespace
-you choose. Review runner permissions and secret handling for your CI system.
+you choose. The GitHub Actions example builds and pushes images on every branch
+push; restrict its branch filters before copying it if that is not wanted.
+Review runner permissions and secret handling for your CI system.
 
 Set `OPTIO_REGISTRY` to a registry path such as `registry.example.com/optio`;
 provide its user/password through secrets. The Docker build runner needs

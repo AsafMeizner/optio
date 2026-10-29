@@ -202,15 +202,23 @@ export class TerminalManager {
         pty,
         dir,
         ring: new RingBuffer(RING_CAPACITY),
-        // The screen model answers the program's queries (see ScreenModel).
-        screen: new ScreenModel(pty.cols, pty.rows, (reply) => {
-          if (term.exited) return;
-          try {
-            pty.write(reply);
-          } catch {
-            // exited under us
-          }
-        }),
+        // The screen model answers the program's queries (see ScreenModel)
+        // and relays what the program says about itself (OSC 7501).
+        screen: new ScreenModel(
+          pty.cols,
+          pty.rows,
+          (reply) => {
+            if (term.exited) return;
+            try {
+              pty.write(reply);
+            } catch {
+              // exited under us
+            }
+          },
+          (report) => {
+            if (!term.exited) this.opts.attention.statusEvent(term.terminalId, report);
+          },
+        ),
         subscribed: false,
         previewTimer: null,
         lastPreviewAt: 0,

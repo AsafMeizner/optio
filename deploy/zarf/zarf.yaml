@@ -131,11 +131,11 @@ components:
       - optio.local/optio-agent-base:0.1.0
       # The `dind` preset: the base plus a rootless Docker daemon.
       - optio.local/optio-agent-dind:0.1.0
-      - docker.io/library/postgres:16.15
-      - docker.io/library/redis:7.4.11-alpine
+      - docker.io/library/postgres:16@sha256:9e2cf6287f25c3151f4c9421ccce2b17f3e60061c111a29165e0d2cdd9ff0a97
+      - docker.io/library/redis:7-alpine@sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af
       - docker.io/library/busybox:1.36
       # Sidecar of repos with the secret proxy turned on.
-      - docker.io/envoyproxy/envoy:v1.31.10
+      - docker.io/envoyproxy/envoy:v1.39.5
     actions:
       onDeploy:
         before:

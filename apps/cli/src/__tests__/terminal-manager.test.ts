@@ -388,6 +388,26 @@ describe("a terminal whose process exited", () => {
   });
 });
 
+describe("program status", () => {
+  it("answers the OSC 7501 query from the PTY and turns reports into attention frames", async () => {
+    const { sent, manager } = setup();
+    spawnTerminal(manager, "t-1");
+    const pty = h.spawned[0];
+    pty.dataCb?.("\x1b]7501;?\x1b\\");
+    pty.dataCb?.("\x1b]7501;state=blocked:kind=question:app=claude\x1b\\");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pty.written).toEqual([
+      "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\",
+    ]);
+    expect(sent.filter((m) => m.type === "attention").at(-1)).toEqual({
+      type: "attention",
+      terminalId: "t-1",
+      state: "needs_you",
+      reason: "question",
+    });
+  });
+});
+
 describe("input", () => {
   it("writes to the PTY and signals the attention tracker", () => {
     const { attention, manager } = setup();

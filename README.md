@@ -87,7 +87,7 @@ _Native Apple component captures with sample states. Watch support is provided b
 - **Connections and tools.** Combine encrypted credentials, MCP servers, shell environment, and usage notes. Assign access by repo and runtime, with per-work settings. [Connections →](docs/connections.md)
 - **Explicit ownership and isolation.** Execution pools include workspace, owner, purpose, and access settings. Work inside the same pool remains mutually trusted; ordinary pods are not a boundary for hostile tenants. [Security review →](docs/security-review-2026-10.md)
 - **Recovery with visible status.** Sessions report reconnecting, resumable, or lost states. Preserve recoverable work and require an explicit decision before retrying an uncertain outcome. [Recovery →](docs/production-eks.md)
-- **Managed Kubernetes deployment.** Helm supports managed PostgreSQL and Redis, existing Kubernetes Secrets for database, Redis, encryption, and OAuth settings, and separate worker identities. The combined API/web deployment currently requires **one replica**; worker pods scale independently. [EKS and production guide →](docs/production-eks.md)
+- **Managed Kubernetes deployment.** Helm supports managed PostgreSQL and Redis, existing Kubernetes Secrets for database, Redis, encryption, and OAuth settings, and separate worker identities. The combined API/web deployment runs any number of replicas (`api.replicas` or `api.autoscaling`) on one Postgres and one Redis; worker pods scale independently. [EKS and production guide →](docs/production-eks.md)
 - **Identity and access.** Workspaces, admin/member/viewer roles, OAuth/OIDC sign-in, personal access tokens, and encrypted secrets at rest. [Sign-in →](docs/sign-in.md)
 
 Optio is the orchestration layer you host. Agents still communicate with the model providers and external tools you configure; self-hosting Optio does not make those services local.
@@ -104,7 +104,7 @@ cd optio
 
 Open **http://localhost:30310** and complete setup. The API listens at **http://localhost:30400**. The setup script builds the project and deploys it to local Kubernetes; see the [installation guide](https://optio.host/docs/installation/) for prerequisites and other deployment options.
 
-For production, use the [Helm chart](helm/optio/) and [managed deployment guide](docs/production-eks.md). Agent providers and infrastructure may have their own costs.
+For production, use the [Helm chart](helm/optio/) and [managed deployment guide](docs/production-eks.md). Agent providers and infrastructure may have their own costs. The optional [backup guide](docs/backup.md) covers scheduled database dumps, restores and restore drills.
 
 Want a workspace to explore? [Seed the example catalog](scripts/showcase/README.md). It adds clearly labeled, paused examples without running agents, contacting integrations, or replacing existing work.
 
@@ -122,6 +122,6 @@ Want a workspace to explore? [Seed the example catalog](scripts/showcase/README.
 | [Redis](docs/redis.md)                                | Standalone or cluster mode, ElastiCache Serverless      |
 | [Contributing](https://optio.host/docs/contributing/) | Architecture, development setup, and tests              |
 
-Built with TypeScript, Next.js, Fastify, PostgreSQL, Redis/BullMQ, and Kubernetes, with native Swift and Kotlin clients. See [CLAUDE.md](CLAUDE.md) for repository conventions and the test matrix.
+Built with TypeScript, Next.js, Fastify, PostgreSQL, Redis/BullMQ, and Kubernetes, with native Swift and Kotlin clients. See [AGENTS.md](AGENTS.md) for repository conventions and the test matrix.
 
 [MIT licensed](LICENSE).

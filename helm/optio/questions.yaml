@@ -1,6 +1,12 @@
 # Optional Rancher install form. Edit YAML exposes the remaining chart values.
 # rancherForm.signIn controls field visibility only.
 questions:
+  - variable: createNamespace
+    label: Create the namespace
+    description: Disable when Rancher or another installer creates the namespace.
+    type: boolean
+    default: true
+    group: Access
   - variable: publicUrl
     label: Public URL
     description: The address people open Optio at, e.g. https://optio.example.com. Sign-in sends people back here, and GitLab delivers webhooks here, so GitLab must be able to reach it too.

@@ -34,30 +34,17 @@ agent:
     pullPolicy: IfNotPresent
     prefix: "optio.local/optio-agent-"
   imagePullPolicy: IfNotPresent
-  envoyProxy:
-    image:
-      repository: envoyproxy/envoy
-      tag: v1.31.10
-      pullPolicy: IfNotPresent
   pvc:
     storageClass: "###ZARF_VAR_STORAGE_CLASS###"
   cache:
     storageClass: "###ZARF_VAR_STORAGE_CLASS###"
 
 postgresql:
-  image:
-    repository: postgres
-    tag: "16.15"
   storage:
     storageClass: "###ZARF_VAR_STORAGE_CLASS###"
     size: ###ZARF_VAR_POSTGRES_STORAGE_SIZE###
   auth:
     password: "###ZARF_VAR_POSTGRES_PASSWORD###"
-
-redis:
-  image:
-    repository: redis
-    tag: 7.4.11-alpine
 
 encryption:
   key: "###ZARF_VAR_ENCRYPTION_KEY###"

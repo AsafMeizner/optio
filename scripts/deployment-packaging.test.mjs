@@ -64,6 +64,24 @@ describe("deployment package metadata", () => {
       assert.ok(supported(question.variable.split(".")), question.variable);
     }
   });
+  it("bundles the chart's current proxy and digest-pinned data images", () => {
+    const images = pkg.components.find((c) => c.name === "optio").images;
+    for (const config of [
+      chart.agent.envoyProxy.image,
+      chart.postgresql.image,
+      chart.redis.image,
+    ]) {
+      assert.ok(
+        images.includes(
+          `docker.io/${config.repository.includes("/") ? "" : "library/"}${config.repository}:${config.tag}`,
+        ),
+      );
+    }
+    const values = parse(packageValues());
+    assert.equal(values.agent.envoyProxy, undefined);
+    assert.equal(values.postgresql.image, undefined);
+    assert.equal(values.redis, undefined);
+  });
   it("declares substitutions and keeps Optio tags at the package version", () => {
     const text =
       read("deploy/zarf/values/optio.yaml") +
@@ -122,6 +140,16 @@ describe("deployment chart rendering", { skip: !helmAvailable }, () => {
     assert.deepEqual(
       render("--set", "createNamespace=false"),
       normal.filter((object) => object.kind !== "Namespace"),
+    );
+  });
+  it("omits ingress TLS without a secret and preserves a named secret", () => {
+    const extra = ["--set", "ingress.enabled=true", "--set", "ingress.tls[0].secretName="];
+    assert.equal(render(...extra).find((o) => o.kind === "Ingress").spec.tls, undefined);
+    assert.equal(
+      render(...extra, "--set", "ingress.tls[0].secretName=optio-tls").find(
+        (o) => o.kind === "Ingress",
+      ).spec.tls[0].secretName,
+      "optio-tls",
     );
   });
   it("renders the substituted package without creating a Namespace", () => {
