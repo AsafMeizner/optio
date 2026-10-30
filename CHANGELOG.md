@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - GitLab change-request threads must be resolvable and written by the token user, an assigned reviewer or a Developer-or-higher member. Review requests take precedence over auto-merge and unresolved review reads continue to block merging.
 - GitLab approval conflicts (HTTP 409) now propagate from `submitReview` rather than silently reporting success.
+- A PR's review status reads each reviewer's latest review, as the merge guard does: one reviewer's open change request outlives another's later approval, so the task resumes or asks for attention instead of retrying a merge the guard refuses.
 - Review context includes the newest 30 GitHub comments, and issue prompts include the newest 30 comments in chronological order.
 
 ### Fixed
