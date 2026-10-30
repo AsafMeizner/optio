@@ -1,6 +1,6 @@
 /**
  * Merge requests and commits that point back to the ticket, the person and
- * the run (docs/ticket-round-trip.md "Traceable merge requests and commits"). Pure text:
+ * the run (docs/prompts.md "Traceability"). Pure text:
  * apps/api/src/services/work-traceability.ts looks up the requester, the
  * team and the run's address, and these turn them into
  *
@@ -38,7 +38,7 @@ export interface WorkTrace {
   ticketKey?: string | null;
   /** The ticket's page. */
   ticketUrl?: string | null;
-  /** Who asked for it: the Jira reporter, else the person who made the work. */
+  /** Who asked for it: the person who made the work (an email only when opted in). */
   requester?: { name: string; email?: string | null } | null;
   /** The team whose work it is. */
   teamName?: string | null;

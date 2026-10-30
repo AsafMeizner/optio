@@ -1,10 +1,10 @@
 /**
- * Commits that point back to the person and the run (docs/ticket-round-trip.md
- * "Traceable merge requests and commits"): a `prepare-commit-msg` hook in
- * the repo pod ends every commit message with
+ * Commits that point back to the person and the run (docs/prompts.md
+ * "Traceability"): a `prepare-commit-msg` hook in the repo pod ends every
+ * commit message with
  *
  *   Jira: PLAT-1                                  (work from a Jira ticket)
- *   Co-authored-by: Ada Lovelace <ada@example.com>
+ *   Co-authored-by: Ada Lovelace <ada@example.com>  (only with OPTIO_WORK_TRACEABILITY_EMAIL)
  *   Optio-Run: https://optio.example.com/work/<id>
  *   Optio-Team: Platform                          (a team's work)
  *

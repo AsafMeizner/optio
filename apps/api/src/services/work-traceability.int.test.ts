@@ -1,9 +1,10 @@
 /**
- * What a run tells GitLab about its work (work-traceability.ts), with the
- * people and teams in Postgres: the requester (the Jira reporter for ticket
- * work, else whoever made it), the team, the run's link, and the switches:
- * nothing unless OPTIO_WORK_TRACEABILITY=true, and OPTIO_COMMIT_TRAILERS=false
- * leaving the commit trailers out.
+ * What a run tells the git host about its work (work-traceability.ts), with
+ * the people in Postgres: the requester (whoever made the work; nobody for
+ * ticket work), the run's link, and the switches: nothing unless the repo is
+ * listed in OPTIO_WORK_TRACEABILITY_REPOS, no email unless
+ * OPTIO_WORK_TRACEABILITY_EMAIL=true, and OPTIO_COMMIT_TRAILERS=false leaving
+ * the commit trailers out.
  */
 import { randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,8 +15,10 @@ import { insertTask, insertWorkspace } from "../test-utils/integration/fixtures.
 import { localTraceabilityNote, workTraceability } from "./work-traceability.js";
 
 const uniq = () => randomBytes(4).toString("hex");
+const TRACED_GROUP = "https://gitlab.example.test/platform";
 let workspaceId: string;
 let userId: string;
+const tracedRepo = () => `${TRACED_GROUP}/app-${uniq()}`;
 
 beforeAll(async () => {
   workspaceId = (await insertWorkspace()).id;
@@ -31,15 +34,19 @@ beforeAll(async () => {
   userId = u.id;
 });
 
-beforeEach(() => vi.stubEnv("OPTIO_WORK_TRACEABILITY", "true"));
+beforeEach(() => vi.stubEnv("OPTIO_WORK_TRACEABILITY_REPOS", `${TRACED_GROUP}/*`));
 afterEach(() => vi.unstubAllEnvs());
+afterAll(async () => {
+  await getRedisClient().quit();
+});
 
-describe("off by default", () => {
-  it("adds nothing to the prompt, the run's environment or a local run", async () => {
-    vi.stubEnv("OPTIO_WORK_TRACEABILITY", "");
+describe("off unless the repo is listed", () => {
+  it("adds nothing with no repos listed", async () => {
+    vi.stubEnv("OPTIO_WORK_TRACEABILITY_REPOS", "");
     vi.stubEnv("PUBLIC_URL", "https://optio.example.test");
     const task = await insertTask({
       title: "Fix",
+      repoUrl: tracedRepo(),
       ticketSource: "jira",
       ticketExternalId: "PLAT-9",
       createdBy: userId,
@@ -49,22 +56,25 @@ describe("off by default", () => {
     expect(await workTraceability(task)).toEqual({ promptVars: {}, env: {} });
     expect(await localTraceabilityNote(task)).toBe("");
   });
-});
-afterAll(async () => {
-  await getRedisClient().quit();
+
+  it("adds nothing for a repo outside the list", async () => {
+    vi.stubEnv("PUBLIC_URL", "https://optio.example.test");
+    const task = await insertTask({ title: "Fix", createdBy: userId, workspaceId });
+    expect(task.repoUrl.startsWith(TRACED_GROUP)).toBe(false);
+    expect(await workTraceability(task)).toEqual({ promptVars: {}, env: {} });
+    expect(await localTraceabilityNote(task)).toBe("");
+  });
 });
 
-describe("what a run tells GitLab", () => {
-  it("Jira work: the key, the reporter as co-author, the team, the run", async () => {
+describe("a listed repo", () => {
+  it("Jira work: the key and the run, and no requester", async () => {
     vi.stubEnv("PUBLIC_URL", "https://optio.example.test/");
     const task = await insertTask({
       title: "Add a /health endpoint",
+      repoUrl: tracedRepo(),
       ticketSource: "jira",
       ticketExternalId: "PLAT-1",
-      metadata: {
-        ticketUrl: "https://jira.example.test/browse/PLAT-1",
-        ticketReporter: { name: "Ada Lovelace", email: "ada@example.test" },
-      },
+      metadata: { ticketUrl: "https://jira.example.test/browse/PLAT-1" },
       createdBy: userId,
       ownerUserId: userId,
       workspaceId,
@@ -75,39 +85,55 @@ describe("what a run tells GitLab", () => {
     expect(promptVars.MR_FOOTER).toContain(
       "Jira: [PLAT-1](https://jira.example.test/browse/PLAT-1)",
     );
-    expect(promptVars.MR_FOOTER).toContain("Requested by: Ada Lovelace");
+    expect(promptVars.MR_FOOTER).not.toContain("Requested by");
     expect(env).toEqual({
       OPTIO_JIRA_KEY: "PLAT-1",
-      OPTIO_COMMIT_CO_AUTHOR: "Ada Lovelace <ada@example.test>",
       OPTIO_RUN_URL: `https://optio.example.test/work/${task.id}`,
     });
   });
 
-  it("a Jira that hides the reporter's email: named, no co-author (never the provider's owner)", async () => {
+  it("other work: names whoever made it, without their email", async () => {
+    vi.stubEnv("PUBLIC_URL", "https://optio.example.test");
     const task = await insertTask({
-      ticketSource: "jira",
-      ticketExternalId: "PLAT-2",
-      metadata: { ticketReporter: { name: "Ada Lovelace", email: null } },
+      title: "Refactor",
+      repoUrl: tracedRepo(),
       createdBy: userId,
       workspaceId,
     });
     const { promptVars, env } = await workTraceability(task);
-    expect(promptVars.MR_FOOTER).toContain("Requested by: Ada Lovelace");
-    expect(env.OPTIO_COMMIT_CO_AUTHOR).toBeUndefined();
-    // No PUBLIC_URL: no run link rather than a wrong one.
-    expect(env.OPTIO_RUN_URL).toBeUndefined();
-  });
-
-  it("other work: whoever made it", async () => {
-    vi.stubEnv("PUBLIC_URL", "https://optio.example.test");
-    const task = await insertTask({ title: "Refactor", createdBy: userId, workspaceId });
-    const { promptVars, env } = await workTraceability(task);
     expect(promptVars.MR_TITLE).toBe("Refactor");
     expect(promptVars.JIRA_KEY).toBe("");
+    expect(promptVars.MR_FOOTER).toContain("Requested by: Grace Hopper");
+    expect(JSON.stringify(promptVars)).not.toContain("grace@example.test");
+    expect(env).toEqual({ OPTIO_RUN_URL: `https://optio.example.test/work/${task.id}` });
+  });
+
+  it("OPTIO_WORK_TRACEABILITY_EMAIL=true: the requester becomes a co-author", async () => {
+    vi.stubEnv("PUBLIC_URL", "https://optio.example.test");
+    vi.stubEnv("OPTIO_WORK_TRACEABILITY_EMAIL", "true");
+    const task = await insertTask({
+      title: "Refactor",
+      repoUrl: tracedRepo(),
+      createdBy: userId,
+      workspaceId,
+    });
+    const { env } = await workTraceability(task);
     expect(env).toEqual({
       OPTIO_COMMIT_CO_AUTHOR: "Grace Hopper <grace@example.test>",
       OPTIO_RUN_URL: `https://optio.example.test/work/${task.id}`,
     });
+  });
+
+  it("no PUBLIC_URL: no run link rather than a wrong one", async () => {
+    const task = await insertTask({
+      title: "Fix",
+      repoUrl: tracedRepo(),
+      ticketSource: "jira",
+      ticketExternalId: "PLAT-2",
+      workspaceId,
+    });
+    const { env } = await workTraceability(task);
+    expect(env).toEqual({ OPTIO_JIRA_KEY: "PLAT-2" });
   });
 
   it("OPTIO_COMMIT_TRAILERS=false: no trailers, the MR title and footer stay", async () => {
@@ -115,6 +141,7 @@ describe("what a run tells GitLab", () => {
     vi.stubEnv("OPTIO_COMMIT_TRAILERS", "false");
     const task = await insertTask({
       title: "Fix",
+      repoUrl: tracedRepo(),
       ticketSource: "jira",
       ticketExternalId: "PLAT-3",
       createdBy: userId,
@@ -133,22 +160,20 @@ describe("a run in a person's own checkout (no hook there)", () => {
     vi.stubEnv("PUBLIC_URL", "https://optio.example.test");
     const task = await insertTask({
       title: "Add a /health endpoint",
+      repoUrl: tracedRepo(),
       ticketSource: "jira",
       ticketExternalId: "PLAT-4",
-      metadata: { ticketReporter: { name: "Ada Lovelace", email: "ada@example.test" } },
       ownerUserId: userId,
       workspaceId,
     });
     const note = await localTraceabilityNote(task);
     expect(note).toContain('Title the merge request "PLAT-4: Add a /health endpoint".');
     expect(note).toContain("End the merge request's description with:");
-    expect(note).toContain(
-      `Jira: PLAT-4\nCo-authored-by: Ada Lovelace <ada@example.test>\nOptio-Run: https://optio.example.test/work/${task.id}`,
-    );
+    expect(note).toContain(`Jira: PLAT-4\nOptio-Run: https://optio.example.test/work/${task.id}`);
   });
 
   it("is empty when there is nothing to say", async () => {
-    const task = await insertTask({ title: "x", workspaceId });
+    const task = await insertTask({ title: "x", repoUrl: tracedRepo(), workspaceId });
     expect(await localTraceabilityNote(task)).toBe("");
   });
 });

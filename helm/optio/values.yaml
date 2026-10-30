@@ -842,7 +842,12 @@ metrics:
 prompts:
   starters: false
 
-# Optional ticket/run metadata in pull requests and commit trailers.
+# Optional ticket/run metadata in pull requests and commit trailers
+# (docs/prompts.md "Traceability"). Off for every repository until listed.
 tickets:
-  traceability: false
+  traceability:
+    # Repository URLs, or https://host/group/* for a whole group.
+    repos: []
+    # Put the requester's email in a Co-authored-by trailer.
+    requesterEmail: false
   # commitTrailers: true

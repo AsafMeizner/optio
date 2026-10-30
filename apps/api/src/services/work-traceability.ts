@@ -1,24 +1,29 @@
 /**
- * What a run tells GitLab about where its work came from (docs/ticket-round-trip.md
- * "Traceable merge requests and commits"): the Jira key, who asked, the team
- * and the run's page, for the MR title and footer (prompt variables) and the
- * commit trailers (the run's environment, read by the hook in
- * commit-trailers.ts). The text rules are in @optio/shared
- * (work-traceability.ts); this file looks the people up.
+ * What a run tells the git host about where its work came from: the Jira
+ * key, who asked, and the run's page, for the MR title and footer (prompt
+ * variables) and the commit trailers (the run's environment, read by the
+ * hook in commit-trailers.ts). The text rules are in @optio/shared
+ * (work-traceability.ts); this file looks the people up. docs/prompts.md
+ * ("Traceability") lists what ends up in the repository's history.
  *
- * Who asked: for ticket work, the ticket's reporter as the sync saw them
- * (`metadata.ticketReporter`; a Server that hides emails gives a name and no
- * Co-authored-by); for other work, the person who made it. The run's page is
- * `<PUBLIC_URL>/work/<id>`, left out while PUBLIC_URL is unset.
+ * Off unless the deployment names the repositories it is for:
+ * OPTIO_WORK_TRACEABILITY_REPOS (Helm `tickets.traceability.repos`), a
+ * comma-separated list of repository URLs, or `host/group/*` for every
+ * repository under a group. Commits and MR text are public wherever the
+ * repository is, so a deployment opts in only the repositories whose history
+ * may name its people and its Optio address.
  *
- * Off unless the deployment turns it on: OPTIO_WORK_TRACEABILITY=true (Helm
- * `tickets.traceability`). Off, the MR and the commits are as the prompt
- * alone makes them. On, OPTIO_COMMIT_TRAILERS=false (Helm
- * `tickets.commitTrailers`) still leaves the commit trailers out; the MR
- * title and footer stay.
+ * Who asked: the person who made the work. Ticket work names nobody (Optio
+ * does not know who reported the ticket, and the trigger's owner did not
+ * ask). Their email is left out (no Co-authored-by) unless
+ * OPTIO_WORK_TRACEABILITY_EMAIL=true (Helm `tickets.traceability.requesterEmail`).
+ * The run's page is `<PUBLIC_URL>/work/<id>`, left out while PUBLIC_URL is
+ * unset. OPTIO_COMMIT_TRAILERS=false (Helm `tickets.commitTrailers`) leaves
+ * the commit trailers out; the MR title and footer stay.
  */
 import { eq } from "drizzle-orm";
 import {
+  normalizeRepoUrl,
   commitTrailerEnv,
   commitTrailers,
   mrFooter,
@@ -34,6 +39,7 @@ import { logger } from "../logger.js";
 export interface TraceableTask {
   id: string;
   title: string;
+  repoUrl?: string | null;
   ticketSource?: string | null;
   ticketExternalId?: string | null;
   metadata?: unknown;
@@ -42,14 +48,41 @@ export interface TraceableTask {
   ownerTeamId?: string | null;
 }
 
-/** Whether runs say where their work came from at all (OPTIO_WORK_TRACEABILITY, default off). */
-export function workTraceabilityEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (env.OPTIO_WORK_TRACEABILITY ?? "").trim().toLowerCase() === "true";
+/**
+ * The repositories traceability is for (OPTIO_WORK_TRACEABILITY_REPOS),
+ * normalized: a URL names one repository, a trailing `/*` every repository
+ * under that path. Empty by default.
+ */
+function traceableRepos(env: NodeJS.ProcessEnv): string[] {
+  return (env.OPTIO_WORK_TRACEABILITY_REPOS ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) =>
+      entry.endsWith("/*") ? `${normalizeRepoUrl(entry.slice(0, -2))}/*` : normalizeRepoUrl(entry),
+    );
 }
 
-/** Whether commits get trailers (with traceability on; OPTIO_COMMIT_TRAILERS, default on). */
+/** Whether runs on `repoUrl` say where their work came from (default: no repository). */
+export function workTraceabilityEnabled(
+  repoUrl: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!repoUrl) return false;
+  const repo = normalizeRepoUrl(repoUrl).toLowerCase();
+  return traceableRepos(env).some((entry) => {
+    const e = entry.toLowerCase();
+    return e.endsWith("/*") ? repo.startsWith(e.slice(0, -1)) : repo === e;
+  });
+}
+
+/** Whether the requester's email goes into a Co-authored-by trailer (default: no). */
+export function requesterEmailEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.OPTIO_WORK_TRACEABILITY_EMAIL ?? "").trim().toLowerCase() === "true";
+}
+
+/** Whether commits get trailers once traceability is on (OPTIO_COMMIT_TRAILERS, default on). */
 export function commitTrailersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (!workTraceabilityEnabled(env)) return false;
   return (env.OPTIO_COMMIT_TRAILERS ?? "").trim().toLowerCase() !== "false";
 }
 
@@ -65,29 +98,20 @@ function metaOf(task: TraceableTask): Record<string, unknown> {
     : {};
 }
 
-/** The ticket reporter the sync stored, as a requester (a name, maybe an email). */
-function reporterOf(task: TraceableTask): WorkTrace["requester"] {
-  const r = metaOf(task).ticketReporter as { name?: unknown; email?: unknown } | undefined;
-  const name = typeof r?.name === "string" ? oneLine(r.name, 120) : "";
-  const email = typeof r?.email === "string" ? r.email : null;
-  return name || email ? { name: name || (email ?? ""), email } : null;
-}
-
 async function personOf(userId: string | null | undefined): Promise<WorkTrace["requester"]> {
   if (!userId) return null;
   const [u] = await db
     .select({ displayName: users.displayName, email: users.email })
     .from(users)
     .where(eq(users.id, userId));
-  return u ? { name: u.displayName, email: u.email } : null;
+  if (!u) return null;
+  return { name: u.displayName, email: requesterEmailEnabled() ? u.email : null };
 }
 
 /** Everything the MR and the commits say about this work. */
 export async function workTrace(task: TraceableTask): Promise<WorkTrace> {
   const meta = metaOf(task);
-  const requester = task.ticketSource
-    ? reporterOf(task)
-    : await personOf(task.createdBy ?? task.ownerUserId);
+  const requester = task.ticketSource ? null : await personOf(task.createdBy ?? task.ownerUserId);
   const teamName: string | null = null;
   return {
     title: task.title,
@@ -107,7 +131,7 @@ export async function workTrace(task: TraceableTask): Promise<WorkTrace> {
 export async function workTraceability(
   task: TraceableTask,
 ): Promise<{ promptVars: Record<string, string>; env: Record<string, string> }> {
-  if (!workTraceabilityEnabled()) return { promptVars: {}, env: {} };
+  if (!workTraceabilityEnabled(task.repoUrl)) return { promptVars: {}, env: {} };
   try {
     const trace = await workTrace(task);
     const promptVars = traceabilityPromptVars(trace);
@@ -115,7 +139,7 @@ export async function workTraceability(
       return { promptVars: { ...promptVars, COMMIT_TRAILERS: "" }, env: {} };
     return { promptVars, env: commitTrailerEnv(trace) };
   } catch (err) {
-    logger.warn({ err, taskId: task.id }, "Could not look up the work's requester and team");
+    logger.warn({ err, taskId: task.id }, "Could not look up the work's requester");
     return { promptVars: {}, env: {} };
   }
 }
@@ -127,7 +151,7 @@ export async function workTraceability(
  * nothing to say. Never throws.
  */
 export async function localTraceabilityNote(task: TraceableTask): Promise<string> {
-  if (!workTraceabilityEnabled()) return "";
+  if (!workTraceabilityEnabled(task.repoUrl)) return "";
   try {
     const trace = await workTrace(task);
     const lines: string[] = [];
@@ -143,7 +167,7 @@ export async function localTraceabilityNote(task: TraceableTask): Promise<string
     }
     return lines.length ? `\n\n${lines.join("\n\n")}` : "";
   } catch (err) {
-    logger.warn({ err, taskId: task.id }, "Could not look up the work's requester and team");
+    logger.warn({ err, taskId: task.id }, "Could not look up the work's requester");
     return "";
   }
 }
