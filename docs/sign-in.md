@@ -288,4 +288,6 @@ STARTTLS, certificate verification or CA must enter the password again (an
 anonymous bind drops the saved one), and the connection test reuses saved or
 environment credentials only for that same URL and transport. Disabling TLS
 verification requires `OPTIO_IDP_ALLOW_INSECURE_TLS=true` on the deployment;
-prefer a private CA.
+prefer a private CA. An Active Directory account flagged disabled
+(`userAccountControl` ACCOUNTDISABLE) is refused even if the directory accepts
+its bind.

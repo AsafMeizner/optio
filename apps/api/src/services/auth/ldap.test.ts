@@ -349,6 +349,20 @@ describe("ldapAuthenticate", () => {
     }
   });
 
+  it("refuses an account Active Directory marks disabled, only after its password bind", async () => {
+    mocks.client.search.mockResolvedValueOnce(
+      found([aliceEntry({ userAccountControl: "514" })]), // NORMAL_ACCOUNT | ACCOUNTDISABLE
+    );
+
+    const err = await expectLdapError(
+      ldapAuthenticate(SETTINGS, "alice", "pw"),
+      "account_disabled",
+    );
+
+    expect(err.message).toMatch(/disabled in the directory/);
+    expect(mocks.client.bind).toHaveBeenLastCalledWith(ALICE_DN, "pw");
+  });
+
   it("refuses insecureSkipVerify without OPTIO_IDP_ALLOW_INSECURE_TLS, before connecting", async () => {
     vi.stubEnv("OPTIO_IDP_ALLOW_INSECURE_TLS", "");
     try {

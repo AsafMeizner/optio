@@ -53,7 +53,14 @@ vi.mock("../services/oauth/index.js", () => ({
 
 const mockResolveProviderConfig = vi.fn<(provider: string) => Promise<unknown>>(async () => null);
 vi.mock("../services/auth/ldap.js", () => ({
-  LdapAuthError: class extends Error {},
+  LdapAuthError: class extends Error {
+    constructor(
+      message: string,
+      readonly code: string,
+    ) {
+      super(message);
+    }
+  },
   ldapAuthenticate: vi.fn(),
 }));
 
@@ -1272,6 +1279,32 @@ describe("LDAP password login", () => {
         browserChallenge,
       });
     }
+  });
+
+  it("refuses a directory-disabled account with 403 and no session", async () => {
+    const { ldapAuthenticate, LdapAuthError } = await import("../services/auth/ldap.js");
+    vi.mocked(ldapAuthenticate).mockRejectedValue(
+      new LdapAuthError("This account is disabled in the directory", "account_disabled"),
+    );
+    mockResolveProviderConfig.mockImplementation(async (p: string) =>
+      p === "ldap"
+        ? {
+            clientId: "",
+            clientSecret: "bind-pw",
+            allowedDomains: [],
+            source: "database",
+            settings: { url: "ldaps://ad.example.com", userBaseDn: "DC=corp" },
+          }
+        : null,
+    );
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/auth/ldap/login?browserChallenge=${browserChallenge}`,
+      payload: { username: "ada", password: "pw" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toMatch(/disabled in the directory/);
+    expect(mockCreateSession).not.toHaveBeenCalled();
   });
 
   it("answers 404 for the LDAP form when LDAP isn't configured", async () => {

@@ -52,10 +52,6 @@ const ERROR_MESSAGES: Record<string, string> = {
     "That account isn't from an organization allowed to sign in here. Use your work account.",
   unverified_email:
     "Your email address isn't verified with the sign-in provider, so it can't be checked against the allowed domains.",
-  group_not_allowed: "Your account isn't in a group allowed to use Optio",
-  // A disabled Optio account.
-  account_disabled:
-    "Your Optio account is disabled. Ask an Optio administrator if you should still have access.",
   provider_error: "The sign-in provider refused the request. Please try again.",
   auth_failed:
     "Sign-in failed. Please try again; if it keeps failing, ask your administrator to test the sign-in settings.",

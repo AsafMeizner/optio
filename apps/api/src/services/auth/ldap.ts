@@ -66,8 +66,8 @@ export interface LdapUser {
    * Active Directory says the account is disabled (`userAccountControl` has
    * ACCOUNTDISABLE, 0x2). False when the directory has no such attribute
    * (OpenLDAP and the like): there, a leaver's entry is removed or taken out
-   * of the required groups instead. The directory sync reads it
-   * (services/directory-sync.ts); AD already refuses such an account's bind.
+   * of the required groups instead. Sign-in refuses such an account even
+   * when the directory accepted its bind.
    */
   accountDisabled: boolean;
 }
@@ -75,7 +75,8 @@ export interface LdapUser {
 export class LdapAuthError extends Error {
   constructor(
     message: string,
-    readonly code: "invalid_credentials" | "user_not_found" | "connection" | "config",
+    readonly code:
+      "invalid_credentials" | "user_not_found" | "account_disabled" | "connection" | "config",
   ) {
     super(message);
     this.name = "LdapAuthError";
@@ -599,6 +600,12 @@ export async function ldapAuthenticate(
     await session.open();
     const entry = await session.findUser(login);
     await session.bindUser(entry.dn, password);
+    // AD refuses a disabled account's bind; a directory that doesn't (a proxy,
+    // AD LDS) must not let it in either. Checked after the password, so the
+    // answer reveals nothing to someone without it.
+    if (isAccountDisabled(firstAttribute(entry, [USER_ACCOUNT_CONTROL_ATTRIBUTE]))) {
+      throw new LdapAuthError("This account is disabled in the directory", "account_disabled");
+    }
     let groupEntries: Entry[] | null = null;
     if (resolved.groupMode === "search") {
       // Read groups with the service account's rights, not the user's.
