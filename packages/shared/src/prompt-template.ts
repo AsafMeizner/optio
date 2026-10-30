@@ -1,21 +1,10 @@
-import { gitlabOnlyDeployment } from "./config/features.js";
 import {
   GITLAB_PROMPT_TEMPLATE,
   GITLAB_PR_REVIEW_PROMPT_TEMPLATE,
   GITLAB_REVIEW_PROMPT_TEMPLATE,
 } from "./prompt-template-gitlab.js";
 
-/**
- * True when the deployment offers GitLab and not GitHub
- * (`OPTIO_GIT_PLATFORMS=gitlab`): the three default prompts are then
- * GitLab's alone (prompt-template-gitlab.ts). By default the text below —
- * upstream's, with its GitHub else-arms — is used.
- */
-export const GITLAB_ONLY_PROMPTS = gitlabOnlyDeployment();
-
-export const DEFAULT_PROMPT_TEMPLATE = GITLAB_ONLY_PROMPTS
-  ? GITLAB_PROMPT_TEMPLATE
-  : `{{#if PLANNING_MODE}}## PLANNING MODE
+export const DEFAULT_PROMPT_TEMPLATE = `{{#if PLANNING_MODE}}## PLANNING MODE
 
 You are in PLANNING MODE. Analyze the task and create a detailed implementation plan — DO NOT implement yet.
 
@@ -177,12 +166,7 @@ concurrently on this same repository — each on its own branch. You MUST stay i
 
 export const TASK_FILE_PATH = ".optio/task.md";
 
-export const DEFAULT_REVIEW_PROMPT_TEMPLATE = GITLAB_ONLY_PROMPTS
-  ? GITLAB_REVIEW_PROMPT_TEMPLATE
-  : `You are a code reviewer. You have been assigned to review exactly ONE {{#if GIT_PLATFORM_GITLAB}}merge request: MR !{{PR_NUMBER}}{{else}}pull request: PR #{{PR_NUMBER}}{{/if}}.
-{{#if REVIEW_LIGHT}}
-This is a LIGHT review: read the diff only, skip the tests, and report only the few findings that matter most. Your turn budget is small — submit your review early.
-{{/if}}
+export const DEFAULT_REVIEW_PROMPT_TEMPLATE = `You are a code reviewer. You have been assigned to review exactly ONE {{#if GIT_PLATFORM_GITLAB}}merge request: MR !{{PR_NUMBER}}{{else}}pull request: PR #{{PR_NUMBER}}{{/if}}.
 
 ## IMPORTANT
 - You are reviewing ONLY {{#if GIT_PLATFORM_GITLAB}}MR !{{PR_NUMBER}}{{else}}PR #{{PR_NUMBER}}{{/if}}. Do not look at, review, or comment on any others.
@@ -242,12 +226,7 @@ export const REVIEW_TASK_FILE_PATH = ".optio/review-context.md";
 
 export const PR_REVIEW_OUTPUT_PATH = ".optio/review-draft.json";
 
-export const DEFAULT_PR_REVIEW_PROMPT_TEMPLATE = GITLAB_ONLY_PROMPTS
-  ? GITLAB_PR_REVIEW_PROMPT_TEMPLATE
-  : `You are a code review assistant. You have been assigned to review exactly ONE {{#if GIT_PLATFORM_GITLAB}}merge request: MR !{{PR_NUMBER}}{{else}}pull request: PR #{{PR_NUMBER}}{{/if}} in the {{REPO_NAME}} repository.
-{{#if REVIEW_LIGHT}}
-This is a LIGHT review: read the diff only, skip the tests, and report only the few findings that matter most. Your turn budget is small — write the review file early.
-{{/if}}
+export const DEFAULT_PR_REVIEW_PROMPT_TEMPLATE = `You are a code review assistant. You have been assigned to review exactly ONE {{#if GIT_PLATFORM_GITLAB}}merge request: MR !{{PR_NUMBER}}{{else}}pull request: PR #{{PR_NUMBER}}{{/if}} in the {{REPO_NAME}} repository.
 
 ## IMPORTANT
 - You are reviewing ONLY {{#if GIT_PLATFORM_GITLAB}}MR !{{PR_NUMBER}}{{else}}PR #{{PR_NUMBER}}{{/if}}. Do not look at, review, or comment on any others.
@@ -349,22 +328,12 @@ export function builtinPromptTemplates(platform?: string | null): {
 }
 
 /**
- * The review prompt's depth variables: REVIEW_DEPTH ("thorough" | "light")
- * and REVIEW_LIGHT (set for a light review) — review-service.ts and
- * pr-review-service.ts render both review prompts with them.
+ * A title as `{{TASK_TITLE}}` takes it: the templates put it inside a
+ * double-quoted shell argument the agent runs (`gh pr create --title
+ * "{{TASK_TITLE}}"`), and the title can be anyone's (an issue's, a PR's).
+ * One line, with what double quotes would still expand (`$`, `` ` ``) or
+ * end (`"`, `\`) backslash-escaped, so the command is the title verbatim.
  */
-export function reviewDepthVars(depth: "thorough" | "light"): {
-  REVIEW_DEPTH: string;
-  REVIEW_LIGHT: string;
-} {
-  return { REVIEW_DEPTH: depth, REVIEW_LIGHT: depth === "light" ? "true" : "" };
-}
-
-/** A light review's turn budget: half the thorough one, never below 1. */
-export function reviewMaxTurns(depth: "thorough" | "light", thoroughTurns: number): number {
-  return depth === "light" ? Math.max(1, Math.floor(thoroughTurns / 2)) : thoroughTurns;
-}
-
 export function shellSafeTitle(title: string): string {
   return title
     .replace(/\s+/g, " ")

@@ -186,7 +186,7 @@ ${onGitLab(
 - Only real issues. No style nitpicks a formatter would catch.
 - Be specific and kind: the author should be able to fix each finding without asking what you meant.`;
 
-const REVIEW_LIGHT = `Give ${onGitLab("merge request !{{mr}}", "pull request #{{mr}}")} a light review.
+const LIGHT_REVIEW_STARTER = `Give ${onGitLab("merge request !{{mr}}", "pull request #{{mr}}")} a light review.
 
 A light review is a quick second pair of eyes: read the diff, catch what would hurt if it merged, and say it in a few lines. Do not run the tests, explore the codebase, modify code, or review any other ${MR}.
 
@@ -506,7 +506,7 @@ export const STARTER_PROMPTS: readonly StarterPrompt[] = [
     name: "Code review (light)",
     kind: "review",
     description: "The diff only, no tests: the top three findings in under ten turns.",
-    template: REVIEW_LIGHT,
+    template: LIGHT_REVIEW_STARTER,
     params: { mr: { description: "The pull or merge request's number", required: true } },
     since: 1,
   },

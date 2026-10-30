@@ -1,7 +1,6 @@
 /**
  * The agent prompts in GitLab's words: the built-in prompts for a GitLab repo
- * (builtinPromptTemplates in prompt-template.ts), and the defaults for a
- * deployment that offers GitLab and not GitHub (config/features.ts).
+ * (builtinPromptTemplates in prompt-template.ts).
  *
  * The default prompts (prompt-template.ts) branch on the repo's platform with
  * `{{#if GIT_PLATFORM_GITLAB}}`, and every else-arm assumes GitHub and `gh`.
@@ -10,8 +9,7 @@
  * still processing the push, the pipeline (`glab ci status`) and the
  * discussion (`glab mr view --comments`). The defaults' text is left as it is.
  *
- * The variables are upstream's, plus REVIEW_DEPTH / REVIEW_LIGHT for the two
- * review prompts (review-service.ts, pr-review-service.ts), and MR_TITLE,
+ * The variables are upstream's, plus MR_TITLE,
  * MR_FOOTER, JIRA_KEY and COMMIT_TRAILERS for the coding prompt
  * (work-traceability.ts): the Jira key in the MR title instead of "Closes
  * #PLAT-1", a footer naming the ticket, the requester, the team and the
@@ -129,7 +127,7 @@ concurrently on this same repository — each on its own branch. You MUST stay i
 
 export const GITLAB_REVIEW_PROMPT_TEMPLATE = `You are a code reviewer. You have been assigned to review exactly ONE merge request: MR !{{PR_NUMBER}}.
 
-{{#if REVIEW_LIGHT}}This is a LIGHT review: read the diff only, do not run the tests, and report only the few findings that matter most. Your turn budget is small — submit your review early.{{else}}This is a THOROUGH review: read the diff and the code around it, check the tests, and report every real issue you find.{{/if}}
+Read the diff and the code around it, check the tests, and report every real issue you find.
 
 ## IMPORTANT
 - You are reviewing ONLY MR !{{PR_NUMBER}}. Do not look at, review, or comment on any other merge request.
@@ -137,20 +135,7 @@ export const GITLAB_REVIEW_PROMPT_TEMPLATE = `You are a code reviewer. You have 
 
 ## Steps
 
-{{#if REVIEW_LIGHT}}1. Read the diff:
-   \`\`\`
-   glab mr diff {{PR_NUMBER}}
-   \`\`\`
-
-2. Read what the merge request is supposed to accomplish:
-   \`\`\`
-   cat {{TASK_FILE}}
-   \`\`\`
-
-3. Look for what would hurt if it merged: wrong behavior, a missed edge case, a
-   regression, a security hole. Leave style and naming alone. Report at most the
-   three most important findings.
-{{else}}1. Read the diff:
+1. Read the diff:
    \`\`\`
    glab mr diff {{PR_NUMBER}}
    \`\`\`
@@ -180,7 +165,7 @@ export const GITLAB_REVIEW_PROMPT_TEMPLATE = `You are a code reviewer. You have 
    - Bugs: Any logic errors, edge cases, or regressions?
    - Security: Any vulnerabilities introduced?
    - Style: Does it follow the repo's conventions?
-{{/if}}
+
 Then submit your review:
    - If the code is good: \`glab mr approve {{PR_NUMBER}} || (glab mr revoke {{PR_NUMBER}} && glab mr approve {{PR_NUMBER}})\` (an approval you already gave is given again, so it counts after any changes you requested since) then \`glab mr note {{PR_NUMBER}} --message "Your review summary"\`
    - If changes are needed: \`glab mr note {{PR_NUMBER}} --message "**Changes Requested:** what needs fixing and why"\`
@@ -199,7 +184,7 @@ After submitting your review, you are done. Do not review any other merge reques
 
 export const GITLAB_PR_REVIEW_PROMPT_TEMPLATE = `You are a code review assistant. You have been assigned to review exactly ONE merge request: MR !{{PR_NUMBER}} in the {{REPO_NAME}} repository.
 
-{{#if REVIEW_LIGHT}}This is a LIGHT review: read the diff only, do not run the tests, and report only the few findings that matter most. Your turn budget is small — write the review file early.{{else}}This is a THOROUGH review: read the diff and the code around it, check the tests, and report every real issue you find.{{/if}}
+Read the diff and the code around it, check the tests, and report every real issue you find.
 
 ## IMPORTANT
 - You are reviewing ONLY MR !{{PR_NUMBER}}. Do not look at, review, or comment on any other merge request.
@@ -217,11 +202,6 @@ export const GITLAB_PR_REVIEW_PROMPT_TEMPLATE = `You are a code review assistant
    \`\`\`
    cat {{TASK_FILE}}
    \`\`\`
-{{#if REVIEW_LIGHT}}
-3. Look for what would hurt if it merged: wrong behavior, a missed edge case, a
-   regression, a security hole. Leave style and naming alone. Keep to the three
-   most important findings.
-{{else}}
 3. Explore the code the diff touches — its callers, its tests, the types it
    changes — to see how the change fits into the codebase.
 
@@ -240,7 +220,7 @@ export const GITLAB_PR_REVIEW_PROMPT_TEMPLATE = `You are a code review assistant
    - Bugs: Any logic errors, edge cases, or regressions?
    - Security: Any vulnerabilities introduced?
    - Style: Does it follow the repo's conventions?
-{{/if}}
+
 Then write your review as a JSON file to \`{{OUTPUT_PATH}}\`. Use this exact command:
 
    \`\`\`

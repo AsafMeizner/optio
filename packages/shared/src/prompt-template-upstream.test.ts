@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 
-// The full profile's prompts (upstream's, with their GitHub and CodeCommit arms).
-vi.hoisted(() => {
-  process.env.OPTIO_PROFILE = "full";
-});
-
-import { DEFAULT_PROMPT_TEMPLATE, renderPromptTemplate } from "./prompt-template.js";
+import {
+  DEFAULT_PROMPT_TEMPLATE,
+  DEFAULT_REVIEW_PROMPT_TEMPLATE,
+  builtinPromptTemplates,
+  renderPromptTemplate,
+} from "./prompt-template.js";
 import { traceabilityPromptVars } from "./work-traceability.js";
 
 /**
@@ -231,5 +231,58 @@ describe("the coding prompt's GitHub arm, traceability on", () => {
       );
       expect(out).not.toContain("{{");
     }
+  });
+});
+
+describe("the built-in prompts are constants", () => {
+  it("don't change with the deployment's platforms", async () => {
+    const before = await import("./prompt-template.js");
+    vi.resetModules();
+    vi.stubEnv("OPTIO_GIT_PLATFORMS", "gitlab");
+    try {
+      const after = await import("./prompt-template.js");
+      expect(after.DEFAULT_PROMPT_TEMPLATE).toBe(before.DEFAULT_PROMPT_TEMPLATE);
+      expect(after.DEFAULT_REVIEW_PROMPT_TEMPLATE).toBe(before.DEFAULT_REVIEW_PROMPT_TEMPLATE);
+      expect(after.DEFAULT_PR_REVIEW_PROMPT_TEMPLATE).toBe(
+        before.DEFAULT_PR_REVIEW_PROMPT_TEMPLATE,
+      );
+      expect(after.DEFAULT_PROMPT_TEMPLATE).toContain("gh pr create");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("render GitLab's review prompts with every step and nothing left over", () => {
+    for (const platform of ["gitlab", "github"]) {
+      const { review, prReview } = builtinPromptTemplates(platform);
+      for (const template of [review, prReview]) {
+        expect(template).not.toContain("REVIEW_LIGHT");
+        const out = renderPromptTemplate(template, {
+          PR_NUMBER: "7",
+          TASK_FILE: ".optio/review-context.md",
+          REPO_NAME: "g/app",
+          OUTPUT_PATH: ".optio/review-draft.json",
+          GIT_PLATFORM_GITLAB: platform === "gitlab" ? "true" : "",
+        });
+        expect(out).not.toMatch(/\{\{[#/]?(if|else)/);
+        if (platform === "gitlab") expect(out).toContain("5. Review the changes for:");
+      }
+    }
+  });
+});
+
+describe("DEFAULT_REVIEW_PROMPT_TEMPLATE approvals", () => {
+  it("on GitLab, gives an approval already given again, so it counts after a later change request", () => {
+    const out = renderPromptTemplate(DEFAULT_REVIEW_PROMPT_TEMPLATE, {
+      PR_NUMBER: "12",
+      GIT_PLATFORM_GITLAB: "true",
+    });
+    expect(out).toContain("glab mr approve 12 || (glab mr revoke 12 && glab mr approve 12)");
+  });
+
+  it("on GitHub, approves with gh as before", () => {
+    const out = renderPromptTemplate(DEFAULT_REVIEW_PROMPT_TEMPLATE, { PR_NUMBER: "12" });
+    expect(out).toContain("gh pr review 12 --approve");
+    expect(out).not.toContain("glab");
   });
 });
