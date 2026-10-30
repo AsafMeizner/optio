@@ -60,6 +60,9 @@ export class GitLabApiError extends Error {
 /** How many pages (of 100) of a thread's newest notes are read. */
 const NOTE_PAGES = 3;
 
+/** How many change-request authors one members read checks (GitLab's largest page). */
+const MEMBER_BATCH = 100;
+
 /** How many of an issue's newest comments a ticket's prompt carries (as GitHub's one page). */
 const ISSUE_COMMENTS = 30;
 
@@ -268,38 +271,55 @@ export class GitLabPlatform implements GitPlatform {
     const assigned = new Set(
       reviewers.map((r) => r.user?.id).filter((id) => Number.isSafeInteger(id) && id > 0),
     );
-    let tokenUser: Promise<number | null> | undefined;
-    const access = new Map<number, Promise<boolean>>();
-    const mayRequestChanges = async (note: any): Promise<boolean> => {
+    // Who may request changes: an assigned reviewer, the token user, or a
+    // Developer-or-higher member. The authors of open change-request threads
+    // are checked together, 100 per members read (`user_ids`), so many
+    // throwaway accounts cost one request per hundred, not one each; the
+    // notes read is capped at NOTE_PAGES pages, so at most that many reads.
+    const authorId = (note: any): number | null => {
       const id = note.author?.id;
-      if (!Number.isSafeInteger(id) || id <= 0) return false;
-      if (assigned.has(id)) return true;
-      let allowed = access.get(id);
-      if (!allowed) {
-        allowed = (async () => {
-          tokenUser ??= this.fetchJson<{ id: number }>(`${ri.apiBaseUrl}/user`, {
-            headers: this.headers(),
-          })
-            .then((user) => user.id)
-            .catch(() => {
-              incomplete = true;
-              return null;
-            });
-          if ((await tokenUser) === id) return true;
-          try {
-            const member = await this.fetchJson<{ access_level: number }>(
-              this.url(ri, `/members/all/${id}`),
-              { headers: this.headers() },
-            );
-            return member.access_level >= 30;
-          } catch (err) {
-            if (!notThere(err)) incomplete = true;
-            return false;
-          }
-        })();
-        access.set(id, allowed);
+      return Number.isSafeInteger(id) && id > 0 ? id : null;
+    };
+    const isOpenRequest = (note: any): boolean =>
+      !note.system &&
+      !!note.body?.trim() &&
+      note.resolvable === true &&
+      !note.resolved &&
+      isChangeRequest(note.body);
+    const unknownAuthors = [
+      ...new Set(
+        notes
+          .filter(isOpenRequest)
+          .map(authorId)
+          .filter((id): id is number => id !== null && !assigned.has(id)),
+      ),
+    ];
+    const authorized = new Set<number>(assigned);
+    if (unknownAuthors.length > 0) {
+      try {
+        const me = await this.fetchJson<{ id: number }>(`${ri.apiBaseUrl}/user`, {
+          headers: this.headers(),
+        });
+        if (Number.isSafeInteger(me.id)) authorized.add(me.id);
+      } catch {
+        incomplete = true;
       }
-      return allowed;
+      const toCheck = unknownAuthors.filter((id) => !authorized.has(id));
+      for (let i = 0; i < toCheck.length && !incomplete; i += MEMBER_BATCH) {
+        const ids = toCheck.slice(i, i + MEMBER_BATCH);
+        try {
+          const developers = await this.developerIds(ri, ids);
+          if (developers === null) incomplete = true;
+          else for (const id of developers) authorized.add(id);
+        } catch {
+          // Unlike a single member's 404, a failed list read proves nothing.
+          incomplete = true;
+        }
+      }
+    }
+    const mayRequestChanges = (note: any): boolean => {
+      const id = authorId(note);
+      return id !== null && authorized.has(id);
     };
 
     const dated: { at: number; review: Review }[] = [];
@@ -317,7 +337,7 @@ export class GitLabPlatform implements GitPlatform {
         note.resolvable === true &&
         !note.resolved &&
         isChangeRequest(note.body) &&
-        (await mayRequestChanges(note));
+        mayRequestChanges(note);
       dated.push({
         at: Date.parse(note.created_at ?? "") || 0,
         review: {
@@ -373,6 +393,28 @@ export class GitLabPlatform implements GitPlatform {
   async getPullRequestComments(ri: RepoIdentifier, prNumber: number): Promise<IssueComment[]> {
     const notes = await this.mrNotes(ri, prNumber);
     return notes.filter((n: any) => !n.system && !n.position).map(toComment);
+  }
+
+  /**
+   * Which of `ids` (at most MEMBER_BATCH) are Developer-or-higher members of
+   * the project, inherited membership included, from one members read. Null
+   * when the answer can't be trusted: a GitLab that ignores `user_ids` sends
+   * other members, and if that page is full the ones asked about may be on a
+   * later page.
+   */
+
+  private async developerIds(ri: RepoIdentifier, ids: number[]): Promise<number[] | null> {
+    const params = new URLSearchParams({ per_page: String(MEMBER_BATCH) });
+    for (const id of ids) params.append("user_ids[]", String(id));
+    const members = await this.fetchJson<any[]>(this.url(ri, `/members/all?${params}`), {
+      headers: this.headers(),
+    });
+    const asked = new Set(ids);
+    const filtered = members.every((m) => asked.has(m?.id));
+    if (!filtered && members.length >= MEMBER_BATCH) return null;
+    return members
+      .filter((m) => asked.has(m?.id) && Number(m?.access_level) >= 30)
+      .map((m) => m.id as number);
   }
 
   /** The MR's newest conversation notes, in chronological order. */

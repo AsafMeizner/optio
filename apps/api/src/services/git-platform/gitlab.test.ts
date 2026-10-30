@@ -77,7 +77,9 @@ describe("GitLabPlatform", () => {
         mockJsonResponse({ id: options.own ? 42 : 99, username: "same-name" });
         if (!options.own)
           mockJsonResponse(
-            { access_level: options.access ?? 10 },
+            options.memberError
+              ? { message: "503 Service Unavailable" }
+              : [{ id: 42, username: "same-name", access_level: options.access ?? 10 }],
             !options.memberError,
             options.memberError ? 503 : 200,
           );
@@ -86,8 +88,8 @@ describe("GitLabPlatform", () => {
     }
     it("ignores a Guest's resolvable request despite a matching token username", async () => {
       expect((await reviews())[0].state).toBe("COMMENTED");
-      expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith("/members/all/42"))).toBe(
-        true,
+      expect(String(mockFetch.mock.calls[4][0])).toBe(
+        `https://gitlab.com/api/v4/projects/${projectId}/members/all?per_page=100&user_ids%5B%5D=42`,
       );
     });
     it("ignores plain notes even from an assigned reviewer", async () => {
@@ -108,6 +110,50 @@ describe("GitLabPlatform", () => {
     it("rejects authors without a stable numeric ID", async () => {
       expect((await reviews({ authorId: 0 }))[0].state).toBe("COMMENTED");
       expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+    it("checks many change-request authors in one members read", async () => {
+      const authors = Array.from({ length: 40 }, (_, i) => 1000 + i);
+      mockJsonResponse({ approved_by: [] });
+      mockJsonResponse(
+        authors.map((id, i) => ({
+          id: i + 1,
+          author: { id, username: `guest${id}` },
+          body: "Changes requested: no",
+          resolvable: true,
+          resolved: false,
+          created_at: `2026-10-01T00:00:${String(i).padStart(2, "0")}Z`,
+        })),
+      );
+      mockJsonResponse([]);
+      mockJsonResponse({ id: 99, username: "optio-bot" });
+      mockJsonResponse([
+        { id: 1005, access_level: 10 },
+        { id: 1007, access_level: 30 },
+      ]);
+
+      const states = (await platform.getReviews(ri, 7)).map((r) => r.state);
+
+      expect(mockFetch).toHaveBeenCalledTimes(5);
+      expect(states.filter((s) => s === "CHANGES_REQUESTED")).toHaveLength(1);
+      expect(states[7]).toBe("CHANGES_REQUESTED");
+    });
+    it("fails closed when a GitLab that ignores user_ids fills the page with others", async () => {
+      mockJsonResponse({ approved_by: [] });
+      mockJsonResponse([
+        {
+          id: 1,
+          author: { id: 42, username: "someone" },
+          body: "Changes requested: please",
+          resolvable: true,
+          resolved: false,
+          created_at: "2026-10-01",
+        },
+      ]);
+      mockJsonResponse([]);
+      mockJsonResponse({ id: 99, username: "optio-bot" });
+      mockJsonResponse(Array.from({ length: 100 }, (_, i) => ({ id: 500 + i, access_level: 40 })));
+
+      await expect(platform.getReviews(ri, 7)).rejects.toThrow("GitLab review state is incomplete");
     });
     it("fails closed when membership authority cannot be read", async () => {
       await expect(reviews({ memberError: true })).rejects.toThrow(
