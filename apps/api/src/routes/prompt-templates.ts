@@ -1,4 +1,3 @@
-import { seedStarterPrompts } from "../services/starter-prompts.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -28,7 +27,7 @@ import { promptTemplates } from "../db/schema.js";
 import { DEFAULT_PROMPT_TEMPLATE } from "@optio/shared";
 import { ErrorResponseSchema } from "../schemas/common.js";
 import { PromptTemplateSchema } from "../schemas/integration.js";
-import { requireRole } from "../plugins/auth.js";
+import { requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { withManagedBy } from "../services/config/managed.js";
 
 const repoUrlQuerySchema = z
@@ -224,7 +223,9 @@ export async function promptTemplateRoutes(rawApp: FastifyInstance) {
   app.post(
     "/api/prompt-templates/seed",
     {
-      preHandler: [requireRole("admin")],
+      // Starter rows have no workspace: every workspace lists them, so
+      // restoring them is a deployment-wide write, not one workspace's.
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
       schema: {
         operationId: "seedStarterPrompts",
         summary: "Restore the starter prompts",
@@ -232,7 +233,8 @@ export async function promptTemplateRoutes(rawApp: FastifyInstance) {
           "Add the organization's starter prompts (Create a Claude Code skill, Code " +
           "review, Write a README, …) that are missing, and put edited ones back to " +
           "their text. Never duplicates, and never touches a prompt of someone's own " +
-          "that shares a starter's name. Requires `admin` role.",
+          "that shares a starter's name. Starter prompts are shared by every " +
+          "workspace, so this requires a deployment admin.",
         tags: ["Repos & Integrations"],
         response: {
           200: z.object({ created: z.number(), restored: z.number(), unchanged: z.number() }),
@@ -240,6 +242,7 @@ export async function promptTemplateRoutes(rawApp: FastifyInstance) {
       },
     },
     async (_req, reply) => {
+      const { seedStarterPrompts } = await import("../services/starter-prompts.js");
       reply.send(await seedStarterPrompts({ restore: true }));
     },
   );

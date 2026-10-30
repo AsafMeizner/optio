@@ -163,15 +163,12 @@ function cleanOwnerRepo(
  * Detects platform from the host (github.com → github, gitlab.com or GITLAB_HOSTS → gitlab),
  * unless the caller already knows it (`platform`: the repo's recorded platform).
  */
-export function parseRepoUrl(
-  url: string,
-  platformOverride?: GitPlatformType,
-): RepoIdentifier | null {
+export function parseRepoUrl(url: string, platform?: GitPlatformType): RepoIdentifier | null {
   const extracted = extractParts(url);
   if (!extracted) return null;
 
   const host = extracted.host.toLowerCase();
-  const platform = knownHostPlatform(host) ?? platformOverride ?? detectPlatform(host);
+  platform ??= detectPlatform(host);
 
   const ownerRepo = cleanOwnerRepo(extracted.path, platform, host);
   if (!ownerRepo) return null;

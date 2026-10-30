@@ -2093,7 +2093,7 @@ export const api = {
   deleteNamedTemplate: (id: string) =>
     request<null>(`/api/prompt-templates/${id}`, { method: "DELETE" }),
 
-  /** Admins: add the missing starter prompts and put edited ones back (starter-prompts.ts). */
+  /** Deployment admins: add the missing starter prompts and put edited ones back (starter-prompts.ts). */
   restoreStarterPrompts: () =>
     request<{ created: number; restored: number; unchanged: number }>(
       "/api/prompt-templates/seed",

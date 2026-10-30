@@ -73,7 +73,7 @@ export default function TemplatesPage() {
 }
 
 function PromptsList() {
-  const { userId, isAdmin } = useCurrentUser();
+  const { userId, isAdmin, isDeploymentAdmin } = useCurrentUser();
   const [owner, setOwner] = useOwnerFilter();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [query, setQuery] = useState("");
@@ -143,7 +143,7 @@ function PromptsList() {
   /** Whether any starter prompt is here (the button adds them, else restores them). */
   const hasStarters = templates.some(isStarter);
 
-  /** Admins: add the starter prompts that are missing and put edited ones back. */
+  /** Deployment admins: add the starter prompts that are missing and put edited ones back. */
   const restoreStarters = async () => {
     setRestoring(true);
     try {
@@ -192,7 +192,8 @@ function PromptsList() {
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {isAdmin && (
+            {/* Starter prompts are every workspace's: the server takes a deployment admin. */}
+            {isAdmin && isDeploymentAdmin && (
               <Button
                 variant="secondary"
                 onClick={restoreStarters}

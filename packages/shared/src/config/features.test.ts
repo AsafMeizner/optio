@@ -1,4 +1,3 @@
-import { gitlabOnlyDeployment } from "./features.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AGENT_TYPES } from "../agent-options/index.js";
 import { TRIGGER_TYPES } from "../types/triggers.js";
@@ -175,24 +174,5 @@ describe("featureSettingsGiven", () => {
     for (const name of FEATURE_SETTINGS) {
       expect(featureSettingsGiven({ [name]: "x" })).toBe(true);
     }
-  });
-});
-
-describe("gitlabOnlyDeployment", () => {
-  it("is false by default and with GitHub offered", () => {
-    expect(gitlabOnlyDeployment(featuresFromEnv({}))).toBe(false);
-    expect(gitlabOnlyDeployment(featuresFromEnv({ OPTIO_GIT_PLATFORMS: "github,gitlab" }))).toBe(
-      false,
-    );
-    expect(gitlabOnlyDeployment(featuresFromEnv({ OPTIO_GIT_PLATFORMS: "codecommit" }))).toBe(
-      false,
-    );
-  });
-
-  it("is true only when GitLab is the sole platform", () => {
-    expect(gitlabOnlyDeployment(featuresFromEnv({ OPTIO_GIT_PLATFORMS: "gitlab" }))).toBe(true);
-    expect(
-      gitlabOnlyDeployment(featuresFromEnv({ OPTIO_GIT_PLATFORMS: "gitlab,codecommit" })),
-    ).toBe(false);
   });
 });
