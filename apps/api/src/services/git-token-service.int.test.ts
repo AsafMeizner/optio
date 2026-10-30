@@ -116,3 +116,38 @@ describe("deployment Git credential destinations", () => {
     expect(trusted).toMatchObject({ GITLAB_TOKEN: "global-gl", NPM_TOKEN: "setup-secret" });
   });
 });
+
+describe("workspace-scoped recorded platforms", () => {
+  it("does not let another workspace's URL row select the credential platform", async () => {
+    const a = await insertWorkspace(),
+      b = await insertWorkspace();
+    const repoUrl = "https://git.platform.example/org/shared";
+    vi.stubEnv("GITHUB_HOSTS", "git.platform.example");
+    await db
+      .insert(repos)
+      .values({ repoUrl, fullName: "org/shared", workspaceId: a.id, gitPlatform: "gitlab" });
+    await db
+      .insert(repos)
+      .values({ repoUrl, fullName: "org/shared", workspaceId: b.id, gitPlatform: "github" });
+    expect(
+      (await getGitPlatformForRepo(repoUrl, { server: true, workspaceId: a.id })).ri.platform,
+    ).toBe("gitlab");
+    expect(
+      (await getGitPlatformForRepo(repoUrl, { server: true, workspaceId: b.id })).ri.platform,
+    ).toBe("github");
+    expect((await getGitPlatformForRepo(repoUrl, { server: true })).ri.platform).toBe("github");
+  });
+  it("corrects a recorded platform when the same URL is re-added", async () => {
+    const workspace = await insertWorkspace();
+    const { createRepo } = await import("./repo-service.js");
+    const input = {
+      repoUrl: "https://git.platform.example/org/correct",
+      fullName: "org/correct",
+      workspaceId: workspace.id,
+    };
+    const first = await createRepo({ ...input, gitPlatform: "github" });
+    const corrected = await createRepo({ ...input, gitPlatform: "gitlab" });
+    expect(corrected.id).toBe(first.id);
+    expect(corrected.gitPlatform).toBe("gitlab");
+  });
+});

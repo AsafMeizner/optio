@@ -302,6 +302,7 @@ export function TaskWorkspace({
         compact
         title={task.title}
         state={task.state}
+        prUrl={task.prUrl}
         isStalled={!isLocalTask && stallInfo?.isStalled}
         metaItems={[
           <Link href="/work" className="inline-flex items-center gap-1 hover:text-primary">

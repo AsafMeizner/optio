@@ -32,6 +32,9 @@ import {
   SkeletonCard,
 } from "@/components/settings/settings-ui";
 import { cn } from "@/lib/utils";
+import { AdditionalOAuthForm } from "./additional-oauth-form";
+import { OidcForm } from "./oidc-sign-in-form";
+import { SamlForm } from "./saml-sign-in-form";
 
 /**
  * How everyone signs in — the Settings → Access → Sign-in card and the setup
@@ -450,7 +453,19 @@ export function SignInSetupForm({
   }
 
   const google = config.providers.find((p) => p.provider === "google")!;
-  const others = config.providers.filter((p) => p.provider !== "google");
+  const oidc = config.providers.find((p) => p.provider === "oidc");
+  const saml = config.providers.find((p) => p.provider === "saml");
+  const additional = config.providers.filter(
+    (p) => p.provider === "gitea" || p.provider === "bitbucket",
+  );
+  const others = config.providers.filter(
+    (p) =>
+      p.provider !== "google" &&
+      p.provider !== "oidc" &&
+      p.provider !== "saml" &&
+      p.provider !== "gitea" &&
+      p.provider !== "bitbucket",
+  );
   const canEdit = config.canEdit || (config.bootstrap && setupToken.trim().length > 0);
 
   return (
@@ -476,8 +491,8 @@ export function SignInSetupForm({
             <div>
               <p className="font-medium">Nobody can sign in yet</p>
               <p className="text-xs text-text-muted mt-0.5">
-                Configure your organization's Google sign-in below. The one-time setup token unlocks
-                it: the API prints it in its log —{" "}
+                Configure your organization's Google or OpenID Connect sign-in below. The one-time
+                setup token unlocks it: the API prints it in its log —{" "}
                 <code className="px-1 py-0.5 bg-bg rounded font-mono text-[11px]">
                   kubectl logs deploy/optio-api -n optio | grep &quot;setup token&quot;
                 </code>{" "}
@@ -582,6 +597,110 @@ export function SignInSetupForm({
         )}
       </div>
 
+      {oidc && (
+        <section className="space-y-3" aria-label="OpenID Connect sign-in">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">SSO (OpenID Connect)</h3>
+            <Status p={oidc} />
+          </div>
+          {canEdit ? (
+            <OidcForm
+              key={oidc.updatedAt ?? "new"}
+              view={oidc}
+              config={config}
+              mode={mode}
+              onRemoved={() => void load()}
+              setupToken={setupToken}
+              onSaved={(view, bootstrap) => {
+                setConfig((old) =>
+                  old
+                    ? {
+                        ...old,
+                        bootstrap,
+                        providers: old.providers.map((p) => (p.provider === "oidc" ? view : p)),
+                      }
+                    : old,
+                );
+                onBootstrapChange?.(bootstrap);
+              }}
+            />
+          ) : (
+            <p className={HELP}>Only a deployment admin can change OpenID Connect settings.</p>
+          )}
+        </section>
+      )}
+      {saml && (
+        <section className="space-y-3" aria-label="SAML sign-in">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">SSO (SAML 2.0)</h3>
+            <Status p={saml} />
+          </div>
+          {canEdit ? (
+            <SamlForm
+              key={saml.updatedAt ?? "new"}
+              view={saml}
+              config={config}
+              mode={mode}
+              setupToken={setupToken}
+              onRemoved={() => void load()}
+              onSaved={(view, bootstrap) => {
+                setConfig((old) =>
+                  old
+                    ? {
+                        ...old,
+                        bootstrap,
+                        providers: old.providers.map((p) => (p.provider === "saml" ? view : p)),
+                      }
+                    : old,
+                );
+                onBootstrapChange?.(bootstrap);
+              }}
+            />
+          ) : (
+            <p className={HELP}>Only a deployment admin can change SAML settings.</p>
+          )}
+        </section>
+      )}
+      {additional.map((provider) => (
+        <section
+          key={provider.provider}
+          className="space-y-3"
+          aria-label={`${provider.displayName} sign-in`}
+        >
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">
+              {provider.provider === "gitea" ? "Gitea / Forgejo" : "Bitbucket"}
+            </h3>
+            <Status p={provider} />
+          </div>
+          {canEdit ? (
+            <AdditionalOAuthForm
+              key={provider.updatedAt ?? "new"}
+              view={provider}
+              config={config}
+              mode={mode}
+              setupToken={setupToken}
+              onRemoved={() => void load()}
+              onSaved={(view, bootstrap) => {
+                setConfig((old) =>
+                  old
+                    ? {
+                        ...old,
+                        bootstrap,
+                        providers: old.providers.map((p) =>
+                          p.provider === view.provider ? view : p,
+                        ),
+                      }
+                    : old,
+                );
+                onBootstrapChange?.(bootstrap);
+              }}
+            />
+          ) : (
+            <p className={HELP}>Only a deployment admin can change sign-in settings.</p>
+          )}
+        </section>
+      ))}
       {/* Other providers: environment-configured, read-only here */}
       <ul className={LIST}>
         {others.map((p) => {

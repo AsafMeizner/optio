@@ -56,13 +56,12 @@ export function knownHostPlatform(host: string): GitPlatformType | null {
 }
 
 function detectPlatform(host: string): GitPlatformType {
+  const known = knownHostPlatform(host);
+  if (known) return known;
   const h = host.toLowerCase();
-  if (GITHUB_HOSTS.has(h)) return "github";
-  if (getGitLabHosts().has(h)) return "gitlab";
-  if (extractCodeCommitRegion(h)) return "codecommit";
   // Unknown hosts: check if the hostname contains "gitlab"
   if (h.includes("gitlab")) return "gitlab";
-  // Default to github for unknown hosts (most common case)
+  // Default to GitHub for unknown hosts; GITLAB_HOSTS names other GitLab hosts.
   return "github";
 }
 
@@ -109,7 +108,9 @@ function extractParts(url: string): { host: string; path: string } | null {
     const parsed = new URL(u);
     const path = parsed.pathname.replace(/^\//, "");
     if (!path) return null;
-    return { host: parsed.hostname, path };
+    // `host` keeps a non-default port (https://gitlab.corp:8443/...): the
+    // API and the web pages live on it too.
+    return { host: parsed.host, path };
   } catch {
     return null;
   }
@@ -159,7 +160,8 @@ function cleanOwnerRepo(
 
 /**
  * Parse a git repository URL into a RepoIdentifier.
- * Detects platform from the host (github.com → github, gitlab.com or GITLAB_HOSTS → gitlab).
+ * Detects platform from the host (github.com → github, gitlab.com or GITLAB_HOSTS → gitlab),
+ * unless the caller already knows it (`platform`: the repo's recorded platform).
  */
 export function parseRepoUrl(url: string, platform?: GitPlatformType): RepoIdentifier | null {
   const extracted = extractParts(url);
@@ -245,12 +247,14 @@ export function parsePrUrl(url: string): (RepoIdentifier & { prNumber: number })
   // Also handles subgroups: group/subgroup/repo/-/merge_requests/123
   const glMatch = p.match(/^(.+?)\/([^/]+)\/?-?\/merge_requests\/(\d+)/);
   if (glMatch) {
+    // A merge request on a host nothing names is a self-hosted GitLab's.
+    const mrPlatform = knownHostPlatform(host) ? platform : "gitlab";
     return {
-      platform,
+      platform: mrPlatform,
       host,
       owner: glMatch[1],
       repo: glMatch[2],
-      apiBaseUrl: buildApiBaseUrl(platform, host),
+      apiBaseUrl: buildApiBaseUrl(mrPlatform, host),
       prNumber: parseInt(glMatch[3], 10),
     };
   }

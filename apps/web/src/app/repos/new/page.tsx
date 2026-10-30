@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FORM_WIDTH } from "@/components/ui/page";
 import { useRouter } from "next/navigation";
 import { usePageTitle } from "@/hooks/use-page-title";
@@ -34,6 +34,7 @@ import {
   repoAgentPatch,
 } from "@/components/agent-choice-model";
 import { GitHubRepoBrowser } from "@/components/github-repo-browser";
+import { GitLabRepoBrowser } from "@/components/gitlab-repo-browser";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { inputClass as fieldClass } from "@/components/ui/input";
 
@@ -52,7 +53,37 @@ export default function NewRepoPage() {
   const [stepIndex, setStepIndex] = useState(0);
   const currentStep = STEPS[stepIndex];
 
-  // Step 1: Repo
+  // Step 1: Repo — on the platform picked above the repo browser (the ones
+  // the deployment offers; GitHub first, as before). Beside GitHub, GitLab
+  // is offered once one is set up: a GITLAB_TOKEN the person can use, or the
+  // GitLab host the setup wizard saved.
+  const offered = BROWSABLE_PLATFORMS;
+  const [gitlabSetUp, setGitlabSetUp] = useState(false);
+  const besideGitHub = offered.length > 1;
+  useEffect(() => {
+    if (!besideGitHub) return;
+    api
+      .listSecrets()
+      .then(({ secrets }) =>
+        setGitlabSetUp(secrets.some((s) => GITLAB_SETUP_SECRETS.includes(s.name))),
+      )
+      .catch(() => {});
+  }, [besideGitHub]);
+  const platforms: readonly BrowsablePlatform[] =
+    besideGitHub && !gitlabSetUp ? offered.filter((p) => p !== "gitlab") : offered;
+  const [platformChoice, setPlatformChoice] = useState<BrowsablePlatform | null>(null);
+  const platform: BrowsablePlatform =
+    platformChoice && platforms.includes(platformChoice)
+      ? platformChoice
+      : (platforms[0] ?? "github");
+  // The list the repo was picked from, while its URL stays as picked.
+  const [pickedFrom, setPickedFrom] = useState<BrowsablePlatform | null>(null);
+  // Said only when the person chose GitLab (the switch, or a project from its
+  // list): otherwise the URL decides, as it always did.
+  const chosenPlatform =
+    platform === "gitlab" && (platformChoice === "gitlab" || pickedFrom === "gitlab")
+      ? ("gitlab" as const)
+      : undefined;
   const [repoUrl, setRepoUrl] = useState("");
   const [fullName, setFullName] = useState("");
   const [defaultBranch, setDefaultBranch] = useState("main");
@@ -106,7 +137,7 @@ export default function NewRepoPage() {
         // No secrets access, that's fine
       }
 
-      const res = await api.validateRepo(repoUrl, token);
+      const res = await api.validateRepo(repoUrl, token, chosenPlatform);
       if (res.valid && res.repo) {
         setFullName(res.repo.fullName);
         setDefaultBranch(res.repo.defaultBranch);
@@ -130,6 +161,7 @@ export default function NewRepoPage() {
         fullName,
         defaultBranch,
         isPrivate,
+        gitPlatform: chosenPlatform,
       });
       const repoId = res.repo.id;
 
@@ -231,6 +263,7 @@ export default function NewRepoPage() {
               repoUrl={repoUrl}
               setRepoUrl={(v) => {
                 setRepoUrl(v);
+                setPickedFrom(null);
                 // A different URL needs validating again.
                 setValidated(false);
                 setValidationError("");
@@ -238,6 +271,7 @@ export default function NewRepoPage() {
               onPick={(r) => {
                 // The picked repo's metadata comes from GitHub already.
                 setRepoUrl(r.htmlUrl);
+                setPickedFrom(platform);
                 setFullName(r.fullName);
                 setDefaultBranch(r.defaultBranch);
                 setIsPrivate(r.isPrivate);
@@ -252,6 +286,13 @@ export default function NewRepoPage() {
               validationError={validationError}
               onValidate={validateRepo}
               inputClass={inputClass}
+              platform={platform}
+              platforms={platforms}
+              onPlatformChange={(p) => {
+                setPlatformChoice(p);
+                setValidated(false);
+                setValidationError("");
+              }}
             />
           )}
 
@@ -334,6 +375,15 @@ export default function NewRepoPage() {
 
 /* ── Step 1: Repository URL ─────────────────────────────────── */
 
+/** The platforms whose repositories the page can list. */
+const BROWSABLE_PLATFORMS = ["github", "gitlab"] as const;
+type BrowsablePlatform = (typeof BROWSABLE_PLATFORMS)[number];
+
+const PLATFORM_LABELS: Record<BrowsablePlatform, string> = { github: "GitHub", gitlab: "GitLab" };
+
+/** Secrets that say a GitLab is set up (a token at any scope, the wizard's host). */
+const GITLAB_SETUP_SECRETS = ["GITLAB_TOKEN", "GITLAB_USER_ACCESS_TOKEN", "GITLAB_HOST"];
+
 function RepoStep({
   repoUrl,
   setRepoUrl,
@@ -346,6 +396,9 @@ function RepoStep({
   validationError,
   onValidate,
   inputClass,
+  platform,
+  platforms,
+  onPlatformChange,
 }: {
   repoUrl: string;
   setRepoUrl: (v: string) => void;
@@ -363,7 +416,11 @@ function RepoStep({
   validationError: string;
   onValidate: () => void;
   inputClass: string;
+  platform: BrowsablePlatform;
+  platforms: readonly BrowsablePlatform[];
+  onPlatformChange: (platform: BrowsablePlatform) => void;
 }) {
+  const github = platform === "github";
   return (
     <SectionCard
       step={1}
@@ -372,19 +429,40 @@ function RepoStep({
       summary={validated ? fullName : undefined}
       bodyClassName="p-4 space-y-4"
     >
-      <p className="text-xs text-text-muted">
-        Pick one of the repositories Optio's GitHub credentials can access, or paste any repository
-        URL. Optio will fetch the repo metadata automatically.
-      </p>
+      {platforms.length > 1 && (
+        <Segmented
+          aria-label="Git platform"
+          value={platform}
+          onChange={onPlatformChange}
+          options={platforms.map((p) => ({ value: p, label: PLATFORM_LABELS[p] }))}
+        />
+      )}
+      {github ? (
+        <p className="text-xs text-text-muted">
+          Pick one of the repositories Optio's GitHub credentials can access, or paste any
+          repository URL. Optio will fetch the repo metadata automatically.
+        </p>
+      ) : (
+        <p className="text-xs text-text-muted">
+          Pick one of the GitLab projects your GitLab token can access, or paste a project URL.
+          Optio will fetch the project metadata automatically.
+        </p>
+      )}
 
-      <GitHubRepoBrowser selected={validated ? fullName : null} onPick={onPick} />
+      {github ? (
+        <GitHubRepoBrowser selected={validated ? fullName : null} onPick={onPick} />
+      ) : (
+        <GitLabRepoBrowser selected={validated ? fullName : null} onPick={onPick} />
+      )}
 
       <div className="flex gap-2">
         <input
           value={repoUrl}
           onChange={(e) => setRepoUrl(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && onValidate()}
-          placeholder="https://github.com/owner/repo"
+          placeholder={
+            github ? "https://github.com/owner/repo" : "https://gitlab.example.com/group/project"
+          }
           className={cn(inputClass, "flex-1")}
           aria-label="Repository URL"
         />

@@ -1,3 +1,4 @@
+import type { GitPlatformType } from "@optio/shared";
 /**
  * How a pod signs in to git — the same for every pod that clones or pushes: a
  * Repo Task, a review, a persistent agent with a repo.
@@ -15,7 +16,14 @@ import {
 import { getInstallationToken, isGitHubAppConfigured } from "./github-app-service.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
 import { parseRepoUrl } from "@optio/shared";
-import { isTrustedGitHost } from "./git-token-service.js";
+import { getGitToken, isTrustedGitHost } from "./git-token-service.js";
+
+export function requiredGitTokenSecret(platform: GitPlatformType | undefined): string | null {
+  // Host-scoped secrets and API environment fallback are resolved best effort
+  // below/the signed helper; requiring plain GITLAB_TOKEN breaks both setups.
+  if (platform === "gitlab") return null;
+  return isGitHubAppConfigured() ? null : "GITHUB_TOKEN";
+}
 
 const apiInternalUrl = () =>
   process.env.OPTIO_API_INTERNAL_URL ?? `http://localhost:${process.env.API_PORT ?? "4000"}`;
@@ -59,7 +67,26 @@ export async function applyGitAccess(
   },
 ): Promise<void> {
   if (!(await restrictGitCredentialsToRepo(env, opts.repoUrl))) return;
-  for (const name of ["GITHUB_TOKEN", "GITLAB_TOKEN", "GITLAB_HOST"]) {
+  const repo = opts.repoUrl ? parseRepoUrl(opts.repoUrl) : null;
+  if (repo?.platform === "gitlab" && !env.GITLAB_TOKEN) {
+    const token = await getGitToken("gitlab", {
+      workspaceId: opts.workspaceId,
+      userId: opts.ownerUserId ?? undefined,
+      host: repo.host,
+    }).catch(() => null);
+    if (token) {
+      env.GITLAB_TOKEN = token;
+      // This token was resolved for one repository host. The shell fallback
+      // must not offer it to other operator-listed hosts if the API is down.
+      env.GITLAB_HOST = repo.host;
+      env.GITLAB_HOSTS = repo.host;
+    }
+  }
+  for (const name of [
+    "GITHUB_TOKEN",
+    ...(repo?.platform === "gitlab" ? [] : ["GITLAB_TOKEN"]),
+    "GITLAB_HOST",
+  ]) {
     if (env[name]) continue;
     const value = await retrieveSecretWithFallback(
       name,

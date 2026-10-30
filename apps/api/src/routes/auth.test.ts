@@ -14,10 +14,15 @@ const mockValidateSession = vi.fn();
 const mockCreateSession = vi.fn();
 const mockRevokeSession = vi.fn();
 const mockCreateWsToken = vi.fn();
+const mockCompleteSignIn = vi.fn(async (..._args: unknown[]) => ({
+  deploymentAdmin: false,
+  bootstrapped: false,
+}));
 
 vi.mock("../services/session-service.js", () => ({
   validateSession: (...args: unknown[]) => mockValidateSession(...args),
   createSession: (...args: unknown[]) => mockCreateSession(...args),
+  linkAccountsByEmailEnabled: () => false,
   revokeSession: (...args: unknown[]) => mockRevokeSession(...args),
   createWsToken: (...args: unknown[]) => mockCreateWsToken(...args),
 }));
@@ -50,7 +55,7 @@ vi.mock("../services/oauth/index.js", () => ({
 // nobody a deployment admin (covered by sign-in-config.int.test.ts).
 vi.mock("../services/sign-in-config-service.js", () => ({
   SIGN_IN_PROVIDERS: ["google", "github", "gitlab", "oidc"],
-  completeSignIn: async () => ({ deploymentAdmin: false, bootstrapped: false }),
+  completeSignIn: (...args: unknown[]) => mockCompleteSignIn(...args),
   domainDecision: () => mockDomainDecision,
   isDeploymentAdmin: async () => deploymentAdmin,
   hasDeploymentAdmin: async () => true,
@@ -128,6 +133,79 @@ vi.mock("../workers/token-validation-worker.js", () => ({
 }));
 
 import { authRoutes } from "./auth.js";
+
+describe("OIDC browser-bound protocol state", () => {
+  let app: FastifyInstance;
+  const flow = { codeVerifier: "provider-pkce-verifier", nonce: "provider-nonce" };
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    redisStore.clear();
+    authDisabled = false;
+    mockDomainDecision = "allowed";
+    mockOAuthProvider = {
+      name: "oidc",
+      beginFlow: () => flow,
+      authorizeUrl: (state: string) => `https://idp.example/authorize?state=${state}`,
+      exchangeCode: vi.fn().mockResolvedValue({ accessToken: "access" }),
+      fetchUser: vi.fn().mockResolvedValue({
+        externalId: "subject",
+        email: "person@acme.test",
+        displayName: "Person",
+        emailVerified: true,
+        emailVerifiedByProvider: false,
+      }),
+    };
+    mockCreateSession.mockResolvedValue({ token: "oidc-session", user: mockUser });
+    mockRevokeSession.mockResolvedValue(undefined);
+    app = await buildTestApp();
+  });
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("keeps the provider nonce and PKCE alongside the BFF challenge, and spends state once", async () => {
+    const start = await app.inject({
+      url: `/api/auth/oidc/login?browserChallenge=${browserChallenge}`,
+    });
+    expect(start.statusCode).toBe(302);
+    const state = new URL(start.headers.location!).searchParams.get("state")!;
+    expect(JSON.parse(redisStore.get(`oauth_state:${state}`)!)).toEqual({
+      provider: "oidc",
+      browserChallenge,
+      flow,
+    });
+    const request = { url: `/api/auth/oidc/callback?state=${state}&code=idp-code` };
+    const callback = await app.inject(request);
+    expect(mockOAuthProvider.exchangeCode).toHaveBeenCalledWith("idp-code", flow);
+    const code = new URL(callback.headers.location!).searchParams.get("code")!;
+    expect(JSON.parse(redisStore.get(`auth_code:${code}`)!)).toEqual({
+      token: "oidc-session",
+      browserChallenge,
+    });
+    expect(mockCompleteSignIn).toHaveBeenCalledWith(
+      expect.objectContaining({ emailVerified: false, provider: "oidc" }),
+    );
+    expect((await app.inject(request)).headers.location).toContain("invalid_state");
+    expect(mockOAuthProvider.exchangeCode).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an unbound browser login before contacting the provider", async () => {
+    const response = await app.inject({ url: "/api/auth/oidc/login" });
+    expect(response.statusCode).toBe(400);
+    expect(redisStore.size).toBe(0);
+    expect(mockOAuthProvider.exchangeCode).not.toHaveBeenCalled();
+  });
+
+  it("revokes a session created from legacy state without a browser binding", async () => {
+    redisStore.set("oauth_state:unbound", JSON.stringify({ provider: "oidc", flow }));
+    const response = await app.inject({
+      url: "/api/auth/oidc/callback?state=unbound&code=idp-code",
+    });
+    expect(response.headers.location).toContain("invalid_state");
+    expect(mockRevokeSession).toHaveBeenCalledWith("oidc-session");
+    expect([...redisStore.keys()].some((key) => key.startsWith("auth_code:"))).toBe(false);
+  });
+});
 
 // ─── Helpers ───
 

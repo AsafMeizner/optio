@@ -1,4 +1,6 @@
 import { guardedFetch } from "../../utils/outbound-url.js";
+import type { Branch, BrowsableRepository, PlatformLocation } from "@optio/shared";
+import { defaultBranchFirst } from "./pr-search.js";
 import type {
   GitPlatform,
   RepoIdentifier,
@@ -87,7 +89,7 @@ export class GitLabPlatform implements GitPlatform {
 
   private headers(json = false): Record<string, string> {
     const h: Record<string, string> = {
-      "PRIVATE-TOKEN": this.token,
+      Authorization: `Bearer ${this.token}`,
       "User-Agent": "Optio",
     };
     if (json) h["Content-Type"] = "application/json";
@@ -569,6 +571,26 @@ export class GitLabPlatform implements GitPlatform {
 
   // ── Issue reads/writes ────────────────────────────────────────────────────
 
+  async getIssue(ri: RepoIdentifier, number: number): Promise<Issue> {
+    const i = await this.fetchJson<any>(this.url(ri, `/issues/${number}`), {
+      headers: this.headers(),
+    });
+    return {
+      id: i.id,
+      number: i.iid,
+      title: i.title ?? "",
+      body: i.description ?? "",
+      state: i.state === "opened" ? "open" : "closed",
+      url: i.web_url ?? "",
+      labels: i.labels ?? [],
+      author: i.author?.username ?? "",
+      assignee: i.assignee?.username ?? null,
+      isPullRequest: false,
+      createdAt: i.created_at ?? "",
+      updatedAt: i.updated_at ?? "",
+    };
+  }
+
   async listIssues(
     ri: RepoIdentifier,
     opts?: { state?: string; perPage?: number; labels?: string },
@@ -670,6 +692,68 @@ export class GitLabPlatform implements GitPlatform {
       name: item.name ?? "",
       type: item.type === "tree" ? "dir" : "file",
     }));
+  }
+  async listBranches(
+    ri: RepoIdentifier,
+    opts?: { search?: string; perPage?: number },
+  ): Promise<Branch[]> {
+    // GitLab's `search` is a contains-match (`^term` / `term$` anchor it);
+    // branches come back alphabetically, with the default one flagged.
+    const params = new URLSearchParams({ per_page: String(Math.min(opts?.perPage ?? 100, 100)) });
+    const search = opts?.search?.trim();
+    if (search) params.set("search", search);
+    const data = await this.fetchJson<any[]>(this.url(ri, `/repository/branches?${params}`), {
+      headers: this.headers(),
+    });
+    return defaultBranchFirst(
+      data
+        .filter((b: any) => typeof b?.name === "string" && b.name)
+        .map((b: any) => ({
+          name: b.name as string,
+          default: b.default === true,
+          protected: b.protected === true,
+        })),
+    );
+  }
+
+  /**
+   * The projects the token is a member of (`/projects?membership=true`),
+   * most recently active first. GitLab searches name, path and description
+   * server-side; `search_namespaces` lets `group/project` match too.
+   */
+
+  async browseRepositories(
+    query: string,
+    at: PlatformLocation,
+    opts?: { perPage?: number },
+  ): Promise<BrowsableRepository[]> {
+    const params = new URLSearchParams({
+      membership: "true",
+      order_by: "last_activity_at",
+      sort: "desc",
+      per_page: String(Math.min(opts?.perPage ?? 50, 100)),
+    });
+    const search = query.trim();
+    if (search) {
+      params.set("search", search);
+      if (search.includes("/")) params.set("search_namespaces", "true");
+    }
+    const data = await this.fetchJson<any[]>(`${at.apiBaseUrl}/projects?${params}`, {
+      headers: this.headers(),
+    });
+    return data
+      .filter((p: any) => typeof p?.path_with_namespace === "string")
+      .map((p: any) => ({
+        fullName: p.path_with_namespace as string,
+        cloneUrl:
+          p.http_url_to_repo ??
+          `${at.apiBaseUrl.replace(/\/api\/v4$/, "")}/${p.path_with_namespace}.git`,
+        htmlUrl: p.web_url ?? `${at.apiBaseUrl.replace(/\/api\/v4$/, "")}/${p.path_with_namespace}`,
+        defaultBranch: p.default_branch ?? "main",
+        isPrivate: p.visibility !== "public",
+        description: p.description ?? null,
+        pushedAt: p.last_activity_at ?? null,
+      }));
   }
 }
 

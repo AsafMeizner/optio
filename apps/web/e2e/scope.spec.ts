@@ -115,17 +115,23 @@ test.describe("Scope", () => {
     await expect(card.getByText("GitHub", { exact: true })).toBeVisible();
     await expect(card.getByText("Redirect URI to register in Google Cloud Console")).toBeVisible();
     await expect(card.getByText(/\/api\/auth\/google\/callback/)).toBeVisible();
-    await expect(card.getByRole("button", { name: "Save", exact: true })).toBeVisible();
+    const googleForm = card
+      .locator("form")
+      .filter({ hasText: "Redirect URI to register in Google Cloud Console" });
+    await expect(googleForm.getByRole("button", { name: "Save", exact: true })).toBeVisible();
 
     const config = await api<{ bootstrap: boolean; providers: Array<{ provider: string }> }>(
       "/api/auth/sign-in",
     );
     expect(config.bootstrap).toBe(false);
     expect(config.providers.map((p) => p.provider).sort()).toEqual([
+      "bitbucket",
+      "gitea",
       "github",
       "gitlab",
       "google",
       "oidc",
+      "saml",
     ]);
   });
 });

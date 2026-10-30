@@ -9,6 +9,7 @@ export * from "./types/agent-events.js";
 export * from "./utils/state-machine.js";
 export * from "./utils/normalize-repo-url.js";
 export * from "./utils/extract-work-links.js";
+export * from "./utils/work-link-status.js";
 export * from "./utils/agent-usage.js";
 export * from "./utils/transcript-source.js";
 export * from "./utils/dag.js";
@@ -26,6 +27,7 @@ export * from "./types/optio-settings.js";
 export * from "./types/optio-action.js";
 export * from "./types/git-platform.js";
 export * from "./utils/parse-repo-url.js";
+export * from "./utils/change-request.js";
 export * from "./utils/is-stalled.js";
 export * from "./utils/error-message.js";
 export * from "./utils/parse-int-env.js";
@@ -63,6 +65,8 @@ export * from "./usage/index.js";
 export * from "./controller-tools.js";
 
 export * from "./utils/session-work-links.js";
+
+export * from "./types/sign-in.js";
 export * from "./utils/body-pattern.js";
 
 export { changeRequestAbbrev, isMergeRequest } from "./utils/change-request.js";

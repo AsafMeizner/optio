@@ -1236,6 +1236,8 @@ describe("isDeploymentSecret", () => {
       "GITHUB_TOKEN",
       "AWS_SECRET_ACCESS_KEY",
       "GITHUB_USER_ACCESS_TOKEN",
+      "GITLAB_TOKEN_GITLAB_COM",
+      "GITLAB_TOKEN_GIT_CORP_EXAMPLE_8443",
       "ticket-provider:1234",
       "SLACK_WEBHOOK_URL",
     ]) {

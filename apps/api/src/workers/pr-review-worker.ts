@@ -60,7 +60,6 @@ import {
 import { RunOutputDigest } from "../services/run-output-digest.js";
 import { runHome } from "../utils/harness-config.js";
 import { resolveSecretsForTask, retrieveSecretWithFallback } from "../services/secret-service.js";
-import { isGitHubAppConfigured } from "../services/github-app-service.js";
 import { publishEvent } from "../services/event-bus.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { instrumentWorkerProcessor } from "../telemetry/instrument-worker.js";
@@ -70,7 +69,7 @@ import { enqueueReconcile } from "../services/reconcile-queue.js";
 import { resolveReviewConfig } from "../services/review-config.js";
 import * as optioSettingsService from "../services/optio-settings-service.js";
 import { buildAgentEnvironment } from "../services/agent-environment-service.js";
-import { applyGitAccess } from "../services/git-access-env.js";
+import { applyGitAccess, requiredGitTokenSecret } from "../services/git-access-env.js";
 import { buildInitialClaudeStreamMessage } from "../services/pooled-agent-command.js";
 import { buildAgentCommand } from "./task-worker.js";
 
@@ -406,11 +405,9 @@ export function startPrReviewWorker() {
         );
 
         // ── Secrets ───────────────────────────────────────────────
+        const gitToken = requiredGitTokenSecret(parsedRepo?.platform);
         const secretNames = [
-          ...new Set([
-            ...agentConfig.requiredSecrets,
-            ...(!isGitHubAppConfigured() ? ["GITHUB_TOKEN"] : []),
-          ]),
+          ...new Set([...agentConfig.requiredSecrets, ...(gitToken ? [gitToken] : [])]),
         ];
         const resolvedSecrets = await resolveSecretsForTask(
           secretNames,

@@ -34,6 +34,8 @@ export { SsrfError };
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface OutboundOptions {
+  /** Per-request IdP trust; DNS pinning and outbound policy remain mandatory. */
+  tls?: { ca?: string; rejectUnauthorized?: boolean };
   /** Overrides the environment's policy. */
   policy?: OutboundPolicy;
   /** Overrides DNS (tests). */
@@ -88,6 +90,7 @@ export async function guardedFetch(
     maxRedirects = DEFAULT_MAX_REDIRECTS,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     redirect = "follow",
+    tls,
     ...rest
   } = init;
   const signal = rest.signal ?? AbortSignal.timeout(timeoutMs);
@@ -96,7 +99,7 @@ export async function guardedFetch(
 
   if (redirect !== "follow") {
     const vetted = await vetOutboundUrl(url, vet);
-    return send(vetted, { ...rest, signal, redirect }, fetchImpl);
+    return send(vetted, { ...rest, signal, redirect }, fetchImpl, tls);
   }
 
   let method = rest.method ?? "GET";
@@ -111,6 +114,7 @@ export async function guardedFetch(
       vetted,
       { ...rest, method, body, headers, signal, redirect: "manual" },
       fetchImpl,
+      tls,
     );
     if (!REDIRECT_STATUSES.has(response.status)) return response;
     const location = response.headers?.get?.("location");
@@ -140,10 +144,11 @@ async function send(
   vetted: VettedUrl,
   init: RequestInit,
   fetchImpl: FetchLike | undefined,
+  tls?: OutboundOptions["tls"],
 ): Promise<Response> {
   const url = vetted.url.toString();
   if (fetchImpl) return fetchImpl(url, init);
-  const agent = pinnedAgent(vetted);
+  const agent = pinnedAgent(vetted, tls);
   try {
     const response = await undiciFetch(url, {
       ...(init as unknown as Record<string, unknown>),
@@ -158,7 +163,7 @@ async function send(
 }
 
 /** An Agent that connects `vetted.hostname` to `vetted.addresses` and nothing else. */
-function pinnedAgent(vetted: VettedUrl): Agent {
+function pinnedAgent(vetted: VettedUrl, tls?: OutboundOptions["tls"]): Agent {
   const lookup: LookupFunction = (hostname, options, callback) => {
     if (normalizeHostname(hostname) !== vetted.hostname) {
       callback(new Error(`connection to ${hostname} was not vetted`), "", undefined);
@@ -168,7 +173,7 @@ function pinnedAgent(vetted: VettedUrl): Agent {
     if (options.all) callback(null, all);
     else callback(null, all[0]!.address, all[0]!.family);
   };
-  const connect = { lookup, timeout: CONNECT_TIMEOUT_MS };
+  const connect = { ...tls, lookup, timeout: CONNECT_TIMEOUT_MS };
   return new Agent({ connect: connect as unknown as Agent.Options["connect"] });
 }
 

@@ -220,6 +220,11 @@ agent:
     maxSizeTotalGi: 200               # Max total cache size across all dirs per repo
   # Repo init timeout (how long to wait for clone to complete)
   repoInitTimeoutMs: 120000           # 2 min default; increase for large repos
+  # Who agents commit as (GIT_BOT_NAME / GIT_BOT_EMAIL on the API, which hands
+  # them to agent pods). Empty preserves the GitHub App bot / Optio Agent default.
+  git:
+    botName: ""   # e.g. "Optio Agent"
+    botEmail: ""  # e.g. optio-agent@gitlab.example.com
 
 # Per-IP API rate limit (requests per minute). The web UI proxies through the
 # Next server, but the iOS app and CLI talk to the API directly and poll several
@@ -496,6 +501,8 @@ publicUrl: ""  # e.g. https://optio.example.com
 # by the setup token (auth.setupToken, or the one the API prints in its log).
 # ──────────────────────────────────────────────────────────────────────────────
 auth:
+  # Link new identities by provider-verified email, preserving the original identity.
+  linkAccountsByEmail: false
   # Set to true to disable authentication (NOT recommended for production).
   disabled: false
   # One-time token that unlocks the setup wizard's Sign-in step while nobody
@@ -517,13 +524,32 @@ auth:
     clientId: ""
     clientSecret: ""
     # baseUrl: https://gitlab.com  # Self-hosted GitLab URL
-  # Generic OIDC provider (Keycloak, Authentik, Authelia, Zitadel, Okta, Auth0, etc.)
+  # Generic OIDC provider: the organization's own (Keycloak, Authentik, ADFS,
+  # Entra ID, Okta, Zitadel, Authelia, Auth0, …). Set issuerUrl to turn it on. Register the redirect URI <publicUrl>/api/auth/oidc/callback
+  # (<web.publicApiUrl>/api/auth/oidc/callback when the API has an origin of
+  # its own) with the provider.
+  gitea:
+    baseUrl: ""
+    clientId: ""
+    clientSecret: ""
+    displayName: "Gitea / Forgejo"
+    scopes: "openid profile email groups"
+    caPem: ""
+  bitbucket:
+    clientId: ""
+    clientSecret: ""
+
   oidc:
-    issuerUrl: ""       # e.g. https://auth.example.com/realms/optio
+    issuerUrl: ""       # e.g. https://auth.example.com/realms/optio (serves /.well-known/openid-configuration)
     clientId: ""
     clientSecret: ""
     displayName: "SSO"  # Button label: "Sign in with {displayName}"
     scopes: ""          # Defaults to "openid email profile" if empty
+    groupsClaim: ""     # The claim carrying the person's groups; empty = "groups" (Keycloak realm roles: realm_access.roles)
+    trustEmail: false   # true: count the email as verified without the provider's email_verified claim (most self-hosted providers send none)
+    usePkce: false      # true: PKCE (S256) on the sign-in, for a provider that supports it
+    linkByEmail: false  # true: a first sign-in whose verified email matches one existing account gets that account; only if people can't change their email at the provider
+    caPem: ""           # PEM bundle of the CA behind a private provider certificate (caBundle below covers it too)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # GitHub webhook signature validation
@@ -709,6 +735,8 @@ observability:
 # Namespace
 # ──────────────────────────────────────────────────────────────────────────────
 namespace: optio
+# Set false when Zarf, Rancher or Helm creates the namespace.
+createNamespace: true
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Namespace resource quotas
@@ -771,3 +799,41 @@ serviceAccount:
 # ──────────────────────────────────────────────────────────────────────────────
 imagePullSecrets: []
 #  - name: my-registry-secret
+
+# Optional Prometheus listener; never exposed by the ingress.
+# Enabling metrics with its default NetworkPolicy installs an ingress policy
+# on the whole API pod. API/web ports (4000/3000) remain open to all sources;
+# the metrics port permits only the monitoring audience and helm-test pod.
+metrics:
+  enabled: false
+  port: 9464
+  service:
+    annotations: {}
+  # Requires a CNI that enforces Kubernetes NetworkPolicy.
+  # Set an explicit audience before enabling metrics.
+  networkPolicy:
+    enabled: true
+    namespaces: []
+    from: []
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    labels: {}
+    alertLabels: {}
+    job: ""
+    failureRatio: 0.5
+    failureMinRuns: 5
+    queueDepth: 100
+    additionalRules: []
+  grafanaDashboard:
+    enabled: false
+    namespace: ""
+    labels:
+      grafana_dashboard: "1"
+    annotations: {}

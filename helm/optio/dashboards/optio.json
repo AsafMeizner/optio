@@ -1,0 +1,166 @@
+{
+  "title": "Optio \u00b7 NAMESPACE",
+  "uid": "optio-NAMESPACE",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus"
+      },
+      {
+        "name": "namespace",
+        "type": "constant",
+        "query": "NAMESPACE",
+        "hide": 2
+      },
+      {
+        "name": "job",
+        "type": "constant",
+        "query": "JOB",
+        "hide": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active tasks",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "expr": "max(optio_active_tasks{namespace=\"$namespace\",job=\"$job\"})",
+          "refId": "A",
+          "legendFormat": "Active tasks"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Queue by state",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "expr": "max by (state) (optio_queue_depth{namespace=\"$namespace\",job=\"$job\"})",
+          "refId": "A",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Pods by state",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "expr": "max by (state) (optio_pod_count{namespace=\"$namespace\",job=\"$job\"})",
+          "refId": "A",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Task completions",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "expr": "sum by (state) (rate(optio_tasks_total{namespace=\"$namespace\",job=\"$job\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Task duration p95",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(optio_task_duration_seconds_bucket{namespace=\"$namespace\",job=\"$job\"}[5m])))",
+          "refId": "A",
+          "legendFormat": "p95 seconds"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Webhook deliveries",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "expr": "sum by (success) (rate(optio_webhook_deliveries_total{namespace=\"$namespace\",job=\"$job\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{success}}"
+        }
+      ]
+    }
+  ]
+}

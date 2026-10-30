@@ -1,0 +1,56 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- include "optio.metrics.requireEndpoint" (dict "Values" .Values "what" "metrics.prometheusRule.enabled") }}
+{{- if and (not .Values.metrics.serviceMonitor.enabled) (not .Values.metrics.prometheusRule.job) }}
+{{- fail "metrics.prometheusRule needs serviceMonitor.enabled or an explicit scrape job" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}-metrics
+  namespace: {{ .Values.metrics.prometheusRule.namespace | default .Values.namespace }}
+  labels:
+    {{- include "optio.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: optio
+      rules:
+        - alert: OptioDown
+          expr: absent(up{namespace={{ .Values.namespace | quote }},job={{ include "optio.metrics.job" . | quote }}}) or up{namespace={{ .Values.namespace | quote }},job={{ include "optio.metrics.job" . | quote }}} == 0
+          for: 5m
+          labels:
+            severity: critical
+            {{- with .Values.metrics.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: Optio metrics cannot be scraped
+        - alert: OptioQueueGrowing
+          expr: max(optio_queue_depth{namespace={{ .Values.namespace | quote }},job={{ include "optio.metrics.job" . | quote }},state="queued"}) > {{ .Values.metrics.prometheusRule.queueDepth }}
+          for: 15m
+          labels:
+            severity: warning
+            {{- with .Values.metrics.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: Optio queued work exceeds its configured threshold
+        - alert: OptioTaskFailureRate
+          expr: |
+            (sum(increase(optio_tasks_total{namespace={{ .Values.namespace | quote }},job={{ include "optio.metrics.job" . | quote }},state="failed"}[30m]))
+            / clamp_min(sum(increase(optio_tasks_total{namespace={{ .Values.namespace | quote }},job={{ include "optio.metrics.job" . | quote }}}[30m])), 1) > {{ .Values.metrics.prometheusRule.failureRatio }})
+            and sum(increase(optio_tasks_total{namespace={{ .Values.namespace | quote }},job={{ include "optio.metrics.job" . | quote }}}[30m])) >= {{ .Values.metrics.prometheusRule.failureMinRuns }}
+          for: 5m
+          labels:
+            severity: warning
+            {{- with .Values.metrics.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: Optio task failures exceed their configured ratio
+        {{- with .Values.metrics.prometheusRule.additionalRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

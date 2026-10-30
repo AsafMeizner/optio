@@ -1,0 +1,12 @@
+# Passed with zarf package deploy --values example-values.yaml.
+# chart values override the package defaults. See helm/optio/values.yaml.
+chart:
+  auth:
+    deploymentAdmins: ["admin@example.com"]
+  api:
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { cpu: "2", memory: 1536Mi }
+  # Pin agent pods to nodes that can reach your repositories and model services.
+  # agent:
+  #   nodeSelector: { node-role.example.com/agents: "true" }
