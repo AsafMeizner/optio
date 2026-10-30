@@ -85,6 +85,16 @@ export async function releaseTicketClaim(
     .catch((err) => logger.warn({ err, source, externalId }, "Could not release ticket claim"));
 }
 
+export function ticketCallConfig(
+  ticket: { source: string; repo?: string },
+  mergedConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  if (ticket.source === "gitlab" && !mergedConfig.projectPath && ticket.repo) {
+    return { ...mergedConfig, projectPath: ticket.repo };
+  }
+  return mergedConfig;
+}
+
 export async function syncAllTickets(): Promise<number> {
   const providers = await db
     .select()
@@ -164,10 +174,13 @@ export async function syncAllTickets(): Promise<number> {
             if (match) {
               repoUrl = normalizeRepoUrl(match.repoUrl);
             } else if (providerConfig.source === "gitlab") {
-              // Use provider config baseUrl for self-hosted GitLab instances
-              const baseUrl =
-                (mergedConfig as Record<string, unknown>).baseUrl ?? "https://gitlab.com";
-              repoUrl = normalizeRepoUrl(`${baseUrl}/${repo}`);
+              // A self-hosted GitLab: the provider config names its base URL,
+              // or its host (the GitLab provider talks to https://<host>).
+              const { baseUrl, host } = mergedConfig as { baseUrl?: string; host?: string };
+              const base = baseUrl
+                ? baseUrl.replace(/\/+$/, "")
+                : `https://${(host || "gitlab.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "")}`;
+              repoUrl = normalizeRepoUrl(`${base}/${repo}`);
             } else {
               repoUrl = normalizeRepoUrl(`https://github.com/${repo}`);
             }
@@ -209,7 +222,10 @@ export async function syncAllTickets(): Promise<number> {
         // Fetch comments for context
         let commentsSection = "";
         try {
-          const comments = await provider.fetchTicketComments(ticket.externalId, mergedConfig);
+          const comments = await provider.fetchTicketComments(
+            ticket.externalId,
+            ticketCallConfig(ticket, mergedConfig),
+          );
           commentsSection = buildCommentsSection(comments);
         } catch (err) {
           logger.warn({ err, ticketId: ticket.externalId }, "Failed to fetch ticket comments");
@@ -297,7 +313,7 @@ export async function syncAllTickets(): Promise<number> {
           await provider.addComment(
             ticket.externalId,
             `🤖 **Optio** is working on this issue.\n\nTask ID: \`${task.id}\`\nAgent: ${agentType}`,
-            mergedConfig,
+            ticketCallConfig(ticket, mergedConfig),
           );
         } catch (commentErr) {
           logger.warn(

@@ -9,7 +9,7 @@ vi.mock("./secret-service.js", () => ({
   retrieveSecretWithFallback: vi.fn().mockRejectedValue(new Error("none")),
 }));
 
-import { applyGitAccess } from "./git-access-env.js";
+import { applyGitAccess, requiredGitTokenSecret } from "./git-access-env.js";
 import { parseGitCredentialScope } from "./git-credential-scope.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
 
@@ -98,5 +98,47 @@ describe("applyGitAccess", () => {
       repo: "https://github.com/acme/widgets",
     });
     expect(env.OPTIO_CREDENTIAL_SECRET).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("GitLab optional token resolution", () => {
+  it("does not require a plain token before the helper can resolve host credentials", () => {
+    expect(requiredGitTokenSecret("gitlab")).toBeNull();
+  });
+  it("starts a signed helper even when no static token is available", async () => {
+    const env: Record<string, string> = {};
+    await applyGitAccess(env, { workspaceId: "ws-1", repoUrl: "https://gitlab.com/org/repo" });
+    expect(env.GITLAB_TOKEN).toBeUndefined();
+    expect(env.OPTIO_GIT_CREDENTIAL_URL).toBeTruthy();
+    expect(env.OPTIO_CREDENTIAL_SECRET).toBeTruthy();
+  });
+  it.each([true, false])(
+    "uses a host-only token without requiring the plain secret (helper=%s)",
+    async (helper) => {
+      vi.stubEnv("GITLAB_HOSTS", "git.corp.example:8443,other.example:9443");
+      vi.mocked(retrieveSecretWithFallback).mockImplementation(async (name) => {
+        if (name === "GITLAB_TOKEN_GIT_CORP_EXAMPLE_8443") return "glpat-host-only";
+        throw new Error("no plain token");
+      });
+      const env: Record<string, string> = {};
+      await applyGitAccess(env, {
+        workspaceId: "ws-1",
+        repoUrl: "https://git.corp.example:8443/org/repo",
+        helper,
+      });
+      expect(env.GITLAB_TOKEN).toBe("glpat-host-only");
+      expect(env.GITLAB_HOST).toBe("git.corp.example:8443");
+      expect(env.GITLAB_HOSTS).toBe("git.corp.example:8443");
+    },
+  );
+  it("uses the API environment token when no stored token exists", async () => {
+    vi.stubEnv("GITLAB_TOKEN", "glpat-env-only");
+    const env: Record<string, string> = {};
+    await applyGitAccess(env, {
+      workspaceId: null,
+      repoUrl: "https://gitlab.com/org/repo",
+      helper: false,
+    });
+    expect(env.GITLAB_TOKEN).toBe("glpat-env-only");
   });
 });

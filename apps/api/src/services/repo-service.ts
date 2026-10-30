@@ -2,8 +2,7 @@ import { eq, and, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { repos, workspaces } from "../db/schema.js";
 import { encrypt, decrypt, ALG_AES_256_GCM_V1 } from "./secret-service.js";
-import { normalizeRepoUrl, resolveRepoPlatform } from "@optio/shared";
-import type { GitPlatformType } from "@optio/shared";
+import { normalizeRepoUrl, resolveRepoPlatform, type GitPlatformType } from "@optio/shared";
 
 export interface RepoRecord {
   id: string;
@@ -180,6 +179,7 @@ export async function createRepo(data: {
     .onConflictDoUpdate({
       target: [repos.repoUrl, repos.workspaceId],
       set: {
+        gitPlatform,
         fullName: data.fullName,
         defaultBranch: data.defaultBranch ?? "main",
         isPrivate: data.isPrivate ?? false,

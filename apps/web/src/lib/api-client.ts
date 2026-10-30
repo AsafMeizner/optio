@@ -1,3 +1,4 @@
+import type { AnySignInSettings, SignInProviderTestResult } from "@optio/shared";
 /**
  * All API requests are routed through the Next.js BFF proxy at /api/[...path].
  * The proxy reads the HttpOnly session cookie server-side and forwards it as a
@@ -36,6 +37,7 @@ import type {
   WorkSource,
   WorkSpec,
   WorkEnvironmentOptions,
+  WorkLinkStatus,
 } from "@optio/shared";
 import type { ConfigApplyResult, ConfigStatus, ExportedManifest } from "@optio/shared";
 
@@ -97,7 +99,8 @@ export interface ApiKeyCreated {
 
 /** What `GET /api/auth/sign-in` says about one provider (never a secret). */
 export interface SignInProviderView {
-  provider: "google" | "github" | "gitlab" | "oidc";
+  settings?: AnySignInSettings;
+  provider: "google" | "github" | "gitlab" | "oidc" | "saml" | "gitea" | "bitbucket";
   displayName: string;
   configurable: boolean;
   enabled: boolean;
@@ -106,6 +109,7 @@ export interface SignInProviderView {
   hasClientSecret: boolean;
   allowedDomains: string[];
   callbackUrl: string;
+  metadataUrl?: string | null;
   updatedAt: string | null;
 }
 
@@ -485,11 +489,33 @@ export const api = {
     }>(`/api/repos/github/accessible${query ? `?${query}` : ""}`);
   },
 
+  browseRepos: (params: { q?: string; platform?: "github" | "gitlab" | "codecommit" } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.platform) qs.set("platform", params.platform);
+    const query = qs.toString();
+    return request<{
+      repos: Array<{
+        fullName: string;
+        cloneUrl: string;
+        htmlUrl: string;
+        defaultBranch: string;
+        isPrivate: boolean;
+        description: string | null;
+        pushedAt: string | null;
+      }>;
+      platform: "github" | "gitlab" | "codecommit";
+      host: string | null;
+      error?: string;
+    }>(`/api/repos/browse${query ? `?${query}` : ""}`);
+  },
+
   createRepoConfig: (data: {
     repoUrl: string;
     fullName: string;
     defaultBranch?: string;
     isPrivate?: boolean;
+    gitPlatform?: "github" | "gitlab" | "codecommit";
   }) => request<{ repo: any }>("/api/repos", { method: "POST", body: JSON.stringify(data) }),
 
   updateRepo: (id: string, data: Record<string, unknown>) =>
@@ -672,14 +698,14 @@ export const api = {
       body: JSON.stringify({ key }),
     }),
 
-  validateRepo: (repoUrl: string, token?: string) =>
+  validateRepo: (repoUrl: string, token?: string, gitPlatform?: "github" | "gitlab") =>
     request<{
       valid: boolean;
       error?: string;
       repo?: { fullName: string; defaultBranch: string; isPrivate: boolean };
     }>("/api/setup/validate/repo", {
       method: "POST",
-      body: JSON.stringify({ repoUrl, token }),
+      body: JSON.stringify({ repoUrl, token, gitPlatform }),
     }),
 
   getAuthStatus: () =>
@@ -1026,12 +1052,13 @@ export const api = {
   saveSignInProvider: (
     provider: string,
     data: {
-      clientId: string;
+      clientId?: string;
       clientSecret?: string;
       allowedDomains?: string[];
       enabled?: boolean;
       displayName?: string | null;
       organizationName?: string;
+      settings?: AnySignInSettings;
     },
     setupToken?: string,
   ) =>
@@ -1040,8 +1067,21 @@ export const api = {
       body: JSON.stringify(data),
       headers: setupTokenHeader(setupToken),
     }),
-  deleteSignInProvider: (provider: string) =>
-    request<void>(`/api/auth/sign-in/${provider}`, { method: "DELETE" }),
+  testSignInProvider: (
+    provider: string,
+    data: { clientId?: string; clientSecret?: string; settings?: AnySignInSettings },
+    setupToken?: string,
+  ) =>
+    request<SignInProviderTestResult>(`/api/auth/sign-in/${provider}/test`, {
+      method: "POST",
+      body: JSON.stringify(data),
+      headers: setupTokenHeader(setupToken),
+    }),
+  deleteSignInProvider: (provider: string, setupToken?: string) =>
+    request<void>(`/api/auth/sign-in/${provider}`, {
+      method: "DELETE",
+      headers: setupTokenHeader(setupToken),
+    }),
   listDeploymentAdmins: () => request<{ admins: DeploymentAdmin[] }>("/api/auth/deployment-admins"),
   addDeploymentAdmin: (email: string) =>
     request<{ admin: DeploymentAdmin }>("/api/auth/deployment-admins", {
@@ -1387,6 +1427,18 @@ export const api = {
     }),
 
   // PR Reviews — canonical endpoints live under /api/pr-reviews.
+  listRepoBranches: (repoId: string, params: { q?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q?.trim()) qs.set("q", params.q.trim());
+    if (params.limit) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    return request<{
+      branches: Array<{ name: string; default: boolean; protected?: boolean }>;
+      defaultBranch: string | null;
+      error?: string;
+    }>(`/api/repos/${repoId}/branches${query ? `?${query}` : ""}`);
+  },
+
   listPullRequests: (params?: { repoId?: string }) => {
     const qs = new URLSearchParams();
     if (params?.repoId) qs.set("repoId", params.repoId);
@@ -2269,6 +2321,13 @@ export const api = {
     request<{ terminal: any }>(`/api/local/terminals/${id}/pin`, { method: "POST" }),
   unpinLocalTerminal: (id: string) =>
     request<{ terminal: any }>(`/api/local/terminals/${id}/pin`, { method: "DELETE" }),
+
+  /** Where the PRs / tickets some badges name stand (cached server-side for about a minute). */
+  workLinkStatuses: (urls: string[]) => {
+    const params = new URLSearchParams();
+    for (const url of urls) params.append("url", url);
+    return request<{ statuses: WorkLinkStatus[] }>(`/api/work-links/status?${params}`);
+  },
 
   killLocalTerminal: (id: string, signal?: "SIGTERM" | "SIGINT" | "SIGKILL" | "SIGHUP") =>
     request<{}>(`/api/local/terminals/${id}/kill`, {

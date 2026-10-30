@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { parseRepoUrl, resolveRepoPlatform } from "./parse-repo-url.js";
+import { parsePrUrl, parseRepoUrl, resolveRepoPlatform } from "./parse-repo-url.js";
 
 describe("explicit CLI repository platform", () => {
   it("parses with the platform the caller knows", () => {
@@ -29,5 +29,19 @@ describe("resolveRepoPlatform", () => {
     expect(resolveRepoPlatform("https://git.example.com/acme/app", null)).toBe("github");
     expect(resolveRepoPlatform("https://git.example.com/acme/app", "bogus")).toBe("github");
     expect(resolveRepoPlatform("not a url", null)).toBeNull();
+  });
+});
+
+describe("GitLab HTTPS port identity", () => {
+  it("preserves the exact host:port used by credential scopes and API requests", () => {
+    const ri = parseRepoUrl("https://gitlab.example.test:8443/org/repo.git");
+    expect(
+      parsePrUrl("https://gitlab.example.test:8443/org/repo/-/merge_requests/7"),
+    ).toMatchObject({ host: "gitlab.example.test:8443", prNumber: 7 });
+    expect(ri).toMatchObject({
+      platform: "gitlab",
+      host: "gitlab.example.test:8443",
+      apiBaseUrl: "https://gitlab.example.test:8443/api/v4",
+    });
   });
 });

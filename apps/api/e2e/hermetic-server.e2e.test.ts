@@ -58,7 +58,9 @@ describe("test API servers are isolated from this machine", () => {
     expect(secret.status).toBe(201);
     const { status, body } = await get("/api/repos/github/accessible");
     expect(status, JSON.stringify(body)).toBe(200);
-    expect(body.error).toBe("GitHub returned 401");
+    expect(body.error).toBe("Failed to list repositories");
+    expect(JSON.stringify(body)).not.toContain("GitHub returned 401");
+    await expect.poll(() => server.logs()).toContain("GitHub returned 401");
     expect(server.logs()).toContain("[hermetic] answered GET https://api.github.com locally");
   });
 });

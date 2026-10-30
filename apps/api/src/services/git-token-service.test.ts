@@ -10,6 +10,7 @@ vi.mock("./codecommit-credential-service.js", () => ({
   getCodeCommitCredentials: vi.fn(async () => "workload-identity"),
 }));
 
+import { retrieveSecretWithFallback } from "./secret-service.js";
 import { getGitPlatformForRepo, isListedGitHost, isTrustedGitHost } from "./git-token-service.js";
 
 const ENV_KEYS = ["GITLAB_HOSTS", "OPTIO_GITLAB_HOSTS", "GITHUB_HOSTS", "OPTIO_GITHUB_HOSTS"];
@@ -86,4 +87,31 @@ describe("getGitPlatformForRepo", () => {
     const ghe = await getGitPlatformForRepo("https://ghe.corp.example/o/r", { server: true });
     expect(ghe.ri.apiBaseUrl).toBe("https://ghe.corp.example/api/v3");
   });
+});
+
+it("MR/API token selection retains the same port as the signed git helper", async () => {
+  process.env.GITLAB_HOSTS = "git.corp.example";
+  await expect(
+    getGitPlatformForRepo("https://git.corp.example:8443/org/repo", { server: true }),
+  ).rejects.toThrow(/Refusing/);
+  process.env.GITLAB_HOSTS = "git.corp.example:8443";
+  vi.mocked(retrieveSecretWithFallback).mockImplementation(async (name) => {
+    if (name === "GITLAB_TOKEN_GIT_CORP_EXAMPLE_8443") return "glpat-host-only";
+    throw new Error("no plain token");
+  });
+  const gl = await getGitPlatformForRepo("https://git.corp.example:8443/org/repo", {
+    server: true,
+  });
+  expect(gl.ri).toMatchObject({
+    host: "git.corp.example:8443",
+    apiBaseUrl: "https://git.corp.example:8443/api/v4",
+  });
+  expect(retrieveSecretWithFallback).toHaveBeenCalledWith(
+    "GITLAB_TOKEN_GIT_CORP_EXAMPLE_8443",
+    "global",
+    undefined,
+  );
+  await expect(
+    getGitPlatformForRepo("https://git.corp.example:9443/org/repo", { server: true }),
+  ).rejects.toThrow(/Refusing/);
 });

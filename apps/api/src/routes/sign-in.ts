@@ -2,6 +2,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { ErrorResponseSchema } from "../schemas/common.js";
+import {
+  OidcSettingsSchema,
+  samlSettingsSchema,
+  giteaSettingsSchema,
+  bitbucketSettingsSchema,
+} from "../schemas/sign-in.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
 import { logAction } from "../services/optio-action-service.js";
 import {
@@ -16,6 +22,7 @@ import {
   recordBootstrapClaim,
   removeDeploymentAdmin,
   saveSignInConfig,
+  testSignInProvider,
   setupTokenUsable,
   verifySetupToken,
 } from "../services/sign-in-config-service.js";
@@ -43,7 +50,20 @@ import { eq } from "drizzle-orm";
 const SETUP_TOKEN_HEADER = "x-optio-setup-token";
 
 const saveSchema = z.object({
-  clientId: z.string().min(1),
+  settings: z
+    .union([
+      OidcSettingsSchema.describe("Settings for provider=oidc"),
+      samlSettingsSchema.describe("Settings for provider=saml"),
+      giteaSettingsSchema.describe("Settings for provider=gitea"),
+      bitbucketSettingsSchema
+        .strict()
+        .describe("Settings for provider=bitbucket; other providers use no settings"),
+    ])
+    .optional()
+    .describe(
+      "The settings variant must match :provider in the URL; the service enforces this match.",
+    ),
+  clientId: z.string().trim().max(500).optional(),
   clientSecret: z.string().min(1).optional(),
   allowedDomains: z.array(z.string()).max(20).optional(),
   enabled: z.boolean().optional(),
@@ -127,7 +147,7 @@ export async function signInRoutes(rawApp: FastifyInstance) {
         operationId: "saveSignInProvider",
         summary: "Configure a sign-in provider",
         description:
-          "Store a provider's OAuth client (today: `google`), its allowed domains and whether " +
+          "Store a provider's OAuth client, its allowed domains and whether " +
           "it is enabled. The client secret is encrypted at rest and never returned. Needs a " +
           "deployment admin, or the setup token while nobody can sign in yet.",
         tags: ["Auth & Sessions"],
@@ -160,6 +180,31 @@ export async function signInRoutes(rawApp: FastifyInstance) {
           success: true,
         }).catch(() => {});
         reply.send({ provider: view, bootstrap: await isBootstrapMode() });
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.post(
+    "/api/auth/sign-in/:provider/test",
+    {
+      preHandler: [requireDeploymentAdminOrToken],
+      schema: {
+        operationId: "testSignInProvider",
+        summary: "Try a provider's settings before saving them",
+        description:
+          "`oidc`: fetch the issuer's discovery document (through the given CA) and report its " +
+          "endpoints, scopes and claims. Nothing is stored.",
+        tags: ["Auth & Sessions"],
+        params: providerParams,
+        body: saveSchema.partial(),
+        response: { 200: z.unknown(), 403: ErrorResponseSchema, 404: ErrorResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      try {
+        reply.send(await testSignInProvider(req.params.provider, req.body));
       } catch (err) {
         return sendError(reply, err);
       }

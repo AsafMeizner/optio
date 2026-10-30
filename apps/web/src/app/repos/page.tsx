@@ -14,8 +14,11 @@ import { Panel, PanelEmpty } from "@/components/ui/panel";
 import { ButtonLink } from "@/components/ui/button";
 
 /** The git host's mark, from the repo URL (GitHub unless it says otherwise). */
-function repoBrand(repoUrl: string | undefined): Brand | null {
-  const url = (repoUrl ?? "").toLowerCase();
+function repoBrand(repo: { repoUrl?: string; gitPlatform?: string | null }): Brand | null {
+  if (repo.gitPlatform === "gitlab") return "gitlab";
+  if (repo.gitPlatform === "github") return "github";
+  if (repo.gitPlatform === "codecommit") return null;
+  const url = (repo.repoUrl ?? "").toLowerCase();
   if (url.includes("codecommit")) return null;
   if (url.includes("gitlab")) return "gitlab";
   if (url.includes("bitbucket")) return "bitbucket";
@@ -95,7 +98,7 @@ export default function ReposPage() {
           <div className="divide-y divide-border/60">
             {filtered.length === 0 && <PanelEmpty>No repositories match your search.</PanelEmpty>}
             {filtered.map((repo: any) => {
-              const brand = repoBrand(repo.repoUrl);
+              const brand = repoBrand(repo);
               return (
                 <Link
                   key={repo.id}

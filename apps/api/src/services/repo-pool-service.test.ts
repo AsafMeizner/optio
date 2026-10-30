@@ -65,6 +65,12 @@ vi.mock("../db/schema.js", () => ({
   },
 }));
 
+vi.mock("./secret-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./secret-service.js")>()),
+  resolveSecretsForSetup: vi.fn(async () => ({})),
+  workspaceRestrictsPodSecrets: vi.fn(async () => false),
+}));
+
 // Picking a pod, the row's lifecycle, slots, and count repair are
 // agent-pod-pool's (exercised against a real database in
 // agent-pod-pool.int.test.ts). Here we check what the repo pool asks of it and
@@ -155,7 +161,7 @@ import {
   startTaskInRepoPod,
   type RepoPod,
 } from "./repo-pool-service.js";
-import { buildTaskStartScript } from "./repo-pool-service.js";
+import { repoPodEnv, buildTaskStartScript } from "./repo-pool-service.js";
 import { superviseAgent } from "../utils/pod-env.js";
 
 const REPO_URL = "https://github.com/org/repo";
@@ -1253,5 +1259,17 @@ describe("the task start script (the run protocol)", () => {
     const script = buildTaskStartScript(taskId, env, agent, { resetWorktree: true });
     expect(script).toContain("[optio] Resetting existing worktree for retry...");
     expect(script).not.toContain(`rm -rf /workspace/tasks/${taskId}`);
+  });
+});
+
+describe("repo pod GitLab host allowlist", () => {
+  it("passes GITLAB_HOSTS into the pod where the git helper fallback runs", async () => {
+    const env = await repoPodEnv(
+      { GITLAB_HOSTS: "git.corp.example:8443", ANTHROPIC_API_KEY: "per-run-only" },
+      "https://github.com/org/repo",
+      null,
+    );
+    expect(env.GITLAB_HOSTS).toBe("git.corp.example:8443");
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 });

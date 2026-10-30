@@ -1,7 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { db } from "../db/client.js";
-import { users, sessions, wsUpgradeTokens } from "../db/schema.js";
-import { eq, and, lt, sql } from "drizzle-orm";
+import { users, sessions, userIdentities, wsUpgradeTokens } from "../db/schema.js";
+import { eq, and, lt, or, sql } from "drizzle-orm";
 import type { OAuthUser } from "./oauth/provider.js";
 
 const SESSION_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days absolute max
@@ -25,17 +25,81 @@ export interface SessionUser {
   deploymentAdmin?: boolean;
 }
 
-/** Find or create a user from an OAuth profile, then create a session. */
+/** Whether a new sign-in identity may join an existing account by email (opt-in). */
+export function linkAccountsByEmailEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.OPTIO_LINK_ACCOUNTS_BY_EMAIL?.trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
+/**
+ * The account a provider identity already belongs to: its own row, else the
+ * account a linked identity (`user_identities`) points at — one query.
+ */
+export async function findAccountByIdentity(
+  provider: string,
+  externalId: string,
+): Promise<typeof users.$inferSelect | null> {
+  const [account] = await db
+    .select()
+    .from(users)
+    .where(
+      or(
+        and(eq(users.provider, provider), eq(users.externalId, externalId)),
+        sql`${users.id} IN (SELECT "user_id" FROM "user_identities" WHERE "provider" = ${provider} AND "external_id" = ${externalId})`,
+      ),
+    )
+    .limit(1);
+  return account ?? null;
+}
+
+/** Record that `provider`/`externalId` signs in to `userId` (idempotent). */
+export async function linkIdentity(
+  userId: string,
+  provider: string,
+  profile: Pick<OAuthUser, "externalId" | "email">,
+): Promise<void> {
+  await db
+    .insert(userIdentities)
+    .values({ userId, provider, externalId: profile.externalId, email: profile.email || null })
+    .onConflictDoNothing();
+}
+
+/**
+ * Find or create a user from a sign-in profile, then create a session.
+ *
+ * The account is the `(provider, externalId)` pair, or an identity linked to
+ * it (`user_identities`). Otherwise:
+ *
+ * - `linkByEmail` (opt-in: an OIDC or LDAP provider's own `linkByEmail`
+ *   setting, or `OPTIO_LINK_ACCOUNTS_BY_EMAIL=true`): when the provider itself
+ *   asserted the email (`emailVerifiedByProvider`, never an administrator's
+ *   `trustEmail`) and exactly one account has it, the new identity is linked
+ *   to that account — someone who signed in through LDAP keeps their account
+ *   when the deployment moves to SSO, say.
+ *
+ * Linking adds a `user_identities` row; the account keeps the provider and
+ * id it was created with. Otherwise a new identity is a new account.
+ */
 export async function createSession(
   provider: string,
   profile: OAuthUser,
+  opts: { linkByEmail?: boolean } = {},
 ): Promise<{ token: string; user: SessionUser }> {
-  // Upsert user
-  const existing = await db
-    .select()
-    .from(users)
-    .where(and(eq(users.provider, provider), eq(users.externalId, profile.externalId)))
-    .limit(1);
+  const found = await findAccountByIdentity(provider, profile.externalId);
+  let existing = found ? [found] : [];
+
+  const asserted = profile.emailVerifiedByProvider ?? profile.emailVerified;
+  if (existing.length === 0 && opts.linkByEmail && asserted && profile.email) {
+    const sameEmail = await db
+      .select()
+      .from(users)
+      .where(sql`lower(${users.email}) = ${profile.email.toLowerCase()}`)
+      .limit(2);
+    if (sameEmail.length === 1 && sameEmail[0].emailVerified === true) {
+      await linkIdentity(sameEmail[0].id, provider, profile);
+      existing = sameEmail;
+    }
+  }
 
   let user: (typeof existing)[0];
 
@@ -45,7 +109,7 @@ export async function createSession(
       .update(users)
       .set({
         email: profile.email,
-        emailVerified: profile.emailVerified === true,
+        emailVerified: (profile.emailVerifiedByProvider ?? profile.emailVerified) === true,
         displayName: profile.displayName,
         username: profile.username ?? null,
         avatarUrl: profile.avatarUrl ?? null,
@@ -62,7 +126,7 @@ export async function createSession(
         provider,
         externalId: profile.externalId,
         email: profile.email,
-        emailVerified: profile.emailVerified === true,
+        emailVerified: (profile.emailVerifiedByProvider ?? profile.emailVerified) === true,
         displayName: profile.displayName,
         username: profile.username ?? null,
         avatarUrl: profile.avatarUrl ?? null,
