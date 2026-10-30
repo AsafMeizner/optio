@@ -1540,6 +1540,39 @@ data class RepoContent(
     }
 }
 
+/**
+ * A repository the platform credentials can reach, as the "Add repository"
+ * picker lists it (`GitPlatform.browseRepositories`).
+ */
+@Serializable
+data class BrowsableRepository(
+    /** `owner/name` (GitLab: the project's full path, groups included). */
+    val fullName: String,
+    val cloneUrl: String,
+    val htmlUrl: String,
+    val defaultBranch: String,
+    val isPrivate: Boolean,
+    val description: String? = null,
+    /** When it last changed (GitHub: last push; GitLab: last activity). */
+    val pushedAt: String? = null,
+)
+
+/** Where on a platform `browseRepositories` looks: its host and its API root. */
+@Serializable
+data class PlatformLocation(
+    val host: String,
+    val apiBaseUrl: String,
+)
+
+/** A branch of a repository, as the branch pickers list them. */
+@Serializable
+data class Branch(
+    val name: String,
+    /** The repository's default branch (what `getRepoMetadata` reports). */
+    val default: Boolean,
+    val protected: Boolean? = null,
+)
+
 // endregion
 
 // region glance.ts
@@ -4072,6 +4105,8 @@ data class OidcSettings(
 
 @Serializable
 data class SignInProviderTestResult(
+    /** SAML: what the metadata (or the settings) say about the identity provider. */
+    val saml: Saml? = null,
     val ok: Boolean,
     val error: String? = null,
     /** OIDC: what discovery found. */
@@ -4079,6 +4114,21 @@ data class SignInProviderTestResult(
     /** LDAP: what a bind and a sample search found. */
     val ldap: Ldap? = null,
 ) {
+    @Serializable
+    data class Saml(
+        val entityId: String? = null,
+        val entryPoint: String? = null,
+        /** The signing certificates: subject and expiry, never the key. */
+        val certificates: List<Certificate>,
+    ) {
+        @Serializable
+        data class Certificate(
+            val subject: String,
+            val notAfter: String,
+            val fingerprint256: String,
+        )
+    }
+
     @Serializable
     data class Oidc(
         val issuer: String,
@@ -4115,12 +4165,6 @@ data class SignInProviderTestResult(
         )
     }
 }
-
-@Serializable
-data class SignInAccessSettings(
-    /** A provider-verified unique email may link to an existing account; disabled by default. */
-    val linkByEmail: Boolean? = null,
-)
 
 @Serializable
 data class LdapSignInSettings(
@@ -4160,8 +4204,6 @@ data class LdapSignInSettings(
     }
 }
 
-typealias AnySignInSettings = JsonElement
-
 @Serializable
 data class PublicSignInProvider(
     val name: Name,
@@ -4177,6 +4219,9 @@ data class PublicSignInProvider(
         GITHUB("github"),
         GITLAB("gitlab"),
         OIDC("oidc"),
+        SAML("saml"),
+        GITEA("gitea"),
+        BITBUCKET("bitbucket"),
         LDAP("ldap"),
         /** Fallback for raw values this client does not know about yet. */
         UNKNOWN("__unknown__");
@@ -4194,6 +4239,70 @@ data class PublicSignInProvider(
         companion object : RawEnumSerializer<Method>("dev.optio.core.model.PublicSignInProvider.Method", entries, UNKNOWN)
     }
 }
+
+/** Common account linking; group admission is a later split. */
+@Serializable
+data class SignInAccessSettings(
+    /** A provider-verified unique email may link to an existing account; disabled by default. */
+    val linkByEmail: Boolean? = null,
+)
+
+@Serializable
+data class SamlSettings(
+    /** A provider-verified unique email may link to an existing account; disabled by default. */
+    val linkByEmail: Boolean? = null,
+    /** The identity provider's metadata URL (entry point, entity ID, certificates). */
+    val metadataUrl: String? = null,
+    /** Or its metadata XML, pasted in. */
+    val metadataXml: String? = null,
+    /** The single sign-on URL (HTTP-Redirect binding); from the metadata when empty. */
+    val entryPoint: String? = null,
+    /** The identity provider's entity ID (the response's Issuer, checked); from the metadata when empty. */
+    val idpEntityId: String? = null,
+    /** PEM certificate(s) the identity provider signs with; from the metadata when empty. */
+    val idpCert: String? = null,
+    /** Optio's entity ID, the audience (default `<API origin>/api/auth/saml/metadata`). */
+    val spEntityId: String? = null,
+    /** The NameID format to ask for (default: none, the identity provider picks). */
+    val nameIdFormat: String? = null,
+    /** The attribute holding a stable ID (default: the NameID). */
+    val idAttribute: String? = null,
+    /** Attribute names; empty: the common names (email, mail, the WS-Fed claim URIs, the OIDs). */
+    val emailAttribute: String? = null,
+    val nameAttribute: String? = null,
+    val usernameAttribute: String? = null,
+    val groupsAttribute: String? = null,
+    /** Require the whole response to be signed too (default false: the assertion must be). */
+    val wantAuthnResponseSigned: Boolean? = null,
+    /** Require the assertion to be signed (default true). */
+    val wantAssertionsSigned: Boolean? = null,
+    /** PEM bundle of the CA behind the metadata URL's certificate. */
+    val caPem: String? = null,
+    val insecureSkipVerify: Boolean? = null,
+)
+
+/** A self-hosted Gitea or Forgejo: an OAuth2 application on it (OpenID Connect underneath). */
+@Serializable
+data class GiteaSettings(
+    /** A provider-verified unique email may link to an existing account; disabled by default. */
+    val linkByEmail: Boolean? = null,
+    /** The server's URL, e.g. https://git.example.com */
+    val baseUrl: String,
+    /** Space-separated; default "openid profile email groups". */
+    val scopes: String? = null,
+    /** PEM bundle of the CA behind the server's certificate. */
+    val caPem: String? = null,
+    val insecureSkipVerify: Boolean? = null,
+)
+
+/**
+ * Bitbucket Cloud (an OAuth consumer). The person's groups are the
+ * workspaces they belong to (their slugs), for required and admin groups.
+ */
+typealias BitbucketSettings = SignInAccessSettings
+
+/** Any provider's settings beyond its client ID and secret. */
+typealias AnySignInSettings = JsonElement
 
 // endregion
 

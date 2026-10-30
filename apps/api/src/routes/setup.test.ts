@@ -421,6 +421,21 @@ describe("POST /api/setup/validate/repo", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+  it("gitlab: signs in with Authorization: Bearer, which takes every GitLab token kind", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ username: "gl-user", name: "GL User" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await app.inject({
+      method: "POST",
+      url: "/api/setup/validate/gitlab-token",
+      payload: { token: "gloas-oauth" },
+    });
+    const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer gloas-oauth");
+    expect(headers.get("private-token")).toBeNull();
+  });
 });
 
 describe("POST /api/setup/validate/anthropic-key", () => {

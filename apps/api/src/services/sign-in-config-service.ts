@@ -1,7 +1,13 @@
 import { envConfig } from "./sign-in-env.js";
 import type { SignInProviderTestResult } from "@optio/shared";
-import type { OidcSettings, LdapSignInSettings, AnySignInSettings } from "@optio/shared";
-import { OidcSettingsSchema, ldapSettingsSchema } from "../schemas/sign-in.js";
+import type {
+  AnySignInSettings,
+  GiteaSettings,
+  LdapSignInSettings,
+  OidcSettings,
+  SamlSettings,
+} from "@optio/shared";
+import { ldapSettingsSchema, samlSettingsSchema, settingsSchemaFor } from "../schemas/sign-in.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -9,7 +15,7 @@ import { authProviderConfigs, users, workspaceMembers, workspaces } from "../db/
 import { logger } from "../logger.js";
 import { decrypt, encrypt } from "./secret-service.js";
 import { getRedisClient } from "./event-bus.js";
-import { getCallbackUrl } from "./oauth/provider.js";
+import { getCallbackUrl, publicApiOrigin } from "./oauth/provider.js";
 import { ensureUserHasWorkspace, normalizeAutoJoinDomains } from "./workspace-service.js";
 
 /**
@@ -36,10 +42,26 @@ import { ensureUserHasWorkspace, normalizeAutoJoinDomains } from "./workspace-se
 const isAuthDisabled = () => process.env.OPTIO_AUTH_DISABLED === "true";
 
 /** The providers whose config can be stored in the app. */
-export const CONFIGURABLE_PROVIDERS = ["google", "oidc", "ldap"] as const;
+export const CONFIGURABLE_PROVIDERS = [
+  "google",
+  "oidc",
+  "saml",
+  "gitea",
+  "bitbucket",
+  "ldap",
+] as const;
 export type ConfigurableProvider = (typeof CONFIGURABLE_PROVIDERS)[number];
 
-export const SIGN_IN_PROVIDERS = ["google", "github", "gitlab", "oidc", "ldap"] as const;
+export const SIGN_IN_PROVIDERS = [
+  "google",
+  "github",
+  "gitlab",
+  "oidc",
+  "saml",
+  "gitea",
+  "bitbucket",
+  "ldap",
+] as const;
 export type SignInProviderName = (typeof SIGN_IN_PROVIDERS)[number];
 
 export class SignInConfigError extends Error {
@@ -77,6 +99,7 @@ export interface SignInProviderView {
   allowedDomains: string[];
   /** The redirect URI to register with the provider. */
   callbackUrl: string | null;
+  metadataUrl?: string | null;
   settings?: AnySignInSettings;
   updatedAt: string | null;
 }
@@ -87,7 +110,22 @@ const DISPLAY: Record<SignInProviderName, string> = {
   gitlab: "GitLab",
   oidc: process.env.OIDC_DISPLAY_NAME || "SSO",
   ldap: process.env.LDAP_DISPLAY_NAME || "LDAP / Active Directory",
+  saml: process.env.SAML_DISPLAY_NAME || "SSO (SAML 2.0)",
+  gitea: process.env.GITEA_DISPLAY_NAME || "Gitea / Forgejo",
+  bitbucket: "Bitbucket",
 };
+
+function hasSettings(
+  provider: string,
+): provider is "oidc" | "saml" | "gitea" | "bitbucket" | "ldap" {
+  return (
+    provider === "oidc" ||
+    provider === "saml" ||
+    provider === "gitea" ||
+    provider === "bitbucket" ||
+    provider === "ldap"
+  );
+}
 
 function secretAAD(provider: string): Buffer {
   return Buffer.from(`auth_provider|${provider}`);
@@ -151,7 +189,7 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
       enabled: fromDb || !!env,
       source: fromDb ? "database" : env ? "environment" : stored ? "database" : "none",
       clientId:
-        provider === "ldap"
+        provider === "saml" || provider === "ldap"
           ? null
           : fromDb || (stored && !env)
             ? stored!.clientId
@@ -160,10 +198,10 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
         fromDb || (stored && !env) ? !!stored!.encryptedClientSecret : !!env?.clientSecret,
       allowedDomains: stored?.allowedDomains ?? [],
       callbackUrl: provider === "ldap" ? null : getCallbackUrl(provider),
-      settings:
-        provider === "oidc" || provider === "ldap"
-          ? ((fromDb || (stored && !env) ? stored?.settings : env?.settings) ?? undefined)
-          : undefined,
+      metadataUrl: provider === "saml" ? publicApiOrigin() + "/api/auth/saml/metadata" : null,
+      settings: hasSettings(provider)
+        ? ((fromDb || (stored && !env) ? stored?.settings : env?.settings) ?? undefined)
+        : undefined,
       updatedAt: stored?.updatedAt.toISOString() ?? null,
     });
   }
@@ -189,8 +227,9 @@ export async function saveSignInConfig(
   if (!(CONFIGURABLE_PROVIDERS as readonly string[]).includes(provider)) {
     throw new SignInConfigError(`${provider} can only be configured by environment variables`, 400);
   }
-  const clientId = input.clientId?.trim() ?? "";
-  if (!clientId && provider !== "ldap") throw new SignInConfigError("A client ID is required");
+  const clientId = provider === "saml" ? "" : (input.clientId ?? "").trim();
+  if (!clientId && provider !== "saml" && provider !== "ldap")
+    throw new SignInConfigError("A client ID is required");
   let domains: string[] = [];
   if (input.allowedDomains !== undefined) {
     const normalized = normalizeAutoJoinDomains(input.allowedDomains);
@@ -198,8 +237,8 @@ export async function saveSignInConfig(
     domains = normalized.domains;
   }
   const existing = await getStoredConfig(provider);
-  const secret = input.clientSecret?.trim();
-  if (!existing && !secret && provider !== "ldap")
+  const secret = provider === "saml" ? undefined : input.clientSecret?.trim();
+  if (!existing && !secret && provider !== "saml" && provider !== "ldap")
     throw new SignInConfigError("A client secret is required");
 
   const sealed = secret
@@ -213,12 +252,11 @@ export async function saveSignInConfig(
       })()
     : {};
   let settings: AnySignInSettings | null = null;
-  if (provider === "oidc" || provider === "ldap") {
-    const candidate = input.settings ?? existing?.settings;
+  if (hasSettings(provider)) {
+    const candidate =
+      input.settings ?? existing?.settings ?? (provider === "bitbucket" ? {} : undefined);
     if (!candidate) throw new SignInConfigError("Settings are required");
-    const parsed = (provider === "ldap" ? ldapSettingsSchema : OidcSettingsSchema).safeParse(
-      candidate,
-    );
+    const parsed = settingsSchemaFor(provider).safeParse(candidate);
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       throw new SignInConfigError(
@@ -234,6 +272,17 @@ export async function saveSignInConfig(
     !secret
   )
     throw new SignInConfigError("The bind password is required");
+  if (provider === "saml") {
+    // The identity provider must be reachable now: its metadata, or the
+    // single sign-on URL and certificate typed in.
+    const { resolveSamlIdp } = await import("./oauth/saml.js");
+    try {
+      await resolveSamlIdp(settings as SamlSettings, { fresh: true });
+    } catch (err) {
+      throw new SignInConfigError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   const values = {
     clientId,
     settings,
@@ -651,14 +700,32 @@ export async function testSignInProvider(
         : undefined,
     };
   }
-  if (provider !== "oidc") throw new SignInConfigError("This provider has no connection test", 400);
+  if (provider === "saml") {
+    const stored = await getStoredConfig(provider);
+    const parsed = samlSettingsSchema.safeParse(
+      input.settings ?? stored?.settings ?? envConfig("saml")?.settings,
+    );
+    if (!parsed.success)
+      return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid SAML settings" };
+    const { describeSamlIdp } = await import("./oauth/saml.js");
+    try {
+      return { ok: true, saml: await describeSamlIdp(parsed.data) };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  if (provider !== "oidc" && provider !== "gitea")
+    throw new SignInConfigError("This provider has no connection test", 400);
   const stored = await getStoredConfig(provider);
-  const parsed = OidcSettingsSchema.safeParse(
-    input.settings ?? stored?.settings ?? envConfig("oidc")?.settings,
+  const parsed = settingsSchemaFor(provider).safeParse(
+    input.settings ?? stored?.settings ?? envConfig(provider)?.settings,
   );
   if (!parsed.success)
     return { ok: false, error: "Valid OIDC settings and issuer URL are required" };
-  const oidc = parsed.data;
+  const oidc =
+    provider === "gitea"
+      ? (await import("./oauth/gitea.js")).giteaOidcSettings(parsed.data as GiteaSettings)
+      : (parsed.data as OidcSettings);
   const { discoverOidc, effectiveOidcSettings, describeFetchError } =
     await import("./oauth/oidc.js");
   try {

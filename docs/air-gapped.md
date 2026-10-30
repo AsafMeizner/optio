@@ -1,7 +1,8 @@
 # Air-gapped installations
 
 These optional scripts prepare dependencies and build Optio images without
-internet access. Deployment packages follow in #zarf-rancher.
+internet access. See the optional Zarf package and Rancher form below for deployment.
+The scripts need bash 4 or newer (macOS ships 3.2: `brew install bash`).
 Normal builds download dependencies and use the complete agent toolchain;
 none of the steps below runs automatically.
 
@@ -91,18 +92,18 @@ scripts/offline/kit-scan.sh /media/kit-1.0.0 --offline
 
 ## Image build arguments
 
-| Argument                                                                 | Default                        | Purpose                                                                                                                                                                                                                          |
-| ------------------------------------------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AGENT_CLIS`                                                             | `all`                          | Complete toolchain, or a comma list: `claude-code,codex,pi,copilot,cursor,gemini,openclaw,opencode`. API and compatibility images install the listed runtimes they support. GitHub, GitLab and AWS utilities remain available.   |
-| `CLAUDE_CODE_VERSION`                                                    | `2.1.112`                      | Override Claude Code's Bun compatibility pin (the compatibility image keeps its unpinned default). Later releases need testing with your nodes' kernels, especially Linux 7 or newer.                                            |
-| `PREINSTALL_MCP_SERVERS`                                                 | `0`                            | On the base agent image, `1` installs pinned Filesystem and PostgreSQL MCP servers and marks the image with `OPTIO_MCP_PREINSTALLED=1`. Configure server commands explicitly; automatic connection selection follows separately. |
-| `OPENCODE_INSTALL_METHOD`                                                | `script`                       | Base agent image: `npm` installs the pinned OpenCode npm package, useful with a package mirror.                                                                                                                                  |
-| `OPTIO_OFFLINE_FONTS`                                                    | `0`                            | Web build: `1` uses vendored OFL fonts. Otherwise `next/font/google` downloads the usual Google fonts. Also works as an environment variable for `pnpm --filter @optio/web build`.                                               |
-| `NODE_SLIM_IMAGE`                                                        | upstream's pinned Node 26 slim | Override the Node base with a mirrored or digest-pinned reference.                                                                                                                                                               |
-| `NODE_IMAGE`                                                             | empty                          | API dependency stage: optionally use a full Node image; empty retains the slim base.                                                                                                                                             |
-| `UBUNTU_IMAGE`                                                           | upstream's pinned Ubuntu 24.04 | Agent base and compatibility image: mirrored or digest-pinned base.                                                                                                                                                              |
-| `PNPM_OFFLINE`                                                           | `0`                            | `1` installs from the named `pnpm-offline` context containing `store/` and `pnpm.tgz`.                                                                                                                                           |
-| `API_TOOLCHAIN_IMAGE` / `AGENT_TOOLCHAIN_IMAGE` / `DIND_TOOLCHAIN_IMAGE` | empty                          | Reuse the matching prebuilt third-party stage; the normal path builds it from apt/npm/downloads.                                                                                                                                 |
+| Argument                                                                 | Default                        | Purpose                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `AGENT_CLIS`                                                             | `all`                          | Complete toolchain, or a comma list: `claude-code,codex,pi,copilot,cursor,gemini,openclaw,opencode`. API and compatibility images install the listed runtimes they support. GitHub, GitLab and AWS utilities remain available. |
+| `CLAUDE_CODE_VERSION`                                                    | `2.1.310`                      | Override Claude Code's Bun compatibility pin (the compatibility image keeps its unpinned default). Later releases need testing with your nodes' kernels, especially Linux 7 or newer.                                          |
+| `PREINSTALL_MCP_SERVERS`                                                 | `0`                            | On the base agent image, `1` installs the pinned Filesystem MCP server and marks the image with `OPTIO_MCP_PREINSTALLED=1`. Configure server commands explicitly; automatic connection selection follows separately.           |
+| `OPENCODE_INSTALL_METHOD`                                                | `script`                       | Base agent image: `npm` installs the pinned OpenCode npm package, useful with a package mirror.                                                                                                                                |
+| `OPTIO_OFFLINE_FONTS`                                                    | `0`                            | Web build: `1` uses vendored OFL fonts. Otherwise `next/font/google` downloads the usual Google fonts. Also works as an environment variable for `pnpm --filter @optio/web build`.                                             |
+| `NODE_SLIM_IMAGE`                                                        | upstream's pinned Node 26 slim | Override the Node base with a mirrored or digest-pinned reference.                                                                                                                                                             |
+| `NODE_IMAGE`                                                             | empty                          | API dependency stage: optionally use a full Node image; empty retains the slim base.                                                                                                                                           |
+| `UBUNTU_IMAGE`                                                           | upstream's pinned Ubuntu 24.04 | Agent base and compatibility image: mirrored or digest-pinned base.                                                                                                                                                            |
+| `PNPM_OFFLINE`                                                           | `0`                            | `1` installs from the named `pnpm-offline` context containing `store/` and `pnpm.tgz`.                                                                                                                                         |
+| `API_TOOLCHAIN_IMAGE` / `AGENT_TOOLCHAIN_IMAGE` / `DIND_TOOLCHAIN_IMAGE` | empty                          | Reuse the matching prebuilt third-party stage; the normal path builds it from apt/npm/downloads.                                                                                                                               |
 
 For an individual web build with a transferred store:
 
@@ -127,3 +128,48 @@ interpreter. The REST and controller MCP bridges are bundled independently of
 With Linux dependencies installed and node-pty compiled, run
 `scripts/build-cli-tarball.sh /tmp/optio-cli.tgz` to create a standalone CLI
 archive. This is a manual artifact; the API image and routes do not publish it.
+
+## Zarf package
+
+[deploy/zarf](../deploy/zarf/) contains a separate, optional package with chart
+values and manifests. Its version and all `optio.local/*` tags must match the
+images you build. The checked-in example uses `0.1.0`; change those tags
+together when packaging another version.
+
+```bash
+scripts/offline/build-images.sh 0.1.0 --presets
+zarf package create deploy/zarf --confirm --flavor presets
+# Transfer the package, a suitable Zarf executable and the cluster's init package.
+zarf init --confirm
+zarf package deploy zarf-package-optio-amd64-0.1.0.tar.zst --confirm \
+  --set-variables PUBLIC_URL=https://optio.example.com \
+  --values deploy/zarf/example-values.yaml
+```
+
+The package declares
+all variables and sensitive fields in `zarf.yaml`. `chart:` in the example
+values is merged over the package's chart values. Preserve the encryption key
+and PostgreSQL password across upgrades: the package reads existing Secrets
+before generating values on a first install. Its optional presets and
+metrics-server components can be omitted. Zarf creates the namespace and
+rewrites image references through its registry. Install metrics-server only
+when your cluster needs it.
+
+## Rancher form and CI examples
+
+The chart retains Rancher catalog annotations and `helm/optio/questions.yaml`.
+Publish the packaged chart in a Helm repository, add that repository in
+Rancher Apps & Marketplace, then use the form or **Edit YAML** to configure it.
+The form supports the existing GitHub, GitLab, Google and OIDC settings; it does not
+choose a registry or provider for you. Keep the Rancher release namespace
+consistent with `namespace` in values. Use `createNamespace=false` when
+Rancher or `helm --create-namespace` creates it.
+
+Optional [GitHub Actions and GitLab CI examples](examples/ci/README.md) show
+checking, testing, image builds, manual deployment and smoke checks. No GitLab
+pipeline is activated by mirroring this repository.
+
+Only chart options already available in this branch are exposed. Additional
+sign-in controls, backups, monitoring and runtime policy options follow in
+their respective PRs. Package and model mirrors used by agents must be
+configured in repository setup and the external services they contact.

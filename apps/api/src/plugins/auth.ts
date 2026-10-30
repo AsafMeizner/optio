@@ -154,6 +154,9 @@ const PUBLIC_AUTH_ROUTES = new Set([
   "/api/auth/oidc/login",
   "/api/auth/oidc/callback",
   "/api/auth/ldap/login",
+  "/api/auth/saml/login",
+  "/api/auth/saml/callback",
+  "/api/auth/saml/metadata",
   "/api/auth/cli/start",
   "/api/auth/cli/token",
 ]);

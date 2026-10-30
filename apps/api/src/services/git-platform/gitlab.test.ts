@@ -74,7 +74,7 @@ describe("GitLabPlatform", () => {
         `https://gitlab.com/api/v4/projects/${projectId}/merge_requests/7`,
         expect.objectContaining({
           headers: expect.objectContaining({
-            "PRIVATE-TOKEN": "glpat-test123",
+            Authorization: "Bearer glpat-test123",
           }),
         }),
       );
@@ -344,6 +344,41 @@ describe("GitLabPlatform", () => {
       });
 
       await expect(platform.getPullRequest(ri, 999)).rejects.toThrow("GitLab API error 404");
+    });
+  });
+  describe("listBranches", () => {
+    it("searches repository/branches and puts the default branch first", async () => {
+      mockJsonResponse([
+        { name: "release/1.0", default: false, protected: true },
+        { name: "release/main", default: true, protected: true },
+        { name: "release/wip", default: false, protected: false },
+      ]);
+
+      const branches = await platform.listBranches(ri, { search: "rel", perPage: 20 });
+
+      expect(String(mockFetch.mock.calls[0][0])).toBe(
+        `https://gitlab.com/api/v4/projects/${projectId}/repository/branches?per_page=20&search=rel`,
+      );
+      expect(mockFetch.mock.calls[0][1]).toEqual(
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer glpat-test123" }),
+        }),
+      );
+      expect(branches).toEqual([
+        { name: "release/main", default: true, protected: true },
+        { name: "release/1.0", default: false, protected: true },
+        { name: "release/wip", default: false, protected: false },
+      ]);
+    });
+
+    it("lists all branches (capped at 100) without a query", async () => {
+      mockJsonResponse([{ name: "main", default: true }]);
+
+      await platform.listBranches(ri);
+
+      const url = String(mockFetch.mock.calls[0][0]);
+      expect(url).toContain("/repository/branches?per_page=100");
+      expect(url).not.toContain("search=");
     });
   });
 });

@@ -74,6 +74,14 @@ export interface OidcSettings {
 }
 
 export interface SignInProviderTestResult {
+  /** SAML: what the metadata (or the settings) say about the identity provider. */
+  saml?: {
+    entityId: string | null;
+    entryPoint: string | null;
+    /** The signing certificates: subject and expiry, never the key. */
+    certificates: Array<{ subject: string; notAfter: string; fingerprint256: string }>;
+  };
+
   ok: boolean;
   error?: string;
   /** OIDC: what discovery found. */
@@ -103,11 +111,6 @@ export interface SignInProviderTestResult {
   };
 }
 
-export interface SignInAccessSettings {
-  /** A provider-verified unique email may link to an existing account; disabled by default. */
-  linkByEmail?: boolean;
-}
-
 export interface LdapSignInSettings extends SignInAccessSettings {
   /** ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636 */
   url: string;
@@ -133,13 +136,70 @@ export interface LdapSignInSettings extends SignInAccessSettings {
   usernameLabel?: string | null;
 }
 
-export type AnySignInSettings = OidcSettings | LdapSignInSettings;
-
 export interface PublicSignInProvider {
-  name: "google" | "github" | "gitlab" | "oidc" | "ldap";
+  name: "google" | "github" | "gitlab" | "oidc" | "saml" | "gitea" | "bitbucket" | "ldap";
   displayName: string;
   /** "redirect": a button that sends the browser to the provider; "password": a form on the login page. */
   method: "redirect" | "password";
   /** LDAP: the label above the username field. */
   usernameLabel?: string | null;
 }
+
+/** Common account linking; group admission is a later split. */
+export interface SignInAccessSettings {
+  /** A provider-verified unique email may link to an existing account; disabled by default. */
+  linkByEmail?: boolean;
+}
+
+export interface SamlSettings extends SignInAccessSettings {
+  /** The identity provider's metadata URL (entry point, entity ID, certificates). */
+  metadataUrl?: string | null;
+  /** Or its metadata XML, pasted in. */
+  metadataXml?: string | null;
+  /** The single sign-on URL (HTTP-Redirect binding); from the metadata when empty. */
+  entryPoint?: string | null;
+  /** The identity provider's entity ID (the response's Issuer, checked); from the metadata when empty. */
+  idpEntityId?: string | null;
+  /** PEM certificate(s) the identity provider signs with; from the metadata when empty. */
+  idpCert?: string | null;
+  /** Optio's entity ID, the audience (default `<API origin>/api/auth/saml/metadata`). */
+  spEntityId?: string | null;
+  /** The NameID format to ask for (default: none, the identity provider picks). */
+  nameIdFormat?: string | null;
+  /** The attribute holding a stable ID (default: the NameID). */
+  idAttribute?: string | null;
+  /** Attribute names; empty: the common names (email, mail, the WS-Fed claim URIs, the OIDs). */
+  emailAttribute?: string | null;
+  nameAttribute?: string | null;
+  usernameAttribute?: string | null;
+  groupsAttribute?: string | null;
+  /** Require the whole response to be signed too (default false: the assertion must be). */
+  wantAuthnResponseSigned?: boolean;
+  /** Require the assertion to be signed (default true). */
+  wantAssertionsSigned?: true;
+  /** PEM bundle of the CA behind the metadata URL's certificate. */
+  caPem?: string | null;
+  insecureSkipVerify?: boolean;
+}
+
+/** A self-hosted Gitea or Forgejo: an OAuth2 application on it (OpenID Connect underneath). */
+export interface GiteaSettings extends SignInAccessSettings {
+  /** The server's URL, e.g. https://git.example.com */
+  baseUrl: string;
+  /** Space-separated; default "openid profile email groups". */
+  scopes?: string;
+  /** PEM bundle of the CA behind the server's certificate. */
+  caPem?: string | null;
+  insecureSkipVerify?: boolean;
+}
+
+/**
+ * Bitbucket Cloud (an OAuth consumer). The person's groups are the
+ * workspaces they belong to (their slugs), for required and admin groups.
+ */
+export type BitbucketSettings = SignInAccessSettings;
+
+/** Any provider's settings beyond its client ID and secret. */
+
+export type AnySignInSettings =
+  OidcSettings | SamlSettings | GiteaSettings | BitbucketSettings | LdapSignInSettings;

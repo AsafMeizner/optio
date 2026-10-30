@@ -3605,6 +3605,84 @@ public struct RepoContent: Codable, Hashable, Sendable {
     }
 }
 
+/// A repository the platform credentials can reach, as the "Add repository"
+/// picker lists it (`GitPlatform.browseRepositories`).
+public struct BrowsableRepository: Codable, Hashable, Sendable {
+    /// `owner/name` (GitLab: the project's full path, groups included).
+    public let fullName: String
+    public let cloneUrl: String
+    public let htmlUrl: String
+    public let defaultBranch: String
+    public let isPrivate: Bool
+    public let description: String?
+    /// When it last changed (GitHub: last push; GitLab: last activity).
+    public let pushedAt: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case fullName = "fullName"
+        case cloneUrl = "cloneUrl"
+        case htmlUrl = "htmlUrl"
+        case defaultBranch = "defaultBranch"
+        case isPrivate = "isPrivate"
+        case description = "description"
+        case pushedAt = "pushedAt"
+    }
+
+    public init(
+        fullName: String,
+        cloneUrl: String,
+        htmlUrl: String,
+        defaultBranch: String,
+        isPrivate: Bool,
+        description: String? = nil,
+        pushedAt: String? = nil
+    ) {
+        self.fullName = fullName
+        self.cloneUrl = cloneUrl
+        self.htmlUrl = htmlUrl
+        self.defaultBranch = defaultBranch
+        self.isPrivate = isPrivate
+        self.description = description
+        self.pushedAt = pushedAt
+    }
+}
+
+/// Where on a platform `browseRepositories` looks: its host and its API root.
+public struct PlatformLocation: Codable, Hashable, Sendable {
+    public let host: String
+    public let apiBaseUrl: String
+
+    private enum CodingKeys: String, CodingKey {
+        case host = "host"
+        case apiBaseUrl = "apiBaseUrl"
+    }
+
+    public init(host: String, apiBaseUrl: String) {
+        self.host = host
+        self.apiBaseUrl = apiBaseUrl
+    }
+}
+
+/// A branch of a repository, as the branch pickers list them.
+public struct Branch: Codable, Hashable, Sendable {
+    public let name: String
+    /// The repository's default branch (what `getRepoMetadata` reports).
+    public let `default`: Bool
+    public let protected: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case name = "name"
+        case `default` = "default"
+        case protected = "protected"
+    }
+
+    public init(name: String, `default`: Bool, protected: Bool? = nil) {
+        self.name = name
+        self.`default` = `default`
+        self.protected = protected
+    }
+}
+
 // MARK: - image.ts
 
 public enum PresetImageId: String, Codable, Hashable, Sendable, CaseIterable {
@@ -8620,6 +8698,43 @@ public struct OidcSettings: Codable, Hashable, Sendable {
 }
 
 public struct SignInProviderTestResult: Codable, Hashable, Sendable {
+    public struct Saml: Codable, Hashable, Sendable {
+        public struct Certificate: Codable, Hashable, Sendable {
+            public let subject: String
+            public let notAfter: String
+            public let fingerprint256: String
+
+            private enum CodingKeys: String, CodingKey {
+                case subject = "subject"
+                case notAfter = "notAfter"
+                case fingerprint256 = "fingerprint256"
+            }
+
+            public init(subject: String, notAfter: String, fingerprint256: String) {
+                self.subject = subject
+                self.notAfter = notAfter
+                self.fingerprint256 = fingerprint256
+            }
+        }
+
+        public let entityId: String?
+        public let entryPoint: String?
+        /// The signing certificates: subject and expiry, never the key.
+        public let certificates: [Certificate]
+
+        private enum CodingKeys: String, CodingKey {
+            case entityId = "entityId"
+            case entryPoint = "entryPoint"
+            case certificates = "certificates"
+        }
+
+        public init(entityId: String? = nil, entryPoint: String? = nil, certificates: [Certificate]) {
+            self.entityId = entityId
+            self.entryPoint = entryPoint
+            self.certificates = certificates
+        }
+    }
+
     public struct Oidc: Codable, Hashable, Sendable {
         public let issuer: String
         public let authorizationEndpoint: String
@@ -8730,6 +8845,8 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
         }
     }
 
+    /// SAML: what the metadata (or the settings) say about the identity provider.
+    public let saml: Saml?
     public let ok: Bool
     public let error: String?
     /// OIDC: what discovery found.
@@ -8738,30 +8855,25 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
     public let ldap: Ldap?
 
     private enum CodingKeys: String, CodingKey {
+        case saml = "saml"
         case ok = "ok"
         case error = "error"
         case oidc = "oidc"
         case ldap = "ldap"
     }
 
-    public init(ok: Bool, error: String? = nil, oidc: Oidc? = nil, ldap: Ldap? = nil) {
+    public init(
+        saml: Saml? = nil,
+        ok: Bool,
+        error: String? = nil,
+        oidc: Oidc? = nil,
+        ldap: Ldap? = nil
+    ) {
+        self.saml = saml
         self.ok = ok
         self.error = error
         self.oidc = oidc
         self.ldap = ldap
-    }
-}
-
-public struct SignInAccessSettings: Codable, Hashable, Sendable {
-    /// A provider-verified unique email may link to an existing account; disabled by default.
-    public let linkByEmail: Bool?
-
-    private enum CodingKeys: String, CodingKey {
-        case linkByEmail = "linkByEmail"
-    }
-
-    public init(linkByEmail: Bool? = nil) {
-        self.linkByEmail = linkByEmail
     }
 }
 
@@ -8858,19 +8970,20 @@ public struct LdapSignInSettings: Codable, Hashable, Sendable {
     }
 }
 
-public typealias AnySignInSettings = AnyCodable
-
 public struct PublicSignInProvider: Codable, Hashable, Sendable {
     public enum Name: String, Codable, Hashable, Sendable, CaseIterable {
         case google = "google"
         case github = "github"
         case gitlab = "gitlab"
         case oidc = "oidc"
+        case saml = "saml"
+        case gitea = "gitea"
+        case bitbucket = "bitbucket"
         case ldap = "ldap"
         /// Fallback for raw values this client does not know about yet.
         case unknown = "__unknown__"
 
-        public static let allCases: [Name] = [.google, .github, .gitlab, .oidc, .ldap]
+        public static let allCases: [Name] = [.google, .github, .gitlab, .oidc, .saml, .gitea, .bitbucket, .ldap]
 
         public init(from decoder: any Decoder) throws {
             let raw = try decoder.singleValueContainer().decode(String.self)
@@ -8913,6 +9026,153 @@ public struct PublicSignInProvider: Codable, Hashable, Sendable {
         self.usernameLabel = usernameLabel
     }
 }
+
+/// Common account linking; group admission is a later split.
+public struct SignInAccessSettings: Codable, Hashable, Sendable {
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+    }
+
+    public init(linkByEmail: Bool? = nil) {
+        self.linkByEmail = linkByEmail
+    }
+}
+
+public struct SamlSettings: Codable, Hashable, Sendable {
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
+    /// The identity provider's metadata URL (entry point, entity ID, certificates).
+    public let metadataUrl: String?
+    /// Or its metadata XML, pasted in.
+    public let metadataXml: String?
+    /// The single sign-on URL (HTTP-Redirect binding); from the metadata when empty.
+    public let entryPoint: String?
+    /// The identity provider's entity ID (the response's Issuer, checked); from the metadata when empty.
+    public let idpEntityId: String?
+    /// PEM certificate(s) the identity provider signs with; from the metadata when empty.
+    public let idpCert: String?
+    /// Optio's entity ID, the audience (default `<API origin>/api/auth/saml/metadata`).
+    public let spEntityId: String?
+    /// The NameID format to ask for (default: none, the identity provider picks).
+    public let nameIdFormat: String?
+    /// The attribute holding a stable ID (default: the NameID).
+    public let idAttribute: String?
+    /// Attribute names; empty: the common names (email, mail, the WS-Fed claim URIs, the OIDs).
+    public let emailAttribute: String?
+    public let nameAttribute: String?
+    public let usernameAttribute: String?
+    public let groupsAttribute: String?
+    /// Require the whole response to be signed too (default false: the assertion must be).
+    public let wantAuthnResponseSigned: Bool?
+    /// Require the assertion to be signed (default true).
+    public let wantAssertionsSigned: Bool?
+    /// PEM bundle of the CA behind the metadata URL's certificate.
+    public let caPem: String?
+    public let insecureSkipVerify: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+        case metadataUrl = "metadataUrl"
+        case metadataXml = "metadataXml"
+        case entryPoint = "entryPoint"
+        case idpEntityId = "idpEntityId"
+        case idpCert = "idpCert"
+        case spEntityId = "spEntityId"
+        case nameIdFormat = "nameIdFormat"
+        case idAttribute = "idAttribute"
+        case emailAttribute = "emailAttribute"
+        case nameAttribute = "nameAttribute"
+        case usernameAttribute = "usernameAttribute"
+        case groupsAttribute = "groupsAttribute"
+        case wantAuthnResponseSigned = "wantAuthnResponseSigned"
+        case wantAssertionsSigned = "wantAssertionsSigned"
+        case caPem = "caPem"
+        case insecureSkipVerify = "insecureSkipVerify"
+    }
+
+    public init(
+        linkByEmail: Bool? = nil,
+        metadataUrl: String? = nil,
+        metadataXml: String? = nil,
+        entryPoint: String? = nil,
+        idpEntityId: String? = nil,
+        idpCert: String? = nil,
+        spEntityId: String? = nil,
+        nameIdFormat: String? = nil,
+        idAttribute: String? = nil,
+        emailAttribute: String? = nil,
+        nameAttribute: String? = nil,
+        usernameAttribute: String? = nil,
+        groupsAttribute: String? = nil,
+        wantAuthnResponseSigned: Bool? = nil,
+        wantAssertionsSigned: Bool? = nil,
+        caPem: String? = nil,
+        insecureSkipVerify: Bool? = nil
+    ) {
+        self.linkByEmail = linkByEmail
+        self.metadataUrl = metadataUrl
+        self.metadataXml = metadataXml
+        self.entryPoint = entryPoint
+        self.idpEntityId = idpEntityId
+        self.idpCert = idpCert
+        self.spEntityId = spEntityId
+        self.nameIdFormat = nameIdFormat
+        self.idAttribute = idAttribute
+        self.emailAttribute = emailAttribute
+        self.nameAttribute = nameAttribute
+        self.usernameAttribute = usernameAttribute
+        self.groupsAttribute = groupsAttribute
+        self.wantAuthnResponseSigned = wantAuthnResponseSigned
+        self.wantAssertionsSigned = wantAssertionsSigned
+        self.caPem = caPem
+        self.insecureSkipVerify = insecureSkipVerify
+    }
+}
+
+/// A self-hosted Gitea or Forgejo: an OAuth2 application on it (OpenID Connect underneath).
+public struct GiteaSettings: Codable, Hashable, Sendable {
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
+    /// The server's URL, e.g. https://git.example.com
+    public let baseUrl: String
+    /// Space-separated; default "openid profile email groups".
+    public let scopes: String?
+    /// PEM bundle of the CA behind the server's certificate.
+    public let caPem: String?
+    public let insecureSkipVerify: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+        case baseUrl = "baseUrl"
+        case scopes = "scopes"
+        case caPem = "caPem"
+        case insecureSkipVerify = "insecureSkipVerify"
+    }
+
+    public init(
+        linkByEmail: Bool? = nil,
+        baseUrl: String,
+        scopes: String? = nil,
+        caPem: String? = nil,
+        insecureSkipVerify: Bool? = nil
+    ) {
+        self.linkByEmail = linkByEmail
+        self.baseUrl = baseUrl
+        self.scopes = scopes
+        self.caPem = caPem
+        self.insecureSkipVerify = insecureSkipVerify
+    }
+}
+
+/// Bitbucket Cloud (an OAuth consumer). The person's groups are the
+/// workspaces they belong to (their slugs), for required and admin groups.
+public typealias BitbucketSettings = SignInAccessSettings
+
+/// Any provider's settings beyond its client ID and secret.
+public typealias AnySignInSettings = AnyCodable
 
 // MARK: - task.ts
 

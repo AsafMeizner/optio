@@ -35,6 +35,15 @@ export function buildStatusResponse(): {
 const gitCredentialsQuerySchema = z
   .object({
     scope: z.string().max(1024).optional(),
+    host: z
+      .string()
+      .max(253)
+      .optional()
+      .describe(
+        "The git host asking (git's `host=`, with any port). A known GitLab host " +
+          "gets the run owner's GitLab token for that host; github.com or none, " +
+          "GitHub's.",
+      ),
     taskId: z
       .string()
       .optional()
@@ -49,6 +58,10 @@ const gitCredentialsQuerySchema = z
 const GitCredentialsResponseSchema = z
   .object({
     token: z.string(),
+    username: z
+      .string()
+      .optional()
+      .describe("The user name git sends with the token (GitLab: oauth2)"),
   })
   .describe("Git credential token for cloning or committing");
 
@@ -59,6 +72,36 @@ const GitHubAppStatusResponseSchema = z
     installationId: z.string().optional(),
   })
   .describe("GitHub App installation status");
+
+/** git's `host=` value, lower-cased: `GitLab.Corp:8443` → `gitlab.corp:8443`. */
+function normalizeGitHost(host: string | undefined): string {
+  return (host ?? "").trim().toLowerCase();
+}
+
+/**
+ * Whether a deployment named `host` as a GitLab: gitlab.com, `GITLAB_HOSTS`,
+ * or the setup wizard's `GITLAB_HOST`. A port on either side is matched
+ * with or without it.
+ */
+async function isKnownGitLabHost(host: string, workspaceId: string | null): Promise<boolean> {
+  const bare = (h: string) => h.replace(/:\d+$/, "");
+  const clean = (h: string) =>
+    h
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/\/.*$/, "");
+  const named = ["gitlab.com"];
+  for (const h of (process.env.GITLAB_HOSTS ?? process.env.OPTIO_GITLAB_HOSTS ?? "").split(",")) {
+    if (h.trim()) named.push(h);
+  }
+  const { retrieveSecretWithFallback } = await import("../services/secret-service.js");
+  const wizard = await retrieveSecretWithFallback("GITLAB_HOST", "global", workspaceId).catch(
+    () => "",
+  );
+  if (wizard) named.push(wizard);
+  return named.map(clean).some((h) => h === host || bare(h) === bare(host));
+}
 
 export default async function githubAppRoutes(rawApp: FastifyInstance): Promise<void> {
   const app = rawApp.withTypeProvider<ZodTypeProvider>();
@@ -81,6 +124,7 @@ export default async function githubAppRoutes(rawApp: FastifyInstance): Promise<
         response: {
           200: GitCredentialsResponseSchema,
           401: ErrorResponseSchema,
+          404: ErrorResponseSchema,
           500: ErrorResponseSchema,
         },
       },
@@ -124,6 +168,38 @@ export default async function githubAppRoutes(rawApp: FastifyInstance): Promise<
               .send({ error: "Credential owner no longer has workspace execution access" });
         }
         reply.header("Cache-Control", "no-store");
+        const host = normalizeGitHost(req.query.host);
+        // git hands the answer to whichever host asked: the legacy unscoped
+        // key has GitHub's token alone, so any other host gets nothing.
+        if (!scope && host && host !== "github.com") {
+          return reply.status(404).send({ error: `${host} is not a known GitLab host` });
+        }
+        if (scope && host && host !== "github.com") {
+          // Only a host named as GitLab: git hands the answer to whichever
+          // host asked, so an unknown one gets nothing.
+          if (!(await isKnownGitLabHost(host, scope.workspaceId ?? null))) {
+            return reply.status(404).send({ error: `${host} is not a known GitLab host` });
+          }
+          let scopedHost: string | null = null;
+          try {
+            scopedHost = scope.repo ? new URL(scope.repo).host.toLowerCase() : null;
+          } catch {
+            // A malformed or legacy scope cannot authorize a GitLab host.
+          }
+          if (scopedHost !== host) {
+            return reply
+              .status(401)
+              .send({ error: "This pod's repo is not on the requested GitLab host" });
+          }
+          const { getGitToken } = await import("../services/git-token-service.js");
+          const token = await getGitToken("gitlab", {
+            userId: scope.ownerUserId ?? undefined,
+            server: !scope.ownerUserId,
+            workspaceId: scope.workspaceId,
+            host,
+          });
+          return reply.send({ token, username: "oauth2" });
+        }
         const { taskId } = req.query;
         // The pod's repo bounds its installation token; a repo that isn't on
         // GitHub has no use for a GitHub token.

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -18,6 +18,8 @@ import {
   buildEnvExports,
   buildPooledStartScript,
   CHECKOUT_REPO,
+  gitBotEnv,
+  gitBotIdentity,
   deliverStdinScript,
   killRunScript,
   POOLED_CHECKOUT_DIR,
@@ -453,5 +455,49 @@ describe("buildPooledStartScript (the run protocol)", () => {
     expect(attachRunScript("/home/agent/optio/runs/x", 0)).toContain("tail -c +1 ");
     expect(deliverStdinScript("/home/agent/optio/runs/x", 3)).toContain("head -c 3 >>");
     expect(killRunScript("/home/agent/optio/runs/x", "TERM")).toContain("kill -TERM");
+  });
+});
+
+describe("the bot identity a pod commits as", () => {
+  const commitAs = (env: Record<string, string>) => {
+    const { name, email } = gitBotIdentity();
+    return execFileSync("bash", ["-c", `echo "${name} <${email}>"`], {
+      env: { PATH: process.env.PATH ?? "", ...env },
+    })
+      .toString()
+      .trim();
+  };
+
+  it("is upstream's chain with no GIT_BOT_*: the GitHub App's bot, else Optio Agent", () => {
+    vi.stubEnv("GIT_BOT_NAME", "");
+    vi.stubEnv("GIT_BOT_EMAIL", "");
+    try {
+      expect(commitAs({})).toBe("Optio Agent <optio-agent@noreply.github.com>");
+      expect(commitAs({ GITHUB_APP_BOT_NAME: "app[bot]", GITHUB_APP_BOT_EMAIL: "1+app@x" })).toBe(
+        "app[bot] <1+app@x>",
+      );
+      // Nothing for repo-init.sh to read: it uses the same chain.
+      expect(gitBotEnv()).toEqual({});
+      // Whatever git platforms the deployment offers.
+      vi.stubEnv("OPTIO_GIT_PLATFORMS", "gitlab");
+      expect(commitAs({})).toBe("Optio Agent <optio-agent@noreply.github.com>");
+      expect(gitBotEnv()).toEqual({});
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("is GIT_BOT_NAME / GIT_BOT_EMAIL when the deployment sets them, over the GitHub App's bot", () => {
+    vi.stubEnv("GIT_BOT_NAME", "Build Bot");
+    vi.stubEnv("GIT_BOT_EMAIL", "bot@example.com");
+    try {
+      const env = gitBotEnv();
+      expect(env).toEqual({ GIT_BOT_NAME: "Build Bot", GIT_BOT_EMAIL: "bot@example.com" });
+      expect(
+        commitAs({ ...env, GITHUB_APP_BOT_NAME: "app[bot]", GITHUB_APP_BOT_EMAIL: "1+app@x" }),
+      ).toBe("Build Bot <bot@example.com>");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

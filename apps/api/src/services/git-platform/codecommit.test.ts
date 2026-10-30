@@ -12,6 +12,7 @@ import {
   MergePullRequestByFastForwardCommand,
   MergePullRequestByThreeWayCommand,
   GetRepositoryCommand,
+  ListBranchesCommand,
   GetFolderCommand,
 } from "@aws-sdk/client-codecommit";
 import { CodeCommitPlatform } from "./codecommit.js";
@@ -372,6 +373,25 @@ describe("CodeCommitPlatform", () => {
       const types = Object.fromEntries(contents.map((c) => [c.name, c.type]));
       expect(types["package.json"]).toBe("file");
       expect(types["src"]).toBe("dir");
+    });
+  });
+  describe("listBranches", () => {
+    it("lists branch names, the default first, filtered by the query", async () => {
+      ccMock.on(GetRepositoryCommand).resolves({
+        repositoryMetadata: { repositoryName: "MyRepo", defaultBranch: "main" },
+      });
+      ccMock
+        .on(ListBranchesCommand, { repositoryName: "MyRepo", nextToken: undefined })
+        .resolves({ branches: ["feature/a", "main"], nextToken: "t2" })
+        .on(ListBranchesCommand, { repositoryName: "MyRepo", nextToken: "t2" })
+        .resolves({ branches: ["release/a"] });
+
+      const branches = await platform.listBranches(ri, { search: "a" });
+      expect(branches).toEqual([
+        { name: "main", default: true },
+        { name: "feature/a", default: false },
+        { name: "release/a", default: false },
+      ]);
     });
   });
 });

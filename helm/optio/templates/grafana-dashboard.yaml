@@ -1,0 +1,27 @@
+{{- if .Values.metrics.grafanaDashboard.enabled }}
+{{- include "optio.metrics.requireEndpoint" (dict "Values" .Values "what" "metrics.grafanaDashboard.enabled") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-grafana-dashboard
+  namespace: {{ .Values.metrics.grafanaDashboard.namespace | default .Values.namespace }}
+  labels:
+    {{- include "optio.labels" . | nindent 4 }}
+    {{- with .Values.metrics.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  optio-{{ .Values.namespace }}.json: |
+    {{- $dashboard := .Files.Get "dashboards/optio.json" | mustFromJson }}
+    {{- $_ := set $dashboard "title" (printf "Optio · %s" .Values.namespace) }}
+    {{- $_ := set $dashboard "uid" (printf "optio-%s" (printf "%s/%s" .Values.namespace .Release.Name | sha256sum | trunc 20)) }}
+    {{- range $variable := $dashboard.templating.list }}
+    {{- if eq $variable.name "namespace" }}{{- $_ := set $variable "query" $.Values.namespace }}{{- end }}
+    {{- if eq $variable.name "job" }}{{- $_ := set $variable "query" (include "optio.metrics.job" $) }}{{- end }}
+    {{- end }}
+    {{- $dashboard | toPrettyJson | nindent 4 }}
+{{- end }}

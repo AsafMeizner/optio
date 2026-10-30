@@ -35,12 +35,15 @@ import { cn } from "@/lib/utils";
 type Mode = "settings" | "wizard";
 const CHECK = "mt-0.5 shrink-0";
 export const DEFAULT_DISPLAY_NAME = { oidc: "SSO", ldap: "Corporate account" };
-const SIGN_IN_PROVIDER_LABEL = {
+export const SIGN_IN_PROVIDER_LABEL = {
   oidc: "SSO (OpenID Connect)",
   google: "Google",
   github: "GitHub",
   gitlab: "GitLab",
   ldap: "LDAP / Active Directory",
+  saml: "SSO (SAML 2.0)",
+  gitea: "Gitea / Forgejo",
+  bitbucket: "Bitbucket",
 };
 type SignInProviderName = keyof typeof SIGN_IN_PROVIDER_LABEL;
 
@@ -112,7 +115,7 @@ export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function CopyField({ label, value }: { label: string; value: string }) {
+export function CopyField({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <span className={LABEL}>{label}</span>
@@ -303,6 +306,18 @@ export function TestResultView({
       role="status"
       className="p-3 rounded-lg bg-success/5 border border-success/20 text-xs space-y-2"
     >
+      {result.saml && (
+        <>
+          <p className="font-medium">SAML identity provider verified</p>
+          <p>{result.saml.entityId}</p>
+          <p>{result.saml.entryPoint}</p>
+          {result.saml.certificates.map((c) => (
+            <p key={c.fingerprint256}>
+              {c.subject} · expires {c.notAfter}
+            </p>
+          ))}
+        </>
+      )}
       {result.oidc && (
         <>
           <p className="flex items-center gap-1.5 text-success font-medium">
