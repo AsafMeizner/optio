@@ -118,7 +118,7 @@ export const ldapSettingsSchema = z.object({
     .regex(/^ldaps?:\/\/[^\s/]+$/i, "An ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636"),
   startTls: z.boolean().optional(),
   caPem: pem,
-  insecureSkipVerify: z.boolean().optional(),
+  insecureSkipVerify: OidcSettingsSchema.shape.insecureSkipVerify,
   bindDn: z.string().trim().max(1000).nullable().optional(),
   userBaseDn: z.string().trim().min(1).max(1000),
   userFilter: z.string().trim().max(2000).nullable().optional(),

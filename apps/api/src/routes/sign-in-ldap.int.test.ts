@@ -123,4 +123,13 @@ describe("LDAP bind password stays with its server", () => {
     expect(res.json().provider.hasClientSecret).toBe(false);
     expect((await resolveProviderConfig("ldap"))?.clientSecret).toBe("");
   });
+
+  it("refuses to store insecure LDAP TLS unless the deployment allows it", async () => {
+    const res = await save({
+      settings: { ...trusted, insecureSkipVerify: true },
+      clientSecret: STORED_PASSWORD,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatch(/OPTIO_IDP_ALLOW_INSECURE_TLS/);
+  });
 });

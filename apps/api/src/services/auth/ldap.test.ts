@@ -336,12 +336,30 @@ describe("ldapAuthenticate", () => {
     );
   });
 
-  it("passes insecureSkipVerify through as rejectUnauthorized: false", async () => {
-    mocks.client.search.mockResolvedValueOnce(found([aliceEntry()]));
+  it("passes insecureSkipVerify through as rejectUnauthorized: false when the deployment allows it", async () => {
+    vi.stubEnv("OPTIO_IDP_ALLOW_INSECURE_TLS", "true");
+    try {
+      mocks.client.search.mockResolvedValueOnce(found([aliceEntry()]));
 
-    await ldapAuthenticate({ ...SETTINGS, insecureSkipVerify: true }, "alice", "pw");
+      await ldapAuthenticate({ ...SETTINGS, insecureSkipVerify: true }, "alice", "pw");
 
-    expect(constructorOptions().tlsOptions).toEqual({ rejectUnauthorized: false });
+      expect(constructorOptions().tlsOptions).toEqual({ rejectUnauthorized: false });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("refuses insecureSkipVerify without OPTIO_IDP_ALLOW_INSECURE_TLS, before connecting", async () => {
+    vi.stubEnv("OPTIO_IDP_ALLOW_INSECURE_TLS", "");
+    try {
+      await expectLdapError(
+        ldapAuthenticate({ ...SETTINGS, insecureSkipVerify: true }, "alice", "pw"),
+        "config",
+      );
+      expect(mocks.client.bind).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("maps a STARTTLS failure to connection", async () => {

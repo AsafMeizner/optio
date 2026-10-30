@@ -286,4 +286,6 @@ STARTTLS; plain LDAP without STARTTLS sends credentials without encryption.
 The saved bind password belongs to its server: a save that changes the URL,
 STARTTLS, certificate verification or CA must enter the password again (an
 anonymous bind drops the saved one), and the connection test reuses saved or
-environment credentials only for that same URL and transport.
+environment credentials only for that same URL and transport. Disabling TLS
+verification requires `OPTIO_IDP_ALLOW_INSECURE_TLS=true` on the deployment;
+prefer a private CA.

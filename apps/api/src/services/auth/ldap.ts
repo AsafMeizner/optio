@@ -1,6 +1,7 @@
 import type { ConnectionOptions as TlsConnectionOptions } from "node:tls";
 import { Client, FilterParser, InvalidCredentialsError, ResultCodeError } from "ldapts";
 import type { Entry } from "ldapts";
+import { insecureIdentityProviderTlsAllowed } from "../../utils/idp-url.js";
 
 /**
  * LDAP / Active Directory sign-in for self-hosted deployments — the
@@ -292,7 +293,16 @@ function resolveSettings(settings: LdapSettings): ResolvedSettings {
   const secure = scheme === "ldaps";
   const tlsOptions: TlsConnectionOptions = {};
   if (settings.caPem?.trim()) tlsOptions.ca = [settings.caPem];
-  if (settings.insecureSkipVerify) tlsOptions.rejectUnauthorized = false;
+  if (settings.insecureSkipVerify) {
+    // Settings stored before the deployment withdrew its opt-in stay refused.
+    if (!insecureIdentityProviderTlsAllowed()) {
+      throw new LdapAuthError(
+        "Insecure identity-provider TLS is disabled by deployment policy",
+        "config",
+      );
+    }
+    tlsOptions.rejectUnauthorized = false;
+  }
 
   const usernameAttribute = trimmed(settings.usernameAttribute);
   const displayNameAttribute = trimmed(settings.displayNameAttribute);
