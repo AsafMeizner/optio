@@ -218,6 +218,27 @@ export interface SaveSignInConfigInput {
   displayName?: string | null;
 }
 
+/**
+ * Whether two LDAP settings reach the same server the same way: the URL and
+ * every transport option (STARTTLS, certificate verification, the trusted
+ * CA). A stored bind password is only ever sent over the transport it was
+ * saved with.
+ */
+function sameLdapTransport(
+  a: AnySignInSettings | null | undefined,
+  b: AnySignInSettings | null | undefined,
+): boolean {
+  const x = ldapSettingsSchema.safeParse(a).data;
+  const y = ldapSettingsSchema.safeParse(b).data;
+  if (!x || !y) return false;
+  return (
+    x.url === y.url &&
+    !!x.startTls === !!y.startTls &&
+    !!x.insecureSkipVerify === !!y.insecureSkipVerify &&
+    (x.caPem?.trim() ?? "") === (y.caPem?.trim() ?? "")
+  );
+}
+
 /** Store (or update) a provider's config. Validates the domains like workspace auto-join. */
 export async function saveSignInConfig(
   provider: string,
@@ -265,13 +286,26 @@ export async function saveSignInConfig(
     }
     settings = parsed.data;
   }
-  if (
-    provider === "ldap" &&
-    (settings as LdapSignInSettings)?.bindDn?.trim() &&
-    !existing?.encryptedClientSecret &&
-    !secret
-  )
-    throw new SignInConfigError("The bind password is required");
+  let clearSecret = false;
+  if (provider === "ldap" && !secret) {
+    const bindDn = (settings as LdapSignInSettings)?.bindDn?.trim();
+    // The stored bind password belongs to the server it was saved with: a
+    // save that points the directory elsewhere (another URL, or the same one
+    // with weaker transport) must bring the password again, or the next
+    // sign-in would send the stored one to the new server.
+    const keepsServer =
+      !!existing?.encryptedClientSecret &&
+      sameLdapTransport(existing.settings, settings as LdapSignInSettings);
+    if (bindDn && !keepsServer) {
+      throw new SignInConfigError(
+        existing?.encryptedClientSecret
+          ? "Enter the bind password again: the saved one is only sent to the server it was saved for"
+          : "The bind password is required",
+      );
+    }
+    // An anonymous bind needs no password; drop one left for another server.
+    clearSecret = !keepsServer && !!existing?.encryptedClientSecret;
+  }
   if (provider === "saml") {
     // The identity provider must be reachable now: its metadata, or the
     // single sign-on URL and certificate typed in.
@@ -292,7 +326,9 @@ export async function saveSignInConfig(
       input.displayName === undefined ? (existing?.displayName ?? null) : input.displayName,
     updatedBy: actorUserId,
     updatedAt: new Date(),
-    ...sealed,
+    ...(clearSecret
+      ? { encryptedClientSecret: null, clientSecretIv: null, clientSecretAuthTag: null }
+      : sealed),
   };
   if (existing) {
     await db
@@ -660,17 +696,18 @@ export async function testSignInProvider(
     const environment = envConfig("ldap");
     // A test may inspect a new server, but must never send another server's
     // saved password to it. The request must supply credentials for a new URL.
+    // The URL and every transport option must match: the request may not
+    // turn off STARTTLS or verification, or swap the CA, for a saved password.
     const bindPassword =
       input.clientSecret?.trim() ||
-      (stored && ldapSettingsSchema.safeParse(stored.settings).data?.url === ldap.url
-        ? openSecret(stored)
-        : null) ||
-      (ldapSettingsSchema.safeParse(environment?.settings).data?.url === ldap.url
-        ? environment?.clientSecret
-        : null) ||
+      (stored && sameLdapTransport(stored.settings, ldap) ? openSecret(stored) : null) ||
+      (sameLdapTransport(environment?.settings, ldap) ? environment?.clientSecret : null) ||
       "";
     if (ldap.bindDn && !bindPassword)
-      return { ok: false, error: "Supply the bind password when testing a different LDAP URL" };
+      return {
+        ok: false,
+        error: "Supply the bind password when testing a different LDAP server or transport",
+      };
 
     const { ldapTest } = await import("./auth/ldap.js");
     const result = await ldapTest(

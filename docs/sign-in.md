@@ -283,5 +283,7 @@ Wrong credentials receive the same 401 response. Operations time out after
 per-account lockout policy as well. Unknown usernames return before a password
 bind, so response timing can reveal directory membership. Prefer LDAPS or
 STARTTLS; plain LDAP without STARTTLS sends credentials without encryption.
-The connection test reuses saved credentials only for their configured URL;
-testing a different URL with a bind DN requires an explicit password.
+The saved bind password belongs to its server: a save that changes the URL,
+STARTTLS, certificate verification or CA must enter the password again (an
+anonymous bind drops the saved one), and the connection test reuses saved or
+environment credentials only for that same URL and transport.
