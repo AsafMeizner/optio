@@ -1,3 +1,4 @@
+import { readPrConversation } from "./pr-conversation.js";
 /**
  * PR Review service — operates on the `pr_reviews` primitive.
  *
@@ -169,33 +170,7 @@ async function fetchPrContext(
   out.prBody = prData.body;
   out.headSha = prData.headSha;
 
-  try {
-    const reviews = await platform.getReviews(ri, prNumber);
-    const withBody = reviews.filter((r) => r.body?.trim());
-    if (withBody.length > 0) {
-      out.existingReviews = withBody
-        .map((r) => `**${r.author}** (${r.state}):\n${r.body}`)
-        .join("\n\n");
-    }
-  } catch {}
-
-  try {
-    const comments = await platform.getIssueComments(ri, prNumber);
-    if (comments.length > 0) {
-      out.prComments = comments
-        .map((c) => `**${c.author}** (${c.createdAt}):\n${c.body}`)
-        .join("\n\n");
-    }
-  } catch {}
-
-  try {
-    const inlineComments = await platform.getInlineComments(ri, prNumber);
-    if (inlineComments.length > 0) {
-      out.inlineComments = inlineComments
-        .map((c) => `**${c.author}** on \`${c.path}${c.line ? `:${c.line}` : ""}\`:\n${c.body}`)
-        .join("\n\n");
-    }
-  } catch {}
+  Object.assign(out, await readPrConversation(platform, ri, prNumber));
 
   return out;
 }
@@ -869,6 +844,7 @@ export async function submitReview(
   const result = await platform.submitReview(ri, review.prNumber, {
     event,
     body: review.summary ?? "Review by Optio",
+    commitId: review.headSha,
     comments: comments.length > 0 ? comments : undefined,
   });
 

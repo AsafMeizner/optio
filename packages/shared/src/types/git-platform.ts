@@ -133,6 +133,9 @@ export interface GitPlatform {
   /** One issue by number (on GitHub a PR answers here too, `isPullRequest`). Platforms without issues leave it out. */
   getIssue?(ri: RepoIdentifier, number: number): Promise<Issue>;
 
+  /** The MR discussion, separate from issues on GitLab. */
+  getPullRequestComments?(ri: RepoIdentifier, prNumber: number): Promise<IssueComment[]>;
+
   // PR/MR writes
   mergePullRequest(
     ri: RepoIdentifier,
@@ -148,6 +151,8 @@ export interface GitPlatform {
       event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
       body: string;
       comments?: { path: string; line?: number; side?: string; body: string }[];
+      /** Pin the approval to the commit reviewed. */
+      commitId?: string;
     },
   ): Promise<{ url: string }>;
 

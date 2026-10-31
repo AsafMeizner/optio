@@ -1,3 +1,4 @@
+import { readPrReviews } from "../services/pr-review-state.js";
 import { Queue, Worker } from "bullmq";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -33,18 +34,37 @@ export function determineCheckStatus(
   return "failing";
 }
 
-/** Determine review status from GitHub PR reviews. */
-export function determineReviewStatus(reviews: { state: string; body?: string }[]): {
+/** Determine a PR's review status from its reviews (GitHub, or GitLab's as getReviews reads them). */
+export function determineReviewStatus(
+  reviews: { state: string; body?: string; author?: string }[],
+): {
   status: string;
   comments: string;
 } {
   if (reviews.length === 0) return { status: "none", comments: "" };
+  // Each reviewer's latest say counts, as the merge guard reads it
+  // (hasChangesRequested): a later approval by someone else does not clear
+  // an open change request, or the PR would be sent to merge, refused there,
+  // and never resumed.
+  const latest = new Map<string | undefined, { state: string; body?: string }>();
+  for (const r of reviews) {
+    if (r.state === "COMMENTED") continue;
+    latest.delete(r.author);
+    latest.set(r.author, r);
+  }
+  const open = [...latest.values()].filter((r) => r.state === "CHANGES_REQUESTED");
+  if (open.length > 0) {
+    return {
+      status: "changes_requested",
+      comments: open
+        .map((r) => r.body ?? "")
+        .filter(Boolean)
+        .join("\n\n"),
+    };
+  }
   const substantive = reviews.filter((r) => r.state !== "COMMENTED" && r.state !== "DISMISSED");
-  const latest = substantive[substantive.length - 1];
-  if (latest) {
-    if (latest.state === "APPROVED") return { status: "approved", comments: "" };
-    if (latest.state === "CHANGES_REQUESTED")
-      return { status: "changes_requested", comments: latest.body || "" };
+  if (substantive[substantive.length - 1]?.state === "APPROVED") {
+    return { status: "approved", comments: "" };
   }
   if (reviews.some((r) => r.state === "COMMENTED")) return { status: "pending", comments: "" };
   return { status: "none", comments: "" };
@@ -134,7 +154,7 @@ export async function pollPrs(): Promise<void> {
       if (!prData) continue;
 
       const checkRuns = await platform.getCIChecks(ri, prData.headSha).catch(() => []);
-      const reviewsData = await platform.getReviews(ri, prNumber).catch(() => []);
+      const reviewsData = await readPrReviews(platform, ri, prNumber, prData);
       const checksStatus = determineCheckStatus(checkRuns);
       const reviewResult = determineReviewStatus(reviewsData);
       const reviewStatus = reviewResult.status;

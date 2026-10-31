@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- GitLab change-request threads must be resolvable and written by the token user, an assigned reviewer or a Developer-or-higher member. Review requests take precedence over auto-merge and unresolved review reads continue to block merging.
+- GitLab approval conflicts (HTTP 409) now propagate from `submitReview` rather than silently reporting success.
+- A PR's review status reads each reviewer's latest review, as the merge guard does: one reviewer's open change request outlives another's later approval, so the task resumes or asks for attention instead of retrying a merge the guard refuses.
+- Review context includes the newest 30 GitHub comments, and issue prompts include the newest 30 comments in chronological order.
+
 ### Fixed
 
 - The New work form no longer puts your last settings on top of an example you have already clicked. The form opens on "Open a PR" and, once your saved settings load, starts from them; clicking that same example right after the page appeared looked identical to not having touched it, so a slow load could switch Then and Where to your last session's (an interactive session on a machine) under the trigger, branch and prompt you went on to fill in, and save a Local automation instead of a scheduled Task. A clicked example now keeps its Then and Where, and your saved settings only fill its blank options.

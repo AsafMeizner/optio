@@ -1,3 +1,4 @@
+import { pullRequestBlocker } from "./auto-merge-guard.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import { db } from "../db/client.js";
@@ -485,6 +486,8 @@ async function applyAutoMergePr(snapshot: WorldSnapshot): Promise<ExecuteOutcome
     if (pr.merged || pr.state !== "open") {
       return { status: "stale", reason: "pr_state_changed" };
     }
+    const blocker = pullRequestBlocker(pr, await platform.getReviews(ri, parsed.prNumber));
+    if (blocker) return { status: "skipped", reason: blocker };
     const { determineCheckStatus } = await import("../workers/pr-watcher-worker.js");
     const checksStatus = determineCheckStatus(await platform.getCIChecks(ri, headSha));
     if (checksStatus === "pending" || checksStatus === "failing") {
@@ -577,7 +580,7 @@ function buildResumeContext(
       };
     case "review":
       return {
-        prompt: `A reviewer requested changes on the ${ctx.prLabel}. Please address the following feedback:\n\n${ctx.reviewComments || "(no comment text captured — use \`gh pr view --comments\` to read the review)"}`,
+        prompt: `A reviewer requested changes on the ${ctx.prLabel}. Please address the following feedback:\n\n${ctx.reviewComments || "(no comment text captured — open the review and discussion on the repository’s code host)"}`,
         trigger: "review_changes_requested",
         jobSuffix: "review",
         freshSession: false,

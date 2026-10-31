@@ -1,3 +1,4 @@
+import { readPrReviews } from "./pr-review-state.js";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
@@ -359,7 +360,7 @@ async function loadPrStatus(run: Run, userId: string | null): Promise<PrStatus |
       if (prData.merged || prData.state === "closed") return [];
       throw err;
     }),
-    platform.getReviews(ri, parsed.prNumber).catch(() => []),
+    readPrReviews(platform, ri, parsed.prNumber, prData),
   ]);
   const checksStatus = determineCheckStatus(checkRuns);
   const reviewResult = determineReviewStatus(reviews);
@@ -370,6 +371,7 @@ async function loadPrStatus(run: Run, userId: string | null): Promise<PrStatus |
     state: (prData.merged ? "merged" : prData.state) as PrStatus["state"],
     merged: !!prData.merged,
     mergeable: prData.mergeable ?? null,
+    draft: !!prData.draft,
     checksStatus,
     reviewStatus: reviewResult.status as PrStatus["reviewStatus"],
     latestReviewComments: reviewResult.comments || null,
@@ -724,7 +726,7 @@ async function loadPrStatusForReview(row: typeof prReviews.$inferSelect): Promis
 
   const [checkRuns, reviews] = await Promise.all([
     platform.getCIChecks(ri, prData.headSha).catch(() => []),
-    platform.getReviews(ri, parsed.prNumber).catch(() => []),
+    readPrReviews(platform, ri, parsed.prNumber, prData),
   ]);
   const checksStatus = determineCheckStatus(checkRuns);
   const reviewResult = determineReviewStatus(reviews);
@@ -735,6 +737,7 @@ async function loadPrStatusForReview(row: typeof prReviews.$inferSelect): Promis
     state: (prData.merged ? "merged" : prData.state) as PrStatus["state"],
     merged: !!prData.merged,
     mergeable: prData.mergeable ?? null,
+    draft: !!prData.draft,
     checksStatus,
     reviewStatus: reviewResult.status as PrStatus["reviewStatus"],
     latestReviewComments: reviewResult.comments || null,

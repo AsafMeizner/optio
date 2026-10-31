@@ -11,6 +11,7 @@ const mockWorkflowQueueAdd = vi.fn();
 const mockLaunchReview = vi.fn();
 const mockMergePR = vi.fn();
 const mockReadPR = vi.fn();
+const mockReadReviews = vi.fn();
 const mockReadChecks = vi.fn();
 const mockRedisSet = vi.fn();
 const mockRedisGet = vi.fn();
@@ -491,6 +492,7 @@ describe("reconcile-executor", () => {
   describe("autoMergePr", () => {
     beforeEach(() => {
       mockReadPR.mockResolvedValue({ headSha: "checked-head", state: "open", merged: false });
+      mockReadReviews.mockResolvedValue([]);
       mockReadChecks.mockResolvedValue([{ status: "completed", conclusion: "success" }]);
     });
 
@@ -522,6 +524,7 @@ describe("reconcile-executor", () => {
             type: "github",
             mergePullRequest: mockMergePR,
             getPullRequest: mockReadPR,
+            getReviews: mockReadReviews,
             getCIChecks: mockReadChecks,
           },
           ri: { owner: "acme", repo: "repo" },
@@ -545,6 +548,7 @@ describe("reconcile-executor", () => {
           type: "github",
           mergePullRequest: mockMergePR,
           getPullRequest: mockReadPR,
+          getReviews: mockReadReviews,
           getCIChecks: mockReadChecks,
         },
         ri: { owner: "acme", repo: "repo" },
@@ -565,6 +569,7 @@ describe("reconcile-executor", () => {
           type: "github",
           mergePullRequest: mockMergePR,
           getPullRequest: mockReadPR,
+          getReviews: mockReadReviews,
           getCIChecks: mockReadChecks,
         },
         ri: { owner: "acme", repo: "repo" },
@@ -585,6 +590,7 @@ describe("reconcile-executor", () => {
           type: "github",
           mergePullRequest: mockMergePR,
           getPullRequest: mockReadPR,
+          getReviews: mockReadReviews,
           getCIChecks: mockReadChecks,
         },
         ri: { owner: "acme", repo: "repo" },
@@ -612,6 +618,7 @@ describe("reconcile-executor", () => {
           type: "codecommit",
           mergePullRequest: mockMergePR,
           getPullRequest: mockReadPR,
+          getReviews: mockReadReviews,
           getCIChecks: mockReadChecks,
         },
         ri: { owner: "us-east-1", repo: "repo" },
@@ -635,6 +642,7 @@ describe("reconcile-executor", () => {
           type: "github",
           mergePullRequest: mockMergePR,
           getPullRequest: mockReadPR,
+          getReviews: mockReadReviews,
           getCIChecks: mockReadChecks,
         },
         ri: { owner: "acme", repo: "repo" },
@@ -672,6 +680,7 @@ describe("reconcile-executor", () => {
           type: "github",
           mergePullRequest: mockMergePR,
           getPullRequest: mockReadPR,
+          getReviews: mockReadReviews,
           getCIChecks: mockReadChecks,
         },
         ri: { owner: "acme", repo: "repo" },
@@ -694,6 +703,7 @@ describe("reconcile-executor", () => {
           type: "github",
           mergePullRequest: mockMergePR,
           getPullRequest: mockReadPR,
+          getReviews: mockReadReviews,
           getCIChecks: mockReadChecks,
         },
         ri: { owner: "acme", repo: "repo" },
@@ -737,6 +747,7 @@ describe("reconcile-executor", () => {
           type: "github",
           mergePullRequest: mockMergePR,
           getPullRequest: mockReadPR,
+          getReviews: mockReadReviews,
           getCIChecks: mockReadChecks,
         },
         ri: { owner: "acme", repo: "repo" },
