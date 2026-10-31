@@ -29,11 +29,19 @@ this release.
 
 Behind a proxy, set `OPTIO_TRUST_PROXY` (Helm
 `rateLimit.trustProxy`) to the explicit trusted proxy IPs or CIDRs, separated
-by commas. It is unset by default. `true` and numeric hop counts (`1`, `2`)
-are ignored: the API trusts nobody, logs a warning at startup, and records
-every client as the ingress controller's address. Enabling ingress alone does
-not enable proxy trust. Only trust proxies that overwrite forwarded headers
-from clients.
+by commas: the ingress controller's own address as a `/32` (e.g.
+`192.0.2.10/32`), or its load balancer's or the nodes' CIDR when it runs with
+host networking. It is unset by default. A CIDR that also covers agent pods,
+such as the cluster's pod CIDR (`10.42.0.0/16` on k3s), is equivalent to
+`true`: any agent pod can reach the API and claim to be `127.0.0.1`, which
+skips the per-IP and sign-in rate limits and puts that address in the audit
+rows. `true`, numeric hop counts (`1`, `2`), the proxy-addr keywords
+`uniquelocal` and `linklocal`, and CIDRs shorter than `/8` (IPv6 `/16`) are
+ignored: the API trusts nobody, logs a warning at startup, and records every
+client as the ingress controller's address. A value that is not an IP
+address, a CIDR or `loopback` (say `ingress`) stops the API at startup with
+an error naming it. Enabling ingress alone does not enable proxy trust. Only
+trust proxies that overwrite forwarded headers from clients.
 
 ## What is recorded
 
