@@ -398,8 +398,7 @@ export async function remoteWorkspaceRoutes(rawApp: FastifyInstance) {
       },
       async (req, reply) => {
         try {
-          const removed = await deleteConnection(req.params.id, actorOf(req));
-
+          await deleteConnection(req.params.id, actorOf(req));
           return reply.status(204).send(null);
         } catch (err) {
           return sendError(reply, err);
