@@ -27,7 +27,7 @@ import { promptTemplates } from "../db/schema.js";
 import { DEFAULT_PROMPT_TEMPLATE } from "@optio/shared";
 import { ErrorResponseSchema } from "../schemas/common.js";
 import { PromptTemplateSchema } from "../schemas/integration.js";
-import { requireRole } from "../plugins/auth.js";
+import { requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { withManagedBy } from "../services/config/managed.js";
 
 const repoUrlQuerySchema = z
@@ -217,6 +217,33 @@ export async function promptTemplateRoutes(rawApp: FastifyInstance) {
         await saveDefaultPromptTemplate(body.template, body.autoMerge ?? false);
       }
       reply.status(201).send({ ok: true });
+    },
+  );
+
+  app.post(
+    "/api/prompt-templates/seed",
+    {
+      // Starter rows have no workspace: every workspace lists them, so
+      // restoring them is a deployment-wide write, not one workspace's.
+      preHandler: [requireRole("admin"), requireDeploymentAdmin],
+      schema: {
+        operationId: "seedStarterPrompts",
+        summary: "Restore the starter prompts",
+        description:
+          "Add the organization's starter prompts (Create a Claude Code skill, Code " +
+          "review, Write a README, …) that are missing, and put edited ones back to " +
+          "their text. Never duplicates, and never touches a prompt of someone's own " +
+          "that shares a starter's name. Starter prompts are shared by every " +
+          "workspace, so this requires a deployment admin.",
+        tags: ["Repos & Integrations"],
+        response: {
+          200: z.object({ created: z.number(), restored: z.number(), unchanged: z.number() }),
+        },
+      },
+    },
+    async (_req, reply) => {
+      const { seedStarterPrompts } = await import("../services/starter-prompts.js");
+      reply.send(await seedStarterPrompts({ restore: true }));
     },
   );
 

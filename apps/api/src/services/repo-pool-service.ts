@@ -1,3 +1,4 @@
+import { commitTrailerHookSetup } from "./commit-trailers.js";
 import { agentNodePlacement } from "./agent-node-placement.js";
 import { randomUUID } from "node:crypto";
 import { eq, and, sql } from "drizzle-orm";
@@ -930,6 +931,7 @@ function taskSetupLines(
     `echo "${runToken}" > /workspace/tasks/${taskId}/.optio-run-token`,
     `export OPTIO_TASK_ID="${taskId}"`,
     ...WRITE_SETUP_FILES,
+    ...commitTrailerHookSetup(),
     // Exclude Optio runtime files from git tracking using the local exclude file
     // (never committed, unlike .gitignore modifications)
     `EXCLUDE_FILE="$(git rev-parse --git-dir)/info/exclude"`,

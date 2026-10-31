@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { FileText, Loader2, Plus, Trash2, Eye, Save, Pencil } from "lucide-react";
+import { FileText, Loader2, Plus, Trash2, Eye, Save, Pencil, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { ListToolbar } from "@/components/ui/list-toolbar";
 import { Dialog } from "@/components/ui/dialog";
@@ -48,6 +48,8 @@ const KIND_LABELS: Record<TemplateKind, string> = {
   task: "Repo task blueprint",
 };
 
+const isStarter = (t: Template) => t.paramsSchema?.starter === true;
+
 const KIND_FILTERS: Array<{ value: TemplateKind | "all"; label: string }> = [
   { value: "all", label: "All" },
   { value: "prompt", label: "Coding" },
@@ -71,12 +73,13 @@ export default function TemplatesPage() {
 }
 
 function PromptsList() {
-  const { userId, isAdmin } = useCurrentUser();
+  const { userId, isAdmin, isDeploymentAdmin } = useCurrentUser();
   const [owner, setOwner] = useOwnerFilter();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<TemplateKind | "all">("all");
   const [loading, setLoading] = useState(true);
+  const [restoring, setRestoring] = useState(false);
   const [editing, setEditing] = useState<{ template: Template | null; scope: PickedScope } | null>(
     null,
   );
@@ -137,6 +140,29 @@ function PromptsList() {
     }
   };
 
+  /** Whether any starter prompt is here (the button adds them, else restores them). */
+  const hasStarters = templates.some(isStarter);
+
+  /** Deployment admins: add the starter prompts that are missing and put edited ones back. */
+  const restoreStarters = async () => {
+    setRestoring(true);
+    try {
+      const r = await api.restoreStarterPrompts();
+      toast.success(
+        r.created + r.restored === 0
+          ? "The starter prompts are all here"
+          : `Starter prompts: ${r.created} added, ${r.restored} restored`,
+      );
+      await load();
+    } catch (err) {
+      toast.error("Couldn't add the starter prompts", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   const newButton = (scope?: PickedScope, small = false) =>
     small ? (
       <button type="button" onClick={() => openNew(scope)} className="text-primary hover:underline">
@@ -164,7 +190,33 @@ function PromptsList() {
             </span>
           ) : null
         }
-        actions={newButton()}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Starter prompts are every workspace's: the server takes a deployment admin. */}
+            {isAdmin && isDeploymentAdmin && (
+              <Button
+                variant="secondary"
+                onClick={restoreStarters}
+                disabled={restoring}
+                title={
+                  hasStarters
+                    ? "Add the starter prompts that are missing and put edited ones back"
+                    : "Add prompts for common work (a skill, a CLAUDE.md, a review, tests…), written for GitHub and GitLab repos"
+                }
+              >
+                {restoring ? (
+                  <Loader2 className="animate-spin" />
+                ) : hasStarters ? (
+                  <RotateCcw />
+                ) : (
+                  <Plus />
+                )}
+                {hasStarters ? "Restore starter prompts" : "Add starter prompts"}
+              </Button>
+            )}
+            {newButton()}
+          </div>
+        }
       />
 
       <ListToolbar search={{ value: query, onChange: setQuery, label: "Search prompts" }} />

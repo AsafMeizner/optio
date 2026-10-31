@@ -1,3 +1,4 @@
+import { localTraceabilityNote } from "./work-traceability.js";
 /**
  * Local runs: Jobs and Repo Tasks whose run location is the owner's own
  * machine instead of an Optio pod. See docs/optio-local.md ("Local runs")
@@ -395,7 +396,9 @@ export async function dispatchLocalTask(
     kind: "agent",
     // A task always has an agent type, so the host check found its agent.
     agent: resolved.agent!,
-    prompt: buildLocalTaskPrompt(task, opts.resumePrompt),
+    prompt:
+      buildLocalTaskPrompt(task, opts.resumePrompt) +
+      (opts.resumePrompt ? "" : await localTraceabilityNote(task)),
     mode: task.localSessionMode ?? "headless",
     ...(resumeSessionId ? { resumeSessionId } : {}),
     ...localAgentParams(task.agentType, (task.metadata as any)?.agentOptions),

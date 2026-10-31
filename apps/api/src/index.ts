@@ -175,6 +175,13 @@ async function main() {
     await import("./services/connection-service.js");
   await seedBuiltInProviders();
   logger.info("Built-in connection providers seeded");
+  // The organization's starter prompts (services/starter-prompts.ts): added
+  // the first time, then only the ones a newer version brings. Idempotent.
+  const { seedStarterPrompts } = await import("./services/starter-prompts.js");
+  await seedStarterPrompts().catch((err) =>
+    logger.error({ err }, "seedStarterPrompts failed at boot"),
+  );
+
   // Connections made before v2 keep their credentials in the plain config:
   // move them into the encrypted column (idempotent).
   await sealPlaintextConnectionSecrets().catch((err) =>

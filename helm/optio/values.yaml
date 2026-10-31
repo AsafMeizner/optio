@@ -861,3 +861,17 @@ metrics:
     labels:
       grafana_dashboard: "1"
     annotations: {}
+
+# Starter prompts are added only on demand unless enabled here.
+prompts:
+  starters: false
+
+# Optional ticket/run metadata in pull requests and commit trailers
+# (docs/prompts.md "Traceability"). Off for every repository until listed.
+tickets:
+  traceability:
+    # Repository URLs, or https://host/group/* for a whole group.
+    repos: []
+    # Put the requester's email in a Co-authored-by trailer.
+    requesterEmail: false
+  # commitTrailers: true

@@ -1,3 +1,4 @@
+import { resolveRepoPlatform } from "@optio/shared";
 /**
  * Scheduled Tasks — `repo-blueprint` work definitions: a saved Repo Task that
  * each trigger firing spawns as a fresh task. Rows live in work_definitions
@@ -15,6 +16,8 @@ import { repoDefaultBranch } from "./repo-service.js";
 import type { WorkDefinition, WorkDefinitionValues } from "./work-definition-service.js";
 import {
   getPromptTemplateById,
+  platformTemplateParams,
+  templateUsesPlatform,
   renderRunTitle,
   renderTemplateString,
 } from "./prompt-template-service.js";
@@ -201,6 +204,13 @@ export async function deleteTaskConfig(id: string): Promise<boolean> {
   return definitions.deleteDefinition(id, "repo-blueprint");
 }
 
+/** The platform of a repo URL: the added repo's own, else what the URL says. */
+async function repoPlatformOf(repoUrl: string): Promise<string | null> {
+  const { getRepoByUrl } = await import("./repo-service.js");
+  const repo = await getRepoByUrl(repoUrl).catch(() => null);
+  return resolveRepoPlatform(repoUrl, repo?.gitPlatform ?? null);
+}
+
 /**
  * Create a concrete task from a scheduled Task (a repo-blueprint), transition
  * it into the queue, and enqueue the BullMQ job. Mirrors the flow used by the
@@ -230,7 +240,13 @@ export async function instantiateTask(
   if (config.promptTemplateId) {
     const template = await getPromptTemplateById(config.promptTemplateId);
     if (template) {
-      effectivePrompt = renderTemplateString(template.template, params);
+      const platform = templateUsesPlatform(template.template)
+        ? await repoPlatformOf(config.repoUrl)
+        : null;
+      effectivePrompt = renderTemplateString(template.template, {
+        ...platformTemplateParams(template.template, platform),
+        ...params,
+      });
       if (!effectiveAgentType && template.defaultAgentType) {
         effectiveAgentType = template.defaultAgentType;
       }

@@ -1,3 +1,9 @@
+import {
+  GITLAB_PROMPT_TEMPLATE,
+  GITLAB_PR_REVIEW_PROMPT_TEMPLATE,
+  GITLAB_REVIEW_PROMPT_TEMPLATE,
+} from "./prompt-template-gitlab.js";
+
 export const DEFAULT_PROMPT_TEMPLATE = `{{#if PLANNING_MODE}}## PLANNING MODE
 
 You are in PLANNING MODE. Analyze the task and create a detailed implementation plan — DO NOT implement yet.
@@ -87,28 +93,32 @@ Implements task {{TASK_ID}}
 ## How to test
 <Describe how a reviewer can verify the changes>
 OPTIO_PR_EOF
-)" --remove-source-branch{{/if}}
+)" --remove-source-branch{{/if}}{{#if DRAFT_PR}} --draft{{/if}}
    \`\`\`
 {{else}}
    Use the \`gh\` CLI to create a pull request:
    \`\`\`
-{{#if ISSUE_NUMBER}}   gh pr create --title "{{TASK_TITLE}}" --body "$(cat <<'OPTIO_PR_EOF'
+{{#if ISSUE_NUMBER}}   gh pr create --title "{{#if MR_TITLE}}{{MR_TITLE}}{{else}}{{TASK_TITLE}}{{/if}}" --body "$(cat <<'OPTIO_PR_EOF'
 Closes #{{ISSUE_NUMBER}}
 
 ## What changed
 <Summarize the changes you made and why>
 
 ## How to test
-<Describe how a reviewer can verify the changes>
+<Describe how a reviewer can verify the changes>{{#if MR_FOOTER}}
+
+{{MR_FOOTER}}{{/if}}
 OPTIO_PR_EOF
-)"{{else}}   gh pr create --title "{{TASK_TITLE}}" --body "$(cat <<'OPTIO_PR_EOF'
+)"{{else}}   gh pr create --title "{{#if MR_TITLE}}{{MR_TITLE}}{{else}}{{TASK_TITLE}}{{/if}}" --body "$(cat <<'OPTIO_PR_EOF'
 Implements task {{TASK_ID}}
 
 ## What changed
 <Summarize the changes you made and why>
 
 ## How to test
-<Describe how a reviewer can verify the changes>
+<Describe how a reviewer can verify the changes>{{#if MR_FOOTER}}
+
+{{MR_FOOTER}}{{/if}}
 OPTIO_PR_EOF
 )"{{/if}}{{#if DRAFT_PR}} --draft{{/if}}
    \`\`\`
@@ -193,7 +203,7 @@ export const DEFAULT_REVIEW_PROMPT_TEMPLATE = `You are a code reviewer. You have
 5. Submit your review:
 {{#if GIT_PLATFORM_CODECOMMIT}}   - If the code is good: \`aws codecommit update-pull-request-approval-state --pull-request-id {{PR_NUMBER}} --revision-id $(aws codecommit get-pull-request --pull-request-id {{PR_NUMBER}} --query 'pullRequest.revisionId' --output text) --approval-state APPROVE\` then \`aws codecommit post-comment-for-pull-request --pull-request-id {{PR_NUMBER}} --repository-name {{CODECOMMIT_REPO}} --before-commit-id $(aws codecommit get-pull-request --pull-request-id {{PR_NUMBER}} --query 'pullRequest.pullRequestTargets[0].destinationCommit' --output text) --after-commit-id $(aws codecommit get-pull-request --pull-request-id {{PR_NUMBER}} --query 'pullRequest.pullRequestTargets[0].sourceCommit' --output text) --content "Your review summary"\`
    - If changes are needed: post a comment with \`aws codecommit post-comment-for-pull-request ...\` whose content starts with \`**[CHANGES REQUESTED]**\`
-{{else}}{{#if GIT_PLATFORM_GITLAB}}   - If the code is good: \`glab mr approve {{PR_NUMBER}}\` then \`glab mr note {{PR_NUMBER}} --message "Your review summary"\`
+{{else}}{{#if GIT_PLATFORM_GITLAB}}   - If the code is good: \`glab mr approve {{PR_NUMBER}} || (glab mr revoke {{PR_NUMBER}} && glab mr approve {{PR_NUMBER}})\` (an approval you already gave is given again, so it counts after any changes you requested since) then \`glab mr note {{PR_NUMBER}} --message "Your review summary"\`
    - If changes are needed: \`glab mr note {{PR_NUMBER}} --message "Changes requested: What needs fixing"\`
 {{else}}   - If the code is good: \`gh pr review {{PR_NUMBER}} --approve --body "Your review summary"\`
    - If changes are needed: \`gh pr review {{PR_NUMBER}} --request-changes --body "What needs fixing"\`
@@ -291,6 +301,31 @@ export const DEFAULT_PR_REVIEW_PROMPT_TEMPLATE = `You are a code review assistan
 {{/if}}{{/if}}- Your working directory is your worktree. Do not navigate outside it.
 - **You have a limited turn budget.** Focus on the diff and task context. Do not exhaustively explore the entire codebase. Write the review JSON file BEFORE you run out of turns.
 `;
+
+/**
+ * The built-in prompts for a repo on `platform`. A GitLab repo gets the
+ * prompts written for GitLab (prompt-template-gitlab.ts: draft merge requests,
+ * the target branch, the pipeline and the discussion); any other repo gets
+ * the defaults above. A prompt someone saved still wins over either.
+ */
+export function builtinPromptTemplates(platform?: string | null): {
+  task: string;
+  review: string;
+  prReview: string;
+} {
+  if (platform === "gitlab") {
+    return {
+      task: GITLAB_PROMPT_TEMPLATE,
+      review: GITLAB_REVIEW_PROMPT_TEMPLATE,
+      prReview: GITLAB_PR_REVIEW_PROMPT_TEMPLATE,
+    };
+  }
+  return {
+    task: DEFAULT_PROMPT_TEMPLATE,
+    review: DEFAULT_REVIEW_PROMPT_TEMPLATE,
+    prReview: DEFAULT_PR_REVIEW_PROMPT_TEMPLATE,
+  };
+}
 
 /**
  * A title as `{{TASK_TITLE}}` takes it: the templates put it inside a
