@@ -61,6 +61,8 @@
     "pino": "^9.14.0",
     "pino-pretty": "^13.2.0",
     "postgres": "^3.4.9",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-sealedbox-js": "^1.2.0",
     "undici": "^8.12.3",
     "web-push": "^3.6.7",
     "yaml": "2.9.1",

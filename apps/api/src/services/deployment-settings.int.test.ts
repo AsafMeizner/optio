@@ -16,6 +16,8 @@ beforeEach(async () => {
   vi.stubEnv("OPTIO_AUTH_DISABLED", "false");
   vi.stubEnv("OPTIO_DEPLOYMENT_ADMINS", "");
   vi.stubEnv("OPTIO_WORKSPACE_CREATION", "");
+  vi.stubEnv("OPTIO_REMOTE_WORKSPACES", "false");
+  await setDeploymentSetting("remoteWorkspaces.enabled", null, null);
   await setDeploymentSetting(WORKSPACE_CREATION_KEY, null, null);
 });
 afterEach(() => vi.unstubAllEnvs());
@@ -43,6 +45,62 @@ async function appAs(deploymentAdmin = false) {
 }
 
 describe("deployment workspace-creation policy", () => {
+  it("restricts remote-provider overrides to deployment admins and restores the environment", async () => {
+    const admin = await appAs(true);
+    const workspaceAdmin = await appAs();
+    try {
+      const denied = await workspaceAdmin.inject({
+        method: "PUT",
+        url: "/api/deployment-settings",
+        payload: { remoteWorkspaces: true },
+      });
+      expect(denied.statusCode).toBe(403);
+      expect(await getDeploymentSetting("remoteWorkspaces.enabled")).toBeUndefined();
+      const enabled = await admin.inject({
+        method: "PUT",
+        url: "/api/deployment-settings",
+        payload: { remoteWorkspaces: true },
+      });
+      expect(enabled.statusCode).toBe(200);
+      expect(enabled.json().remoteWorkspaces).toEqual({
+        value: true,
+        environment: false,
+        source: "app",
+      });
+      expect(
+        (await workspaceAdmin.inject({ method: "GET", url: "/api/deployment-settings" })).json()
+          .remoteWorkspaces.value,
+      ).toBe(true);
+      vi.stubEnv("OPTIO_REMOTE_WORKSPACES", "true");
+      const disabled = await admin.inject({
+        method: "PUT",
+        url: "/api/deployment-settings",
+        payload: { remoteWorkspaces: false },
+      });
+      expect(disabled.statusCode).toBe(200);
+      expect(disabled.json().remoteWorkspaces).toEqual({
+        value: false,
+        environment: true,
+        source: "app",
+      });
+      const follow = await admin.inject({
+        method: "PUT",
+        url: "/api/deployment-settings",
+        payload: { remoteWorkspaces: null },
+      });
+      expect(follow.statusCode).toBe(200);
+      expect(follow.json().remoteWorkspaces).toEqual({
+        value: true,
+        environment: true,
+        source: "environment",
+      });
+      expect(await getDeploymentSetting("remoteWorkspaces.enabled")).toBeUndefined();
+    } finally {
+      await admin.close();
+      await workspaceAdmin.close();
+    }
+  });
+
   it("retains everyone by default, while separating workspace and deployment admins", async () => {
     const app = await appAs();
     try {
@@ -50,6 +108,7 @@ describe("deployment workspace-creation policy", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
         workspaceCreation: { value: "everyone", environment: "everyone", source: "environment" },
+        remoteWorkspaces: { value: false, environment: false, source: "environment" },
         onboarding: { value: false, environment: false, source: "environment" },
         canEdit: false,
         mayCreateWorkspace: true,

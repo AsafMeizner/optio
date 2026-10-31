@@ -10,6 +10,7 @@ import {
   SHELL_RUNTIME,
   type LocalAgentSessionMode,
   type RunTarget,
+  type RemoteWorkspaceLaunch,
 } from "@optio/shared";
 import { db } from "../db/client.js";
 import { workDefinitions, workflowRuns, workflowTriggers } from "../db/schema.js";
@@ -120,6 +121,8 @@ export interface CreateWorkflowInput {
   localHostId?: string | null;
   localDir?: string | null;
   localSessionMode?: LocalAgentSessionMode | null;
+  /** Runs in a remote workspace Optio starts (docs/remote-workspaces.md); a local run target. */
+  remoteWorkspaceLaunch?: RemoteWorkspaceLaunch | null;
 }
 
 export async function createWorkflow(input: CreateWorkflowInput) {
@@ -143,6 +146,9 @@ export async function createWorkflow(input: CreateWorkflowInput) {
     localHostId: local ? (input.localHostId ?? null) : null,
     localDir: local ? (input.localDir ?? null) : null,
     localSessionMode: input.localSessionMode ?? "headless",
+    ...(local && input.remoteWorkspaceLaunch
+      ? { remoteWorkspaceLaunch: input.remoteWorkspaceLaunch }
+      : {}),
     enabled: input.enabled ?? true,
     environmentSpec: input.environmentSpec,
     paramsSchema: input.paramsSchema,
@@ -203,8 +209,9 @@ export async function cloneWorkflow(
   id: string,
   opts?: { workspaceId?: string; createdBy?: string },
 ) {
-  const source = await getWorkflow(id);
-  if (!source) return null;
+  const row = await definitions.getDefinition(id, "standalone");
+  if (!row) return null;
+  const source = toWorkflow(row);
 
   const cloned = await createWorkflow({
     name: `${source.name} (copy)`,
@@ -222,9 +229,12 @@ export async function cloneWorkflow(
     maxPodInstances: source.maxPodInstances ?? undefined,
     maxAgentsPerPod: source.maxAgentsPerPod ?? undefined,
     runTarget: source.runTarget,
-    localHostId: source.localHostId,
+    // A Job in a remote workspace keeps its launch; the machine its first
+    // firing paired is the source's, so the copy starts a workspace of its own.
+    localHostId: row.remoteWorkspaceLaunch ? null : source.localHostId,
     localDir: source.localDir,
     localSessionMode: source.localSessionMode,
+    remoteWorkspaceLaunch: row.remoteWorkspaceLaunch ?? null,
     enabled: false, // clones start disabled
     environmentSpec: (source.environmentSpec as Record<string, unknown>) ?? undefined,
     paramsSchema: (source.paramsSchema as Record<string, unknown>) ?? undefined,

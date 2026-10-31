@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  REMOTE_WORKSPACE_PROVIDERS,
   TRIGGER_TYPES,
   WORK_SOURCES,
   WORK_STATUSES,
@@ -168,6 +169,17 @@ const TRIGGERED_WHEN_TYPES = TRIGGER_TYPES.filter(
 ) as [TriggeredWhenType, ...TriggeredWhenType[]];
 
 /** Work described by its five attributes — mirrors `WorkSpec` in @optio/shared. */
+/** Which remote workspace work starts in (`where.remoteWorkspace`; RemoteWorkspaceLaunch). */
+const remoteWorkspaceLaunch = z.object({
+  connectionId: z.string().uuid().nullable().optional(),
+  workspaceId: z.string().min(1).max(200).nullable().optional(),
+  templateVersionId: z.string().min(1).max(200).nullable().optional(),
+  templateId: z.string().min(1).max(200).nullable().optional(),
+  parameters: z.record(z.string().max(4000)).nullable().optional(),
+  name: z.string().min(1).max(48).nullable().optional(),
+  checkoutDir: z.string().min(1).max(1000).nullable().optional(),
+});
+
 export const WorkSpecSchema = z
   .object({
     name: z.string().trim().min(1).max(200),
@@ -188,8 +200,25 @@ export const WorkSpecSchema = z
         repoBranch: branch.nullable().optional(),
         localHostId: z.string().uuid().nullable().optional(),
         localDir: z.string().min(1).max(1000).nullable().optional(),
+        remoteWorkspace: remoteWorkspaceLaunch
+          .extend({ provider: z.enum(REMOTE_WORKSPACE_PROVIDERS).nullable().optional() })
+          .nullable()
+          .optional()
+          .describe(
+            "In a remote workspace (runTarget local; docs/remote-workspaces.md): an existing " +
+              "workspace of yours, or a new one from a template, at a provider (Coder, GitHub " +
+              "Codespaces, Daytona, E2B; unset = the connection's). Optio fills localHostId " +
+              "(and localDir, the workspace's checkout) and starts the workspace; the run waits " +
+              "for it to pair.",
+          ),
+        coder: remoteWorkspaceLaunch
+          .nullable()
+          .optional()
+          .describe("Deprecated: `remoteWorkspace` with provider coder."),
       })
-      .describe("An Optio pod or one of your machines, and the repo it works in, if any"),
+      .describe(
+        "An Optio pod, one of your machines or a remote workspace, and the repo it works in, if any",
+      ),
     who: z
       .object({
         runtime: AgentTypeSchema.nullable().describe("Agent runtime; null = a plain terminal"),

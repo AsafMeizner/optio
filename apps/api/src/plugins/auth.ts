@@ -101,6 +101,9 @@ const PUBLIC_ROUTES = new Set([
   "/api/notifications/vapid-public-key",
   "/api/internal/git-credentials",
   "/api/internal/persistent-agents",
+  "/api/cli/install.sh",
+  "/api/cli/optio-cli.tgz",
+  "/api/cli/workspace-start.sh",
 ]);
 
 /**

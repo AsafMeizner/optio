@@ -18,6 +18,7 @@ import {
   check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { RemoteWorkspaceLaunch, RemoteWorkspaceProviderId } from "@optio/shared";
 import type {
   ConfigApplyResult,
   WorkLink,
@@ -184,6 +185,7 @@ function runColumns() {
     localHostId: uuid("local_host_id").references(() => localHosts.id, { onDelete: "set null" }),
     localDir: text("local_dir"),
     localSessionMode: text("local_session_mode").$type<"interactive" | "headless">(),
+    remoteWorkspaceLaunch: jsonb("remote_workspace_launch").$type<RemoteWorkspaceLaunch>(),
     localTerminalId: uuid("local_terminal_id"),
     // Who the work belongs to (null = the organization) and the secrets its
     // pod gets by name (null = the workspace's legacy behavior).
@@ -877,6 +879,7 @@ export const workDefinitions = pgTable(
     localHostId: uuid("local_host_id").references(() => localHosts.id, { onDelete: "set null" }),
     localDir: text("local_dir"),
     localSessionMode: text("local_session_mode").$type<"interactive" | "headless">(),
+    remoteWorkspaceLaunch: jsonb("remote_workspace_launch").$type<RemoteWorkspaceLaunch>(),
     environmentSpec: jsonb("environment_spec").$type<Record<string, unknown>>(),
     // Local automations: "hold" parks each spawned terminal until you start it.
     spawnMode: text("spawn_mode").$type<"auto" | "hold">().notNull().default("auto"),
@@ -1143,6 +1146,69 @@ export const modelProviders = pgTable(
   (table) => [
     index("model_providers_workspace_id_idx").on(table.workspaceId),
     index("model_providers_owner_user_id_idx").on(table.ownerUserId),
+  ],
+);
+
+// ── Remote workspaces (docs/remote-workspaces.md) ──────────────────────────
+//
+// Where Optio starts work in a remote workspace: the provider (Coder, GitHub
+// Codespaces, Daytona, E2B), its API, a token (sealed; AAD
+// `coder_connection|<id>`, the label the first rows were sealed under;
+// never returned), its CA, and the default template. One per provider for
+// the organization, per team and per person; work uses the person's, else
+// its team's, else the organization's
+// (services/remote-workspace-service.ts `resolveConnectionFor`).
+
+export const remoteWorkspaceConnections = pgTable(
+  "remote_workspace_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id"),
+    provider: text("provider").$type<RemoteWorkspaceProviderId>().notNull(),
+    // Null = the organization's; set = one person's (or, with a team, its creator).
+    ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "cascade" }),
+    ownerTeamId: uuid("owner_team_id"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    name: text("name").notNull(),
+    url: text("url").notNull(),
+    encryptedToken: bytea("encrypted_token"),
+    tokenIv: bytea("token_iv"),
+    tokenAuthTag: bytea("token_auth_tag"),
+    tokenHint: text("token_hint"),
+    caPem: text("ca_pem"),
+    insecureSkipVerify: boolean("insecure_skip_verify").notNull().default(false),
+    organizationId: text("organization_id"),
+    templateId: text("template_id"),
+    templateVersionId: text("template_version_id"),
+    templateName: text("template_name"),
+    defaultParameters: jsonb("default_parameters")
+      .$type<Record<string, string>>()
+      .notNull()
+      .default({}),
+    ttlMs: bigint("ttl_ms", { mode: "number" }),
+    deleteWhenDone: boolean("delete_when_done").notNull().default(false),
+    lastTestedAt: timestamp("last_tested_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("remote_workspace_connections_workspace_id_idx").on(table.workspaceId),
+    check("remote_workspace_connections_team_owner_check", sql`${table.ownerTeamId} IS NULL`),
+    check(
+      "remote_workspace_connections_provider_check",
+      sql`${table.provider} IN ('coder', 'codespaces', 'daytona', 'e2b')`,
+    ),
+    uniqueIndex("remote_workspace_connections_org_key")
+      .on(table.workspaceId, table.provider)
+      .where(sql`${table.ownerUserId} IS NULL`),
+    uniqueIndex("remote_workspace_connections_team_key")
+      .on(table.workspaceId, table.provider, table.ownerTeamId)
+      .where(sql`${table.ownerTeamId} IS NOT NULL`),
+    uniqueIndex("remote_workspace_connections_user_key")
+      .on(table.workspaceId, table.provider, table.ownerUserId)
+      .where(sql`${table.ownerUserId} IS NOT NULL AND ${table.ownerTeamId} IS NULL`),
   ],
 );
 
@@ -2144,6 +2210,22 @@ export const localHosts = pgTable(
     // Agent terminals that may run on the machine at once; automation spawns
     // past it park in pending/capacity (local-terminal-service).
     maxConcurrentAgents: integer("max_concurrent_agents").notNull().default(3),
+    // A provider's id ("coder", "codespaces", "daytona", "e2b"): a remote
+    // workspace Optio started (docs/remote-workspaces.md). The row is
+    // registered before the workspace exists; its daemon claims it by id.
+    origin: text("origin")
+      .$type<"machine" | RemoteWorkspaceProviderId>()
+      .notNull()
+      .default("machine"),
+    remoteWorkspaceId: text("remote_workspace_id"),
+    remoteWorkspaceConnectionId: uuid("remote_workspace_connection_id").references(
+      () => remoteWorkspaceConnections.id,
+      { onDelete: "set null" },
+    ),
+    remoteWorkspaceName: text("remote_workspace_name"),
+    pairingTokenId: uuid("pairing_token_id").references(() => apiKeys.id, {
+      onDelete: "set null",
+    }),
     state: localHostStateEnum("state").notNull().default("offline"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -2152,6 +2234,9 @@ export const localHosts = pgTable(
   (table) => [
     unique("local_hosts_user_hostname_key").on(table.userId, table.hostname),
     index("local_hosts_user_id_idx").on(table.userId),
+    index("local_hosts_remote_workspace_id_idx")
+      .on(table.remoteWorkspaceId)
+      .where(sql`${table.remoteWorkspaceId} IS NOT NULL`),
   ],
 );
 

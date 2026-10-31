@@ -549,6 +549,23 @@ export const TRIGGER_PARAMS: Record<WhenType, string[]> = {
 
 export const isLocal = (d: WorkDraft) => d.location.runTarget === "local";
 
+/** In a remote workspace (docs/remote-workspaces.md): a local run on a workspace Optio starts. */
+export const isRemoteWorkspace = (d: WorkDraft) => isLocal(d) && !!d.location.remoteWorkspace;
+
+/**
+ * Why "A remote workspace" can't be picked. New work can use one whatever
+ * starts it: work that runs now starts the workspace when it is created,
+ * work on a trigger or a schedule when it first fires (local-run-service
+ * wakes it from the saved `remote_workspace_launch`). An edit keeps a saved
+ * remote workspace, but saved work that runs elsewhere doesn't move onto one.
+ */
+export function remoteWorkspaceDisabled(d: WorkDraft, editing = false): string | undefined {
+  if (editing && !isRemoteWorkspace(d)) {
+    return "Saved work keeps where it runs — start new work to use a remote workspace.";
+  }
+  return undefined;
+}
+
 const EVENT_WHENS: ReadonlySet<string> = new Set<EventTriggerType>([
   "github",
   "gitlab",
@@ -682,13 +699,19 @@ export function thenOptions(d: WorkDraft): Choice<Then>[] {
     },
     {
       value: "waits-for-me",
-      ...(!local && !d.withRepo && terminal
-        ? { disabled: "A pod terminal is attached to a repo — pick a repository above." }
-        : !local && isTriggered(d)
-          ? {
-              disabled: "A pod terminal is opened by hand. On your machine, triggers can open one.",
-            }
-          : {}),
+      ...(isRemoteWorkspace(d)
+        ? {
+            disabled:
+              "A remote workspace runs work that finishes — pick My machine for an interactive session.",
+          }
+        : !local && !d.withRepo && terminal
+          ? { disabled: "A pod terminal is attached to a repo — pick a repository above." }
+          : !local && isTriggered(d)
+            ? {
+                disabled:
+                  "A pod terminal is opened by hand. On your machine, triggers can open one.",
+              }
+            : {}),
     },
     {
       // In a pod, with or without a repo (it then works in a checkout of
@@ -717,6 +740,13 @@ export function normalize(d: WorkDraft): WorkDraft {
   const where = firstEnabled(whereOptions(next), next.location.runTarget);
   if (where !== next.location.runTarget) {
     next = { ...next, location: { ...next.location, runTarget: where } };
+  }
+  // A remote workspace the form no longer allows goes back to a plain
+  // machine. No rule refuses one a new draft already has today
+  // (remoteWorkspaceDisabled only stops an edit moving onto one); this keeps
+  // a future rule honest.
+  if (isRemoteWorkspace(next) && remoteWorkspaceDisabled(next)) {
+    next = { ...next, location: { ...next.location, remoteWorkspace: null } };
   }
   // A runtime that can't run here falls back to the first agent that can —
   // never silently to a bare terminal, which is a different kind of work.
@@ -1034,6 +1064,27 @@ export function describe(
       parts.push(
         d.repoUrl
           ? { text: `with ${ctx.repoName ?? d.repoUrl}` }
+          : { missing: "a repo", field: "repo" },
+      );
+    }
+  } else if (isRemoteWorkspace(d)) {
+    const remote = d.location.remoteWorkspace!;
+    parts.push(
+      !remote.connectionId
+        ? { missing: "a remote workspace", field: "machine" }
+        : remote.source === "existing" && !remote.workspaceId
+          ? { missing: "a remote workspace", field: "machine" }
+          : {
+              text:
+                remote.source === "existing"
+                  ? "in a remote workspace"
+                  : "in a new remote workspace",
+            },
+    );
+    if (d.withRepo && d.runtime !== TERMINAL) {
+      parts.push(
+        remote.repoUrl.trim()
+          ? { text: `on a new branch of ${remote.repoUrl.trim().replace(/^https?:\/\//, "")}` }
           : { missing: "a repo", field: "repo" },
       );
     }

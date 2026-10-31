@@ -55,3 +55,26 @@ describe("WorkspaceCreationSettings", () => {
     );
   });
 });
+
+describe("remote workspace deployment switch", () => {
+  it("lets only the deployment admin opt in and return to the off environment default", async () => {
+    api.getDeploymentSettings.mockResolvedValue(
+      settings({ remoteWorkspaces: { value: false, source: "environment", environment: false } }),
+    );
+    api.updateDeploymentSettings.mockResolvedValue(
+      settings({ remoteWorkspaces: { value: true, source: "app", environment: false } }),
+    );
+    render(<WorkspaceCreationSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "On", exact: true }));
+    await waitFor(() =>
+      expect(api.updateDeploymentSettings).toHaveBeenCalledWith({ remoteWorkspaces: true }),
+    );
+    api.updateDeploymentSettings.mockResolvedValue(
+      settings({ remoteWorkspaces: { value: false, source: "environment", environment: false } }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Follow the deployment (off)" }));
+    await waitFor(() =>
+      expect(api.updateDeploymentSettings).toHaveBeenLastCalledWith({ remoteWorkspaces: null }),
+    );
+  });
+});

@@ -101,6 +101,7 @@ function definition(overrides: Partial<WorkDefinition> = {}): WorkDefinition {
   return {
     id: "w-1",
     kind: "standalone",
+    remoteWorkspaceLaunch: null,
     name: "Deploy",
     description: null,
     workspaceId: null,
