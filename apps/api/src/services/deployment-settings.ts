@@ -15,6 +15,7 @@ import { deploymentSettings } from "../db/schema.js";
  * | Key                   | Values                   | Environment default                                                   |
  * | --------------------- | ------------------------ | --------------------------------------------------------------------- |
  * | `workspaces.creation` | `"admins"`, `"everyone"` | `OPTIO_WORKSPACE_CREATION` (chart `workspaces.creation`), `everyone`  |
+ * | `onboarding.enabled`  | `true`, `false`          | `OPTIO_ONBOARDING` (chart `onboarding.enabled`), `false`              |
  *
  * Other deployment-wide settings live here too:
  * `getDeploymentSetting(key)` / `setDeploymentSetting(key, value, userId)`,
@@ -157,3 +158,15 @@ export async function switchEnabled(sw: DeploymentSwitch): Promise<boolean> {
 export function forgetSwitches(): void {
   switchCache.clear();
 }
+
+// ── onboarding.enabled ──────────────────────────────────────────────────────
+
+/**
+ * The getting-started checklist on the Overview and Help → Using Optio in
+ * the account menu (docs/using-optio.md). Web only: nothing on the server
+ * changes with it. Off by default.
+ */
+export const ONBOARDING: DeploymentSwitch = {
+  key: "onboarding.enabled",
+  env: "OPTIO_ONBOARDING",
+};

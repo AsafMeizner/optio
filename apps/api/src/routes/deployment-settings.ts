@@ -8,8 +8,10 @@ import {
   requesterIsDeploymentAdmin,
 } from "../services/deployment-admin-gates.js";
 import {
+  ONBOARDING,
   WORKSPACE_CREATION_KEY,
   setDeploymentSetting,
+  switchPolicy,
   workspaceCreationPolicy,
 } from "../services/deployment-settings.js";
 import { logAction } from "../services/optio-action-service.js";
@@ -20,7 +22,8 @@ import { isAuthDisabled } from "../services/oauth/index.js";
  * Settings → Access. Anyone signed in reads them (the web app shows "New
  * workspace" by `mayCreateWorkspace`); only a deployment admin changes them.
  * A value of null goes back to the deployment's own default
- * (`OPTIO_WORKSPACE_CREATION` / chart `workspaces.creation`).
+ * (`OPTIO_WORKSPACE_CREATION` / chart `workspaces.creation`,
+ * `OPTIO_ONBOARDING` / chart `onboarding.enabled`).
  *
  * A feature that adds a setting adds its field to `SettingsResponseSchema`
  * and `UpdateBodySchema`, and its line to `current` and the `changes` below;
@@ -48,6 +51,9 @@ const SettingsResponseSchema = z.object({
       environment: WorkspaceCreationSchema,
     })
     .describe("Who may create a workspace (everyone by default)"),
+  onboarding: DeploymentSwitchSchema.describe(
+    "The getting-started checklist and the in-app guide (off by default)",
+  ),
   canEdit: z.boolean().describe("The caller is a deployment admin"),
   mayCreateWorkspace: z.boolean().describe("The caller may create a workspace now"),
 });
@@ -57,6 +63,13 @@ const UpdateBodySchema = z
     workspaceCreation: WorkspaceCreationSchema.nullable()
       .optional()
       .describe("Who may create a workspace; null = the deployment's default"),
+    onboarding: z
+      .boolean()
+      .nullable()
+      .optional()
+      .describe(
+        "Show the getting-started checklist and the guide; null = the deployment's default",
+      ),
   })
   .describe("Deployment settings to change");
 
@@ -65,6 +78,7 @@ export async function deploymentSettingsRoutes(rawApp: FastifyInstance) {
 
   const current = async (req: Parameters<typeof mayCreateWorkspace>[0]) => ({
     workspaceCreation: await workspaceCreationPolicy(),
+    onboarding: await switchPolicy(ONBOARDING),
     canEdit: await requesterIsDeploymentAdmin(req),
     mayCreateWorkspace: await mayCreateWorkspace(req),
   });
@@ -76,8 +90,9 @@ export async function deploymentSettingsRoutes(rawApp: FastifyInstance) {
         operationId: "getDeploymentSettings",
         summary: "Deployment-wide settings",
         description:
-          "Who may create workspaces (and where that comes from), whether the caller " +
-          "may change the settings, and whether the caller may create a workspace now.",
+          "Who may create workspaces and whether the getting-started guide shows (and " +
+          "where each comes from), whether the caller may change the settings, and " +
+          "whether the caller may create a workspace now.",
         tags: ["Setup & Settings"],
         response: { 200: SettingsResponseSchema, 401: ErrorResponseSchema },
       },
@@ -121,6 +136,7 @@ export async function deploymentSettingsRoutes(rawApp: FastifyInstance) {
       const changes: Array<[string, unknown]> = [];
       if (req.body.workspaceCreation !== undefined)
         changes.push([WORKSPACE_CREATION_KEY, req.body.workspaceCreation]);
+      if (req.body.onboarding !== undefined) changes.push([ONBOARDING.key, req.body.onboarding]);
       for (const [key, value] of changes) {
         await setDeploymentSetting(key, value, req.user?.id ?? null);
         logAction({

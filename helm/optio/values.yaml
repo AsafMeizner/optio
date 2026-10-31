@@ -22,6 +22,12 @@ features:
 workspaces:
   creation: everyone
 
+# The getting-started checklist on the Overview and Help → Using Optio in the
+# account menu (docs/using-optio.md). Off by default; an app setting
+# (Settings → Access) overrides it. (OPTIO_ONBOARDING)
+onboarding:
+  enabled: false
+
 # ──────────────────────────────────────────────────────────────────────────────
 # API Server
 # ──────────────────────────────────────────────────────────────────────────────

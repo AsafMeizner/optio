@@ -113,12 +113,21 @@ export interface SignInProviderView {
   updatedAt: string | null;
 }
 
+/** An on / off deployment behaviour (Settings → Access). */
+export interface DeploymentSwitch {
+  value: boolean;
+  source: "app" | "environment";
+  environment: boolean;
+}
+
 export interface DeploymentSettings {
   workspaceCreation: {
     value: "admins" | "everyone";
     source: "app" | "environment";
     environment: "admins" | "everyone";
   };
+  /** The getting-started checklist and Help → Using Optio (off by default). */
+  onboarding?: DeploymentSwitch;
   canEdit: boolean;
   mayCreateWorkspace: boolean;
 }
@@ -154,7 +163,10 @@ export interface VisibleSecret extends SecretRef {
 export const api = {
   getFeatures: () => request<DeploymentFeatures>("/api/features"),
   getDeploymentSettings: () => request<DeploymentSettings>("/api/deployment-settings"),
-  updateDeploymentSettings: (data: { workspaceCreation?: "admins" | "everyone" | null }) =>
+  updateDeploymentSettings: (data: {
+    workspaceCreation?: "admins" | "everyone" | null;
+    onboarding?: boolean | null;
+  }) =>
     request<DeploymentSettings>("/api/deployment-settings", {
       method: "PUT",
       body: JSON.stringify(data),
