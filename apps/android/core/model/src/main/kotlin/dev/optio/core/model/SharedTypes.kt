@@ -1411,6 +1411,8 @@ data class PullRequest(
     val state: State,
     val merged: Boolean,
     val mergeable: Boolean? = null,
+    /** GitLab detailed_merge_status. */
+    val mergeStatus: String? = null,
     val draft: Boolean,
     val headSha: String,
     val baseBranch: String,

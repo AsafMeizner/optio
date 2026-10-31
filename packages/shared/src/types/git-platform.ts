@@ -15,6 +15,8 @@ export interface PullRequest {
   state: "open" | "closed";
   merged: boolean;
   mergeable: boolean | null;
+  /** GitLab detailed_merge_status. */
+  mergeStatus?: string;
   draft: boolean;
   headSha: string;
   baseBranch: string;

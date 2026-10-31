@@ -3296,6 +3296,8 @@ public struct PullRequest: Codable, Hashable, Sendable {
     public let state: State
     public let merged: Bool
     public let mergeable: Bool?
+    /// GitLab detailed_merge_status.
+    public let mergeStatus: String?
     public let draft: Bool
     public let headSha: String
     public let baseBranch: String
@@ -3317,6 +3319,7 @@ public struct PullRequest: Codable, Hashable, Sendable {
         case state = "state"
         case merged = "merged"
         case mergeable = "mergeable"
+        case mergeStatus = "mergeStatus"
         case draft = "draft"
         case headSha = "headSha"
         case baseBranch = "baseBranch"
@@ -3337,6 +3340,7 @@ public struct PullRequest: Codable, Hashable, Sendable {
         state: State,
         merged: Bool,
         mergeable: Bool? = nil,
+        mergeStatus: String? = nil,
         draft: Bool,
         headSha: String,
         baseBranch: String,
@@ -3355,6 +3359,7 @@ public struct PullRequest: Codable, Hashable, Sendable {
         self.state = state
         self.merged = merged
         self.mergeable = mergeable
+        self.mergeStatus = mergeStatus
         self.draft = draft
         self.headSha = headSha
         self.baseBranch = baseBranch

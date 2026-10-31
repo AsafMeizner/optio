@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { API, liveTerminal } from "./fake-daemon";
 
@@ -5,8 +6,10 @@ test("session rail ends a live row first, deletes it once stopped after confirmi
   page,
   request,
 }) => {
+  const fixture = `session-delete-${randomUUID()}`;
+  const liveTitle = `Keep this session open ${fixture}`;
   const live = await liveTerminal(request, {
-    title: "Keep this session open",
+    title: liveTitle,
     screen: "$ ready\r\n",
   });
   const { hosts } = await (await request.get(`${API}/api/local/hosts`)).json();
@@ -27,19 +30,21 @@ test("session rail ends a live row first, deletes it once stopped after confirmi
     }
     return terminal;
   };
-  const target = await create("Delete from sidebar");
-  const current = await create("Delete current session", true);
+  const target = await create(`Delete from sidebar ${fixture}`);
+  const current = await create(`Delete current session ${fixture}`, true);
+  const unrelated = await create("Unrelated session", true);
   try {
     await page.goto(`/work/${live.id}`);
+    // The rail is global: isolate this fixture through the same search users use.
+    await page.getByRole("searchbox", { name: "Search sessions", exact: true }).fill(fixture);
+    await expect(page.locator(`[data-terminal-id="${unrelated.id}"]`)).toHaveCount(0);
     // A running row offers End session, not Delete; ending turns it into Delete.
     const kill = page.getByRole("button", { name: `End ${target.title}`, exact: true });
     await expect(kill).toBeEnabled();
     await expect(
       page.getByRole("button", { name: `Delete ${target.title}`, exact: true }),
     ).toHaveCount(0);
-    await expect(
-      page.getByRole("button", { name: "End Keep this session open", exact: true }),
-    ).toBeEnabled();
+    await expect(page.getByRole("button", { name: `End ${liveTitle}`, exact: true })).toBeEnabled();
     await kill.click();
     const remove = page.getByRole("button", { name: `Delete ${target.title}`, exact: true });
     await expect(remove).toBeEnabled();
@@ -58,6 +63,8 @@ test("session rail ends a live row first, deletes it once stopped after confirmi
 
     // Deleting the open session moves to the next row in the rail, not /work.
     await page.goto(`/work/${current.id}`);
+    await page.getByRole("searchbox", { name: "Search sessions", exact: true }).fill(fixture);
+    await expect(page.getByRole("button", { name: `End ${liveTitle}`, exact: true })).toBeEnabled();
     await page.getByRole("button", { name: `Delete ${current.title}`, exact: true }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/work/${live.id}$`));
@@ -65,6 +72,7 @@ test("session rail ends a live row first, deletes it once stopped after confirmi
   } finally {
     await request.delete(`${API}/api/local/terminals/${target.id}`);
     await request.delete(`${API}/api/local/terminals/${current.id}`);
+    await request.delete(`${API}/api/local/terminals/${unrelated.id}`);
     await live.done();
   }
 });
