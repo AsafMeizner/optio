@@ -1,6 +1,11 @@
 import { setOutboundDefaults } from "../../utils/outbound-url.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { GitLabApiError, GitLabPlatform } from "./gitlab.js";
+import {
+  GitLabApiError,
+  GitLabNotReadyError,
+  GitLabPlatform,
+  classifyGitLabFailure,
+} from "./gitlab.js";
 import { determineReviewStatus } from "../../workers/pr-watcher-worker.js";
 import { buildCommentsSection } from "../ticket-context.js";
 import type { RepoIdentifier } from "@optio/shared";
@@ -233,11 +238,15 @@ describe("GitLabPlatform", () => {
         { name: "deploy", status: "manual" },
       ]);
 
+      // Third call: trigger jobs (none)
+      mockJsonResponse([]);
+
       const checks = await platform.getCIChecks(ri, "abc123");
 
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
       expect(mockFetch.mock.calls[0][0]).toContain(`/pipelines?sha=abc123`);
       expect(mockFetch.mock.calls[1][0]).toContain(`/pipelines/100/jobs`);
+      expect(mockFetch.mock.calls[2][0]).toContain(`/pipelines/100/bridges`);
       expect(checks).toEqual([
         { name: "build", status: "completed", conclusion: "success" },
         { name: "test", status: "completed", conclusion: "failure" },
@@ -249,6 +258,110 @@ describe("GitLabPlatform", () => {
       mockJsonResponse([]);
       const checks = await platform.getCIChecks(ri, "abc123");
       expect(checks).toEqual([]);
+    });
+
+    it("uses the MR's head pipeline (a merged-results pipeline runs on another SHA)", async () => {
+      mockJsonResponse({
+        iid: 7,
+        state: "opened",
+        sha: "head1",
+        head_pipeline: { id: 555, sha: "merge-commit", status: "running" },
+      });
+      await platform.getPullRequest(ri, 7);
+      mockJsonResponse([{ name: "test", status: "running" }]);
+      mockJsonResponse([]);
+
+      const checks = await platform.getCIChecks(ri, "head1");
+
+      const urls = mockFetch.mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.includes("/pipelines?sha="))).toBe(false);
+      expect(urls[1]).toContain("/pipelines/555/jobs");
+      expect(checks).toEqual([{ name: "test", status: "in_progress", conclusion: null }]);
+    });
+
+    it("looks the pipeline up by SHA when the MR read was for another head", async () => {
+      mockJsonResponse({ iid: 7, state: "opened", sha: "old", head_pipeline: { id: 1 } });
+      await platform.getPullRequest(ri, 7);
+      mockJsonResponse([{ id: 2, status: "success" }]);
+      mockJsonResponse([{ name: "build", status: "success" }]);
+      mockJsonResponse([]);
+
+      await platform.getCIChecks(ri, "new");
+
+      expect(String(mockFetch.mock.calls[1][0])).toContain("/pipelines?sha=new");
+      expect(String(mockFetch.mock.calls[2][0])).toContain("/pipelines/2/jobs");
+    });
+
+    it("a job allowed to fail doesn't fail the checks (passed with warnings)", async () => {
+      mockJsonResponse([{ id: 3, status: "success" }]);
+      mockJsonResponse([
+        { name: "build", status: "success" },
+        { name: "lint", status: "failed", allow_failure: true },
+      ]);
+      mockJsonResponse([]);
+
+      const checks = await platform.getCIChecks(ri, "abc");
+
+      expect(checks).toEqual([
+        { name: "build", status: "completed", conclusion: "success" },
+        { name: "lint", status: "completed", conclusion: "skipped" },
+      ]);
+    });
+
+    it("counts trigger jobs (child pipelines) as checks", async () => {
+      mockJsonResponse([{ id: 4, status: "failed" }]);
+      mockJsonResponse([{ name: "build", status: "success" }]);
+      mockJsonResponse([{ name: "trigger-e2e", status: "failed" }]);
+
+      const checks = await platform.getCIChecks(ri, "abc");
+
+      expect(checks).toContainEqual({
+        name: "trigger-e2e",
+        status: "completed",
+        conclusion: "failure",
+      });
+    });
+
+    it("the pipeline's own status wins over a job list that says nothing", async () => {
+      // Failed, but no listed job failed (an older GitLab without the bridges API)
+      mockJsonResponse([{ id: 5, status: "failed" }]);
+      mockJsonResponse([{ name: "build", status: "success" }]);
+      mockJsonResponse({ message: "404 Not Found" }, false, 404);
+      expect(await platform.getCIChecks(ri, "a")).toContainEqual({
+        name: "pipeline #5",
+        status: "completed",
+        conclusion: "failure",
+      });
+
+      // Still running with every listed job done
+      mockJsonResponse([{ id: 6, status: "running" }]);
+      mockJsonResponse([{ name: "build", status: "success" }]);
+      mockJsonResponse([]);
+      expect(await platform.getCIChecks(ri, "b")).toContainEqual({
+        name: "pipeline #6",
+        status: "in_progress",
+        conclusion: null,
+      });
+
+      // A pipeline with no jobs listed at all
+      mockJsonResponse([{ id: 7, status: "success" }]);
+      mockJsonResponse([]);
+      mockJsonResponse([]);
+      expect(await platform.getCIChecks(ri, "c")).toEqual([
+        { name: "pipeline #7", status: "completed", conclusion: "success" },
+      ]);
+    });
+
+    it("reads every page of a large pipeline's jobs", async () => {
+      mockJsonResponse([{ id: 8, status: "success" }]);
+      const page = Array.from({ length: 100 }, (_, i) => ({ name: `j${i}`, status: "success" }));
+      mockJsonResponse(page);
+      mockJsonResponse([]); // bridges
+      mockJsonResponse([{ name: "j100", status: "success" }]);
+
+      const checks = await platform.getCIChecks(ri, "abc");
+
+      expect(checks).toHaveLength(101);
     });
   });
 
@@ -348,6 +461,150 @@ describe("GitLabPlatform", () => {
       const body = JSON.parse(call[1].body);
       expect(body.squash).toBe(true);
       expect(body.should_remove_source_branch).toBe(true);
+    });
+
+    it("'rebase' rebases with GitLab first (there is no merge_method), then merges the result", async () => {
+      vi.useFakeTimers();
+      try {
+        mockJsonResponse({ rebase_in_progress: true });
+        mockJsonResponse({ iid: 7, rebase_in_progress: false, sha: "rebased" });
+        mockJsonResponse({ state: "merged" });
+        const done = platform.mergePullRequest(ri, 7, "rebase");
+        await vi.runAllTimersAsync();
+        await done;
+        expect(mockFetch.mock.calls[0][0]).toContain("/merge_requests/7/rebase");
+        const body = JSON.parse(mockFetch.mock.calls[2][1].body);
+        expect(body).toEqual({ should_remove_source_branch: true, sha: "rebased" });
+        expect(body).not.toHaveProperty("merge_method");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    describe("while GitLab is still checking the MR (405 / 406)", () => {
+      beforeEach(() => vi.useFakeTimers());
+      afterEach(() => vi.useRealTimers());
+
+      const notAllowed = () =>
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 405,
+          text: () => Promise.resolve('{"message":"405 Method Not Allowed"}'),
+        });
+
+      it("polls the MR until it is mergeable, then merges", async () => {
+        notAllowed();
+        mockJsonResponse({ iid: 7, state: "opened", detailed_merge_status: "checking" });
+        mockJsonResponse({ iid: 7, state: "opened", detailed_merge_status: "mergeable" });
+        mockJsonResponse({ state: "merged" });
+        const done = platform.mergePullRequest(ri, 7, "squash", "head");
+        await vi.runAllTimersAsync();
+        await expect(done).resolves.toBeUndefined();
+        expect(mockFetch.mock.calls.map((c) => c[1]?.method ?? "GET")).toEqual([
+          "PUT",
+          "GET",
+          "GET",
+          "PUT",
+        ]);
+      });
+
+      it("gives up with GitLabNotReadyError after 5 polls that stay unchecked", async () => {
+        notAllowed();
+        for (let i = 0; i < 5; i++) {
+          mockJsonResponse({ iid: 7, state: "opened", detailed_merge_status: "unchecked" });
+        }
+        const done = platform.mergePullRequest(ri, 7, "merge");
+        const caught = done.catch((e) => e);
+        await vi.runAllTimersAsync();
+        const err = await caught;
+        expect(err).toBeInstanceOf(GitLabNotReadyError);
+        expect(err.mergeStatus).toBe("unchecked");
+        expect(mockFetch).toHaveBeenCalledTimes(6);
+      });
+
+      it("a blocker that isn't a check in progress is not-ready at once", async () => {
+        notAllowed();
+        mockJsonResponse({ iid: 7, state: "opened", detailed_merge_status: "ci_must_pass" });
+        const caught = platform.mergePullRequest(ri, 7, "merge").catch((e) => e);
+        await vi.runAllTimersAsync();
+        const err = await caught;
+        expect(err).toBeInstanceOf(GitLabNotReadyError);
+        expect(err.mergeStatus).toBe("ci_must_pass");
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      it("an MR that only needs a rebase is rebased by GitLab, then merged", async () => {
+        notAllowed();
+        mockJsonResponse({ iid: 7, state: "opened", detailed_merge_status: "need_rebase" });
+        mockJsonResponse({ rebase_in_progress: true }); // PUT /rebase
+        mockJsonResponse({ iid: 7, rebase_in_progress: true, sha: "old" });
+        mockJsonResponse({ iid: 7, rebase_in_progress: false, merge_error: null, sha: "rebased" });
+        mockJsonResponse({ state: "merged" });
+        const done = platform.mergePullRequest(ri, 7, "merge");
+        await vi.runAllTimersAsync();
+        await expect(done).resolves.toBeUndefined();
+        const calls = mockFetch.mock.calls.map((c) => `${c[1]?.method ?? "GET"} ${c[0]}`);
+        expect(calls[2]).toMatch(/^PUT .*\/merge_requests\/7\/rebase$/);
+        expect(calls[3]).toContain("include_rebase_in_progress=true");
+        expect(calls[5]).toMatch(/^PUT .*\/merge_requests\/7\/merge$/);
+        expect(JSON.parse(mockFetch.mock.calls[5][1].body).sha).toBe("rebased");
+      });
+
+      it("a merge guarded by a checked head waits for CI on the rebased head", async () => {
+        notAllowed();
+        mockJsonResponse({ iid: 7, state: "opened", detailed_merge_status: "need_rebase" });
+        mockJsonResponse({ rebase_in_progress: true });
+        mockJsonResponse({ iid: 7, rebase_in_progress: false, sha: "rebased" });
+        const caught = platform.mergePullRequest(ri, 7, "squash", "checked").catch((e) => e);
+        await vi.runAllTimersAsync();
+        const err = await caught;
+        expect(err).toBeInstanceOf(GitLabNotReadyError);
+        expect(err.mergeStatus).toBe("need_rebase");
+        expect(mockFetch).toHaveBeenCalledTimes(4);
+        // A pinned squash merge still has GitLab rebase (documented on
+        // mergePullRequest), but leaves the rebased head for a later pass.
+        const calls = mockFetch.mock.calls.map((c) => `${c[1]?.method ?? "GET"} ${c[0]}`);
+        expect(calls[2]).toMatch(/^PUT .*\/merge_requests\/7\/rebase$/);
+        expect(calls.filter((c) => /^PUT .*\/merge$/.test(c))).toHaveLength(1);
+      });
+
+      it("a rebase GitLab couldn't do is a conflict", async () => {
+        notAllowed();
+        mockJsonResponse({ iid: 7, state: "opened", detailed_merge_status: "need_rebase" });
+        mockJsonResponse({ rebase_in_progress: true });
+        mockJsonResponse({
+          iid: 7,
+          rebase_in_progress: false,
+          merge_error:
+            "Rebase failed: Rebase locally, resolve all conflicts, then push the branch.",
+          sha: "old",
+        });
+        const caught = platform.mergePullRequest(ri, 7, "merge").catch((e) => e);
+        await vi.runAllTimersAsync();
+        const err = await caught;
+        expect(err).toBeInstanceOf(GitLabNotReadyError);
+        expect(err.mergeStatus).toBe("conflict");
+      });
+
+      it("an MR merged meanwhile is done", async () => {
+        notAllowed();
+        mockJsonResponse({ iid: 7, state: "merged", detailed_merge_status: "not_open" });
+        const done = platform.mergePullRequest(ri, 7, "merge");
+        await vi.runAllTimersAsync();
+        await expect(done).resolves.toBeUndefined();
+      });
+    });
+
+    it("other errors stay GitLabApiErrors, with their status", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        text: () => Promise.resolve("SHA does not match HEAD"),
+      });
+      const err = await platform.mergePullRequest(ri, 7, "merge", "old").catch((e) => e);
+      expect(err).toBeInstanceOf(GitLabApiError);
+      expect(err.status).toBe(409);
+      expect(err.message).toBe("GitLab API error 409: SHA does not match HEAD");
     });
   });
 
@@ -510,7 +767,44 @@ describe("GitLabPlatform", () => {
 
       await expect(platform.getPullRequest(ri, 999)).rejects.toThrow("GitLab API error 404");
     });
+
+    it("keeps GitLab's rate-limit headers and classifies a 429, 401 and 403", async () => {
+      mockFetch.mockResolvedValueOnce(
+        new Response("Retry later", {
+          status: 429,
+          headers: {
+            "Retry-After": "30",
+            "RateLimit-Remaining": "0",
+            "RateLimit-Reset": "2000000000",
+          },
+        }),
+      );
+      const err = await platform.getPullRequest(ri, 1).catch((e) => e);
+      expect(err).toBeInstanceOf(GitLabApiError);
+      expect(err).toMatchObject({
+        status: 429,
+        retryAfterMs: 30_000,
+        rateLimitRemaining: 0,
+        rateLimitResetMs: 2_000_000_000_000,
+      });
+      expect(classifyGitLabFailure(err)).toEqual({
+        kind: "primary_rate_limit",
+        retryAfterMs: 30_000,
+        resetAtMs: 2_000_000_000_000,
+      });
+
+      // No reset header: Retry-After from now
+      const before = Date.now();
+      const noReset = classifyGitLabFailure(new GitLabApiError(429, "", { retryAfterMs: 5_000 }));
+      expect(noReset?.resetAtMs).toBeGreaterThanOrEqual(before + 5_000);
+
+      expect(classifyGitLabFailure(new GitLabApiError(401, ""))?.kind).toBe("auth");
+      expect(classifyGitLabFailure(new GitLabApiError(403, ""))?.kind).toBe("permission");
+      expect(classifyGitLabFailure(new GitLabApiError(500, ""))).toBeNull();
+      expect(classifyGitLabFailure(new Error("GitLab API error 429"))).toBeNull();
+    });
   });
+
   describe("a review that requests changes", () => {
     const note = (author: string, body: string, created_at: string, extra: object = {}) => ({
       author: {
@@ -910,6 +1204,43 @@ describe("GitLabPlatform", () => {
         platform.submitReview(ri, 7, { event: "APPROVE", body: "Fixed", commitId: "old" }),
       ).rejects.toMatchObject({ status: 409 });
       expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+  });
+  describe("mergeable from detailed_merge_status", () => {
+    const read = async (fields: Record<string, unknown>) => {
+      mockJsonResponse({ iid: 7, state: "opened", ...fields });
+      return platform.getPullRequest(ri, 7);
+    };
+
+    it("is unknown while GitLab is still checking, whatever merge_status says", async () => {
+      for (const s of ["unchecked", "checking", "preparing"]) {
+        const pr = await read({ detailed_merge_status: s, merge_status: "can_be_merged" });
+        expect(pr.mergeable).toBeNull();
+        expect(pr.mergeStatus).toBe(s);
+      }
+    });
+
+    it("is true when mergeable, false for a conflict", async () => {
+      expect((await read({ detailed_merge_status: "mergeable" })).mergeable).toBe(true);
+      expect((await read({ detailed_merge_status: "conflict" })).mergeable).toBe(false);
+    });
+
+    it("a branch that is only behind (need_rebase) is no conflict", async () => {
+      const pr = await read({
+        detailed_merge_status: "need_rebase",
+        merge_status: "cannot_be_merged",
+      });
+      expect(pr.mergeable).toBe(true);
+      expect(pr.mergeStatus).toBe("need_rebase");
+    });
+
+    it("a blocker that isn't a conflict (CI) leaves it to merge_status", async () => {
+      const pr = await read({
+        detailed_merge_status: "ci_must_pass",
+        merge_status: "can_be_merged",
+      });
+      expect(pr.mergeable).toBe(true);
+      expect(pr.mergeStatus).toBe("ci_must_pass");
     });
   });
   describe("listBranches", () => {

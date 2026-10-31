@@ -1,3 +1,4 @@
+import type { GitHubFailure } from "./github.js";
 import { guardedFetch } from "../../utils/outbound-url.js";
 import type { Branch, BrowsableRepository, PlatformLocation } from "@optio/shared";
 import { defaultBranchFirst } from "./pr-search.js";
@@ -57,6 +58,81 @@ export class GitLabApiError extends Error {
   }
 }
 
+/**
+ * The failure class of a GitLab error, in the shape GitHub's has
+ * (classifyGitHubFailure), or null when it isn't one that waiting fixes or
+ * that retrying can't: a 429 is a rate limit (GitLab's limits are per user
+ * and endpoint, with `Retry-After`); a 401 is the token, a 403 its scope or
+ * the user's role on the project.
+ */
+export function classifyGitLabFailure(err: unknown): GitHubFailure | null {
+  if (!(err instanceof GitLabApiError)) return null;
+  if (err.status === 429) {
+    // Wait until GitLab's reset time (or its Retry-After from now).
+    const resetAtMs =
+      err.rateLimitResetMs ?? (err.retryAfterMs != null ? Date.now() + err.retryAfterMs : null);
+    return { kind: "primary_rate_limit", retryAfterMs: err.retryAfterMs, resetAtMs };
+  }
+  if (err.status === 401) return { kind: "auth", retryAfterMs: null, resetAtMs: null };
+  if (err.status === 403) return { kind: "permission", retryAfterMs: null, resetAtMs: null };
+  return null;
+}
+
+/**
+ * GitLab won't merge the MR yet: it answered 405/406 and, after polling,
+ * still reports the MR as being checked, or as not mergeable. Auto-merge
+ * tries again later instead of failing the run (reconcile-executor.ts).
+ */
+export class GitLabNotReadyError extends Error {
+  constructor(readonly mergeStatus: string | undefined) {
+    super(`GitLab merge request not ready to merge (${mergeStatus ?? "unknown"})`);
+    this.name = "GitLabNotReadyError";
+  }
+}
+
+/** `detailed_merge_status` values that mean GitLab is still checking the MR. */
+const MERGE_STATUS_PENDING = new Set(["unchecked", "checking", "preparing", "approvals_syncing"]);
+
+/** Whether a `PullRequest.mergeStatus` says GitLab is still checking the MR. */
+export function mergeStatusPending(status: string | undefined | null): boolean {
+  return !!status && MERGE_STATUS_PENDING.has(status);
+}
+
+/**
+ * `detailed_merge_status` values only a person clears — an approval rule,
+ * unresolved threads, a reviewer's requested changes, a blocking MR, a
+ * draft, a closed MR, a policy — so automatic merging asks a person at once
+ * instead of trying again for minutes. CI states and checks still in
+ * progress are not among them: those settle by themselves.
+ */
+const MERGE_STATUS_NEEDS_PERSON = new Set([
+  "not_approved",
+  "discussions_not_resolved",
+  "requested_changes",
+  "blocked_status",
+  "merge_request_blocked",
+  "draft_status",
+  "not_open",
+  "jira_association_missing",
+  "security_policy_violations",
+  "locked_paths",
+  "locked_lfs_files",
+  "title_regex",
+]);
+
+/** Whether a GitLab merge status is one only a person can clear (see above). */
+export function mergeStatusNeedsPerson(status: string | undefined | null): boolean {
+  return !!status && MERGE_STATUS_NEEDS_PERSON.has(status);
+}
+
+/** How long a merge waits for GitLab to finish checking an MR (5 × 2 s). */
+const MERGE_STATUS_POLLS = 5;
+const MERGE_STATUS_POLL_MS = 2_000;
+/** How long a rebase GitLab runs is waited for (15 × 2 s). */
+const REBASE_POLLS = 15;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** How many pages (of 100) of a thread's newest notes are read. */
 const NOTE_PAGES = 3;
 
@@ -82,9 +158,18 @@ function toComment(n: any): IssueComment {
   };
 }
 
+/** How long an MR read's head pipeline stands in for a pipeline lookup. */
+const HEAD_PIPELINE_TTL_MS = 60_000;
+
 export class GitLabPlatform implements GitPlatform {
   readonly type = "gitlab" as const;
   private readonly token: string;
+
+  /** `<project url>@<sha>` → the head pipeline the last MR read reported for it. */
+  private readonly headPipelines = new Map<
+    string,
+    { at: number; pipeline: { id: number; status?: string } | null }
+  >();
 
   constructor(token: string) {
     this.token = token;
@@ -122,6 +207,7 @@ export class GitLabPlatform implements GitPlatform {
     const data = await this.fetchJson<any>(this.url(ri, `/merge_requests/${number}`), {
       headers: this.headers(),
     });
+    this.rememberHeadPipeline(ri, data);
     return mapMr(data, ri, await this.forkPaths(ri, [data]));
   }
 
@@ -155,6 +241,17 @@ export class GitLabPlatform implements GitPlatform {
   }
 
   /** Open merge requests with fork source paths resolved for review context. */
+
+  private rememberHeadPipeline(ri: RepoIdentifier, data: any): void {
+    const sha = typeof data?.sha === "string" ? data.sha : null;
+    if (!sha) return;
+    const hp = data.head_pipeline;
+    if (this.headPipelines.size > 200) this.headPipelines.clear();
+    this.headPipelines.set(`${this.url(ri, "")}@${sha}`, {
+      at: Date.now(),
+      pipeline: hp && typeof hp.id === "number" ? { id: hp.id, status: hp.status } : null,
+    });
+  }
 
   async listOpenPullRequests(
     ri: RepoIdentifier,
@@ -195,25 +292,59 @@ export class GitLabPlatform implements GitPlatform {
   }
 
   async getCIChecks(ri: RepoIdentifier, commitSha: string): Promise<CICheck[]> {
-    // Get pipelines for the commit
-    const pipelines = await this.fetchJson<any[]>(
-      this.url(ri, `/pipelines?sha=${commitSha}&per_page=5`),
-      { headers: this.headers() },
-    );
-    if (pipelines.length === 0) return [];
+    const pipeline = await this.pipelineFor(ri, commitSha);
+    if (!pipeline) return [];
 
-    // Get jobs from the most recent pipeline
-    const pipelineId = pipelines[0].id;
-    const jobs = await this.fetchJson<any[]>(
-      this.url(ri, `/pipelines/${pipelineId}/jobs?per_page=100`),
-      { headers: this.headers() },
-    );
-
-    return jobs.map((j: any) => ({
+    const [jobs, bridges] = await Promise.all([
+      this.fetchPages(ri, `/pipelines/${pipeline.id}/jobs`),
+      // Older GitLab has no bridges API (a 404): its trigger jobs stay out.
+      this.fetchPages(ri, `/pipelines/${pipeline.id}/bridges`).catch((err) => {
+        if (err instanceof GitLabApiError && err.status === 404) return [];
+        throw err;
+      }),
+    ]);
+    const checks: CICheck[] = [...jobs, ...bridges].map((j: any) => ({
       name: j.name ?? "",
       status: mapGitLabJobStatus(j.status),
-      conclusion: mapGitLabJobConclusion(j.status),
+      conclusion:
+        j.allow_failure === true && j.status === "failed"
+          ? "skipped"
+          : mapGitLabJobConclusion(j.status),
     }));
+    const verdict = pipelineVerdict(pipeline, checks);
+    return verdict ? [...checks, verdict] : checks;
+  }
+
+  /** The pipeline whose checks count for `commitSha` (see getCIChecks). */
+
+  private async pipelineFor(
+    ri: RepoIdentifier,
+    commitSha: string,
+  ): Promise<{ id: number; status?: string } | null> {
+    const fromMr = this.headPipelines.get(`${this.url(ri, "")}@${commitSha}`);
+    if (fromMr && Date.now() - fromMr.at < HEAD_PIPELINE_TTL_MS && fromMr.pipeline) {
+      return fromMr.pipeline;
+    }
+    const pipelines = await this.fetchJson<any[]>(
+      this.url(ri, `/pipelines?sha=${encodeURIComponent(commitSha)}&per_page=5`),
+      { headers: this.headers() },
+    );
+    const newest = pipelines[0];
+    return newest && typeof newest.id === "number" ? newest : null;
+  }
+
+  /** Every page (100 a page, at most 5) of a list endpoint. */
+
+  private async fetchPages(ri: RepoIdentifier, path: string): Promise<any[]> {
+    const out: any[] = [];
+    for (let page = 1; page <= 5; page++) {
+      const data = await this.fetchJson<any[]>(this.url(ri, `${path}?per_page=100&page=${page}`), {
+        headers: this.headers(),
+      });
+      out.push(...data);
+      if (data.length < 100) break;
+    }
+    return out;
   }
 
   async getReviews(ri: RepoIdentifier, prNumber: number): Promise<Review[]> {
@@ -448,28 +579,108 @@ export class GitLabPlatform implements GitPlatform {
 
   // ── PR/MR writes ──────────────────────────────────────────────────────────
 
-  /** Merge with GitLab's project merge method, optionally pinned to the checked head SHA.
-   * Squash is an explicit request flag; this adapter does not initiate a rebase.
+  /**
+   * Merge with the project's merge method, optionally pinned to the checked
+   * head SHA; `squash` sets GitLab's squash flag.
+   *
+   * Two paths have GitLab rebase the source branch (PUT /rebase), which
+   * rewrites its head:
+   * - `method === "rebase"` rebases first.
+   * - Any method, squash included (the one the reconcile executor uses),
+   *   when GitLab reports `need_rebase`: a project with fast-forward or
+   *   semi-linear merges won't merge a branch behind its target in any
+   *   other way, so the merge could never go through.
+   * A pinned-head caller never gets the rebased head merged in the same
+   * call: GitLabNotReadyError is thrown, and a later pass re-reads checks and
+   * reviews on the new head before merging it. An unpinned call merges the
+   * rebased head.
    */
-
   async mergePullRequest(
     ri: RepoIdentifier,
     prNumber: number,
     method: "merge" | "squash" | "rebase",
     expectedHeadSha?: string,
   ): Promise<void> {
-    const body: Record<string, unknown> = {
+    let sha = expectedHeadSha;
+    if (method === "rebase") {
+      const rebased = await this.rebaseMergeRequest(ri, prNumber);
+      if (expectedHeadSha && rebased !== expectedHeadSha) {
+        throw new GitLabNotReadyError("rebased");
+      }
+      sha = rebased ?? sha;
+    }
+    const body = (): Record<string, unknown> => ({
       should_remove_source_branch: true,
-      sha: expectedHeadSha,
-    };
-    if (method === "squash") body.squash = true;
-    if (method === "rebase") body.merge_method = "rebase";
+      sha,
+      ...(method === "squash" ? { squash: true } : {}),
+    });
 
-    await this.fetchJson(this.url(ri, `/merge_requests/${prNumber}/merge`), {
+    const merge = async (): Promise<boolean> => {
+      try {
+        await this.fetchJson(this.url(ri, `/merge_requests/${prNumber}/merge`), {
+          method: "PUT",
+          headers: this.headers(true),
+          body: JSON.stringify(body()),
+        });
+        return true;
+      } catch (err) {
+        // 405 / 406: not mergeable *yet* — GitLab answers so right after a
+        // push, while `detailed_merge_status` is still unchecked/checking.
+        if (err instanceof GitLabApiError && (err.status === 405 || err.status === 406)) {
+          return false;
+        }
+        throw err;
+      }
+    };
+    if (await merge()) return;
+
+    let status: string | undefined;
+    for (let i = 0; i < MERGE_STATUS_POLLS; i++) {
+      await sleep(MERGE_STATUS_POLL_MS);
+      const mr = await this.fetchJson<any>(this.url(ri, `/merge_requests/${prNumber}`), {
+        headers: this.headers(),
+      });
+      if (mr.state === "merged") return;
+      status = mr.detailed_merge_status ?? mr.merge_status;
+      if (!mergeStatusPending(status)) break;
+    }
+    if (status === "need_rebase") {
+      // Rebase even for squash: see the method comment.
+      const rebased = await this.rebaseMergeRequest(ri, prNumber);
+      if (expectedHeadSha) throw new GitLabNotReadyError("need_rebase");
+      sha = rebased ?? undefined;
+      if (await merge()) return;
+      throw new GitLabNotReadyError(status);
+    }
+    if ((status === "mergeable" || status === "can_be_merged") && (await merge())) return;
+    throw new GitLabNotReadyError(status);
+  }
+
+  /**
+   * Have GitLab rebase the MR's source branch onto its target and wait for
+   * it (`rebase_in_progress`), returning the new head SHA. A rebase GitLab
+   * couldn't do (a real conflict) is a `GitLabNotReadyError("conflict")`.
+   */
+
+  private async rebaseMergeRequest(ri: RepoIdentifier, prNumber: number): Promise<string | null> {
+    await this.fetchJson(this.url(ri, `/merge_requests/${prNumber}/rebase`), {
       method: "PUT",
       headers: this.headers(true),
-      body: JSON.stringify(body),
     });
+    for (let i = 0; i < REBASE_POLLS; i++) {
+      await sleep(MERGE_STATUS_POLL_MS);
+      const mr = await this.fetchJson<any>(
+        this.url(ri, `/merge_requests/${prNumber}?include_rebase_in_progress=true`),
+        { headers: this.headers() },
+      );
+      if (mr.rebase_in_progress) continue;
+      // "Rebase failed: Rebase locally, resolve all conflicts, then push the branch."
+      if (typeof mr.merge_error === "string" && /rebase/i.test(mr.merge_error)) {
+        throw new GitLabNotReadyError("conflict");
+      }
+      return typeof mr.sha === "string" ? mr.sha : null;
+    }
+    throw new GitLabNotReadyError("rebase_in_progress");
   }
 
   async submitReview(
@@ -801,6 +1012,20 @@ export class GitLabPlatform implements GitPlatform {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function mrMergeable(data: any): boolean | null {
+  const detailed = data.detailed_merge_status;
+  if (detailed === "mergeable" || detailed === "need_rebase") return true;
+  if (mergeStatusPending(detailed)) return null;
+  if (detailed === "conflict" || detailed === "broken_status") {
+    return false;
+  }
+  return data.merge_status === "can_be_merged"
+    ? true
+    : data.merge_status === "cannot_be_merged"
+      ? false
+      : null;
+}
+
 function mapMr(data: any, ri: RepoIdentifier, forks?: Map<number, string>): PullRequest {
   const headRepo = forks?.get(data.source_project_id);
   return {
@@ -809,18 +1034,18 @@ function mapMr(data: any, ri: RepoIdentifier, forks?: Map<number, string>): Pull
     body: data.description ?? "",
     state: data.state === "merged" || data.state === "closed" ? "closed" : "open",
     merged: data.state === "merged",
-    mergeable:
-      data.merge_status === "can_be_merged"
-        ? true
-        : data.merge_status === "cannot_be_merged"
-          ? false
-          : null,
+    mergeable: mrMergeable(data),
+    ...(typeof data.detailed_merge_status === "string"
+      ? { mergeStatus: data.detailed_merge_status }
+      : {}),
     draft: data.draft ?? data.work_in_progress ?? false,
     headSha: data.sha ?? data.diff_refs?.head_sha ?? "",
     baseBranch: data.target_branch ?? "",
     headBranch: data.source_branch ?? undefined,
     ...(headRepo ? { headRepo } : {}),
-    url: data.web_url ?? `https://${ri.host}/${ri.owner}/${ri.repo}/-/merge_requests/${data.iid}`,
+    url:
+      data.web_url ??
+      `${ri.apiBaseUrl.replace(/\/api\/v4$/, "")}/${ri.owner}/${ri.repo}/-/merge_requests/${data.iid}`,
     author: data.author?.username ?? "",
     assignees: (data.assignees ?? []).map((a: any) => a.username ?? ""),
     labels: data.labels ?? [],
@@ -865,6 +1090,39 @@ function mapGitLabJobConclusion(
     default:
       return null;
   }
+}
+
+/**
+ * The pipeline's own status as one more check, when its jobs don't already
+ * say it: a failed pipeline with no failed job in the list (a trigger job's
+ * downstream pipeline, a job beyond the pages read), a pipeline still running
+ * or waiting with every listed job done, or a pipeline with no jobs listed.
+ */
+function pipelineVerdict(
+  pipeline: { id: number; status?: string },
+  checks: CICheck[],
+): CICheck | null {
+  const status = pipeline.status;
+  if (!status) return null;
+  const name = `pipeline #${pipeline.id}`;
+  if (status === "failed") {
+    return checks.some((c) => c.conclusion === "failure")
+      ? null
+      : { name, status: "completed", conclusion: "failure" };
+  }
+  if (status === "canceled") {
+    return checks.some((c) => c.conclusion === "failure" || c.conclusion === "cancelled")
+      ? null
+      : { name, status: "completed", conclusion: "cancelled" };
+  }
+  if (status === "success" || status === "skipped" || status === "manual") {
+    if (checks.length > 0) return null;
+    return { name, status: "completed", conclusion: status === "success" ? "success" : "skipped" };
+  }
+  // created, waiting_for_resource, preparing, pending, running, scheduled
+  return checks.some((c) => c.status !== "completed")
+    ? null
+    : { name, status: status === "running" ? "in_progress" : "queued", conclusion: null };
 }
 
 function mapIssueStateToGitLab(state: string): string {

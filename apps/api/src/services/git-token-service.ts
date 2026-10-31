@@ -157,7 +157,7 @@ export async function getGitPlatformForRepo(
   context: GitTokenContext & {
     platformHint?: GitPlatformType;
   },
-): Promise<{ platform: GitPlatform; ri: RepoIdentifier }> {
+): Promise<{ platform: GitPlatform; ri: RepoIdentifier; token: string }> {
   const { platformHint, ...tokenContext } = context;
   const platformType = resolveRepoPlatform(
     repoUrl,
@@ -179,5 +179,5 @@ export async function getGitPlatformForRepo(
   );
   const platform = createGitPlatform(ri.platform, token);
 
-  return { platform, ri };
+  return { platform, ri, token };
 }

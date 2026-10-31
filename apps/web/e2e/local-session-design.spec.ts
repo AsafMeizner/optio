@@ -155,6 +155,8 @@ test("local session controls and usage fit narrow screens, and latest reaches th
       animations: "disabled",
     });
   } finally {
+    // Finish polling route.fetch handlers before deleting their terminal fixtures.
+    await page.unrouteAll({ behavior: "wait" });
     for (const id of children) {
       await request.post(`${API}/api/local/terminals/${id}/kill`);
       await expect

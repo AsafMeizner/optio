@@ -105,12 +105,14 @@ vi.mock("../logger.js", () => ({
       debug: vi.fn(),
     }),
     warn: vi.fn(),
+    debug: vi.fn(),
   },
 }));
 
 // Import AFTER mocks
 import { executeAction } from "./reconcile-executor.js";
 import { GitHubApiError } from "./git-platform/github.js";
+import { GitLabApiError, GitLabNotReadyError } from "./git-platform/gitlab.js";
 
 // ─── Fixtures ───
 
@@ -769,6 +771,212 @@ describe("reconcile-executor", () => {
       expect(mockTransitionTask).not.toHaveBeenCalled();
       const enqueueArgs = mockEnqueueReconcile.mock.calls.at(-1)?.[1] as { delayMs: number };
       expect(enqueueArgs.delayMs).toBeGreaterThanOrEqual(60_000);
+    });
+    it("holds the run on a GitLab rate limit until GitLab's reset, and on a refused token", async () => {
+      mockGetPlatform.mockResolvedValue({
+        platform: {
+          type: "gitlab",
+          mergePullRequest: mockMergePR,
+          getPullRequest: mockReadPR,
+          getCIChecks: mockReadChecks,
+          getReviews: mockReadReviews,
+        },
+        ri: { owner: "acme", repo: "repo" },
+      });
+      const resetAt = Date.now() + 300_000;
+      mockMergePR.mockRejectedValueOnce(
+        new GitLabApiError(429, "Retry later", { rateLimitResetMs: resetAt }),
+      );
+      const chain = chainable([{ id: "task-1" }]);
+      mockDbUpdate.mockReturnValue(chain);
+
+      const snap = mergeSnapshot();
+      if (snap.run.kind !== "repo") throw new Error("fixture mismatch");
+      snap.run.status.prUrl = "https://gitlab.com/acme/repo/-/merge_requests/42";
+      snap.run.status.state = TaskState.PR_OPENED;
+
+      const limited = await executeAction(
+        { kind: "autoMergePr", reason: "auto_merge_ready" },
+        snap,
+      );
+      expect(limited).toMatchObject({
+        status: "applied",
+        reason: "gitlab_cooldown:primary_rate_limit",
+      });
+      expect(mockTransitionTask).not.toHaveBeenCalled();
+      const wait = mockEnqueueReconcile.mock.calls.at(-1)?.[1] as { delayMs: number };
+      expect(wait.delayMs).toBeGreaterThan(250_000);
+
+      mockMergePR.mockRejectedValueOnce(new GitLabApiError(403, '{"message":"403 Forbidden"}'));
+      const refused = await executeAction(
+        { kind: "autoMergePr", reason: "auto_merge_ready" },
+        snap,
+      );
+      expect(refused.reason).toBe("gitlab_cooldown:permission");
+      expect(chain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ errorMessage: expect.stringContaining("GitLab API error 403") }),
+      );
+    });
+
+    describe("a GitLab MR that isn't ready to merge yet", () => {
+      function gitlab() {
+        mockGetPlatform.mockResolvedValue({
+          platform: {
+            type: "gitlab",
+            mergePullRequest: mockMergePR,
+            getPullRequest: mockReadPR,
+            getCIChecks: mockReadChecks,
+            getReviews: mockReadReviews,
+          },
+          ri: { owner: "acme", repo: "repo" },
+        });
+      }
+      function gitlabSnapshot(waits = 0) {
+        mockRedisGet.mockResolvedValue(waits ? String(waits) : null);
+        const snap = mergeSnapshot();
+        if (snap.run.kind !== "repo") throw new Error("fixture mismatch");
+        snap.run.status.prUrl = "https://gitlab.com/acme/repo/-/merge_requests/42";
+        return snap;
+      }
+      const waitKey = "optio:auto-merge:not-ready:task-1:42:checked-head";
+
+      it("a 405 that polling didn't clear waits and tries again — not an error", async () => {
+        gitlab();
+        mockMergePR.mockRejectedValue(new GitLabNotReadyError("checking"));
+        const chain = chainable([{ id: "task-1" }]);
+        mockDbUpdate.mockReturnValue(chain);
+        const outcome = await executeAction(
+          { kind: "autoMergePr", reason: "auto_merge_ready" },
+          gitlabSnapshot(),
+        );
+        expect(outcome).toEqual({ status: "skipped", reason: "auto_merge_mr_not_ready" });
+        expect(mockEnqueueReconcile).toHaveBeenLastCalledWith(
+          { kind: "repo", id: "task-1" },
+          { reason: "auto_merge_mr_not_ready", delayMs: 15_000 },
+        );
+        expect(chain.set).toHaveBeenCalledWith(
+          expect.objectContaining({ reconcileBackoffUntil: null }),
+        );
+        expect(chain.set).not.toHaveBeenCalledWith(
+          expect.objectContaining({ reconcileAttempts: expect.anything() }),
+        );
+        expect(mockRedisGet).toHaveBeenCalledWith(waitKey);
+        expect(mockRedisSet).toHaveBeenCalledWith(waitKey, "1", "EX", 86_400);
+        expect(mockTransitionTask).not.toHaveBeenCalled();
+      });
+
+      it("counts waits per head whatever reconcileAttempts and read deferrals say", async () => {
+        gitlab();
+        mockMergePR.mockRejectedValue(new GitLabNotReadyError("checking"));
+        const chain = chainable([{ id: "task-1" }]);
+        mockDbUpdate.mockReturnValue(chain);
+        // A previous pass deferred on an unreadable review state: a backoff
+        // and an unrelated attempt count. Neither touches the wait count.
+        const snap = gitlabSnapshot(19);
+        snap.run.status.reconcileBackoffUntil = new Date(0);
+        snap.run.status.reconcileAttempts = 0;
+        expect(
+          await executeAction({ kind: "autoMergePr", reason: "auto_merge_ready" }, snap),
+        ).toEqual({ status: "skipped", reason: "auto_merge_mr_not_ready" });
+        expect(mockRedisSet).toHaveBeenCalledWith(waitKey, "20", "EX", 86_400);
+
+        const next = gitlabSnapshot(20);
+        next.run.status.reconcileBackoffUntil = new Date(0);
+        next.run.status.reconcileAttempts = 0;
+        mockTransitionTask.mockResolvedValue({ id: "task-1" });
+        expect(
+          await executeAction({ kind: "autoMergePr", reason: "auto_merge_ready" }, next),
+        ).toEqual({ status: "applied", reason: "auto_merge_not_ready_needs_attention" });
+      });
+
+      it("a new head starts a new wait budget", async () => {
+        gitlab();
+        mockMergePR.mockRejectedValue(new GitLabNotReadyError("checking"));
+        mockDbUpdate.mockReturnValue(chainable([{ id: "task-1" }]));
+        mockReadPR.mockResolvedValue({ headSha: "new-head", state: "open", merged: false });
+        const snap = gitlabSnapshot();
+        snap.pr!.headSha = "new-head";
+        await executeAction({ kind: "autoMergePr", reason: "auto_merge_ready" }, snap);
+        expect(mockRedisGet).toHaveBeenCalledWith("optio:auto-merge:not-ready:task-1:42:new-head");
+      });
+      it("does not enqueue a stale merge wait", async () => {
+        gitlab();
+        mockMergePR.mockRejectedValue(new GitLabNotReadyError("checking"));
+        mockDbUpdate.mockReturnValue(chainable([]));
+        expect(
+          await executeAction(
+            { kind: "autoMergePr", reason: "auto_merge_ready" },
+            gitlabSnapshot(),
+          ),
+        ).toEqual({ status: "stale", reason: "cas_failed_merge_wait" });
+        expect(mockRedisSet).not.toHaveBeenCalled();
+        expect(mockEnqueueReconcile).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ reason: "auto_merge_mr_not_ready" }),
+        );
+      });
+
+      it("an MR GitLab is still checking isn't merged at all yet", async () => {
+        gitlab();
+        mockReadPR.mockResolvedValue({
+          headSha: "checked-head",
+          state: "open",
+          merged: false,
+          mergeable: null,
+          mergeStatus: "unchecked",
+        });
+        mockDbUpdate.mockReturnValue(chainable([{ id: "task-1" }]));
+        const outcome = await executeAction(
+          { kind: "autoMergePr", reason: "auto_merge_ready" },
+          gitlabSnapshot(),
+        );
+        expect(outcome).toEqual({ status: "skipped", reason: "auto_merge_mr_not_ready" });
+        expect(mockMergePR).not.toHaveBeenCalled();
+      });
+
+      it("a blocker only a person clears asks a person at once", async () => {
+        gitlab();
+        mockMergePR.mockRejectedValue(new GitLabNotReadyError("not_approved"));
+        mockTransitionTask.mockResolvedValue({ id: "task-1" });
+        const outcome = await executeAction(
+          { kind: "autoMergePr", reason: "auto_merge_ready" },
+          gitlabSnapshot(0),
+        );
+        expect(outcome).toEqual({
+          status: "applied",
+          reason: "auto_merge_not_ready_needs_attention",
+        });
+        expect(mockTransitionTask).toHaveBeenCalledWith(
+          "task-1",
+          TaskState.NEEDS_ATTENTION,
+          "auto_merge_not_ready",
+          expect.stringContaining("(not_approved)"),
+        );
+      });
+
+      it("after 20 waits, asks a person instead of spinning", async () => {
+        gitlab();
+        mockMergePR.mockRejectedValue(new GitLabNotReadyError("conflict"));
+        mockTransitionTask.mockResolvedValue({ id: "task-1" });
+        const outcome = await executeAction(
+          { kind: "autoMergePr", reason: "auto_merge_ready" },
+          gitlabSnapshot(20),
+        );
+        expect(outcome).toEqual({
+          status: "applied",
+          reason: "auto_merge_not_ready_needs_attention",
+        });
+        expect(mockTransitionTask).toHaveBeenCalledWith(
+          "task-1",
+          TaskState.NEEDS_ATTENTION,
+          "auto_merge_not_ready",
+          expect.stringContaining("(conflict)"),
+        );
+        expect(mockEnqueueReconcile).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ reason: "auto_merge_mr_not_ready" }),
+        );
+      });
     });
   });
 
