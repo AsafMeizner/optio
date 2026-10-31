@@ -50,6 +50,7 @@ describe("deployment workspace-creation policy", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
         workspaceCreation: { value: "everyone", environment: "everyone", source: "environment" },
+        onboarding: { value: false, environment: false, source: "environment" },
         canEdit: false,
         mayCreateWorkspace: true,
       });
