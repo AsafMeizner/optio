@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import {
   CheckCircle,
@@ -36,7 +37,21 @@ function QuickLink({
   );
 }
 
-export function WelcomeHero({ repoCount }: { repoCount: number }) {
+export function WelcomeHero({
+  repoCount,
+  checklist,
+}: {
+  repoCount: number;
+  /**
+   * With the getting-started guide on (Settings → Access), renders the
+   * checklist (getting-started.tsx), which says whether it shows; the static
+   * steps stay hidden only while it does (not once it's hidden or complete).
+   * Absent: the static steps alone.
+   */
+  checklist?: (onShowing: (showing: boolean) => void) => ReactNode;
+}) {
+  // Whether the checklist shows; it says so as soon as it knows.
+  const [checklistShowing, setChecklistShowing] = useState(true);
   const hasRepos = repoCount > 0;
 
   const steps = [
@@ -102,7 +117,8 @@ export function WelcomeHero({ repoCount }: { repoCount: number }) {
         </div>
       </div>
 
-      <div className="mb-8">
+      {checklist?.(setChecklistShowing)}
+      <div className="mb-8" hidden={!!checklist && checklistShowing}>
         <h2 className="text-sm font-medium text-text-heading uppercase tracking-wider mb-4">
           Get started
         </h2>

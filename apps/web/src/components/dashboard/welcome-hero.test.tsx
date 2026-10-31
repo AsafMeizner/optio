@@ -1,0 +1,114 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import type { ChecklistSources } from "./getting-started-model";
+
+// The welcome screen's static Get started steps and the getting-started
+// checklist (getting-started.tsx), as the Overview hands it over with the
+// guide on: the steps hide only while the checklist shows, so a hidden or
+// complete checklist never leaves the welcome empty.
+vi.mock("next/link", () => ({
+  default: ({ href, children, ...rest }: any) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  ),
+}));
+vi.mock("@/hooks/use-current-user", () => ({
+  useCurrentUser: () => ({
+    user: { id: "u1", email: "ann@example.com" },
+    authDisabled: false,
+    loaded: true,
+    isAdmin: true,
+    isViewer: false,
+  }),
+}));
+vi.mock("@/lib/api-client", () => ({ api: {} }));
+
+import { WelcomeHero } from "./welcome-hero";
+import { GettingStarted } from "./getting-started";
+import { useGettingStartedStore } from "./getting-started-store";
+
+const sources = (over: Partial<ChecklistSources> = {}): ChecklistSources => ({
+  user: { id: "u1", email: "ann@example.com" },
+  repoCount: 0,
+  repoPlatforms: [],
+  tasks: { started: null, waiting: null, merged: null },
+  ...over,
+});
+
+/** As app/page.tsx hands it over on a first run. */
+const hero = (load: () => Promise<ChecklistSources>) => (
+  <WelcomeHero
+    repoCount={0}
+    checklist={(onShowing) => <GettingStarted load={load} onShowingChange={onShowing} />}
+  />
+);
+const staticSteps = () => screen.getByText("Get started").closest("div");
+
+beforeEach(() => {
+  window.localStorage.clear();
+  useGettingStartedStore.setState({ hidden: {} });
+});
+afterEach(() => cleanup());
+
+describe("WelcomeHero and the first-run checklist", () => {
+  it("the checklist shows in place of the static steps", async () => {
+    render(hero(async () => sources()));
+    expect(await screen.findByTestId("getting-started")).toBeInTheDocument();
+    expect(staticSteps()).toHaveAttribute("hidden");
+  });
+
+  it("while the checklist loads, the static steps don't flash in", async () => {
+    render(hero(() => new Promise<ChecklistSources>(() => {})));
+    await act(async () => {});
+    expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();
+    expect(staticSteps()).toHaveAttribute("hidden");
+  });
+
+  it("a person who hid the checklist gets the static steps back", async () => {
+    window.localStorage.setItem("optio.gettingStarted.hidden.u1", "dismissed");
+    const load = vi.fn(async () => sources());
+    render(hero(load));
+    await act(async () => {});
+    expect(load).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();
+    expect(staticSteps()).not.toHaveAttribute("hidden");
+    expect(screen.getByText("Add a repository")).toBeInTheDocument();
+  });
+
+  it("a complete checklist shows nothing, so the static steps come back", async () => {
+    const done = sources({
+      repoCount: 1,
+      tasks: {
+        started: { id: "a", title: "A" },
+        waiting: null,
+        merged: { id: "a", title: "A", prUrl: "https://github.com/o/r/pull/1" },
+      },
+    });
+    render(hero(async () => done));
+    await act(async () => {});
+    expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();
+    expect(staticSteps()).not.toHaveAttribute("hidden");
+  });
+
+  it("Hide on the welcome screen brings the static steps back at once", async () => {
+    render(hero(async () => sources()));
+    const hide = await screen.findByRole("button", { name: /Hide/ });
+    expect(staticSteps()).toHaveAttribute("hidden");
+    act(() => hide.click());
+    expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();
+    expect(staticSteps()).not.toHaveAttribute("hidden");
+  });
+
+  it("without a checklist (the guide off, the default), it is the default welcome", () => {
+    render(<WelcomeHero repoCount={0} />);
+    expect(staticSteps()).not.toHaveAttribute("hidden");
+    expect(screen.queryByTestId("getting-started")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Add your Anthropic API key or connect Claude Max credentials."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Connect a GitHub repo so Optio can clone it and run agents."),
+    ).toBeInTheDocument();
+  });
+});

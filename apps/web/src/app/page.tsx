@@ -22,6 +22,10 @@ import {
 import { useWorkFeed } from "@/hooks/use-work-feed";
 import { countWork } from "@/lib/work-feed";
 import { UpdateBanner } from "@/components/update-banner";
+// A new person's getting-started checklist (docs/using-optio.md), when an admin turns it on.
+import { GettingStarted } from "@/components/dashboard/getting-started";
+import { useCurrentUser } from "@/hooks/use-current-user";
+import { useOnboarding } from "@/hooks/use-onboarding";
 import { IfCanMutate } from "@/components/role-gate";
 
 export default function OverviewPage() {
@@ -44,6 +48,10 @@ export default function OverviewPage() {
   } = useDashboardData();
   const feed = useWorkFeed();
   const counts = countWork(feed.rows);
+  // With the getting-started guide on and sign-in on, the checklist takes the
+  // welcome's static steps' place while it shows.
+  const { authDisabled } = useCurrentUser();
+  const { onboarding } = useOnboarding();
 
   if (loading) {
     return (
@@ -75,7 +83,16 @@ export default function OverviewPage() {
   // terminal open counts as "started", even with zero repo tasks.
   const isFirstRun = (taskStats?.total ?? 0) === 0 && localTerminals.length === 0;
   if (isFirstRun) {
-    return <WelcomeHero repoCount={repoCount ?? 0} />;
+    return (
+      <WelcomeHero
+        repoCount={repoCount ?? 0}
+        checklist={
+          authDisabled || !onboarding
+            ? undefined
+            : (onShowing) => <GettingStarted className="mb-8" onShowingChange={onShowing} />
+        }
+      />
+    );
   }
 
   // ── What needs me? ─────────────────────────────────────────────────
@@ -148,6 +165,8 @@ export default function OverviewPage() {
       />
 
       <UpdateBanner />
+
+      {onboarding && <GettingStarted />}
 
       <NeedsYou items={needsYou} />
 
