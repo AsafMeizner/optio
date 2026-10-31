@@ -11,6 +11,47 @@ afterEach(() => {
 });
 
 describe("browser authentication boundaries", () => {
+  it("binds a successful LDAP password login to its private browser verifier", async () => {
+    vi.stubEnv("PUBLIC_URL", "https://optio.example");
+    const fetch = vi.fn().mockResolvedValue(Response.json({ code: "ldap-code" }));
+    vi.stubGlobal("fetch", fetch);
+    const response = await POST(
+      new NextRequest("https://optio.example/api/auth/ldap/login?browserChallenge=attacker", {
+        method: "POST",
+        headers: { origin: "https://optio.example", "content-type": "application/json" },
+        body: JSON.stringify({ username: "ada", password: "test-password" }),
+      }),
+    );
+    const verifier = response.cookies.get("__Host-optio_oauth_verifier")!;
+    expect(verifier.value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(response.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(response.headers.get("set-cookie")).toContain("Secure");
+    expect(new URL(fetch.mock.calls[0][0]).searchParams.get("browserChallenge")).toBe(
+      createHash("sha256").update(verifier.value).digest("base64url"),
+    );
+    expect(await response.json()).toEqual({ code: "ldap-code" });
+  });
+
+  it("does not establish an LDAP browser binding after failed credentials or a hostile Origin", async () => {
+    vi.stubEnv("PUBLIC_URL", "https://optio.example");
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(Response.json({ error: "Wrong username or password" }, { status: 401 }));
+    vi.stubGlobal("fetch", fetch);
+    const request = (origin: string) =>
+      new NextRequest("https://optio.example/api/auth/ldap/login", {
+        method: "POST",
+        headers: { origin },
+        body: "{}",
+      });
+    expect(
+      (await POST(request("https://optio.example"))).cookies.get("__Host-optio_oauth_verifier"),
+    ).toBeUndefined();
+    const hostile = await POST(request("https://evil.example"));
+    expect(hostile.status).toBe(403);
+    expect(hostile.cookies.get("__Host-optio_oauth_verifier")).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it("preserves the explicit bootstrap setup token through the proxy", async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json({ bootstrap: true }));
     vi.stubGlobal("fetch", fetch);

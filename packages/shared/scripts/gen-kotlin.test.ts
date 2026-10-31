@@ -615,5 +615,6 @@ describe("the shared front end", { timeout: PROGRAM_TIMEOUT_MS }, () => {
     expect(kotlin).toContain("typealias AnySignInSettings = JsonElement");
     expect(block(kotlin, "SamlSettings")).toContain("val linkByEmail: Boolean? = null");
     expect(block(kotlin, "GiteaSettings")).toContain("val linkByEmail: Boolean? = null");
+    expect(block(kotlin, "LdapSignInSettings")).toContain("val linkByEmail: Boolean? = null");
   });
 });

@@ -7,6 +7,7 @@ import {
   samlSettingsSchema,
   giteaSettingsSchema,
   bitbucketSettingsSchema,
+  ldapSettingsSchema,
 } from "../schemas/sign-in.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
 import { logAction } from "../services/optio-action-service.js";
@@ -55,6 +56,7 @@ const saveSchema = z.object({
       OidcSettingsSchema.describe("Settings for provider=oidc"),
       samlSettingsSchema.describe("Settings for provider=saml"),
       giteaSettingsSchema.describe("Settings for provider=gitea"),
+      ldapSettingsSchema.describe("Settings for provider=ldap"),
       bitbucketSettingsSchema
         .strict()
         .describe("Settings for provider=bitbucket; other providers use no settings"),
@@ -198,7 +200,7 @@ export async function signInRoutes(rawApp: FastifyInstance) {
           "endpoints, scopes and claims. Nothing is stored.",
         tags: ["Auth & Sessions"],
         params: providerParams,
-        body: saveSchema.partial(),
+        body: saveSchema.partial().extend({ sampleUsername: z.string().max(200).optional() }),
         response: { 200: z.unknown(), 403: ErrorResponseSchema, 404: ErrorResponseSchema },
       },
     },

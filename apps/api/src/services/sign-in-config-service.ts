@@ -1,7 +1,13 @@
 import { envConfig } from "./sign-in-env.js";
 import type { SignInProviderTestResult } from "@optio/shared";
-import type { AnySignInSettings, GiteaSettings, OidcSettings, SamlSettings } from "@optio/shared";
-import { samlSettingsSchema, settingsSchemaFor } from "../schemas/sign-in.js";
+import type {
+  AnySignInSettings,
+  GiteaSettings,
+  LdapSignInSettings,
+  OidcSettings,
+  SamlSettings,
+} from "@optio/shared";
+import { ldapSettingsSchema, samlSettingsSchema, settingsSchemaFor } from "../schemas/sign-in.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -36,7 +42,14 @@ import { ensureUserHasWorkspace, normalizeAutoJoinDomains } from "./workspace-se
 const isAuthDisabled = () => process.env.OPTIO_AUTH_DISABLED === "true";
 
 /** The providers whose config can be stored in the app. */
-export const CONFIGURABLE_PROVIDERS = ["google", "oidc", "saml", "gitea", "bitbucket"] as const;
+export const CONFIGURABLE_PROVIDERS = [
+  "google",
+  "oidc",
+  "saml",
+  "gitea",
+  "bitbucket",
+  "ldap",
+] as const;
 export type ConfigurableProvider = (typeof CONFIGURABLE_PROVIDERS)[number];
 
 export const SIGN_IN_PROVIDERS = [
@@ -47,6 +60,7 @@ export const SIGN_IN_PROVIDERS = [
   "saml",
   "gitea",
   "bitbucket",
+  "ldap",
 ] as const;
 export type SignInProviderName = (typeof SIGN_IN_PROVIDERS)[number];
 
@@ -68,6 +82,7 @@ export interface ResolvedProviderConfig {
   clientSecret: string;
   allowedDomains: string[];
   source: "database" | "environment";
+  displayName?: string;
   settings?: AnySignInSettings;
 }
 
@@ -83,7 +98,7 @@ export interface SignInProviderView {
   hasClientSecret: boolean;
   allowedDomains: string[];
   /** The redirect URI to register with the provider. */
-  callbackUrl: string;
+  callbackUrl: string | null;
   metadataUrl?: string | null;
   settings?: AnySignInSettings;
   updatedAt: string | null;
@@ -94,14 +109,21 @@ const DISPLAY: Record<SignInProviderName, string> = {
   github: "GitHub",
   gitlab: "GitLab",
   oidc: process.env.OIDC_DISPLAY_NAME || "SSO",
+  ldap: process.env.LDAP_DISPLAY_NAME || "LDAP / Active Directory",
   saml: process.env.SAML_DISPLAY_NAME || "SSO (SAML 2.0)",
   gitea: process.env.GITEA_DISPLAY_NAME || "Gitea / Forgejo",
   bitbucket: "Bitbucket",
 };
 
-function hasSettings(provider: string): provider is "oidc" | "saml" | "gitea" | "bitbucket" {
+function hasSettings(
+  provider: string,
+): provider is "oidc" | "saml" | "gitea" | "bitbucket" | "ldap" {
   return (
-    provider === "oidc" || provider === "saml" || provider === "gitea" || provider === "bitbucket"
+    provider === "oidc" ||
+    provider === "saml" ||
+    provider === "gitea" ||
+    provider === "bitbucket" ||
+    provider === "ldap"
   );
 }
 
@@ -162,12 +184,12 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
     const fromDb = !!stored?.enabled;
     out.push({
       provider,
-      displayName: stored?.displayName || DISPLAY[provider],
+      displayName: stored?.displayName || env?.displayName || DISPLAY[provider],
       configurable: (CONFIGURABLE_PROVIDERS as readonly string[]).includes(provider),
       enabled: fromDb || !!env,
       source: fromDb ? "database" : env ? "environment" : stored ? "database" : "none",
       clientId:
-        provider === "saml"
+        provider === "saml" || provider === "ldap"
           ? null
           : fromDb || (stored && !env)
             ? stored!.clientId
@@ -175,7 +197,7 @@ export async function listSignInProviders(): Promise<SignInProviderView[]> {
       hasClientSecret:
         fromDb || (stored && !env) ? !!stored!.encryptedClientSecret : !!env?.clientSecret,
       allowedDomains: stored?.allowedDomains ?? [],
-      callbackUrl: getCallbackUrl(provider),
+      callbackUrl: provider === "ldap" ? null : getCallbackUrl(provider),
       metadataUrl: provider === "saml" ? publicApiOrigin() + "/api/auth/saml/metadata" : null,
       settings: hasSettings(provider)
         ? ((fromDb || (stored && !env) ? stored?.settings : env?.settings) ?? undefined)
@@ -196,6 +218,27 @@ export interface SaveSignInConfigInput {
   displayName?: string | null;
 }
 
+/**
+ * Whether two LDAP settings reach the same server the same way: the URL and
+ * every transport option (STARTTLS, certificate verification, the trusted
+ * CA). A stored bind password is only ever sent over the transport it was
+ * saved with.
+ */
+function sameLdapTransport(
+  a: AnySignInSettings | null | undefined,
+  b: AnySignInSettings | null | undefined,
+): boolean {
+  const x = ldapSettingsSchema.safeParse(a).data;
+  const y = ldapSettingsSchema.safeParse(b).data;
+  if (!x || !y) return false;
+  return (
+    x.url === y.url &&
+    !!x.startTls === !!y.startTls &&
+    !!x.insecureSkipVerify === !!y.insecureSkipVerify &&
+    (x.caPem?.trim() ?? "") === (y.caPem?.trim() ?? "")
+  );
+}
+
 /** Store (or update) a provider's config. Validates the domains like workspace auto-join. */
 export async function saveSignInConfig(
   provider: string,
@@ -206,7 +249,8 @@ export async function saveSignInConfig(
     throw new SignInConfigError(`${provider} can only be configured by environment variables`, 400);
   }
   const clientId = provider === "saml" ? "" : (input.clientId ?? "").trim();
-  if (!clientId && provider !== "saml") throw new SignInConfigError("A client ID is required");
+  if (!clientId && provider !== "saml" && provider !== "ldap")
+    throw new SignInConfigError("A client ID is required");
   let domains: string[] = [];
   if (input.allowedDomains !== undefined) {
     const normalized = normalizeAutoJoinDomains(input.allowedDomains);
@@ -215,7 +259,7 @@ export async function saveSignInConfig(
   }
   const existing = await getStoredConfig(provider);
   const secret = provider === "saml" ? undefined : input.clientSecret?.trim();
-  if (!existing && !secret && provider !== "saml")
+  if (!existing && !secret && provider !== "saml" && provider !== "ldap")
     throw new SignInConfigError("A client secret is required");
 
   const sealed = secret
@@ -242,6 +286,26 @@ export async function saveSignInConfig(
     }
     settings = parsed.data;
   }
+  let clearSecret = false;
+  if (provider === "ldap" && !secret) {
+    const bindDn = (settings as LdapSignInSettings)?.bindDn?.trim();
+    // The stored bind password belongs to the server it was saved with: a
+    // save that points the directory elsewhere (another URL, or the same one
+    // with weaker transport) must bring the password again, or the next
+    // sign-in would send the stored one to the new server.
+    const keepsServer =
+      !!existing?.encryptedClientSecret &&
+      sameLdapTransport(existing.settings, settings as LdapSignInSettings);
+    if (bindDn && !keepsServer) {
+      throw new SignInConfigError(
+        existing?.encryptedClientSecret
+          ? "Enter the bind password again: the saved one is only sent to the server it was saved for"
+          : "The bind password is required",
+      );
+    }
+    // An anonymous bind needs no password; drop one left for another server.
+    clearSecret = !keepsServer && !!existing?.encryptedClientSecret;
+  }
   if (provider === "saml") {
     // The identity provider must be reachable now: its metadata, or the
     // single sign-on URL and certificate typed in.
@@ -262,7 +326,9 @@ export async function saveSignInConfig(
       input.displayName === undefined ? (existing?.displayName ?? null) : input.displayName,
     updatedBy: actorUserId,
     updatedAt: new Date(),
-    ...sealed,
+    ...(clearSecret
+      ? { encryptedClientSecret: null, clientSecretIv: null, clientSecretAuthTag: null }
+      : sealed),
   };
   if (existing) {
     await db
@@ -618,8 +684,59 @@ function slugOf(name: string, fallbackId: string): string {
 
 export async function testSignInProvider(
   provider: string,
-  input: { settings?: AnySignInSettings },
+  input: { settings?: AnySignInSettings; clientSecret?: string; sampleUsername?: string },
 ): Promise<SignInProviderTestResult> {
+  if (provider === "ldap") {
+    const stored = await getStoredConfig(provider);
+    const parsed = ldapSettingsSchema.safeParse(
+      input.settings ?? stored?.settings ?? envConfig("ldap")?.settings,
+    );
+    if (!parsed.success) return { ok: false, error: "Valid LDAP settings are required" };
+    const ldap = parsed.data as LdapSignInSettings;
+    const environment = envConfig("ldap");
+    // A test may inspect a new server, but must never send another server's
+    // saved password to it. The request must supply credentials for a new URL.
+    // The URL and every transport option must match: the request may not
+    // turn off STARTTLS or verification, or swap the CA, for a saved password.
+    const bindPassword =
+      input.clientSecret?.trim() ||
+      (stored && sameLdapTransport(stored.settings, ldap) ? openSecret(stored) : null) ||
+      (sameLdapTransport(environment?.settings, ldap) ? environment?.clientSecret : null) ||
+      "";
+    if (ldap.bindDn && !bindPassword)
+      return {
+        ok: false,
+        error: "Supply the bind password when testing a different LDAP server or transport",
+      };
+
+    const { ldapTest } = await import("./auth/ldap.js");
+    const result = await ldapTest(
+      {
+        url: ldap.url,
+        startTls: ldap.startTls,
+        caPem: ldap.caPem,
+        insecureSkipVerify: ldap.insecureSkipVerify,
+        bindDn: ldap.bindDn,
+        bindPassword,
+        userBaseDn: ldap.userBaseDn,
+        userFilter: ldap.userFilter,
+        usernameAttribute: ldap.usernameAttribute,
+        emailAttribute: ldap.emailAttribute,
+        displayNameAttribute: ldap.displayNameAttribute,
+        groupMode: ldap.groupMode,
+        groupBaseDn: ldap.groupBaseDn,
+        groupFilter: ldap.groupFilter,
+      },
+      input.sampleUsername,
+    );
+    return {
+      ok: result.ok,
+      error: result.error,
+      ldap: result.ok
+        ? { boundAs: result.boundAs, serverInfo: result.serverInfo, sample: result.sample ?? null }
+        : undefined,
+    };
+  }
   if (provider === "saml") {
     const stored = await getStoredConfig(provider);
     const parsed = samlSettingsSchema.safeParse(

@@ -8782,25 +8782,248 @@ public struct SignInProviderTestResult: Codable, Hashable, Sendable {
         }
     }
 
+    public struct Ldap: Codable, Hashable, Sendable {
+        public struct ServerInfo: Codable, Hashable, Sendable {
+            public let vendor: String?
+            public let namingContexts: [String]?
+
+            private enum CodingKeys: String, CodingKey {
+                case vendor = "vendor"
+                case namingContexts = "namingContexts"
+            }
+
+            public init(vendor: String? = nil, namingContexts: [String]? = nil) {
+                self.vendor = vendor
+                self.namingContexts = namingContexts
+            }
+        }
+
+        public struct Sample: Codable, Hashable, Sendable {
+            public let dn: String
+            public let username: String
+            public let email: String
+            public let displayName: String
+            public let groups: [String]
+
+            private enum CodingKeys: String, CodingKey {
+                case dn = "dn"
+                case username = "username"
+                case email = "email"
+                case displayName = "displayName"
+                case groups = "groups"
+            }
+
+            public init(
+                dn: String,
+                username: String,
+                email: String,
+                displayName: String,
+                groups: [String]
+            ) {
+                self.dn = dn
+                self.username = username
+                self.email = email
+                self.displayName = displayName
+                self.groups = groups
+            }
+        }
+
+        public let boundAs: String?
+        public let serverInfo: ServerInfo?
+        public let sample: Sample?
+
+        private enum CodingKeys: String, CodingKey {
+            case boundAs = "boundAs"
+            case serverInfo = "serverInfo"
+            case sample = "sample"
+        }
+
+        public init(boundAs: String? = nil, serverInfo: ServerInfo? = nil, sample: Sample? = nil) {
+            self.boundAs = boundAs
+            self.serverInfo = serverInfo
+            self.sample = sample
+        }
+    }
+
     /// SAML: what the metadata (or the settings) say about the identity provider.
     public let saml: Saml?
     public let ok: Bool
     public let error: String?
     /// OIDC: what discovery found.
     public let oidc: Oidc?
+    /// LDAP: what a bind and a sample search found.
+    public let ldap: Ldap?
 
     private enum CodingKeys: String, CodingKey {
         case saml = "saml"
         case ok = "ok"
         case error = "error"
         case oidc = "oidc"
+        case ldap = "ldap"
     }
 
-    public init(saml: Saml? = nil, ok: Bool, error: String? = nil, oidc: Oidc? = nil) {
+    public init(
+        saml: Saml? = nil,
+        ok: Bool,
+        error: String? = nil,
+        oidc: Oidc? = nil,
+        ldap: Ldap? = nil
+    ) {
         self.saml = saml
         self.ok = ok
         self.error = error
         self.oidc = oidc
+        self.ldap = ldap
+    }
+}
+
+public struct LdapSignInSettings: Codable, Hashable, Sendable {
+    public enum GroupMode: String, Codable, Hashable, Sendable, CaseIterable {
+        case memberOf = "memberOf"
+        case search = "search"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [GroupMode] = [.memberOf, .search]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = GroupMode(rawValue: raw) ?? .unknown
+        }
+    }
+
+    /// A provider-verified unique email may link to an existing account; disabled by default.
+    public let linkByEmail: Bool?
+    /// ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636
+    public let url: String
+    /// Upgrade a plain ldap:// connection with STARTTLS before binding.
+    public let startTls: Bool?
+    public let caPem: String?
+    public let insecureSkipVerify: Bool?
+    /// Service account for the search bind; empty = anonymous bind. Its password is stored sealed.
+    public let bindDn: String?
+    /// Where users live, e.g. OU=People,DC=example,DC=com
+    public let userBaseDn: String
+    /// Filter with a {{username}} placeholder. Default matches sAMAccountName, uid or mail.
+    public let userFilter: String?
+    public let usernameAttribute: String?
+    public let emailAttribute: String?
+    public let displayNameAttribute: String?
+    /// "memberOf" (the attribute on the user, default) or "search" (a group search).
+    public let groupMode: GroupMode?
+    public let groupBaseDn: String?
+    /// For groupMode "search": filter with {{dn}} / {{username}} placeholders.
+    public let groupFilter: String?
+    /// Shown above the username field ("Corporate account").
+    public let usernameLabel: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case linkByEmail = "linkByEmail"
+        case url = "url"
+        case startTls = "startTls"
+        case caPem = "caPem"
+        case insecureSkipVerify = "insecureSkipVerify"
+        case bindDn = "bindDn"
+        case userBaseDn = "userBaseDn"
+        case userFilter = "userFilter"
+        case usernameAttribute = "usernameAttribute"
+        case emailAttribute = "emailAttribute"
+        case displayNameAttribute = "displayNameAttribute"
+        case groupMode = "groupMode"
+        case groupBaseDn = "groupBaseDn"
+        case groupFilter = "groupFilter"
+        case usernameLabel = "usernameLabel"
+    }
+
+    public init(
+        linkByEmail: Bool? = nil,
+        url: String,
+        startTls: Bool? = nil,
+        caPem: String? = nil,
+        insecureSkipVerify: Bool? = nil,
+        bindDn: String? = nil,
+        userBaseDn: String,
+        userFilter: String? = nil,
+        usernameAttribute: String? = nil,
+        emailAttribute: String? = nil,
+        displayNameAttribute: String? = nil,
+        groupMode: GroupMode? = nil,
+        groupBaseDn: String? = nil,
+        groupFilter: String? = nil,
+        usernameLabel: String? = nil
+    ) {
+        self.linkByEmail = linkByEmail
+        self.url = url
+        self.startTls = startTls
+        self.caPem = caPem
+        self.insecureSkipVerify = insecureSkipVerify
+        self.bindDn = bindDn
+        self.userBaseDn = userBaseDn
+        self.userFilter = userFilter
+        self.usernameAttribute = usernameAttribute
+        self.emailAttribute = emailAttribute
+        self.displayNameAttribute = displayNameAttribute
+        self.groupMode = groupMode
+        self.groupBaseDn = groupBaseDn
+        self.groupFilter = groupFilter
+        self.usernameLabel = usernameLabel
+    }
+}
+
+public struct PublicSignInProvider: Codable, Hashable, Sendable {
+    public enum Name: String, Codable, Hashable, Sendable, CaseIterable {
+        case google = "google"
+        case github = "github"
+        case gitlab = "gitlab"
+        case oidc = "oidc"
+        case saml = "saml"
+        case gitea = "gitea"
+        case bitbucket = "bitbucket"
+        case ldap = "ldap"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [Name] = [.google, .github, .gitlab, .oidc, .saml, .gitea, .bitbucket, .ldap]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Name(rawValue: raw) ?? .unknown
+        }
+    }
+
+    public enum Method: String, Codable, Hashable, Sendable, CaseIterable {
+        case redirect = "redirect"
+        case password = "password"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [Method] = [.redirect, .password]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Method(rawValue: raw) ?? .unknown
+        }
+    }
+
+    public let name: Name
+    public let displayName: String
+    /// "redirect": a button that sends the browser to the provider; "password": a form on the login page.
+    public let method: Method
+    /// LDAP: the label above the username field.
+    public let usernameLabel: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case name = "name"
+        case displayName = "displayName"
+        case method = "method"
+        case usernameLabel = "usernameLabel"
+    }
+
+    public init(name: Name, displayName: String, method: Method, usernameLabel: String? = nil) {
+        self.name = name
+        self.displayName = displayName
+        self.method = method
+        self.usernameLabel = usernameLabel
     }
 }
 

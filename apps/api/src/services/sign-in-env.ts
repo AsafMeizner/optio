@@ -95,5 +95,27 @@ export function envConfig(provider: SignInProviderName): {
           caPem: env.SAML_CA_PEM || undefined,
         } satisfies SamlSettings,
       };
+    case "ldap":
+      if (!env.LDAP_URL) return null;
+      return {
+        clientId: "",
+        clientSecret: env.LDAP_BIND_PASSWORD ?? "",
+        displayName: env.LDAP_DISPLAY_NAME || "Corporate account",
+        settings: {
+          url: env.LDAP_URL,
+          startTls: envBool("LDAP_START_TLS"),
+          caPem: env.LDAP_CA_PEM || undefined,
+          bindDn: env.LDAP_BIND_DN || undefined,
+          userBaseDn: env.LDAP_USER_BASE_DN ?? "",
+          userFilter: env.LDAP_USER_FILTER || undefined,
+          usernameAttribute: env.LDAP_USERNAME_ATTRIBUTE || undefined,
+          emailAttribute: env.LDAP_EMAIL_ATTRIBUTE || undefined,
+          displayNameAttribute: env.LDAP_DISPLAY_NAME_ATTRIBUTE || undefined,
+          groupMode: env.LDAP_GROUP_MODE === "search" ? "search" : undefined,
+          groupBaseDn: env.LDAP_GROUP_BASE_DN || undefined,
+          groupFilter: env.LDAP_GROUP_FILTER || undefined,
+          linkByEmail: envBool("LDAP_LINK_BY_EMAIL") ?? false,
+        },
+      };
   }
 }

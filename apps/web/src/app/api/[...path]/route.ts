@@ -20,8 +20,9 @@ async function proxyRequest(request: NextRequest) {
   const url = new URL(request.url);
   const targetUrl = new URL(`${INTERNAL_API_URL}${url.pathname}${url.search}`);
   const isMcp = url.pathname === "/api/mcp";
+  const isLdapLogin = request.method === "POST" && url.pathname === "/api/auth/ldap/login";
   const browserVerifier =
-    request.method === "GET" && /^\/api\/auth\/[^/]+\/login$/.test(url.pathname)
+    (request.method === "GET" && /^\/api\/auth\/[^/]+\/login$/.test(url.pathname)) || isLdapLogin
       ? randomBytes(32).toString("base64url")
       : undefined;
   if (browserVerifier) {
@@ -139,11 +140,21 @@ async function proxyRequest(request: NextRequest) {
       if (value) responseHeaders.set(name, value);
     }
 
-    return new NextResponse(apiRes.body, {
+    const response = new NextResponse(apiRes.body, {
       status: apiRes.status,
       statusText: apiRes.statusText,
       headers: responseHeaders,
     });
+    if (isLdapLogin && apiRes.ok && browserVerifier) {
+      response.cookies.set(authCookieName("oauth_verifier"), browserVerifier, {
+        path: "/",
+        httpOnly: true,
+        sameSite: "lax",
+        secure: secureAuthCookies(),
+        maxAge: 600,
+      });
+    }
+    return response;
   } catch {
     return NextResponse.json({ error: "API proxy error" }, { status: 502 });
   }

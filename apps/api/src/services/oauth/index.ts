@@ -35,6 +35,8 @@ export function getSamlProvider(): SamlProvider {
 export interface EnabledProvider {
   name: string;
   displayName: string;
+  method?: "redirect" | "password";
+  usernameLabel?: string | null;
 }
 
 /**
@@ -53,9 +55,19 @@ export async function listEnabledProviders(): Promise<EnabledProvider[]> {
     "saml",
     "gitea",
     "bitbucket",
+    "ldap",
   ] as const) {
     const view = views.find((v) => v.provider === name);
-    if (view?.enabled) out.push({ name, displayName: view.displayName });
+    if (view?.enabled)
+      out.push({
+        name,
+        displayName: view.displayName,
+        method: name === "ldap" ? "password" : "redirect",
+        usernameLabel:
+          name === "ldap"
+            ? (view.settings as import("@optio/shared").LdapSignInSettings)?.usernameLabel
+            : undefined,
+      });
   }
   return out;
 }

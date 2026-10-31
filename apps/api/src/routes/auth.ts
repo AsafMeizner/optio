@@ -1,3 +1,5 @@
+import { LdapAuthError, ldapAuthenticate } from "../services/auth/ldap.js";
+import { ldapLoginSchema } from "../schemas/sign-in.js";
 import type { OAuthTokens, OAuthUser } from "../services/oauth/provider.js";
 import { getSamlProvider } from "../services/oauth/index.js";
 import type { OAuthFlowState } from "../services/oauth/provider.js";
@@ -655,6 +657,138 @@ export async function authRoutes(rawApp: FastifyInstance) {
         app.log.error(err, "OAuth callback failed");
         reply.redirect(`${WEB_URL}/login?error=auth_failed`);
       }
+    },
+  );
+
+  /**
+   * The LDAP / Active Directory password form. The browser gets a one-time
+   * code for `/auth/callback` like the redirect flows do; the CLI
+   * (`cli: true`) gets a personal access token straight away.
+   */
+  app.post(
+    "/api/auth/ldap/login",
+    {
+      ...AUTH_RATE_LIMIT,
+      schema: {
+        operationId: "ldapLogin",
+        summary: "Sign in with an LDAP / Active Directory username and password",
+        tags: ["Auth & Sessions"],
+        security: [],
+        body: ldapLoginSchema,
+        querystring: z.object({
+          browserChallenge: z
+            .string()
+            .regex(/^[A-Za-z0-9_-]{43}$/)
+            .optional(),
+        }),
+        response: {
+          200: z.union([
+            z.object({ code: z.string() }),
+            z.object({
+              token: z.string(),
+              tokenId: z.string(),
+              user: z.object({
+                id: z.string(),
+                email: z.string().nullable().optional(),
+                displayName: z.string().nullable().optional(),
+              }),
+            }),
+          ]),
+          400: ErrorResponseSchema,
+          401: ErrorResponseSchema,
+          403: ErrorResponseSchema,
+          404: ErrorResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const config = await resolveProviderConfig("ldap");
+      if (!config) return reply.status(404).send({ error: "LDAP sign-in isn't configured" });
+      const { browserChallenge } = req.query;
+      if (!req.body.cli && !browserChallenge) {
+        return reply.status(400).send({ error: "Start sign-in from the web app" });
+      }
+      const settings = config.settings as import("@optio/shared").LdapSignInSettings;
+      let found;
+      try {
+        found = await ldapAuthenticate(
+          {
+            url: settings.url,
+            startTls: settings.startTls,
+            caPem: settings.caPem,
+            insecureSkipVerify: settings.insecureSkipVerify,
+            bindDn: settings.bindDn,
+            bindPassword: config.clientSecret,
+            userBaseDn: settings.userBaseDn,
+            userFilter: settings.userFilter,
+            usernameAttribute: settings.usernameAttribute,
+            emailAttribute: settings.emailAttribute,
+            displayNameAttribute: settings.displayNameAttribute,
+            groupMode: settings.groupMode,
+            groupBaseDn: settings.groupBaseDn,
+            groupFilter: settings.groupFilter,
+          },
+          req.body.username,
+          req.body.password,
+        );
+      } catch (err) {
+        if (err instanceof LdapAuthError) {
+          app.log.info({ code: err.code, username: req.body.username }, "LDAP sign-in refused");
+          if (err.code === "invalid_credentials" || err.code === "user_not_found") {
+            return reply.status(401).send({ error: "Wrong username or password" });
+          }
+          return reply.status(403).send({ error: err.message });
+        }
+        throw err;
+      }
+      const vouched: OAuthUser = {
+        externalId: found.externalId,
+        email: found.email,
+        displayName: found.displayName,
+        username: found.username,
+        // The directory is the organization's own: its emails are trusted.
+        emailVerified: !!found.email,
+        emailVerifiedByProvider: !!found.email,
+        groups: found.groups,
+      };
+      const decision = domainDecision(vouched, config.allowedDomains);
+      if (decision !== "allowed")
+        return reply
+          .status(403)
+          .send({ error: "Your email address isn't from a domain allowed to sign in here" });
+      const session = await createSession("ldap", vouched, {
+        linkByEmail: config.settings?.linkByEmail === true || linkAccountsByEmailEnabled(),
+      });
+      await joinWorkspacesByEmailDomain(
+        session.user.id,
+        vouched.email,
+        vouched.emailVerified === true,
+      ).catch((err) => app.log.warn({ err }, "auto-join by email domain failed"));
+      await completeSignIn({
+        id: session.user.id,
+        email: vouched.email,
+        emailVerified: vouched.emailVerified === true,
+        provider: "ldap",
+      }).catch((err) => app.log.warn({ err }, "sign-in completion step failed"));
+      if (req.body.cli) {
+        await revokeSession(session.token);
+        const result = await createApiKey(
+          session.user.id,
+          `CLI (${new Date().toISOString().slice(0, 10)})`,
+        );
+        return reply.send({
+          token: result.token,
+          tokenId: result.tokenId,
+          user: {
+            id: session.user.id,
+            email: session.user.email,
+            displayName: session.user.displayName,
+          },
+        });
+      }
+      const authCode = randomBytes(32).toString("hex");
+      await addAuthCode(authCode, session.token, browserChallenge!);
+      reply.send({ code: authCode });
     },
   );
 

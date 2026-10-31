@@ -556,6 +556,24 @@ auth:
     usePkce: false      # true: PKCE (S256) on the sign-in, for a provider that supports it
     linkByEmail: false  # true: a first sign-in whose verified email matches one existing account gets that account; only if people can't change their email at the provider
     caPem: ""           # PEM bundle of the CA behind a private provider certificate (caBundle below covers it too)
+  # LDAP / Active Directory: a username + password form on the login page,
+  # for a network without an OpenID Connect provider. Set url to turn it on.
+  ldap:
+    url: ""                   # ldap:// or ldaps:// URL, e.g. ldaps://ad.example.com:636
+    startTls: false           # Upgrade a plain ldap:// connection with STARTTLS before binding
+    bindDn: ""                # Service account for the user search, e.g. CN=optio,OU=Service,DC=example,DC=com; empty = anonymous bind
+    bindPassword: ""          # Its password (or existingSecrets.LDAP_BIND_PASSWORD)
+    userBaseDn: ""            # Where users live, e.g. OU=People,DC=example,DC=com (required with url)
+    userFilter: ""            # {{username}} placeholder; empty = (|(sAMAccountName={{username}})(uid={{username}})(mail={{username}}))
+    usernameAttribute: ""     # empty = sAMAccountName, then uid
+    emailAttribute: ""        # empty = mail
+    displayNameAttribute: ""  # empty = displayName, then cn
+    groupMode: ""             # "memberOf" (the attribute on the user; the default) or "search" (a group search)
+    groupBaseDn: ""           # groupMode search: where groups live
+    groupFilter: ""           # groupMode search: {{dn}} / {{username}} placeholders; empty = (|(member={{dn}})(uniqueMember={{dn}})(memberUid={{username}}))
+    linkByEmail: false        # true: a first sign-in whose email matches one existing account gets that account; only if people can't change their own mail attribute
+    displayName: "Corporate account"  # The form's heading on the login page
+    caPem: ""                 # PEM bundle of the CA behind the directory's certificate (caBundle below covers it too)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # GitHub webhook signature validation
