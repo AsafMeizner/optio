@@ -37,6 +37,16 @@ function listMigrationSqlFiles(): string[] {
 }
 
 describe("migration journal consistency", () => {
+  it("keeps historical duplicate repair after the original OpenCode columns", () => {
+    // Historical timestamps are not execution order: this repair has an older
+    // timestamp but must run after the original ADD COLUMN migration.
+    const tags = readJournal().entries.map((entry) => entry.tag);
+    const original = tags.indexOf("0042_opencode_repo_columns");
+    const repair = tags.indexOf("1775613995_repair_duplicate_migrations");
+    expect(original).toBeGreaterThanOrEqual(0);
+    expect(repair).toBeGreaterThan(original);
+  });
+
   it("every .sql migration file has an entry in _journal.json", () => {
     const journal = readJournal();
     const journalTags = new Set(journal.entries.map((e) => e.tag));

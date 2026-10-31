@@ -7,6 +7,7 @@ import {
   type WorkSpec,
 } from "@optio/shared";
 import { api } from "@/lib/api-client";
+import { remoteWorkspaceSpecOf } from "@/components/remote-workspaces/location";
 import { defaultAgentsMd } from "@/lib/persistent-agent-defaults";
 import {
   deriveKind,
@@ -165,8 +166,12 @@ export function specFor(d: WorkDraft, ctx: { repoUrl: string; name: string }): W
       // Blank on a pod = the repo's default branch (the server resolves it,
       // #643). On a machine, a base branch is also what says "on a new branch".
       repoBranch: d.withRepo ? d.repoBranch.trim() || (local ? "main" : null) : null,
-      localHostId: local ? d.location.localHostId || null : null,
-      localDir: local ? d.location.localDir || null : null,
+      // A remote workspace: the API starts it and fills in the machine and checkout.
+      localHostId: local && !d.location.remoteWorkspace ? d.location.localHostId || null : null,
+      localDir: local && !d.location.remoteWorkspace ? d.location.localDir || null : null,
+      ...(local && d.location.remoteWorkspace
+        ? { remoteWorkspace: remoteWorkspaceSpecOf(d.location.remoteWorkspace) }
+        : {}),
     },
     who: {
       runtime: d.runtime === TERMINAL ? null : d.runtime,

@@ -1919,11 +1919,37 @@ data class LocalHost(
      * usage pill refresh button). Live, so false whenever the host is offline.
      */
     val refreshLimits: Boolean? = null,
+    /**
+     * A remote workspace's provider ("coder", "codespaces", "daytona", "e2b")
+     * when the machine is a workspace Optio started for a piece of work
+     * (docs/remote-workspaces.md); "machine" (or absent, from older servers):
+     * one a person paired.
+     */
+    val origin: LocalHostOrigin? = null,
+    /** A remote workspace's id and name at its provider; null for a machine. */
+    val remoteWorkspaceId: String? = null,
+    val remoteWorkspaceName: String? = null,
+    /** The connection that started it; null for a machine. */
+    val remoteWorkspaceConnectionId: String? = null,
     val state: LocalHostState,
     val lastSeenAt: String? = null,
     val createdAt: String,
     val updatedAt: String,
 )
+
+/** "machine", or a remote-workspace provider (REMOTE_WORKSPACE_PROVIDERS, remote-workspaces.ts). */
+@Serializable(with = LocalHostOrigin.Companion::class)
+enum class LocalHostOrigin(override val raw: String) : RawEnum {
+    MACHINE("machine"),
+    CODER("coder"),
+    CODESPACES("codespaces"),
+    DAYTONA("daytona"),
+    E2B("e2b"),
+    /** Fallback for raw values this client does not know about yet. */
+    UNKNOWN("__unknown__");
+
+    companion object : RawEnumSerializer<LocalHostOrigin>("dev.optio.core.model.LocalHostOrigin", entries, UNKNOWN)
+}
 
 @Serializable(with = LocalTerminalState.Companion::class)
 enum class LocalTerminalState(override val raw: String) : RawEnum {

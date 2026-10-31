@@ -43,6 +43,34 @@ It is the cost of recorded work so far, not a prediction of the remaining work.
 Unknown model prices are left unavailable. OpenAI rates are recorded in
 `packages/shared/src/utils/agent-usage.ts` with their verification date.
 
+### Directories and the machine's identity
+
+`optio local up` offers the directories in its allowlist
+(`~/.config/optio/local.json`, edited by `optio local add|remove`).
+
+| Flag / variable        | What it does                                                                                                            |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `--dir <path>`         | Also offer this directory, for this run only — never written to `local.json`. Repeatable.                               |
+| `--name <name>`        | The machine's name in Optio (default `OPTIO_LOCAL_HOSTNAME`; with neither, a name set in Optio stays)                   |
+| `--no-remote-dirs`     | Optio can't add or remove directories here                                                                              |
+| `OPTIO_LOCAL_HOST_ID`  | Register as this machine (its id in Optio) instead of the one `local.json` remembers; the id is remembered from then on |
+| `OPTIO_LOCAL_HOSTNAME` | The hostname to register (instead of the OS's), and the name when `--name` isn't given                                  |
+
+A `--dir` that doesn't exist yet is left out with a warning and tried again
+on the next reconnect.
+
+A remote workspace Optio starts (docs/remote-workspaces.md) runs the daemon
+this way: Optio pre-registers the machine and hands the workspace its id, so
+it is matched by id rather than by its hostname, and the workspace passes its
+checkout:
+
+```bash
+# OPTIO_SERVER, OPTIO_TOKEN and OPTIO_LOCAL_HOST_ID come from Optio (a template's
+# parameters, a secret, or the environment of the start script it runs)
+export OPTIO_LOCAL_HOSTNAME="<the workspace's name>"
+optio local up --no-remote-dirs --dir "$OPTIO_CHECKOUT_DIR"
+```
+
 Rebuild the CLI to receive usage-tracking updates. An already-running daemon keeps
 its loaded code until restarted; restarting it stops the terminals it owns, so
 finish or save active work first.

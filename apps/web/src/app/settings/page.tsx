@@ -35,6 +35,7 @@ import {
 } from "@optio/shared";
 import { NotificationPreferences } from "@/components/notifications/notification-preferences";
 import { ApiKeysManager } from "@/components/settings/api-keys-manager";
+import { RemoteWorkspaceConnections } from "@/components/settings/remote-workspace-connections";
 import { ModelProvidersManager } from "@/components/settings/model-providers-manager";
 import { useFeatures } from "@/hooks/use-features";
 import { ticketSourceOptions } from "@/components/settings/ticket-sources";
@@ -2280,6 +2281,7 @@ export default function SettingsPage() {
             content: (
               <>
                 <TicketIntegration />
+                <RemoteWorkspaceConnections />
                 <GlobalMcpServers />
                 <DeploymentSecrets />
                 <GlobalSkills />

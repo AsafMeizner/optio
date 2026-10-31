@@ -68,6 +68,10 @@ export * from "./controller-tools.js";
 export * from "./utils/session-work-links.js";
 
 export * from "./types/sign-in.js";
+export type { RemoteWorkspaceLaunch } from "./work/spec.js";
+export { remoteWorkspaceOf } from "./work/spec.js";
+
+export * from "./remote-workspaces.js";
 export * from "./utils/body-pattern.js";
 
 export { changeRequestAbbrev, isMergeRequest } from "./utils/change-request.js";

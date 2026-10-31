@@ -57,32 +57,78 @@ export function WorkspaceCreationSettings() {
     }
   };
 
+  const remote = settings.remoteWorkspaces;
+  const pickRemote = async (next: string) => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      setSettings(
+        await api.updateDeploymentSettings({
+          remoteWorkspaces: next === "deployment" ? null : next === "on",
+        }),
+      );
+      toast.success("Saved");
+    } catch (err) {
+      toast.error("Couldn't save", { description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
-    <SectionCard
-      label="Workspaces"
-      hint="Who may create one"
-      summary={LABEL[wc.value]}
-      bodyClassName="p-4 space-y-3"
-    >
-      <p className="text-xs text-text-muted">
-        Whoever creates a workspace becomes its admin. With &quot;Deployment admins only&quot;, only
-        deployment admins can create new workspaces. Existing workspace membership is unchanged.
-      </p>
-      <div data-testid="workspace-creation">
-        <Segmented
-          value={choice}
-          onChange={(next) => void pick(next)}
-          aria-label="Who may create a workspace"
-          options={[
-            { value: "everyone", label: LABEL.everyone },
-            { value: "admins", label: LABEL.admins },
-            {
-              value: "deployment",
-              label: `Follow the deployment (${LABEL[wc.environment].toLowerCase()})`,
-            },
-          ]}
-        />
-      </div>
-    </SectionCard>
+    <>
+      <SectionCard
+        label="Workspaces"
+        hint="Who may create one"
+        summary={LABEL[wc.value]}
+        bodyClassName="p-4 space-y-3"
+      >
+        <p className="text-xs text-text-muted">
+          Whoever creates a workspace becomes its admin. With &quot;Deployment admins only&quot;,
+          only deployment admins can create new workspaces. Existing workspace membership is
+          unchanged.
+        </p>
+        <div data-testid="workspace-creation">
+          <Segmented
+            value={choice}
+            onChange={(next) => void pick(next)}
+            aria-label="Who may create a workspace"
+            options={[
+              { value: "everyone", label: LABEL.everyone },
+              { value: "admins", label: LABEL.admins },
+              {
+                value: "deployment",
+                label: `Follow the deployment (${LABEL[wc.environment].toLowerCase()})`,
+              },
+            ]}
+          />
+        </div>
+      </SectionCard>
+      {remote && (
+        <SectionCard
+          label="Remote workspaces"
+          hint="Connections to third-party workspace providers"
+          summary={remote.value ? "On" : "Off"}
+          bodyClassName="p-4 space-y-3"
+        >
+          <p className="text-xs text-text-muted">
+            Off by default. Enabling allows members to connect to Coder, Codespaces, Daytona and E2B
+            and send their pairing credential to those providers.
+          </p>
+          <Segmented
+            aria-label="Remote workspaces"
+            value={remote.source === "app" ? (remote.value ? "on" : "off") : "deployment"}
+            onChange={(value) => void pickRemote(value)}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "on", label: "On" },
+              {
+                value: "deployment",
+                label: `Follow the deployment (${remote.environment ? "on" : "off"})`,
+              },
+            ]}
+          />
+        </SectionCard>
+      )}
+    </>
   );
 }

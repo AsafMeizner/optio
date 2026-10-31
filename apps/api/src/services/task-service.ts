@@ -646,6 +646,22 @@ async function announceTransition(written: WrittenTransition) {
       .catch((err) => logger.warn({ err, taskId: id }, "Failed to kill local terminal for task"));
   }
 
+  // A local task in a remote workspace (docs/remote-workspaces.md): the workspace stays
+  // while the task may resume (pr_opened, a retry) and goes once it settles,
+  // unless another run still uses it. Cheap for every other host (one read).
+  if (
+    (toState === TaskState.COMPLETED ||
+      toState === TaskState.FAILED ||
+      toState === TaskState.CANCELLED) &&
+    updatedTask.runTarget === "local" &&
+    updatedTask.localHostId
+  ) {
+    const hostId = updatedTask.localHostId;
+    import("./remote-workspace-service.js")
+      .then(({ onRemoteWorkspaceTaskSettled }) => onRemoteWorkspaceTaskSettled(hostId))
+      .catch((err) => logger.warn({ err, taskId: id }, "Failed to let a remote workspace go"));
+  }
+
   // Wake the reconciler. Every state change is a signal it may want to act
   // (capacity opened up, PR-related state changed, dependency cascade, etc).
   import("./reconcile-queue.js")

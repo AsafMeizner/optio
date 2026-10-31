@@ -74,6 +74,8 @@ import { recentRunsRoutes } from "./routes/recent-runs.js";
 import githubAppRoutes from "./routes/github-app.js";
 import { githubTokenRoutes } from "./routes/github-token.js";
 import { hookRoutes } from "./routes/hooks.js";
+import { cliDownloadRoutes } from "./routes/cli-downloads.js";
+import { remoteWorkspaceRoutes } from "./routes/remote-workspaces.js";
 import { localRoutes } from "./routes/local.js";
 import { workLinkRoutes } from "./routes/work-links.js";
 import { eventIngressRoutes } from "./routes/event-ingress.js";
@@ -365,6 +367,8 @@ export async function buildServer() {
   await app.register(githubTokenRoutes);
   await app.register(hookRoutes);
   await app.register(localRoutes);
+  await app.register(remoteWorkspaceRoutes);
+  await app.register(cliDownloadRoutes);
   await app.register(workLinkRoutes);
   await app.register(eventIngressRoutes);
 
@@ -460,6 +464,16 @@ export async function buildServer() {
     app.log.error(error);
     reply.status(500).send({ error: "Internal server error" });
   });
+
+  // Remote workspaces that never pair fail their parked runs
+  // (docs/remote-workspaces.md). On listen only, so tests and the OpenAPI
+  // dump that never listen don't sweep.
+  let workspaceWatcher: { close(): void } | null = null;
+  app.addHook("onListen", async () => {
+    const { startRemoteWorkspaceWatcher } = await import("./services/remote-workspace-service.js");
+    workspaceWatcher ??= startRemoteWorkspaceWatcher();
+  });
+  app.addHook("onClose", async () => workspaceWatcher?.close());
 
   return app;
 }

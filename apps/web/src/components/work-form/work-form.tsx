@@ -93,6 +93,7 @@ import {
   isEventWhen,
   isTriggered,
   isLocal,
+  remoteWorkspaceDisabled,
   isOneShot,
   kindLock,
   missingFields,
@@ -582,14 +583,19 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
     });
   };
 
-  const setWhere = (runTarget: "cluster" | "local") => {
+  const setWhere = (location: WorkDraft["location"]) => {
+    const runTarget = location.runTarget;
     // A pod defaults to one of your repos; a machine to the directory as it
     // is. An edit keeps the saved answer, since it is part of the kind.
     setDraft((d) =>
       startOptions(
         {
           ...d,
-          location: { ...d.location, runTarget },
+          location: {
+            ...d.location,
+            runTarget,
+            remoteWorkspace: location.remoteWorkspace ?? null,
+          },
           withRepo: edit ? d.withRepo : runTarget === "cluster",
         },
         d.runtime,
@@ -710,6 +716,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
     wheres.find((w) => w.value === "cluster")?.disabled ??
     lock({ location: { ...draft.location, runTarget: "cluster" } });
   const machineDisabled = lock({ location: { ...draft.location, runTarget: "local" } });
+  const remoteWhereDisabled = remoteWorkspaceDisabled(draft, !!edit) ?? machineDisabled;
   const whenDisabled = Object.fromEntries(
     whenTypesFor(features).map((w) => [
       w,
@@ -961,7 +968,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
                     value={draft.location}
                     onChange={(location) =>
                       location.runTarget !== draft.location.runTarget
-                        ? setWhere(location.runTarget)
+                        ? setWhere(location)
                         : setDraft({ location })
                     }
                     kind={draft.withRepo ? "task" : "job"}
@@ -971,6 +978,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
                     inset
                     clusterDisabled={podDisabled}
                     localDisabled={machineDisabled}
+                    remoteWorkspaceDisabled={remoteWhereDisabled}
                   />
 
                   <div className="pt-3 border-t border-border space-y-3">

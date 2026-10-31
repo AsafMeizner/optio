@@ -31,6 +31,7 @@ import type {
   LocalTranscriptEntry,
   ModelProvider,
   PickableSecret,
+  RemoteWorkspaceProviderId,
   ResourceOwner,
   TaskPr,
   TriggerType,
@@ -125,6 +126,7 @@ export interface DeploymentSwitch {
 }
 
 export interface DeploymentSettings {
+  remoteWorkspaces?: DeploymentSwitch;
   workspaceCreation: {
     value: "admins" | "everyone";
     source: "app" | "environment";
@@ -169,6 +171,7 @@ export const api = {
   getDeploymentSettings: () => request<DeploymentSettings>("/api/deployment-settings"),
   updateDeploymentSettings: (data: {
     workspaceCreation?: "admins" | "everyone" | null;
+    remoteWorkspaces?: boolean | null;
     onboarding?: boolean | null;
   }) =>
     request<DeploymentSettings>("/api/deployment-settings", {
@@ -2504,4 +2507,162 @@ export const api = {
   },
   detachConfigObject: (objectId: string) =>
     request<void>(`/api/config/objects/${objectId}/detach`, { method: "POST" }),
+
+  // MCP with no internet access (docs/air-gapped.md, docs/controller-mcp.md)
+  /** Which package mirrors the agent pods have: what an npx / pip / uvx MCP server needs. */
+  getEnvironmentMirrors: () => request<EnvironmentMirrors>("/api/environment/mirrors"),
+  /** The browser URL that downloads the stdio adapter for the Optio controller MCP. */
+  controllerMcpDownloadUrl: () => "/api/downloads/controller-mcp.js",
+
+  // Remote workspaces (docs/remote-workspaces.md): connections, and what a
+  // remote-workspace location picks from
+  /** The organization's connections, the viewer's teams' and their own (tokens never returned). */
+  listRemoteWorkspaceConnections: (provider?: RemoteWorkspaceProviderId) =>
+    request<{ connections: RemoteWorkspaceConnection[] }>(
+      `/api/remote-workspaces/connections${provider ? `?provider=${provider}` : ""}`,
+    ),
+  createRemoteWorkspaceConnection: (data: CreateRemoteWorkspaceConnectionInput) =>
+    request<{ connection: RemoteWorkspaceConnection }>("/api/remote-workspaces/connections", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  /** Absent fields are kept; `token` absent keeps the stored one. */
+  updateRemoteWorkspaceConnection: (id: string, data: UpdateRemoteWorkspaceConnectionInput) =>
+    request<{ connection: RemoteWorkspaceConnection }>(`/api/remote-workspaces/connections/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteRemoteWorkspaceConnection: (id: string) =>
+    request<void>(`/api/remote-workspaces/connections/${id}`, { method: "DELETE" }),
+  /** Signs in to the provider with the stored token; a failed test is `ok: false` with the reason. */
+  testRemoteWorkspaceConnection: (id: string) =>
+    request<RemoteWorkspaceTestResult>(`/api/remote-workspaces/connections/${id}/test`, {
+      method: "POST",
+    }),
+  /** What a new workspace is made from (templates, snapshots, repositories). */
+  listRemoteWorkspaceTemplates: (id: string, organizationId?: string) =>
+    request<{ organizationId: string; templates: RemoteWorkspaceTemplate[] }>(
+      `/api/remote-workspaces/connections/${id}/templates${
+        organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : ""
+      }`,
+    ),
+  /** A template's parameters; `setByOptio` marks the ones Optio fills. */
+  getRemoteWorkspaceTemplateParameters: (id: string, versionId: string) =>
+    request<{ parameters: RemoteWorkspaceParameter[] }>(
+      `/api/remote-workspaces/connections/${id}/templates/${encodeURIComponent(versionId)}/parameters`,
+    ),
+  /** The token's workspaces. */
+  listRemoteWorkspaces: (id: string) =>
+    request<{ workspaces: RemoteWorkspace[] }>(
+      `/api/remote-workspaces/connections/${id}/workspaces`,
+    ),
+  stopRemoteWorkspace: (id: string, workspaceId: string) =>
+    request<{ ok: true; status: string }>(
+      `/api/remote-workspaces/connections/${id}/workspaces/${encodeURIComponent(workspaceId)}/stop`,
+      { method: "POST" },
+    ),
 };
+
+/** `GET /api/remote-workspaces/connections`: a provider account Optio starts workspaces with. */
+export interface RemoteWorkspaceConnection {
+  id: string;
+  provider: RemoteWorkspaceProviderId;
+  workspaceId: string | null;
+  ownerUserId: string | null;
+  ownerTeamId: string | null;
+  ownerName?: string | null;
+  ownerTeamName?: string | null;
+  name: string;
+  /** The API it reaches; blank = the provider's own. */
+  url: string;
+  hasToken: boolean;
+  /** The token's last four characters. */
+  tokenHint: string | null;
+  caPem: string | null;
+  insecureSkipVerify: boolean;
+  organizationId: string | null;
+  templateId: string | null;
+  templateVersionId: string | null;
+  templateName: string | null;
+  defaultParameters: Record<string, string>;
+  ttlMs: number | null;
+  deleteWhenDone: boolean;
+  lastTestedAt: string | null;
+  lastError: string | null;
+  enabled: boolean;
+  canEdit: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpdateRemoteWorkspaceConnectionInput {
+  name?: string;
+  url?: string;
+  token?: string;
+  caPem?: string | null;
+  insecureSkipVerify?: boolean;
+  organizationId?: string | null;
+  templateId?: string | null;
+  templateVersionId?: string | null;
+  templateName?: string | null;
+  defaultParameters?: Record<string, string>;
+  ttlMs?: number | null;
+  deleteWhenDone?: boolean;
+  enabled?: boolean;
+}
+
+export interface CreateRemoteWorkspaceConnectionInput extends UpdateRemoteWorkspaceConnectionInput {
+  provider: RemoteWorkspaceProviderId;
+  name: string;
+  token: string;
+  /** "workspace" (the organization's; default), "me", or "team:<id>". */
+  owner?: ResourceOwner;
+}
+
+export interface RemoteWorkspaceTestResult {
+  ok: boolean;
+  /** `username` is empty when the provider doesn't say whose the token is. */
+  user?: { username: string; email?: string };
+  error?: string;
+}
+
+export interface RemoteWorkspaceTemplate {
+  id: string;
+  name: string;
+  displayName: string | null;
+  description: string | null;
+  organizationId: string | null;
+  activeVersionId: string;
+}
+
+export interface RemoteWorkspaceParameter {
+  name: string;
+  displayName: string | null;
+  description: string | null;
+  type: string;
+  mutable: boolean;
+  required: boolean;
+  defaultValue: string | null;
+  ephemeral: boolean;
+  options: Array<{ name: string; value: string; description: string | null }>;
+  /** Optio fills it (the pairing bundle, the checkout). */
+  setByOptio: boolean;
+}
+
+export interface RemoteWorkspace {
+  id: string;
+  name: string;
+  ownerName: string | null;
+  templateId: string | null;
+  templateName: string | null;
+  /** running, stopped, starting, stopping, failed, deleted (a Coder build's own status). */
+  status: string;
+  transition: string;
+}
+
+/** `GET /api/environment/mirrors`: `agent.env` in the chart names each tool's mirror. */
+export interface EnvironmentMirrors {
+  npm: boolean;
+  pip: boolean;
+  uv: boolean;
+}

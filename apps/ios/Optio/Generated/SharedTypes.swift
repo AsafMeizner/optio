@@ -3955,6 +3955,16 @@ public struct LocalHost: Codable, Hashable, Sendable {
     /// Whether the connected daemon can refresh agent limits on request (Codex's
     /// usage pill refresh button). Live, so false whenever the host is offline.
     public let refreshLimits: Bool?
+    /// A remote workspace's provider ("coder", "codespaces", "daytona", "e2b")
+    /// when the machine is a workspace Optio started for a piece of work
+    /// (docs/remote-workspaces.md); "machine" (or absent, from older servers):
+    /// one a person paired.
+    public let origin: LocalHostOrigin?
+    /// A remote workspace's id and name at its provider; null for a machine.
+    public let remoteWorkspaceId: String?
+    public let remoteWorkspaceName: String?
+    /// The connection that started it; null for a machine.
+    public let remoteWorkspaceConnectionId: String?
     public let state: LocalHostState
     public let lastSeenAt: String?
     public let createdAt: String
@@ -3977,6 +3987,10 @@ public struct LocalHost: Codable, Hashable, Sendable {
         case modelProviders = "modelProviders"
         case awsProfiles = "awsProfiles"
         case refreshLimits = "refreshLimits"
+        case origin = "origin"
+        case remoteWorkspaceId = "remoteWorkspaceId"
+        case remoteWorkspaceName = "remoteWorkspaceName"
+        case remoteWorkspaceConnectionId = "remoteWorkspaceConnectionId"
         case state = "state"
         case lastSeenAt = "lastSeenAt"
         case createdAt = "createdAt"
@@ -4000,6 +4014,10 @@ public struct LocalHost: Codable, Hashable, Sendable {
         modelProviders: Bool? = nil,
         awsProfiles: [String]? = nil,
         refreshLimits: Bool? = nil,
+        origin: LocalHostOrigin? = nil,
+        remoteWorkspaceId: String? = nil,
+        remoteWorkspaceName: String? = nil,
+        remoteWorkspaceConnectionId: String? = nil,
         state: LocalHostState,
         lastSeenAt: String? = nil,
         createdAt: String,
@@ -4021,10 +4039,32 @@ public struct LocalHost: Codable, Hashable, Sendable {
         self.modelProviders = modelProviders
         self.awsProfiles = awsProfiles
         self.refreshLimits = refreshLimits
+        self.origin = origin
+        self.remoteWorkspaceId = remoteWorkspaceId
+        self.remoteWorkspaceName = remoteWorkspaceName
+        self.remoteWorkspaceConnectionId = remoteWorkspaceConnectionId
         self.state = state
         self.lastSeenAt = lastSeenAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+}
+
+/// "machine", or a remote-workspace provider (REMOTE_WORKSPACE_PROVIDERS, remote-workspaces.ts).
+public enum LocalHostOrigin: String, Codable, Hashable, Sendable, CaseIterable {
+    case machine = "machine"
+    case coder = "coder"
+    case codespaces = "codespaces"
+    case daytona = "daytona"
+    case e2b = "e2b"
+    /// Fallback for raw values this client does not know about yet.
+    case unknown = "__unknown__"
+
+    public static let allCases: [LocalHostOrigin] = [.machine, .coder, .codespaces, .daytona, .e2b]
+
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = LocalHostOrigin(rawValue: raw) ?? .unknown
     }
 }
 

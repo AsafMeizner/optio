@@ -34,8 +34,11 @@ export { SsrfError };
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface OutboundOptions {
-  /** Per-request IdP trust; DNS pinning and outbound policy remain mandatory. */
-  tls?: { ca?: string; rejectUnauthorized?: boolean };
+  /**
+   * Per-request trust (an IdP's, a remote-workspace endpoint's); DNS pinning
+   * and outbound policy remain mandatory.
+   */
+  tls?: OutboundTls;
   /** Overrides the environment's policy. */
   policy?: OutboundPolicy;
   /** Overrides DNS (tests). */
@@ -46,6 +49,11 @@ export interface OutboundOptions {
   maxRedirects?: number;
   /** Used when `signal` is absent. Default 10 s. */
   timeoutMs?: number;
+}
+
+export interface OutboundTls {
+  ca?: string | null;
+  rejectUnauthorized?: boolean;
 }
 
 export type GuardedFetchInit = Omit<RequestInit, "redirect"> & {
@@ -144,7 +152,7 @@ async function send(
   vetted: VettedUrl,
   init: RequestInit,
   fetchImpl: FetchLike | undefined,
-  tls?: OutboundOptions["tls"],
+  tls?: OutboundTls,
 ): Promise<Response> {
   const url = vetted.url.toString();
   if (fetchImpl) return fetchImpl(url, init);
@@ -163,7 +171,7 @@ async function send(
 }
 
 /** An Agent that connects `vetted.hostname` to `vetted.addresses` and nothing else. */
-function pinnedAgent(vetted: VettedUrl, tls?: OutboundOptions["tls"]): Agent {
+function pinnedAgent(vetted: VettedUrl, tls?: OutboundTls): Agent {
   const lookup: LookupFunction = (hostname, options, callback) => {
     if (normalizeHostname(hostname) !== vetted.hostname) {
       callback(new Error(`connection to ${hostname} was not vetted`), "", undefined);
@@ -173,7 +181,9 @@ function pinnedAgent(vetted: VettedUrl, tls?: OutboundOptions["tls"]): Agent {
     if (options.all) callback(null, all);
     else callback(null, all[0]!.address, all[0]!.family);
   };
-  const connect = { ...tls, lookup, timeout: CONNECT_TIMEOUT_MS };
+  const connect: Record<string, unknown> = { lookup, timeout: CONNECT_TIMEOUT_MS };
+  if (tls?.ca?.trim()) connect.ca = tls.ca;
+  if (tls?.rejectUnauthorized === false) connect.rejectUnauthorized = false;
   return new Agent({ connect: connect as unknown as Agent.Options["connect"] });
 }
 

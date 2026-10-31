@@ -1,3 +1,7 @@
+import {
+  REMOTE_WORKSPACES_SWITCH,
+  remoteWorkspacesPolicy,
+} from "../services/remote-workspace-policy.js";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -44,6 +48,7 @@ export const DeploymentSwitchSchema = z.object({
 const WorkspaceCreationSchema = z.enum(["admins", "everyone"]);
 
 const SettingsResponseSchema = z.object({
+  remoteWorkspaces: DeploymentSwitchSchema,
   workspaceCreation: z
     .object({
       value: WorkspaceCreationSchema,
@@ -60,6 +65,7 @@ const SettingsResponseSchema = z.object({
 
 const UpdateBodySchema = z
   .object({
+    remoteWorkspaces: z.boolean().nullable().optional(),
     workspaceCreation: WorkspaceCreationSchema.nullable()
       .optional()
       .describe("Who may create a workspace; null = the deployment's default"),
@@ -78,6 +84,7 @@ export async function deploymentSettingsRoutes(rawApp: FastifyInstance) {
 
   const current = async (req: Parameters<typeof mayCreateWorkspace>[0]) => ({
     workspaceCreation: await workspaceCreationPolicy(),
+    remoteWorkspaces: await remoteWorkspacesPolicy(),
     onboarding: await switchPolicy(ONBOARDING),
     canEdit: await requesterIsDeploymentAdmin(req),
     mayCreateWorkspace: await mayCreateWorkspace(req),
@@ -134,6 +141,8 @@ export async function deploymentSettingsRoutes(rawApp: FastifyInstance) {
       );
       if (refused) return reply;
       const changes: Array<[string, unknown]> = [];
+      if (req.body.remoteWorkspaces !== undefined)
+        changes.push([REMOTE_WORKSPACES_SWITCH.key, req.body.remoteWorkspaces]);
       if (req.body.workspaceCreation !== undefined)
         changes.push([WORKSPACE_CREATION_KEY, req.body.workspaceCreation]);
       if (req.body.onboarding !== undefined) changes.push([ONBOARDING.key, req.body.onboarding]);

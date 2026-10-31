@@ -14,6 +14,8 @@ import {
   kindOfSpec,
   modelProviderIdFrom,
   isSelfSecretTriggerType,
+  remoteWorkspaceOf,
+  REMOTE_WORKSPACE_PROVIDER_INFO,
   slugify,
   toLocalAgentKind,
   type PersistentAgentPodLifecycle,
@@ -39,6 +41,7 @@ import * as terminalService from "./local-terminal-service.js";
 import * as sessionService from "./interactive-session-service.js";
 import * as paService from "./persistent-agent-service.js";
 import { validateRunLocation } from "./local-run-service.js";
+import * as remoteWorkspaceService from "./remote-workspace-service.js";
 import { planNewWork, planWorkUpdate, workChangeError, type WorkActor } from "./work-ownership.js";
 import { getRepoByUrl, repoDefaultBranch } from "./repo-service.js";
 import { isUniqueViolation } from "../utils/db-errors.js";
@@ -144,21 +147,101 @@ function check(spec: WorkSpec, kind: WorkKind): void {
   }
 }
 
+/**
+ * Work in a remote workspace (`where.remoteWorkspace`;
+ * docs/remote-workspaces.md): `startWorkspace` starts the workspace and fills
+ * `started` with the machine it pairs as, so the caller can let it go when
+ * the work isn't created after all.
+ */
+export interface RemoteWorkspaceStart {
+  startWorkspace?: boolean;
+  started?: { hostId: string };
+}
+
 /** A pod or machine location for the kinds that run a headless agent (Tasks, Jobs). */
-async function runLocation(spec: WorkSpec, kind: WorkKind, actor: Actor) {
+async function runLocation(
+  spec: WorkSpec,
+  kind: WorkKind,
+  actor: Actor,
+  remote: RemoteWorkspaceStart = {},
+) {
+  const launch = spec.where.runTarget === "local" ? remoteWorkspaceOf(spec.where) : null;
+  let { localHostId, localDir } = spec.where;
+  if (launch && remote.startWorkspace) {
+    try {
+      const started = await remoteWorkspaceService.startRemoteWorkspaceWork(launch, actor, {
+        workName: spec.name,
+      });
+      remote.started = { hostId: started.localHostId };
+      localHostId = started.localHostId;
+      localDir = localDir || started.localDir;
+    } catch (err) {
+      if (err instanceof remoteWorkspaceService.RemoteWorkspaceError) {
+        throw new WorkError(err.status === 502 ? 400 : err.status, err.message);
+      }
+      throw err;
+    }
+  } else if (launch && !localHostId) {
+    // Work on a trigger or a schedule: its workspace is made when it fires
+    // (local-run-service wakes it from `remote_workspace_launch`), so only check now
+    // what that will need.
+    if (spec.who.runtime && !toLocalAgentKind(spec.who.runtime)) {
+      throw new WorkError(
+        400,
+        `${spec.who.runtime} can't run on your machine — pick Claude Code, Codex, Cursor, Gemini, or OpenCode`,
+      );
+    }
+    if (!actor.userId) {
+      throw new WorkError(400, "Work in a remote workspace needs a signed-in person");
+    }
+    if (
+      !(await remoteWorkspaceService.resolveConnectionFor(actor, {
+        connectionId: launch.connectionId,
+        provider: launch.provider,
+      }))
+    ) {
+      const asked = launch.provider
+        ? REMOTE_WORKSPACE_PROVIDER_INFO[launch.provider].label
+        : "remote workspace";
+      throw new WorkError(
+        400,
+        launch.connectionId
+          ? `That ${asked} connection isn't available`
+          : `No ${asked} connection — add one in Settings → Integrations → Remote workspaces`,
+      );
+    }
+    return {
+      runTarget: "local" as const,
+      localHostId: null,
+      localDir: localDir || launch.checkoutDir?.trim() || null,
+      localSessionMode: "headless" as const,
+      remoteWorkspaceLaunch: launch,
+    };
+  }
   const checked = await validateRunLocation(
     {
       runTarget: spec.where.runTarget,
-      localHostId: spec.where.localHostId,
-      localDir: spec.where.localDir,
+      localHostId,
+      localDir,
       localSessionMode: "headless",
       agentType: spec.who.runtime ?? undefined,
       repoUrl: kind === "standalone" ? null : spec.where.repoUrl,
     },
     actor.userId ?? undefined,
   );
-  if (!checked.ok) throw new WorkError(400, checked.error);
-  return checked.location;
+  if (!checked.ok) {
+    await letWorkspaceGo(remote);
+    throw new WorkError(400, checked.error);
+  }
+  return { ...checked.location, remoteWorkspaceLaunch: launch };
+}
+
+/** Stop a workspace this request started for work that then wasn't created. */
+async function letWorkspaceGo(remote: RemoteWorkspaceStart): Promise<void> {
+  if (!remote.started) return;
+  const { hostId } = remote.started;
+  remote.started = undefined;
+  await remoteWorkspaceService.cancelRemoteWorkspaceWork(hostId).catch(() => {});
 }
 
 /** The kinds that run with an owner's credentials (Tasks, Jobs, agents; in a pod or on a machine). */
@@ -213,6 +296,8 @@ export async function definitionColumns(
   kind: WorkDefinitionKind,
   spec: WorkSpec,
   actor: Actor,
+  /** A Job started now starts its remote workspace too. */
+  remote: RemoteWorkspaceStart = {},
 ): Promise<Partial<WorkDefinitionValues>> {
   const common = {
     name: spec.name.trim(),
@@ -224,7 +309,7 @@ export async function definitionColumns(
     case "repo-blueprint":
       return {
         ...common,
-        ...(await runLocation(spec, kind, actor)),
+        ...(await runLocation(spec, kind, actor, remote)),
         agentType: spec.who.runtime,
         agentOptions: options(spec),
         repoUrl: spec.where.repoUrl,
@@ -240,7 +325,7 @@ export async function definitionColumns(
     case "standalone":
       return {
         ...common,
-        ...(await runLocation(spec, kind, actor)),
+        ...(await runLocation(spec, kind, actor, remote)),
         // No runtime: the Job runs its prompt as a shell command.
         agentType: spec.who.runtime,
         model: spec.who.runtime ? (spec.who.model ?? null) : null,
@@ -342,7 +427,8 @@ export async function createWork(
 
   switch (kind) {
     case "repo-task": {
-      const location = await runLocation(spec, kind, actor);
+      const remote: RemoteWorkspaceStart = { startWorkspace: true };
+      const { remoteWorkspaceLaunch, ...location } = await runLocation(spec, kind, actor, remote);
       try {
         const task = await taskService.submitTask(
           {
@@ -363,8 +449,12 @@ export async function createWork(
           },
           actor.userId ?? undefined,
         );
+        if (remoteWorkspaceLaunch) {
+          await remoteWorkspaceService.recordTaskLaunch(task.id, remoteWorkspaceLaunch);
+        }
         return made(task.id);
       } catch (err) {
+        await letWorkspaceGo(remote);
         if (err instanceof taskService.TaskInputError) throw new WorkError(400, err.message);
         throw err;
       }
@@ -373,7 +463,12 @@ export async function createWork(
     case "repo-blueprint":
     case "standalone":
     case "local-blueprint": {
-      const columns = await definitionColumns(kind, spec, actor);
+      // A Job that runs now starts its remote workspace now; anything else
+      // waits for a trigger and can't start one yet (runLocation).
+      const remote: RemoteWorkspaceStart = {
+        startWorkspace: kind === "standalone" && !trigger && opts.start !== false,
+      };
+      const columns = await definitionColumns(kind, spec, actor, remote);
       let definition: WorkDefinition;
       let madeTriggerRow: triggerService.TriggerRow | null = null;
       try {
@@ -399,6 +494,7 @@ export async function createWork(
           return row;
         });
       } catch (err) {
+        await letWorkspaceGo(remote);
         conflict(err, kind, spec);
       }
       if (kind === "standalone" && !trigger && opts.start !== false) {
@@ -623,6 +719,7 @@ export async function updateWork(id: string, spec: WorkSpec, actor: Actor): Prom
   check(spec, kind);
   const wanted = triggerOf(spec, kind);
   const columns = await definitionColumns(kind, spec, actor);
+  keepPinnedRemoteWorkspaceHost(columns, existing);
   if (kind !== "local-blueprint") {
     // Personal work is its owner's to change; the owner and secrets follow the answers.
     const planned = await planWorkUpdate(
@@ -652,6 +749,40 @@ export async function updateWork(id: string, spec: WorkSpec, actor: Actor): Prom
   }
   const result: WorkCreated = { kind, id, href: workHref(kind, id) };
   return madeTriggerRow ? { ...result, trigger: madeTrigger(madeTriggerRow) } : result;
+}
+
+/** A remote-workspace launch with its unset fields dropped and its keys in order, to compare two. */
+function launchKey(launch: unknown): string {
+  const tidy = (v: unknown): unknown => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return v;
+    const entries = Object.entries(v as Record<string, unknown>)
+      .filter(([, x]) => x !== null && x !== undefined && x !== "")
+      .map(([k, x]) => [k, tidy(x)] as const)
+      .filter(([, x]) => !(x && typeof x === "object" && Object.keys(x).length === 0))
+      .sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries);
+  };
+  return JSON.stringify(tidy(launch));
+}
+
+/**
+ * Saving an edit with the same remote workspace keeps the machine its first
+ * firing paired (local-run-service pins it on the definition), so the next
+ * firing wakes that workspace instead of creating another one.
+ */
+export function keepPinnedRemoteWorkspaceHost(
+  columns: Partial<WorkDefinitionValues>,
+  existing: Pick<WorkDefinition, "remoteWorkspaceLaunch" | "localHostId" | "localDir">,
+): void {
+  if (!columns.remoteWorkspaceLaunch || !existing.remoteWorkspaceLaunch || columns.localHostId) {
+    return;
+  }
+  if (!existing.localHostId) return;
+  if (launchKey(columns.remoteWorkspaceLaunch) !== launchKey(existing.remoteWorkspaceLaunch)) {
+    return;
+  }
+  columns.localHostId = existing.localHostId;
+  if (!columns.localDir) columns.localDir = existing.localDir ?? null;
 }
 
 /** Save a persistent agent from its attributes (Then stays "waits for messages"). */
