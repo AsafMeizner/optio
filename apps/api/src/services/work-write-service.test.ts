@@ -15,6 +15,9 @@ const m = vi.hoisted(() => ({
   createDefinition: vi.fn(),
   createWorkflowRun: vi.fn(),
   planNewWork: vi.fn(),
+  planWorkUpdate: vi.fn(),
+  getDefinition: vi.fn(),
+  updateDefinition: vi.fn(),
 }));
 
 vi.mock("../db/client.js", () => ({
@@ -39,6 +42,8 @@ vi.mock("./task-service.js", () => ({
 }));
 vi.mock("./work-definition-service.js", () => ({
   createDefinition: (...a: unknown[]) => m.createDefinition(...a),
+  getDefinition: (...a: unknown[]) => m.getDefinition(...a),
+  updateDefinition: (...a: unknown[]) => m.updateDefinition(...a),
   TRIGGER_TARGET: { standalone: "job", "repo-blueprint": "task_config" },
 }));
 vi.mock("./workflow-service.js", () => ({
@@ -46,7 +51,7 @@ vi.mock("./workflow-service.js", () => ({
 }));
 vi.mock("./work-ownership.js", () => ({
   planNewWork: (...a: unknown[]) => m.planNewWork(...a),
-  planWorkUpdate: vi.fn(),
+  planWorkUpdate: (...a: unknown[]) => m.planWorkUpdate(...a),
   workChangeError: vi.fn(),
 }));
 vi.mock("./trigger-service.js", () => ({
@@ -65,7 +70,13 @@ vi.mock("./repo-service.js", () => ({
 
 import type { WorkSpec } from "@optio/shared";
 import { RemoteWorkspaceError } from "./remote-workspace-service.js";
-import { createWork, keepPinnedRemoteWorkspaceHost, WorkError } from "./work-write-service.js";
+import { ORGANIZATION_REMOTE_WORKSPACE_REFUSED } from "./remote-workspace-policy.js";
+import {
+  createWork,
+  keepPinnedRemoteWorkspaceHost,
+  updateWork,
+  WorkError,
+} from "./work-write-service.js";
 const actor = { userId: "u-1", workspaceId: "ws-1", isAdmin: false };
 function spec(runtime: "codex" | "opencode"): WorkSpec {
   return {
@@ -282,6 +293,61 @@ describe("createWork in a remote workspace (where.coder)", () => {
       ),
     ).rejects.toThrow(/That Coder connection isn't available/);
     expect(m.createDefinition).not.toHaveBeenCalled();
+  });
+
+  it("refuses organization work on a schedule or a Job in a remote workspace", async () => {
+    m.planNewWork.mockResolvedValue({ ok: true, ownerUserId: null, ownerTeamId: null });
+    m.resolveConnectionFor.mockResolvedValue({ id: launch.connectionId, enabled: true });
+    for (const s of [
+      rwSpec({
+        where: {
+          runTarget: "local",
+          repoUrl: "https://gitlab.example.com/acme/app",
+          coder: launch,
+        },
+        when: { type: "schedule", config: { cronExpression: "0 9 * * *" } },
+      }),
+      rwSpec({ where: { runTarget: "local", coder: launch } }),
+    ]) {
+      await expect(createWork(s, rwActor)).rejects.toMatchObject({
+        status: 400,
+        message: ORGANIZATION_REMOTE_WORKSPACE_REFUSED,
+      });
+    }
+    expect(m.startCoderWork).not.toHaveBeenCalled();
+    expect(m.createDefinition).not.toHaveBeenCalled();
+  });
+
+  it("still starts an organization Task someone runs now, as that person", async () => {
+    m.planNewWork.mockResolvedValue({ ok: true, ownerUserId: null, ownerTeamId: null });
+    await createWork(rwSpec(), rwActor);
+    expect(m.startCoderWork).toHaveBeenCalledWith(coderLaunch, rwActor, expect.any(Object));
+    expect(m.recordTaskLaunch).toHaveBeenCalledWith("task-1", coderLaunch);
+  });
+
+  it("refuses an edit that leaves organization work in a remote workspace", async () => {
+    m.getDefinition.mockResolvedValue({
+      id: "job-9",
+      kind: "standalone",
+      workspaceId: "ws-1",
+      ownerUserId: null,
+      remoteWorkspaceLaunch: coderLaunch,
+      localHostId: null,
+      localDir: null,
+    });
+    m.planWorkUpdate.mockResolvedValue({ ok: true, ownerUserId: null });
+    m.resolveConnectionFor.mockResolvedValue({ id: launch.connectionId, enabled: true });
+    await expect(
+      updateWork(
+        "job-9",
+        rwSpec({
+          where: { runTarget: "local", coder: { ...launch, templateVersionId: "tv-other" } },
+          when: { type: "schedule", config: { cronExpression: "0 9 * * *" } },
+        }),
+        { ...rwActor, userId: "admin-b", isAdmin: true },
+      ),
+    ).rejects.toMatchObject({ status: 400, message: ORGANIZATION_REMOTE_WORKSPACE_REFUSED });
+    expect(m.updateDefinition).not.toHaveBeenCalled();
   });
 
   it("takes where.remoteWorkspace for any provider, as it is", async () => {

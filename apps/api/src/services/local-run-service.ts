@@ -1,3 +1,4 @@
+import { ORGANIZATION_REMOTE_WORKSPACE_REFUSED } from "./remote-workspace-policy.js";
 import { localTraceabilityNote } from "./work-traceability.js";
 /**
  * Local runs: Jobs and Repo Tasks whose run location is the owner's own
@@ -262,7 +263,10 @@ export async function dispatchLocalWorkflowRun(
     { localHostId: workflow.localHostId, localDir: workflow.localDir },
     {
       launch: definition?.remoteWorkspaceLaunch,
-      userId: workflow.ownerUserId ?? workflow.createdBy ?? null,
+      // A Job's runs fire with nobody present: only its owner's token, never
+      // its creator's (organization work has no owner and is refused).
+      userId: workflow.ownerUserId ?? null,
+      definitionRun: true,
       workspaceId: workflow.workspaceId ?? null,
       workName: workflow.name,
       pin: (made, previous) => pinDefinition(workflow.id, made, previous),
@@ -384,7 +388,13 @@ export async function dispatchLocalTask(
     { localHostId: task.localHostId, localDir: task.localDir },
     {
       launch: task.remoteWorkspaceLaunch ?? definition?.remoteWorkspaceLaunch,
-      userId: task.ownerUserId ?? task.createdBy ?? null,
+      // A Task started by a person mints for its owner or that person; a
+      // definition's firing only for the definition's owner (see
+      // remoteWorkspacePlace).
+      userId: task.remoteWorkspaceLaunch
+        ? (task.ownerUserId ?? task.createdBy ?? null)
+        : (task.ownerUserId ?? null),
+      definitionRun: !task.remoteWorkspaceLaunch,
       workspaceId: task.workspaceId ?? null,
       workName: task.title,
       pin: async (made, previous) => {
@@ -492,9 +502,17 @@ type Place = { localHostId: string | null; localDir: string | null };
  */
 async function remoteWorkspacePlace(
   place: Place,
-  input: Omit<WakeRemoteWorkspaceInput, "localHostId" | "localDir">,
+  {
+    definitionRun,
+    ...input
+  }: Omit<WakeRemoteWorkspaceInput, "localHostId" | "localDir"> & {
+    /** The run comes from a Job or scheduled Task definition, not a person's own start. */
+    definitionRun: boolean;
+  },
 ): Promise<Place | { error: string }> {
   if (!input.launch) return place;
+  // Organization work has no owner (ORGANIZATION_REMOTE_WORKSPACE_REFUSED).
+  if (definitionRun && !input.userId) return { error: ORGANIZATION_REMOTE_WORKSPACE_REFUSED };
   try {
     const { wakeRemoteWorkspaceWork } = await import("./remote-workspace-service.js");
     return (await wakeRemoteWorkspaceWork({ ...input, ...place })) ?? place;

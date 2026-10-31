@@ -8,6 +8,7 @@
  * trigger are written in one transaction, so a rejected trigger leaves
  * nothing behind.
  */
+import { ORGANIZATION_REMOTE_WORKSPACE_REFUSED } from "./remote-workspace-policy.js";
 import {
   cleanWorkSettings,
   localAgentParams,
@@ -234,6 +235,19 @@ async function runLocation(
     throw new WorkError(400, checked.error);
   }
   return { ...checked.location, remoteWorkspaceLaunch: launch };
+}
+
+/**
+ * A Job or scheduled Task in a remote workspace mints a pairing token for a
+ * person each time it runs; organization work has nobody it could be
+ * (ORGANIZATION_REMOTE_WORKSPACE_REFUSED). local-run-service refuses such
+ * runs too, for definitions saved before this check.
+ */
+function refuseOrganizationRemoteWorkspace(spec: WorkSpec, ownerUserId: string | null | undefined) {
+  if (ownerUserId) return;
+  if (spec.where.runTarget === "local" && remoteWorkspaceOf(spec.where)) {
+    throw new WorkError(400, ORGANIZATION_REMOTE_WORKSPACE_REFUSED);
+  }
 }
 
 /** Stop a workspace this request started for work that then wasn't created. */
@@ -465,6 +479,7 @@ export async function createWork(
     case "local-blueprint": {
       // A Job that runs now starts its remote workspace now; anything else
       // waits for a trigger and can't start one yet (runLocation).
+      if (kind !== "local-blueprint") refuseOrganizationRemoteWorkspace(spec, owned.ownerUserId);
       const remote: RemoteWorkspaceStart = {
         startWorkspace: kind === "standalone" && !trigger && opts.start !== false,
       };
@@ -735,6 +750,7 @@ export async function updateWork(id: string, spec: WorkSpec, actor: Actor): Prom
     if (!planned.ok) throw new WorkError(planned.status, planned.error);
     columns.ownerUserId = planned.ownerUserId;
     if (planned.podSecrets !== undefined) columns.podSecrets = planned.podSecrets;
+    refuseOrganizationRemoteWorkspace(spec, columns.ownerUserId);
   }
   const targetType = definitions.TRIGGER_TARGET[kind];
 

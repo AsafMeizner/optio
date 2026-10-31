@@ -33,10 +33,15 @@ and Terraform state can expose it to whoever controls the connection's Coder
 account or infrastructure. On an organization Coder connection, those operators
 can act as the member who starts work, including accessing private work and
 secrets. Use a private connection unless every member trusts those operators.
-Revoking the pairing token ends that access. Work on a schedule mints this
-token for the work's owner each time it fires, unattended, with the same full
-scope. The daemon reads `OPTIO_TOKEN` from the environment; do not pass it in
-process arguments.
+Revoking the pairing token ends that access. Personal work on a trigger or
+a schedule mints this token for the work's owner each time it fires,
+unattended, with the same full scope. Organization work has no owner, and any
+workspace admin may edit it, so a Job or a scheduled Task that belongs to the
+organization can't run in a remote workspace at all: saving one is refused,
+and a firing of one saved earlier fails with the reason instead of minting
+anyone's token. A Task someone starts now mints for that person. The daemon
+reads `OPTIO_TOKEN` from the environment; do not pass it in process
+arguments.
 
 Private connections are visible only to their owner: even workspace admins
 cannot read another person's private connection. This is stricter than the
@@ -65,7 +70,8 @@ admin read-only visibility described for other resources in [scope.md](scope.md)
   stopped), and the checkout. A Task also takes the **Repository** (the
   PR's repo, sent as `where.repoUrl` and as the `repo_url` parameter). Optio
   then:
-  1. mints a personal access token for the work's owner (`api_keys`, named
+  1. mints a personal access token for the work's owner, or for the person
+     starting organization work now (`api_keys`, named
      `<provider>:<workspace>`, expiring an hour after the connection's TTL),
      pre-registers the machine (`local_hosts`, the checkout as its one
      directory) and makes the **pairing bundle**: `OPTIO_SERVER`,
@@ -97,6 +103,7 @@ admin read-only visibility described for other resources in [scope.md](scope.md)
 - **Work on a trigger or a schedule** is saved with its launch and no
   machine (the connection must exist then); its workspace is made when it
   first fires and pinned on the definition, so later firings wake that one.
+  Only personal work may do this (see the Coder trust boundary above).
 - The daemon learns its identity from the environment:
   `OPTIO_LOCAL_HOST_ID` (the pre-registered machine, matched by id, not by
   hostname) and `OPTIO_LOCAL_HOSTNAME` (the machine's name in Optio).

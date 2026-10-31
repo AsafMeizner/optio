@@ -91,6 +91,7 @@ import {
   validateRunLocation,
   CLUSTER_LOCATION,
 } from "./local-run-service.js";
+import { ORGANIZATION_REMOTE_WORKSPACE_REFUSED } from "./remote-workspace-policy.js";
 
 const host = {
   id: "host-1",
@@ -525,6 +526,61 @@ describe("dispatching a run in a Coder workspace", () => {
     await dispatchLocalTask(task({ remoteWorkspaceLaunch: null, localDir: "/home/dev/optio" }));
     expect(mockWakeCoderWork).not.toHaveBeenCalled();
     expect(terminalService.createTerminal).toHaveBeenCalled();
+  });
+
+  it("refuses a scheduled organization Task instead of minting its creator's token", async () => {
+    mockSelectRows.mockReturnValue([{ remoteWorkspaceLaunch: launch, localHostId: "host-coder" }]);
+    expect(
+      await dispatchLocalTask(
+        task({
+          remoteWorkspaceLaunch: null,
+          workId: "def-1",
+          ownerUserId: null,
+          createdBy: "admin-a",
+        }),
+      ),
+    ).toBeNull();
+    expect(mockWakeCoderWork).not.toHaveBeenCalled();
+    expect(taskService.tryTransitionTask).toHaveBeenCalledWith(
+      "task-1",
+      "failed",
+      "local_dispatch_failed",
+      ORGANIZATION_REMOTE_WORKSPACE_REFUSED,
+    );
+    expect(terminalService.createTerminal).not.toHaveBeenCalled();
+  });
+
+  it("refuses an organization Job's firing in a remote workspace", async () => {
+    mockSelectRows.mockReturnValue([{ remoteWorkspaceLaunch: launch, localHostId: null }]);
+    const workflow = {
+      id: "def-3",
+      name: "Nightly",
+      agentRuntime: "claude-code",
+      localHostId: null,
+      localDir: null,
+      localSessionMode: "headless",
+      ownerUserId: null,
+      ownerTeamId: null,
+      createdBy: "admin-a",
+      workspaceId: "ws-1",
+      model: null,
+      agentOptions: null,
+      maxRetries: 1,
+    } as any;
+    const run = { id: "run-3", localTerminalId: null, triggerId: "trg-1", title: null } as any;
+    expect(await dispatchLocalWorkflowRun(run, workflow, "Do the nightly thing")).toBeNull();
+    expect(mockWakeCoderWork).not.toHaveBeenCalled();
+    expect(terminalService.createTerminal).not.toHaveBeenCalled();
+  });
+
+  it("mints for the person who started an organization Task by hand", async () => {
+    mockWakeCoderWork.mockResolvedValue({
+      localHostId: "host-coder",
+      localDir: "/home/coder/repo",
+    });
+    await dispatchLocalTask(task({ ownerUserId: null, createdBy: "user-2" }));
+    expect(mockWakeCoderWork.mock.calls[0][0]).toMatchObject({ userId: "user-2" });
+    expect(mockWakeCoderWork.mock.calls[0][0]).not.toHaveProperty("definitionRun");
   });
 
   it("makes a triggered Job's workspace at firing time and keeps it on the definition", async () => {
